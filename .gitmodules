@@ -1,0 +1,6 @@
+[submodule "AnyWear-Service"]
+	path = AnyWear-Service
+	url = https://github.com/git-malu/AnyWear-Service.git
+[submodule "AnyWear-Client"]
+	path = AnyWear-Client
+	url = https://github.com/git-malu/AnyWear-Client.git
