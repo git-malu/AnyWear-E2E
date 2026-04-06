@@ -14,3 +14,14 @@ When working on full-stack features or changes that span both codebases, you sho
 - **Service Agent**: Use a sub-agent dedicated to tasks within the `AnyWear-Service` directory.
 
 By spawning parallel agents for the client and service, you can concurrently implement features, resolve bugs, and run isolated git operations across both repositories.
+
+## Repository Dependency Relations
+
+```mermaid
+graph TD
+    Anywear --> AnyWear-Client
+    Anywear --> AnyWear-Service
+    AnyWear-Client --> Anywear-Meta
+    AnyWear-Service --> Anywear-Meta
+```
+
