@@ -4,3 +4,6 @@
 [submodule "AnyWear-Client"]
 	path = AnyWear-Client
 	url = https://github.com/git-malu/AnyWear-Client.git
+[submodule "AnyWear-Meta"]
+	path = AnyWear-Meta
+	url = https://github.com/git-malu/AnyWear-Meta.git
