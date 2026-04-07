@@ -19,9 +19,10 @@ By spawning parallel agents for the client and service, you can concurrently imp
 
 ```mermaid
 graph TD
-    Anywear --> AnyWear-Client
-    Anywear --> AnyWear-Service
-    AnyWear-Client --> Anywear-Meta
-    AnyWear-Service --> Anywear-Meta
+    Anywear --> |submodule| AnyWear-Client 
+    Anywear --> |submodule| AnyWear-Service
+    Anywear --> |submodule| AnyWear-Meta
+    AnyWear-Client --> |submodule| Anywear-Meta
+    AnyWear-Service --> |submodule| Anywear-Meta
 ```
 
