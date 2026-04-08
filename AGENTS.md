@@ -4,7 +4,7 @@ This root directory is a **shell repository** containing three Git submodules. *
 
 1. **Client Repository**: `AnyWear-Client/` (Tauri / React Frontend)
 2. **Service Repository**: `AnyWear-Service/` (Node.js / Hono Backend)
-3. **Meta Repository**: `AnyWear-Meta/` (Source of truth for OpenAPI specs and shared TypeScript interfaces)
+3. **Meta Repository**: `AnyWear-Meta/` (Source of truth for documentation and shared TypeScript interfaces)
 
 ## Git & Submodule Operations
 
@@ -30,6 +30,6 @@ graph TD
     Anywear --> |submodule| AnyWear-Client 
     Anywear --> |submodule| AnyWear-Service
     Anywear --> |submodule| AnyWear-Meta
-    AnyWear-Client --> |submodule| AnyWear-Meta
-    AnyWear-Service --> |submodule| AnyWear-Meta
+    AnyWear-Client --> |submodule| api
+    AnyWear-Service --> |submodule| api
 ```
