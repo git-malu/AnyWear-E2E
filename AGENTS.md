@@ -16,6 +16,10 @@ This root directory is a **shell repository** containing three Git submodules. *
 
 When designing new features, making architectural decisions, or updating system behaviors, always add or update the corresponding design documents in `AnyWear-Meta/architecture/`. Architecture Decision Records (ADRs) should be documented in `AnyWear-Meta/architecture/ADR/`.
 
+## Code Modification & Verification
+
+After modifying code in the frontend (`AnyWear-Client`) or backend (`AnyWear-Service`), you must execute the appropriate verification tasks (such as build, lint, or test commands) within that specific repository. This step is critical to ensure your changes do not break any existing code or functionality before proceeding.
+
 ## Repository Dependency Relations
 
 ```mermaid
