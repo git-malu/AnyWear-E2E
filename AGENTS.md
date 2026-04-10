@@ -16,17 +16,6 @@ This root directory is a **shell repository** containing three Git submodules. *
 
 When designing new features, making architectural decisions, or updating system behaviors, always add or update the corresponding design documents in `AnyWear-Meta/architecture/`. Architecture Decision Records (ADRs) should be documented in `AnyWear-Meta/architecture/ADR/`.
 
-## Parallel Execution
-
-Frontend and backend tasks can usually be executed in parallel. 
-
-When working on full-stack features or changes that span codebases, utilize sub-agents to maximize efficiency:
-- **Client Agent**: Use a sub-agent dedicated to tasks within the `AnyWear-Client` directory.
-- **Service Agent**: Use a sub-agent dedicated to tasks within the `AnyWear-Service` directory.
-- **Meta Agent**: Use a sub-agent for OpenAPI or shared interface updates within the `AnyWear-Meta` directory.
-
-By spawning parallel agents, you can concurrently implement features, resolve bugs, and run isolated git operations across repositories.
-
 ## Repository Dependency Relations
 
 ```mermaid
