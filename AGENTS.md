@@ -4,6 +4,8 @@
 > - `AnyWear-Meta/AGENTS.md`
 > - `AnyWear-Client/AGENTS.md`
 > - `AnyWear-Service/AGENTS.md`
+> 
+> 💡 **Tip:** To get a comprehensive big picture of the entire project, please read [`AnyWear-Meta/architecture/overall_architecture.md`](AnyWear-Meta/architecture/overall_architecture.md).
 
 This root directory is a **shell repository** containing three Git submodules. **Do not run build or install commands in the root directory.** All code and package configuration lives in the subdirectories.
 
