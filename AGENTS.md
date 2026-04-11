@@ -1,5 +1,10 @@
 # Agents Context & Repository Structure
 
+> **Note:** There are specific agent instruction files for each submodule. Be sure to also reference them when working in their respective directories:
+> - `AnyWear-Meta/AGENTS.md`
+> - `AnyWear-Client/AGENTS.md`
+> - `AnyWear-Service/AGENTS.md`
+
 This root directory is a **shell repository** containing three Git submodules. **Do not run build or install commands in the root directory.** All code and package configuration lives in the subdirectories.
 
 1. **Client Repository**: `AnyWear-Client/` (Tauri / React Frontend)
