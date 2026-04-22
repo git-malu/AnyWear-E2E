@@ -5,7 +5,7 @@ AnyWear is an AI-powered virtual try-on and wardrobe management platform designe
 ## Core Features
 
 - **Virtual Try-On (VTO) Engine**: Powered by ByteDance's Seedream 5.0, the core VTO engine realistically maps selected garments onto a user's uploaded "base photo," handling multi-garment fusion and pose preservation.
-- **Digital Wardrobe Management**: Users can digitize their real-world wardrobe. The platform automatically tags clothing attributes (category, color, fit, etc.) and removes backgrounds using the ZhiPu AI Clothing Recognition Agent. It also supports vector-based visual search to quickly locate items via images.
+- **Digital Wardrobe Management**: Users can digitize their real-world wardrobe. The platform automatically tags clothing attributes (category, color, material, brand, etc.) and removes backgrounds using 2026 SOTA Vision-Language Models (VLM) such as GLM-5V or Qwen3-VL. It also supports vector-based visual search to quickly locate items via images.
 - **AI Styling & Recommendations**:
   - **Context-Aware Recommendations**: Utilizing the ByteDance doubao-seed-2-0 model alongside hyperlocal weather data (via QWeather), the app provides daily personalized outfit suggestions directly rendered onto the user's avatar.
   - **Conversational AI Stylist**: An interactive chat interface allows users to request outfit ideas using natural language, dynamically generating styled VTO images based on the user's prompt and wardrobe context.
