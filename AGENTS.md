@@ -21,7 +21,9 @@ This root directory is a **shell repository** containing three Git submodules. *
 
 ## Design & Documentation
 
-When designing new features, making architectural decisions, or updating system behaviors, always add or update the corresponding design documents in `AnyWear-Meta/architecture/`. Architecture Decision Records (ADRs) should be documented in `AnyWear-Meta/architecture/ADR/`.
+- When designing new features, making architectural decisions, or updating system behaviors, always add or update the corresponding design documents in `AnyWear-Meta/architecture/`.
+- Architecture Decision Records (ADRs) should be documented in `AnyWear-Meta/architecture/ADR/`.
+- **Development Plans**: Before implementing a feature or significant change, you must document a detailed implementation plan in `AnyWear-Meta/change/development/plan/`. This ensures architectural alignment and progress tracking across submodules.
 
 ## Code Modification & Verification
 
