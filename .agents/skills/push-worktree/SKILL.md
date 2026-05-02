@@ -1,39 +1,42 @@
-# Push Worktree Changes to Main
+---
+name: push-worktree
+description: Push changes from a worktree-based shell repository with Git submodules to main, tag releases, and ensure consistent submodule pointers
+license: MIT
+compatibility: opencode
+metadata:
+  audience: developers
+  workflow: version-control
+---
 
-This skill covers pushing changes from a worktree-based shell repository with Git submodules to `main`, tagging releases, and ensuring all submodule pointers are consistent.
+## What I do
 
-## When to Use
+- Safely push changes from a worktree-based shell repository containing Git submodules (`AnyWear-Service`, `AnyWear-Client`, `AnyWear-Meta`).
+- Handle the shared `api` submodule dependency order between Service and Client.
+- Tag releases consistently across all repos.
+- Resolve common worktree and submodule pitfalls (detached HEAD, dirty submodule files, locked branches).
 
-Use this skill when the user asks to "push to main", "ship changes", "merge and push", or any variant across the AnyWear multi-repo setup.
+## When to use me
 
-## Repository Structure
+Use this when the user asks to "push to main", "ship changes", "merge and push", or any variant across the AnyWear multi-repo setup.
 
-```
-stellar-comet (root, shell repo)
-├── AnyWear-Service/     (backend, independent git repo)
-│   └── api/             (shared submodule: AnyWear-Service-API)
-├── AnyWear-Client/      (frontend, independent git repo)
-│   └── api/             (shared submodule: same AnyWear-Service-API)
-└── AnyWear-Meta/        (docs, independent git repo)
-```
+## Critical Constraints
 
-## Critical Dependency Order
+1. **Dependency Order**: The `api` submodule (`AnyWear-Service-API`) must be pushed **first**, then each parent repo's submodule pointer must be updated afterward:
+   ```
+   1. api submodule (AnyWear-Service-API)     ← push first
+   2. AnyWear-Service                         ← then update api pointer
+   3. AnyWear-Client                          ← then update api pointer
+   4. AnyWear-Meta                            ← independent, can go in parallel with 2-3
+   5. Root (stellar-comet)                    ← last: update all 3 submodule pointers
+   ```
+2. **Tagging Convention**: All repos in the same feature push must use the **same semantic tag name** for traceability. Tags are named after the feature (e.g., `"vto-engine"`, `"daily-recommendation"`).
+3. **Worktree Safety**: Root's `main` may be locked by another worktree. Always use `git push origin HEAD:main` for the root repo, never `git push origin main`.
 
-The `api` submodule is **shared** between Service and Client. It must be updated and pushed **first**, then each parent repo's submodule pointer must be updated afterward.
-
-```
-1. api submodule (AnyWear-Service-API)     ← push first
-2. AnyWear-Service                         ← then update api pointer
-3. AnyWear-Client                          ← then update api pointer
-4. AnyWear-Meta                            ← independent, can go in parallel with 2-3
-5. Root (stellar-comet)                    ← last: update all 3 submodule pointers
-```
-
-## Step-by-Step Workflow
+## Execution Steps
 
 ### Step 1: Check Status of All Repos
 
-Run in parallel to assess what needs committing:
+Run these in parallel to assess what needs committing:
 
 ```bash
 # Root
@@ -62,7 +65,7 @@ cd AnyWear-Service/api
 git checkout main
 git pull origin main
 git add anywear_openapi.yaml
-git commit -m "feat: <feature-name>" 
+git commit -m "feat: <feature-name>"
 git tag "<tag-name>" -m "<tag-message>"
 git push origin main
 git push origin tag <tag-name>
@@ -104,8 +107,6 @@ git push origin main
 git push origin tag <tag-name>
 ```
 
-**Common pitfall**: The Client's api submodule often lags behind because the working copy was overwritten manually instead of pulling via git. Always `git pull origin main` inside the submodule, don't just copy files.
-
 ### Step 5: Push Meta Repo
 
 ```bash
@@ -121,8 +122,6 @@ git push origin tag <tag-name>
 
 ### Step 6: Push Root Repo
 
-The root repo tracks submodule pointers as versioned blobs. Since this is a worktree, `main` may be locked by another worktree. Push via direct ref:
-
 ```bash
 cd .  # back to root
 git add AnyWear-Service AnyWear-Client AnyWear-Meta
@@ -133,8 +132,6 @@ git push origin tag <tag-name>
 ```
 
 ### Step 7: Verify
-
-After pushing, verify all repos are in sync:
 
 ```bash
 # Compare api submodule commits across Service and Client
@@ -154,14 +151,3 @@ git -C AnyWear-Client ls-tree HEAD api
 | `error: Your local changes would be overwritten by merge` | Submodule has dirty files not tracked by git | `git restore <file>` then `git pull` |
 | Client api submodule at old commit | `git add api` staged the old pointer | Go into `AnyWear-Client/api`, `git checkout main && git pull origin main`, then `git add api` in parent |
 | `HEAD detached at <hash>` | Submodule checked out at a specific commit, not a branch | `git checkout main` first to attach to branch |
-
-## Tagging Convention
-
-Use semantic tags named after the feature:
-
-```bash
-git tag "vto-engine" -m "VTO engine implementation"
-git tag "daily-recommendation" -m "Daily recommendation feature"
-```
-
-All repos in the same feature push should use the **same tag name** for traceability.
