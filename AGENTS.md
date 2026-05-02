@@ -33,6 +33,8 @@ When a task involves significant changes to **both** the frontend (`AnyWear-Clie
 - Each sub-agent should be given a clear, scoped prompt targeting its specific repository.
 - After both complete, verify changes in each repository with build/lint/test commands.
 
+> ⚠️ **API Dependency Caution:** Both `AnyWear-Client` and `AnyWear-Service` share an `api` submodule that defines their common TypeScript interfaces. If your task involves modifying these shared API types, be careful—the two parallel sub-agents may introduce conflicting or inconsistent changes to the same API definitions. In such cases, consider handling the shared API changes first (or coordinating them explicitly in the prompts), before spinning off the client/service work in parallel.
+
 ## Code Modification & Verification
 
 After modifying code in the frontend (`AnyWear-Client`) or backend (`AnyWear-Service`), you must execute the appropriate verification tasks (such as build, lint, or test commands) within that specific repository. This step is critical to ensure your changes do not break any existing code or functionality before proceeding.
