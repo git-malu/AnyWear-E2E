@@ -18,3 +18,51 @@ AnyWear is an AI-powered virtual try-on and wardrobe management platform designe
 - **Service (Backend)**: A modular monolith deployed on AWS ECS Fargate using a "One Task" unified architecture. Built with Node.js, Hono, Drizzle ORM, and LangGraph.js.
 - **Meta Contract**: The `AnyWear-Meta` submodule serves as the single source of truth for OpenAPI specifications and Shared TypeScript interfaces to seamlessly bridge the client and service repositories.
 - **Cloud Infrastructure**: Embraces AWS managed services including Cognito (with WAF protection for passwordless OTP), Aurora Serverless (PostgreSQL + pgvector), S3, and EventBridge Scheduler.
+
+## Local Development
+
+### Prerequisites
+
+- **Node.js** >= 24
+- **pnpm** (package manager)
+- **Docker Desktop** (for local PostgreSQL)
+- **Rust toolchain** (for Tauri desktop builds)
+
+### 1. Clone & Initialize Submodules
+
+```bash
+git clone <repo-url> && cd AnyWear
+git submodule update --init --recursive
+```
+
+### 2. AnyWear-Service (Backend)
+
+```bash
+cd AnyWear-Service
+cp .env.example .env               # fill in placeholder values
+pnpm install
+pnpm db:up                         # start local PostgreSQL via Docker (pgvector)
+pnpm db:generate && pnpm db:push   # create and apply DB schema
+npm --prefix infra install         # install CDK dependencies
+npm --prefix infra run cdk deploy  # provision AWS dev infra (Cognito, S3, RDS)
+# → update .env with outputs from CDK deploy
+pnpm dev                           # starts on localhost:3000, Swagger UI at /docs
+```
+
+### 3. AnyWear-Client (Frontend)
+
+```bash
+cd AnyWear-Client
+cp .env.example .env               # fill in Cognito IDs (must match Service dev infra)
+pnpm install
+pnpm run dev                       # web dev server
+# or: pnpm run tauri dev           # Tauri desktop app
+```
+
+### 4. Syncing the `api` Submodule
+
+Both Client and Service share the `api` submodule as the source of truth for OpenAPI specs and shared types.
+
+- **After API changes in Service**: run `pnpm dev` to regenerate `api/anywear_openapi.yaml`.
+- **In Client**: run `pnpm orval` to regenerate typed API hooks from the updated spec.
+- **Pull latest submodule**: `git submodule update --remote` in either repo.
