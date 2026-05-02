@@ -25,6 +25,14 @@ This root directory is a **shell repository** containing three Git submodules. *
 - Architecture Decision Records (ADRs) should be documented in `AnyWear-Meta/architecture/ADR/`.
 - **Development Plans**: Before implementing a feature or significant change, you must document a detailed implementation plan in `AnyWear-Meta/change/development/plan/`. This ensures architectural alignment and progress tracking across submodules.
 
+## Parallel Sub-Agent Strategy
+
+When a task involves significant changes to **both** the frontend (`AnyWear-Client`) and backend (`AnyWear-Service`) simultaneously, launch two sub-agents in parallel to work on each repository independently. This saves time by overlapping work instead of serial execution.
+
+- Use this strategy for high-workload tasks touching both repositories.
+- Each sub-agent should be given a clear, scoped prompt targeting its specific repository.
+- After both complete, verify changes in each repository with build/lint/test commands.
+
 ## Code Modification & Verification
 
 After modifying code in the frontend (`AnyWear-Client`) or backend (`AnyWear-Service`), you must execute the appropriate verification tasks (such as build, lint, or test commands) within that specific repository. This step is critical to ensure your changes do not break any existing code or functionality before proceeding.
