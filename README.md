@@ -35,28 +35,33 @@ git clone <repo-url> && cd AnyWear
 git submodule update --init --recursive
 ```
 
-### 2. AnyWear-Service (Backend)
+### 2. Start the Backend
+
+See [`AnyWear-Service/README.md`](AnyWear-Service/README.md) for full setup instructions. All available scripts are defined in [`AnyWear-Service/package.json`](AnyWear-Service/package.json).
+
+Quick start:
 
 ```bash
 cd AnyWear-Service
-cp .env.example .env               # fill in placeholder values
+cp .env.example .env
 pnpm install
-pnpm db:up                         # start local PostgreSQL via Docker (pgvector)
-pnpm db:generate && pnpm db:push   # create and apply DB schema
-npm --prefix infra install         # install CDK dependencies
-npm --prefix infra run cdk deploy  # provision AWS dev infra (Cognito, S3, RDS)
-# → update .env with outputs from CDK deploy
-pnpm dev                           # starts on localhost:3000, Swagger UI at /docs
+pnpm db:up
+pnpm db:generate && pnpm db:push
+pnpm dev                           # → http://localhost:3000, Swagger UI at /docs
 ```
 
-### 3. AnyWear-Client (Frontend)
+### 3. Start the Frontend
+
+See [`AnyWear-Client/README.md`](AnyWear-Client/README.md) for full setup instructions. All available scripts are defined in [`AnyWear-Client/package.json`](AnyWear-Client/package.json).
+
+Quick start:
 
 ```bash
 cd AnyWear-Client
-cp .env.example .env               # fill in Cognito IDs (must match Service dev infra)
+cp .env.example .env
 pnpm install
-pnpm run dev                       # web dev server
-# or: pnpm run tauri dev           # Tauri desktop app
+pnpm dev                           # web dev server
+# or: pnpm tauri dev               # Tauri desktop app
 ```
 
 ### 4. Syncing the `api` Submodule
