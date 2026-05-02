@@ -50,6 +50,19 @@ pnpm db:generate && pnpm db:push
 pnpm dev                           # → http://localhost:3000, Swagger UI at /docs
 ```
 
+#### Infrastructure Deployment (AWS CDK)
+
+To deploy the cloud infrastructure to AWS:
+
+```bash
+cd AnyWear-Service/infra
+npm install
+npx cdk bootstrap     # Only required once per AWS account/region
+npx cdk deploy
+```
+
+This provisions Cognito, S3, Aurora Serverless, ECS Fargate, and other AWS resources defined as code.
+
 ### 3. Start the Frontend
 
 See [`AnyWear-Client/README.md`](AnyWear-Client/README.md) for full setup instructions. All available scripts are defined in [`AnyWear-Client/package.json`](AnyWear-Client/package.json).
