@@ -48,6 +48,7 @@ pnpm install
 pnpm db:up
 pnpm db:generate && pnpm db:push
 pnpm dev                           # → http://localhost:3000, Swagger UI at /docs
+pnpm test                          # vitest run
 ```
 
 #### Infrastructure Deployment (AWS CDK)
@@ -75,6 +76,10 @@ cp .env.example .env
 pnpm install
 pnpm dev                           # web dev server
 # or: pnpm tauri dev               # Tauri desktop app
+pnpm test                          # vitest (watch mode)
+pnpm test:run                      # vitest single run
+pnpm test:coverage                 # vitest with coverage
+pnpm test:e2e                      # playwright e2e tests
 ```
 
 ### 4. Syncing the `api` Submodule
