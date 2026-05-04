@@ -13,32 +13,6 @@ This root directory is a **shell repository** containing three Git submodules. *
 2. **Service Repository**: `AnyWear-Service/` (Node.js / Hono Backend)
 3. **Meta Repository**: `AnyWear-Meta/` (Source of truth for documentation and shared TypeScript interfaces)
 
-## Git & Submodule Operations
-
-- Run `git submodule update --init --recursive` if directories are empty or missing.
-- **Git Commits**: Since each directory is an independent Git repository, you must execute `git` operations (add, commit, push) *inside* the specific subdirectory (`AnyWear-Client`, `AnyWear-Service`, or `AnyWear-Meta`). Committing at the root only updates the submodule commit pointers.
-- **Meta Updates**: When `AnyWear-Meta` is updated, remember that the submodule pointers in `AnyWear-Client`, `AnyWear-Service`, and the root repository may need to be updated and committed to point to the new meta commit.
-
-## Design & Documentation
-
-- When designing new features, making architectural decisions, or updating system behaviors, always add or update the corresponding design documents in `AnyWear-Meta/architecture/`.
-- Architecture Decision Records (ADRs) should be documented in `AnyWear-Meta/architecture/ADR/`.
-- **Development Plans**: Before implementing a feature or significant change, you must document a detailed implementation plan in `AnyWear-Meta/change/development/plan/`. This ensures architectural alignment and progress tracking across submodules.
-
-## Parallel Sub-Agent Strategy
-
-When a task involves significant changes to **both** the frontend (`AnyWear-Client`) and backend (`AnyWear-Service`) simultaneously, launch two sub-agents in parallel to work on each repository independently. This saves time by overlapping work instead of serial execution.
-
-- Use this strategy for high-workload tasks touching both repositories.
-- Each sub-agent should be given a clear, scoped prompt targeting its specific repository.
-- After both complete, verify changes in each repository with build/lint/test commands.
-
-> ⚠️ **API Dependency Caution:** Both `AnyWear-Client` and `AnyWear-Service` share an `api` submodule that defines their common TypeScript interfaces. If your task involves modifying these shared API types, be careful—the two parallel sub-agents may introduce conflicting or inconsistent changes to the same API definitions. In such cases, consider handling the shared API changes first (or coordinating them explicitly in the prompts), before spinning off the client/service work in parallel.
-
-## Code Modification & Verification
-
-After modifying code in the frontend (`AnyWear-Client`) or backend (`AnyWear-Service`), you must execute the appropriate verification tasks (such as build, lint, or test commands) within that specific repository. This step is critical to ensure your changes do not break any existing code or functionality before proceeding.
-
 ## Repository Dependency Relations
 
 ```mermaid
@@ -49,3 +23,22 @@ graph TD
     AnyWear-Client --> |submodule| api
     AnyWear-Service --> |submodule| api
 ```
+
+## Standard Workflow
+
+Follow the full development workflow documented in [`AnyWear-Meta/AGENTS.md`](AnyWear-Meta/AGENTS.md#1-standardized-agent-workflows):
+
+## Git & Submodule Operations
+
+- Run `git submodule update --init --recursive` if directories are empty or missing.
+- **Git Commits**: Since each directory is an independent Git repository, you must execute `git` operations (add, commit, push) *inside* the specific subdirectory (`AnyWear-Client`, `AnyWear-Service`, or `AnyWear-Meta`). Committing at the root only updates the submodule commit pointers.
+
+## Parallel Sub-Agent Strategy
+
+When a task involves significant changes to **both** the frontend (`AnyWear-Client`) and backend (`AnyWear-Service`) simultaneously, launch two sub-agents in parallel to work on each repository independently. This saves time by overlapping work instead of serial execution.
+
+- Use this strategy for high-workload tasks touching both repositories.
+- Each sub-agent should be given a clear, scoped prompt targeting its specific repository.
+- After both complete, verify changes in each repository with build/lint/test commands.
+
+> ⚠️ **API Dependency Caution:** Both `AnyWear-Client` and `AnyWear-Service` share an `api` submodule that defines their common TypeScript interfaces. If your task involves modifying these shared API types, be careful—the two parallel sub-agents may introduce conflicting or inconsistent changes to the same API definitions. In such cases, consider handling the shared API changes first (or coordinating them explicitly in the prompts), before spinning off the client/service work in parallel.
