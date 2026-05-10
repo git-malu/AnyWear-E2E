@@ -21,12 +21,18 @@ graph TD
     Anywear --> AnyWear-Service
     Anywear --> AnyWear-Meta
     AnyWear-Client --> |consume| api
-    AnyWear-Service --> |generate| api
+    AnyWear-Service --> |produce| api
 ```
 
 ## Standard Workflow
 
 Follow the full development workflow documented in [`AnyWear-Meta/AGENTS.md`](AnyWear-Meta/AGENTS.md#1-standardized-agent-workflows):
+
+## Project Management
+
+- **Kanban Board**: Project progress is tracked in the kanban board at [`https://github.com/users/git-malu/projects/4`](https://github.com/users/git-malu/projects/4).
+- **Issue Grouping**: Always create a parent issue under `git-malu/AnyWear`, then create sub-issues under `git-malu/AnyWear-Meta`, `git-malu/AnyWear-Client`, and `git-malu/AnyWear-Service` separately as needed.
+- **Issue Dependencies**: Use `blocked by` / `blocking` relations to build dependencies between issues. See [GitHub docs on issue dependencies](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-issue-dependencies) for details.
 
 ## Git & Submodule Operations
 
