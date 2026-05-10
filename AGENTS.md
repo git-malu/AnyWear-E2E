@@ -13,15 +13,25 @@ This root directory is a **shell repository** containing three Git submodules. *
 2. **Service Repository**: `AnyWear-Service/` (Node.js / Hono Backend)
 3. **Meta Repository**: `AnyWear-Meta/` (Source of truth for documentation and shared TypeScript interfaces)
 
-## Repository Dependency Relations
+## Repository Relations
 
+### Submodule Relation
 ```mermaid
 graph TD
-    Anywear --> AnyWear-Client 
-    Anywear --> AnyWear-Service
-    Anywear --> AnyWear-Meta
-    AnyWear-Client --> |consume| api
-    AnyWear-Service --> |produce| api
+    Anywear --> |submodule| AnyWear-Client 
+    Anywear --> |submodule| AnyWear-Service
+    Anywear --> |submodule| AnyWear-Meta
+    AnyWear-Client --> |submodule| api
+    AnyWear-Service --> |submodule| api
+```
+
+### Dependency Relation
+```mermaid
+graph TD
+    AnyWear-Client --> |depends on| AnyWear-Meta
+    AnyWear-Service --> |depends on| AnyWear-Meta 
+    AnyWear-Client --> |depends on| api
+    api --> |depends on| AnyWear-Service
 ```
 
 ## Standard Workflow
