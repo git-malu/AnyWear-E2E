@@ -17,11 +17,11 @@ This root directory is a **shell repository** containing three Git submodules. *
 
 ```mermaid
 graph TD
-    Anywear --> |submodule| AnyWear-Client 
-    Anywear --> |submodule| AnyWear-Service
-    Anywear --> |submodule| AnyWear-Meta
-    AnyWear-Client --> |submodule| api
-    AnyWear-Service --> |submodule| api
+    Anywear --> AnyWear-Client 
+    Anywear --> AnyWear-Service
+    Anywear --> AnyWear-Meta
+    AnyWear-Client --> |consume| api
+    AnyWear-Service --> |generate| api
 ```
 
 ## Standard Workflow
@@ -41,4 +41,4 @@ When a task involves significant changes to **both** the frontend (`AnyWear-Clie
 - Each sub-agent should be given a clear, scoped prompt targeting its specific repository.
 - After both complete, verify changes in each repository with build/lint/test commands.
 
-> ⚠️ **API Dependency Caution:** Both `AnyWear-Client` and `AnyWear-Service` share an `api` submodule that defines their common TypeScript interfaces. If your task involves modifying these shared API types, be careful—the two parallel sub-agents may introduce conflicting or inconsistent changes to the same API definitions. In such cases, consider handling the shared API changes first (or coordinating them explicitly in the prompts), before spinning off the client/service work in parallel.
+> ⚠️ **API Dependency Caution:** Both `AnyWear-Client` and `AnyWear-Service` reference the same remote `api` repo as a submodule, but with a strict producer/consumer relationship: **`AnyWear-Service` generates the API types, and `AnyWear-Client` only consumes them**. The update flow is always *Service generates → Client consumes* — never the reverse. If your task involves modifying these shared API types, make changes in `AnyWear-Service` first (it's the source of truth), and then update `AnyWear-Client`'s submodule pointer to pull in those changes. When using parallel sub-agents, be careful — the two agents may introduce conflicting or inconsistent changes to the same API definitions. In such cases, handle the shared API changes first (or coordinate them explicitly in the prompts), before spinning off the client/service work in parallel.
