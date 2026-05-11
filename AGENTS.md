@@ -36,7 +36,7 @@ graph TD
 
 ## Standard Workflow
 
-Follow the full development workflow documented in [`AnyWear-Meta/AGENTS.md`](AnyWear-Meta/AGENTS.md#1-standardized-agent-workflows):
+Follow the [Github Project Kanban](https://github.com/users/git-malu/projects/4/views/1) .
 
 ## Project Management
 
