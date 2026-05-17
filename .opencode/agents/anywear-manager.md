@@ -72,21 +72,32 @@ state on a shared feature branch.
 
 ### 2. DEVELOPMENT PHASE (AFTER user approval)
 
-**API Dependency Check**: Before delegating to dev agents, determine whether
-any shared API types need to change (OpenAPI spec under `api/`, TypeScript
-interfaces in `AnyWear-Meta/shared/`):
+**API Sync Stage**: Before implementing features, ensure the shared API types
+are in sync between Service and Client.
 
-- **No API changes** → Delegate to `AnyWear-Service-Dev` and
-  `AnyWear-Client-Dev` **in parallel**. Each agent operates independently in
-  its own repository.
-- **API changes required** → `AnyWear-Service-Dev` must complete **first** (it is
-  the producer of API types; Client is the consumer). Steps:
-    1. Delegate to Service-Dev, wait for completion.
-    2. Update the `AnyWear-Client/api/` submodule pointer to pull in the updated
-       API types.
-    3. Delegate to Client-Dev.
+1. **Assess API changes.** Delegate to `AnyWear-Service-Dev` to determine whether
+   any shared API types need to change (OpenAPI spec under `api/`, TypeScript
+   interfaces in `AnyWear-Meta/shared/`):
+   - **No API changes** → Report: `No API changes needed — skipping API sync`.
+   - **API changes required** → Service-Dev proceeds to make the changes.
 
-In both cases, provide each sub-agent with:
+2. **If API changes:**
+   - Service-Dev updates the Zod schemas in `src/routes/` (source of truth).
+   - Service-Dev runs `pnpm build` to regenerate `api/anywear_openapi.yaml` from
+     the updated Zod schemas.
+   - Service-Dev commits and pushes the API changes (schemas + generated YAML)
+     to the feature branch.
+   - **Sync Client's API submodule.** Update the `AnyWear-Client/api/` submodule
+     pointer to the latest Service commit, so Client-Dev starts with the
+     up-to-date API spec.
+
+3. **API sync complete.** Report: `API sync stage complete`.
+
+4. **Parallel development.** After API sync, delegate to `AnyWear-Service-Dev`
+   and `AnyWear-Client-Dev` **in parallel**. Each agent operates independently
+   in its own repository.
+
+Provide each sub-agent with:
 - Feature requirements and acceptance criteria.
 - Reference to the approved design docs in `AnyWear-Meta/`.
 - Scope reminder: each agent works in its own repository only.
@@ -163,10 +174,10 @@ merge into `main`.
    Development.
 5. **Always get user approval** after commit/push before merging to `main`.
    The manager pushes the branch; the user decides when to merge.
-6. **Check API dependency before parallelizing dev work.** If no shared API
-   types change, Service-Dev and Client-Dev can work in parallel. If API types
-   change, serialize: Service first, then Client (after updating the Client's
-   `api/` submodule pointer).
+6. **Always run the API Sync Stage before parallelizing dev work.** Service-Dev
+   determines if API changes are needed and, if so, makes them and regenerates
+   the OpenAPI spec (`pnpm build`). After the Client's `api/` submodule is
+   synced, Service-Dev and Client-Dev work in parallel.
 7. **Present design docs clearly** — summarize key decisions for efficient
    review.
 8. **When blocked**, ask for clarification rather than guessing. Report what
