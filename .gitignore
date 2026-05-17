@@ -148,4 +148,4 @@ vite.config.ts.timestamp-*
 
 # worktree
 .worktrees/
-.paperclip/
+.paperclip/worktrees
