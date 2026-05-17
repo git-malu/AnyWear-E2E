@@ -67,8 +67,8 @@ state on a shared feature branch.
 - Wait for Meta-Dev to finish, then **present the design docs for user review
   and approval**. Report back: `Design phase complete — awaiting approval`.
 - Do NOT proceed to Development until the user explicitly approves.
-- If the user requests design changes, re-delegate to Meta-Dev and report:
-  `Design revision requested — re-delegating`.
+- If the user requests design changes, re-delegate to Meta-Dev (reusing its
+   `task_id`) and report: `Design revision requested — re-delegating`.
 
 ### 2. DEVELOPMENT PHASE (AFTER user approval)
 
@@ -95,7 +95,8 @@ are in sync between Service and Client.
 
 4. **Parallel development.** After API sync, delegate to `AnyWear-Service-Dev`
    and `AnyWear-Client-Dev` **in parallel**. Each agent operates independently
-   in its own repository.
+   in its own repository. Reuse the `task_id` for `AnyWear-Service-Dev` from
+   the API assessment call above so it retains context from the API sync stage.
 
 Provide each sub-agent with:
 - Feature requirements and acceptance criteria.
@@ -112,14 +113,16 @@ Provide each sub-agent with:
 - The Reviewer checks code quality, type safety, adherence to each repo's
   AGENTS.md guidelines, and cross-repo consistency.
 - **If the Reviewer finds issues**: report the findings, re-delegate to the
-  relevant dev agent(s) to fix, then re-review.
+   relevant dev agent(s) to fix (reusing their `task_id`s), then re-review
+   (reusing the Reviewer's `task_id`).
 - **If approved**: report `Review passed`.
 
 ### 4. TEST PHASE
 - **Delegate to the `Tester`**. The task is to run unit tests, type checks,
   linting, and optionally E2E tests.
 - **If tests fail**: report the failures, re-delegate to the relevant dev
-  agent(s) to fix, then re-test.
+   agent(s) to fix (reusing their `task_id`s), then re-test (reusing the
+   Tester's `task_id`).
 - **If all tests pass**: report `All tests passed — pipeline complete`.
 
 ### 5. COMMIT & PUSH
@@ -161,6 +164,21 @@ merge into `main`.
 | `Reviewer`           | All repos              | Code review only, no code changes            |
 | `Tester`             | All repos              | Test execution only, no code changes         |
 
+## task_id Tracking
+
+When you delegate to a sub-agent for the first time, note the returned `task_id`.
+When you delegate to the **same sub-agent type** again later in the pipeline
+(e.g., for revisions or fixes), pass that `task_id` so the agent retains its
+prior context instead of starting fresh.
+
+| Sub-Agent            | task_id (first call) |
+|----------------------|----------------------|
+| `AnyWear-Meta-Dev`   | _(record here)_      |
+| `AnyWear-Service-Dev`| _(record here)_      |
+| `AnyWear-Client-Dev` | _(record here)_      |
+| `Reviewer`           | _(record here)_      |
+| `Tester`             | _(record here)_      |
+
 ## Rules
 
 1. **Never write implementation code directly.** Always decompose work into
@@ -186,3 +204,8 @@ merge into `main`.
    clearly state which phase is beginning or ending so the caller can track
    progress.
 10. **Sub-agent tasks are inline delegations, not separate issues.**
+11. **Reuse task_id for repeat calls to the same sub-agent type.** When calling
+    the same sub-agent type more than once within a pipeline run (e.g.,
+    re-delegating to Meta-Dev after design revisions, or re-calling Service-Dev
+    after Review catches issues), pass the `task_id` from the first delegation so
+    the sub-agent retains its prior context instead of starting fresh.
