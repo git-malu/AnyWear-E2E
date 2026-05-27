@@ -35,9 +35,10 @@ flowchart TD
 
     START --> SETUP["0. REPO SETUP<br/>Manager"]
 
-    SETUP --> DESIGN["1. DESIGN<br/>anywear-meta-dev"]
-    DESIGN -.->|revise| DESIGN
-    DESIGN -->|user approves| API
+    SETUP --> DESIGN["1a. DESIGN<br/>anywear-meta-dev"]
+    DESIGN --> META_REVIEW["1b. META REVIEW<br/>anywear-meta-reviewer"]
+    META_REVIEW -.->|issues → fix| DESIGN
+    META_REVIEW -->|"meta & user approve"| API
 
     API["2a. API SYNC<br/>anywear-service-dev"]
 
@@ -98,17 +99,32 @@ state on a shared feature branch.
 4. Report: `Repo setup complete — all repos on branch <branch>`.
 
 ### 1. DESIGN PHASE
+
+**1a. Meta-Dev** — Create design docs.
 - **Delegate to `anywear-meta-dev`** with the feature description. Instruct it to:
     - Create/update design docs under `AnyWear-Meta/feature/` and architecture
       docs under `AnyWear-Meta/architecture/`.
     - Follow the no-code policy (see `AnyWear-Meta/AGENTS.md`).
     - Validate every decision against the Three-Question Gate (best practice,
       industry standard, conventional).
-- Wait for it to finish, then **present the design docs for user review
-  and approval**. Report back: `Design phase complete — awaiting approval`.
+- Wait for it to finish. Report: `Design docs created`.
+
+**1b. Meta-Reviewer** — Automated design review.
+- **Delegate to `anywear-meta-reviewer`** to review the design docs.
+- The reviewer checks no-code policy adherence, Three-Question Gate validation,
+  Mermaid diagram quality, cross-reference integrity, shared interface
+  consistency, and feature spec completeness.
+- **If issues found**: report the findings, re-delegate to `anywear-meta-dev`
+  to fix (pass its recorded `task_id`), then re-review with `anywear-meta-reviewer`
+  (pass its recorded `task_id`).
+- **If approved**: report `Meta review passed`.
+
+**1c. User Approval.**
+- Present the design docs (and review report) for user review.
 - Do NOT proceed to Development until the user explicitly approves.
-- If the user requests design changes, re-delegate to `anywear-meta-dev` (reusing
-   the same session) and report: `Design revision requested — re-delegating`.
+- If the user requests changes, re-delegate to `anywear-meta-dev` (pass its
+  recorded `task_id`), then re-review with `anywear-meta-reviewer` (pass its
+  recorded `task_id`), then re-present.
 
 ### 2. DEVELOPMENT PHASE (AFTER user approval)
 
@@ -155,8 +171,8 @@ Provide each sub-agent with:
   - `anywear-service-reviewer` reviews code quality, type safety, and adherence
     to `AnyWear-Service/AGENTS.md` for the service changes.
 - **If a reviewer finds issues**: report the findings, re-delegate to the relevant
-  dev agent to fix (reusing the same dev session name), then re-review with the
-  same reviewer session name.
+  dev agent to fix (pass its recorded `task_id`), then re-review (pass the
+  reviewer's recorded `task_id`).
 - **If both approve**: report `Review passed`.
 
 ### 4. TEST PHASE
@@ -167,8 +183,8 @@ Provide each sub-agent with:
   - `anywear-client-tester`: writes and runs tests in `AnyWear-Client/`.
   - `anywear-service-tester`: writes and runs tests in `AnyWear-Service/`.
 - **If tests fail**: report the failures, re-delegate to the relevant dev agent
-  to fix (reusing the same dev session name), then re-test with the same tester
-  session name.
+  to fix (pass its recorded `task_id`), then re-test (pass the tester's recorded
+  `task_id`).
 - **If all tests pass**: report `All tests passed — pipeline complete`.
 
 ### 5. COMMIT & PUSH
@@ -204,7 +220,8 @@ merge into `main`.
 
 | Sub-Agent                  | Scope                  | Key Constraints                                |
 |----------------------------|------------------------|------------------------------------------------|
-| anywear-meta-dev           | AnyWear-Meta/ only     | NO-CODE: .md, Mermaid, .ts interfaces only     |
+| anywear-meta-dev           | AnyWear-Meta/ only     | Design docs & interfaces only, no implementation code |
+| anywear-meta-reviewer      | AnyWear-Meta/ only     | Design doc review only, no content changes      |
 | anywear-service-dev        | AnyWear-Service/ only  | See AnyWear-Service/AGENTS.md                  |
 | anywear-client-dev         | AnyWear-Client/ only   | See AnyWear-Client/AGENTS.md                   |
 | anywear-service-reviewer   | AnyWear-Service/ only  | Code review only, no code changes              |
@@ -212,15 +229,18 @@ merge into `main`.
 | anywear-service-tester     | AnyWear-Service/ only  | Write & run tests, no implementation changes   |
 | anywear-client-tester      | AnyWear-Client/ only   | Write & run tests, no implementation changes   |
 
-## Agent Session Names
+## Agent Delegation Reference
 
-When delegating to a sub-agent, use the agent name as the session identifier.
-Keep sessions alive by reusing the same name when re-delegating for fixes or
-re-checks.
+When delegating to a sub-agent, use the agent name below as the `subagent_type`.
+On **first delegation**, call without a `task_id` (fresh session) and **record the
+returned `task_id`** for that agent name. On **re-delegation** (fixes, re-checks),
+pass the previously recorded `task_id` so the agent retains its prior context
+instead of starting fresh.
 
-| Session Name               | Purpose                                      |
+| Agent (subagent_type)     | Purpose                                      |
 |----------------------------|----------------------------------------------|
 | anywear-meta-dev           | Design docs & shared interfaces              |
+| anywear-meta-reviewer      | Reviews design docs for quality & compliance |
 | anywear-service-dev        | API changes & backend implementation         |
 | anywear-client-dev         | Frontend implementation                      |
 | anywear-service-reviewer   | Reviews service code changes                 |
@@ -228,10 +248,17 @@ re-checks.
 | anywear-service-tester     | Writes & runs tests in AnyWear-Service/      |
 | anywear-client-tester      | Writes & runs tests in AnyWear-Client/       |
 
-- **Dev sessions**: exactly one instance per type; reuse for the entire pipeline.
+- **First call per agent**: delegate without `task_id`, then record the
+  returned `task_id` for that agent.
+- **Re-delegation**: pass the recorded `task_id` — do NOT rely on the agent name
+  alone to resume a session.
+- **Task IDs are scoped to this conversation.** `task_id` values returned in this
+  manager session cannot be accessed or collided with from any other session.
+- **Dev sessions**: exactly one instance per type; record its `task_id` on first
+  call and reuse throughout the pipeline.
 - **Reviewer & Tester sessions**: launch client and service instances in parallel
-  on the first round. When re-reviewing or re-testing after fixes, reuse the
-  same session name to retain prior context.
+  on the first round, recording each one's `task_id`. When re-reviewing or
+  re-testing after fixes, pass the recorded `task_id` to retain prior context.
 
 ## Rules
 
@@ -258,6 +285,7 @@ re-checks.
    clearly state which phase is beginning or ending so the caller can track
    progress.
 10. **Sub-agent tasks are inline delegations, not separate issues.**
-11. **Reuse agent session names for repeat calls.** When calling the same
+11. **Pass recorded `task_id` for repeat calls.** When calling the same
     agent type more than once within a pipeline run (e.g., fixes after review,
-    re-testing), use the same session name so the agent retains prior context.
+    re-testing), pass the `task_id` recorded from the first delegation so
+    the agent retains prior context.
