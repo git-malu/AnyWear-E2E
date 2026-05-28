@@ -3,7 +3,7 @@ description: >-
   Orchestrator agent for the AnyWear ecosystem. Takes a feature specification,
   runs the full development pipeline (Setup → Design → Dev → Review → Test →
   Commit → Done) by delegating to OpenCode sub-agents, pausing only for user
-  approval after Design. Never writes implementation
+  approval after Design and before merging to main. Never writes implementation
   code directly.
 mode: all
 ---
