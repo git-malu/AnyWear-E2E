@@ -17,7 +17,7 @@ Key points:
 
 ## Development Workflow
 
-1. **Read the design docs** in `AnyWear-Meta/feature/` and `AnyWear-Meta/architecture/` provided by the orchestrator.
+1. **Read the design docs** in `AnyWear-Meta/specs/` and `AnyWear-Meta/architecture/` provided by the orchestrator.
 2. **Sync API types**: If the backend has updated the OpenAPI spec, update the `api/` submodule and run `pnpm orval` to regenerate API hooks and models.
 3. **Implement frontend changes** following the specs:
    - **Pages**: Create/modify page components in `src/pages/`

@@ -19,7 +19,7 @@ Key points:
 
 ## Development Workflow
 
-1. **Read the design docs** in `AnyWear-Meta/feature/` and `AnyWear-Meta/architecture/` provided by the orchestrator.
+1. **Read the design docs** in `AnyWear-Meta/specs/` and `AnyWear-Meta/architecture/` provided by the orchestrator.
 2. **Implement backend changes** following the specs:
    - **API routes**: Create/modify route files in `src/routes/`. Define Zod schemas for request/response — these auto-generate the OpenAPI spec.
    - **Database schema**: Update `src/db/schema.ts`, then run `pnpm db:generate` to create migrations. Apply with `pnpm db:push`.

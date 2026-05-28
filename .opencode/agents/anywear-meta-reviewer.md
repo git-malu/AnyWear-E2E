@@ -36,7 +36,7 @@ You are invoked after `anywear-meta-dev` has produced design documents. Your job
 - Reference `AnyWear-Meta/AGENTS.md` Section 4 for cross-reference rules.
 
 ### Feature Spec Completeness
-Each feature spec under `AnyWear-Meta/feature/` should include:
+Each feature spec under `AnyWear-Meta/specs/` should include:
 - Feature overview and user stories
 - API endpoints (if new/modified) with request/response shapes
 - Database schema changes (if any)

@@ -13,7 +13,7 @@ This is a **strictly no-code** repository. Read the full guidelines, allowed/pro
 
 ## Directory Conventions
 
-- **Feature specs**: `AnyWear-Meta/feature/<feature_name>.md`
+- **Feature specs**: `AnyWear-Meta/specs/<feature_name>.md`
 - **Architecture docs**: `AnyWear-Meta/architecture/<doc_name>.md`
 - **ADR (Architecture Decision Records)**: `AnyWear-Meta/architecture/ADR/<number>-<title>.md`
 - **Shared TypeScript interfaces**: `AnyWear-Meta/shared/<interface_name>.ts`
@@ -25,7 +25,7 @@ When given a feature to design:
 
 1. **Read existing context**: Review `AnyWear-Meta/architecture/overall_architecture.md` and any related feature/architecture docs.
 2. **Identify gaps and decisions**: What needs to be designed? APIs? Data models? UI flows? Infrastructure changes?
-3. **Create the feature spec** under `AnyWear-Meta/feature/` with:
+3. **Create the feature spec** under `AnyWear-Meta/specs/` with:
    - Feature overview and user stories
    - API endpoints (if new/modified) with request/response shapes
    - Database schema changes (if any)

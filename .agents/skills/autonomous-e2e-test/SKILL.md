@@ -17,7 +17,7 @@ metadata:
 
 After implementing a feature and passing scripted tests (unit, integration, e2e). Load this skill to autonomously drive the running app and verify real-world behavior.
 
-The full set of features to be tested is defined in `AnyWear-Meta/feature/` — read those feature docs to understand the expected user flows and acceptance criteria before testing.
+The full set of features to be tested is defined in `AnyWear-Meta/specs/` — read those feature docs to understand the expected user flows and acceptance criteria before testing.
 
 ## Prerequisites
 

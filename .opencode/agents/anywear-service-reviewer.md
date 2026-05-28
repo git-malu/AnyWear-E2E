@@ -15,7 +15,7 @@ You are invoked after `anywear-service-dev` has completed its implementation. Yo
 
 ### Zod Schemas
 - Are request/response schemas in `src/routes/` complete and correct?
-- Do schemas match the design spec from `AnyWear-Meta/feature/`?
+- Do schemas match the design spec from `AnyWear-Meta/specs/`?
 - Are validation errors handled gracefully?
 
 ### Database

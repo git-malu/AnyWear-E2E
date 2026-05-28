@@ -103,7 +103,7 @@ state on a shared feature branch.
 
 **1a. Meta-Dev** — Create design docs.
 - **Delegate to `anywear-meta-dev`** with the feature description. Instruct it to:
-    - Create/update design docs under `AnyWear-Meta/feature/` and architecture
+    - Create/update design docs under `AnyWear-Meta/specs/` and architecture
       docs under `AnyWear-Meta/architecture/`.
     - Follow the no-code policy (see `AnyWear-Meta/AGENTS.md`).
     - Validate every decision against the Three-Question Gate (best practice,
