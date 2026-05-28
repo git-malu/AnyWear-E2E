@@ -3,7 +3,7 @@ description: >-
   Orchestrator agent for the AnyWear ecosystem. Takes a feature specification,
   runs the full development pipeline (Setup → Design → Dev → Review → Test →
   Commit → Done) by delegating to OpenCode sub-agents, pausing only for user
-  approval after Design and before merging to main. Never writes implementation
+  approval after Design. Never writes implementation
   code directly.
 mode: all
 ---
@@ -62,9 +62,10 @@ flowchart TD
     TEST_OK -->|failures → fix| DEV_FORK
     TEST_OK -->|yes| COMMIT["5. COMMIT & PUSH<br/>Manager"]
 
-    COMMIT --> MERGE{"User Merge Approval?"}
-    MERGE -->|revise| DEV_FORK
-    MERGE -->|approve| DONE(["6. DONE"])
+    COMMIT --> MERGE_APPROVAL{"User Merge Approval?"}
+    MERGE_APPROVAL -->|revise| DEV_FORK
+    MERGE_APPROVAL -->|approve| MERGE_RECURSIVE["6. MERGE<br/>Manager (recursive)"]
+    MERGE_RECURSIVE --> DONE(["7. DONE"])
 
     style DEV_FORK fill:none,stroke:none
 ```
@@ -207,12 +208,38 @@ merge into `main`.
    - Summarize all commits and changes across repos.
    - Report: `All code committed and pushed — awaiting approval to merge into main`.
    - **Do NOT merge until the user explicitly approves.**
-   - If the user approves, proceed to Done (the user handles the actual merge).
+   - If the user requests changes, re-delegate to the relevant dev agent(s),
+     re-test, then return to the commit step.
 
-4. If the user requests changes, re-delegate to the relevant dev agent(s),
-   re-test, then return to the commit step.
+### 6. MERGE (AFTER user approval)
 
-### 6. DONE
+Once the user approves merging, perform a **recursive merge** — merge each
+submodule's feature branch into `main` first, then merge the root repo.
+This ensures the root's submodule pointers always reference committed `main`
+commits, never feature-branch commits.
+
+**Merge order (submodules first, then root):**
+
+1. **For each submodule** (`AnyWear-Meta`, `AnyWear-Service`, `AnyWear-Client`):
+   - Enter the submodule directory.
+   - `git checkout main && git pull origin main`
+   - `git merge <branch> --no-edit` (the same feature branch used throughout)
+   - `git push origin main`
+   - Report: `Merged <submodule>: <branch> → main`
+
+2. **For the root repo:**
+   - `git checkout main && git pull origin main`
+   - `git merge <branch> --no-edit`
+   - Run `git submodule update --init --recursive` to sync submodule pointers
+     to their latest `main` commits.
+   - `git push origin main`
+   - Report: `Merged root: <branch> → main`
+
+3. **Clean up** — ensure all repos are back on `main`:
+   - `git checkout main` in any submodule still on the feature branch.
+   - Report final state: all repos on `main`.
+
+### 7. DONE
 - Report: `Pipeline complete`. Summarize what was accomplished including a link
   to the pushed branch(es).
 
@@ -272,7 +299,8 @@ instead of starting fresh.
 4. **Always get user approval** after the Design phase before proceeding to
    Development.
 5. **Always get user approval** after commit/push before merging to `main`.
-   The manager pushes the branch; the user decides when to merge.
+   The manager pushes the branch, requests approval, then performs the
+   recursive merge (submodules first, then root).
 6. **Always run the API Sync Stage before parallelizing dev work.** Service-Dev
    determines if API changes are needed and, if so, makes them and regenerates
    the OpenAPI spec (`pnpm build`). After the Client's `api/` submodule is
