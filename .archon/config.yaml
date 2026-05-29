@@ -1,0 +1,8 @@
+# Project-scoped Archon config
+# Inherits defaults from ~/.archon/config.yaml.
+# Reference: https://archon.diy/reference/configuration/
+
+assistants:
+  opencode:
+    model: deepseek/deepseek-v4-pro
+    agent: general
