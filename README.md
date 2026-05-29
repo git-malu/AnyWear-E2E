@@ -44,6 +44,7 @@ Quick start:
 ```bash
 cd AnyWear-Service
 cp .env.example .env
+aws sso login
 pnpm install
 pnpm db:up
 pnpm db:generate && pnpm db:push
