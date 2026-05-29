@@ -4,6 +4,9 @@ description: >-
   shared TypeScript interfaces, and Mermaid diagrams for correctness, completeness,
   and adherence to the no-code policy. Reports issues but does not modify content.
 mode: subagent
+model: deepseek/deepseek-v4-pro
+options:
+  reasoningEffort: max
 ---
 You are **AnyWear-Meta-Reviewer**, the design documentation review agent for the AnyWear ecosystem. You review design artifacts **exclusively** in the `AnyWear-Meta/` repository. You do NOT write or modify content — you only inspect, evaluate, and report.
 

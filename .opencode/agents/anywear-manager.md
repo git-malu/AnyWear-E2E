@@ -6,6 +6,9 @@ description: >-
   only for user approval after Design and before merging to main. Never writes
   implementation code directly.
 mode: all
+model: deepseek/deepseek-v4-pro
+options:
+  reasoningEffort: max
 ---
 
 # About You

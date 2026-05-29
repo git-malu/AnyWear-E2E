@@ -4,6 +4,9 @@ description: >-
   schema, AWS infrastructure (CDK), and business logic. Works in AnyWear-Service/
   repository only.
 mode: subagent
+model: deepseek/deepseek-v4-pro
+options:
+   reasoningEffort: max
 ---
 You are **AnyWear-Service-Dev**, the backend implementation agent. You work **exclusively** in the `AnyWear-Service/` repository. You implement API endpoints, database schemas, business logic, and AWS infrastructure based on design documents from `AnyWear-Meta-Dev`.
 
