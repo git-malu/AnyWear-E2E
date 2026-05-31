@@ -1,10 +1,12 @@
 ---
 name: anywear-paperclip-issue-workflow
 description: |
-  Paperclip issue-level orchestration for the AnyWear development workflow.
-  Describes how to structure and drive work through three issue types:
-  a parent (main) issue with Backlog Refinement, plus child Development
-  and Verification (E2E) issues.
+  Paperclip issue-level orchestration for the AnyWear development workflow,
+  built on Engineering Cybernetics principles — a feedback control system
+  where E2E verification (sensor) continuously measures output against the
+  refinement spec (setpoint) and feeds corrections back to development.
+  Three issue types: parent (main) with Backlog Refinement, plus child
+  Development and Verification (E2E) issues.
 
   Triggers when user mentions:
   - "AnyWear workflow" / "dev workflow" / "development pipeline"
@@ -22,6 +24,41 @@ work moves through exactly three issue types: a **parent (main) issue** for
 Backlog Refinement, a **Development** child issue, and a **Verification (E2E)**
 child issue.
 
+## Engineering Cybernetics
+
+This workflow is designed as a **feedback control system** — a core idea from
+Engineering Cybernetics. Rather than a linear "plan → build → ship" pipeline,
+it operates as a closed loop where the output is continuously measured against
+the desired outcome and corrections are fed back into the process.
+
+```
+                   ┌─────────── correction signal ───────────┐
+                   │                                          │
+    ┌─────────┐    │    ┌──────────┐     ┌──────────────┐     │
+    │ Setpoint │────┼───▶│ Controller│────▶│   Process    │─────┼───▶ Output
+    │ (Specs)  │    │    │  (Dev)   │     │(Code change) │     │
+    └──────────┘    │    └──────────┘     └──────────────┘     │
+                    │                                          │
+                    │    ┌──────────┐     ┌──────────────┐     │
+                    └────│ Feedback │◀────│   Sensor     │◀────┘
+                         │(Bug fix) │     │ (E2E Verify) │
+                         └──────────┘     └──────────────┘
+```
+
+| Control Term | Workflow Equivalent |
+|---|---|
+| **Setpoint** | Backlog Refinement — acceptance criteria define the desired state |
+| **Controller** | Development issue — produces the change |
+| **Process** | Code change in the repositories |
+| **Sensor** | Verification issue (E2E) — measures actual output against setpoint |
+| **Feedback** | Bug reports flow back to Development for correction |
+| **Correction signal** | Related bugs spawn a Fix sub-issue of the dev issue; unrelated bugs create new issues |
+
+This closed-loop structure means the system is **self-correcting**: every
+iteration through the verification → development loop brings the output closer
+to the setpoint. Work is never "done" until the sensor confirms the output
+matches the specification.
+
 ## Workflow Diagram
 
 ```mermaid
@@ -33,7 +70,8 @@ flowchart TD
     MAIN -->|"what? should we?\n(approved)"| DEV
     DEV -->|"implementation done"| VERIFY
 
-    VERIFY -->|"bug found, related\nto this change"| DEV
+    VERIFY -->|"bug found, related\n→ Fix sub-issue"| FIX["Fix Issue\n(ANY-{N}-FIX)\nBug fix (child of DEV)"]
+    FIX -->|"fix applied"| VERIFY
     VERIFY -->|"bug found, unrelated\n→ new Bug Issue"| BUG["Bug Issue\n(ANY-{M})\nFix later"]
 
     VERIFY -->|"all checks pass"| DONE(["Done"])
@@ -95,7 +133,7 @@ AnyWear Client web layer.
 | Outcome | Action |
 |---------|--------|
 | All E2E checks pass | → `done` |
-| Bug found, related to this change | → reopen dev issue (`todo`), set `blockedByIssueIds: [<dev-issue-id>]`, add comment with findings |
+| Bug found, related to this change | → create a **Fix Issue** as a child of the dev issue, set `blockedByIssueIds: [<fix-issue-id>]`, add comment with findings |
 | Bug found, unrelated to this change | → create a new **Bug Issue**, link it to the parent, set verification to `done` |
 
 ## Bug Handling
@@ -104,19 +142,33 @@ When the Verification issue finds a bug, determine if it's related to the
 current parent issue:
 
 ### Related Bug
-The bug is a regression or flaw in the feature being built. Reopen the
-Development issue:
+The bug is a regression or flaw in the feature being built. Create a **Fix
+Issue** as a child of the Development issue — this preserves the dev issue as
+a clean record of the initial implementation and follows Paperclip's
+forward-moving lifecycle:
 
-```
-PATCH /api/issues/{dev-issue-id}
-{ "status": "todo" }
+```json
+POST /api/companies/{companyId}/issues
+{
+  "title": "Fix: <bug description>",
+  "description": "<reproduction steps, observed behavior, expected behavior>",
+  "status": "todo",
+  "priority": "high",
+  "parentId": "<dev-issue-id>",
+  "goalId": "<same-goal-id>"
+}
 
 PATCH /api/issues/{e2e-issue-id}
-{ "status": "blocked", "blockedByIssueIds": ["{dev-issue-id}"] }
+{ "status": "blocked", "blockedByIssueIds": ["<fix-issue-id>"] }
 ```
 
 Add a comment on the verification issue describing the bug and linking to
-the reopened dev issue. The developer fixes it, then verification reruns.
+the fix issue. When the fix is done, the e2e issue auto-unblocks via
+`issue_blockers_resolved` and verification reruns.
+
+This pattern gives you a clean audit trail: what was built (dev issue) →
+what was found (e2e comment) → what was fixed (fix sub-issue) →
+that it passed (e2e done).
 
 ### Unrelated Bug
 The bug exists in the codebase but is not caused by or related to the
@@ -145,7 +197,7 @@ Parent (backlog/todo) → Refinement (in_progress) → Approval (in_review)
   → Dev (in_progress → done)
   → E2E (todo → in_progress)
     → Pass: Parent + E2E → done
-    → Related fail: Dev reopened (todo), E2E blocked → fix → retest
+    → Related fail: Fix issue created (child of dev, todo), E2E blocked → fix done → retest
     → Unrelated fail: Bug issue created (backlog), E2E → done
 ```
 
@@ -157,7 +209,7 @@ Parent (backlog/todo) → Refinement (in_progress) → Approval (in_review)
    Development, one Verification.
 3. **E2E gates completion** — no issue is done until verification passes or an
    unrelated bug is extracted.
-4. **Related bugs loop back** — reopen the dev issue, not a new one.
+4. **Related bugs spawn Fix sub-issues** — create a `Fix: {bug}` issue as a child of the dev issue. Never reopen a `done` dev issue — this preserves a clean forward audit trail.
 5. **Unrelated bugs are separate issues** — capture them in the backlog, don't
    block the current work.
 6. **Blockers are first-class** — use `blockedByIssueIds` to express the
