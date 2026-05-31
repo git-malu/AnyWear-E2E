@@ -31,18 +31,14 @@ Engineering Cybernetics. Rather than a linear "plan → build → ship" pipeline
 it operates as a closed loop where the output is continuously measured against
 the desired outcome and corrections are fed back into the process.
 
-```
-                   ┌─────────── correction signal ───────────┐
-                   │                                          │
-    ┌─────────┐    │    ┌──────────┐     ┌──────────────┐     │
-    │ Setpoint │────┼───▶│ Controller│────▶│   Process    │─────┼───▶ Output
-    │ (Specs)  │    │    │  (Dev)   │     │(Code change) │     │
-    └──────────┘    │    └──────────┘     └──────────────┘     │
-                    │                                          │
-                    │    ┌──────────┐     ┌──────────────┐     │
-                    └────│ Feedback │◀────│   Sensor     │◀────┘
-                         │(Bug fix) │     │ (E2E Verify) │
-                         └──────────┘     └──────────────┘
+```mermaid
+flowchart LR
+    SETPOINT["Setpoint\n(Specs)"] -->|"desired output"| CTRL["Controller\n(Dev)"]
+    CTRL -->|"produces"| PROC["Process\n(Code change)"]
+    PROC -->|"output"| SENSOR["Sensor\n(E2E Verify)"]
+    SENSOR -->|"delta detected"| FB["Feedback\n(Bug fix)"]
+    FB -->|"correction signal"| CTRL
+    SENSOR -->|"output matches"| DONE(["Done"])
 ```
 
 | Control Term | Workflow Equivalent |
@@ -113,6 +109,7 @@ AnyWear repositories (`AnyWear-Client/`, `AnyWear-Service/`, `AnyWear-Meta/`).
 - `parentId`: the parent issue ID
 - `goalId`: same as parent's `goalId`
 - `title`: derived from parent (`"{parent-title} — Development"`)
+- `executionWorkspacePreference`: `"new_isolated"` — creates a fresh git worktree
 - `blockedByIssueIds`: empty (starts immediately after parent approval)
 
 **Status flow**: `todo` → `in_progress` → `done` (when implementation complete
@@ -134,7 +131,58 @@ AnyWear Client web layer.
 |---------|--------|
 | All E2E checks pass | → `done` |
 | Bug found, related to this change | → create a **Fix Issue** as a child of the dev issue, set `blockedByIssueIds: [<fix-issue-id>]`, add comment with findings |
-| Bug found, unrelated to this change | → create a new **Bug Issue**, link it to the parent, set verification to `done` |
+| Bug found, unrelated to this change | → create a new **Bug Issue** (default workspace), link it to the parent, set verification to `done` |
+
+## Workspaces
+
+Only the **Development issue** creates a new isolated workspace. All other
+issues in the coding/testing chain share it. The parent refinement issue and
+unrelated bug issues use the default workspace.
+
+```mermaid
+flowchart TD
+    subgraph DEFAULT["Default Workspace"]
+        PARENT["Parent Issue\n(Backlog Refinement)"]
+        BUG["Unrelated Bug Issue"]
+    end
+
+    subgraph ISOLATED["Isolated Workspace (worktree)"]
+        DEV["Development Issue\n(owner)"]
+        FIX["Fix Issue\n(child, inherits)"]
+        E2E["Verification Issue\n(E2E, shares)"]
+    end
+
+    PARENT -->|"spawns"| DEV
+    DEV -->|"spawns"| FIX
+    DEV -.->|"inheritExecution\nWorkspaceFrom"| E2E
+    PARENT -.->|"unrelated bug"| BUG
+```
+
+| Issue | Workspace | How |
+|-------|-----------|-----|
+| Parent (Backlog Refinement) | Default workspace | No special config |
+| Development | New isolated workspace (worktree) | `executionWorkspacePreference: "new_isolated"` |
+| Verification (E2E) | Same as Development | `inheritExecutionWorkspaceFromIssueId: <dev-issue-id>` |
+| Fix Issue (child of dev) | Inherited from dev | Automatic via `parentId` |
+| Unrelated Bug | Default workspace | No special config |
+
+**Rule**: the development issue owns the workspace. Verification and fix
+issues share it so they operate on the same checkout. Parent and unrelated
+bugs don't need code access — they use the default workspace.
+
+### Verification Issue Creation (with workspace sharing)
+
+```json
+POST /api/companies/{companyId}/issues
+{
+  "parentId": "<parent-issue-id>",
+  "goalId": "<same-goal-id>",
+  "title": "{parent-title} — Verification",
+  "status": "todo",
+  "blockedByIssueIds": ["<dev-issue-id>"],
+  "inheritExecutionWorkspaceFromIssueId": "<dev-issue-id>"
+}
+```
 
 ## Bug Handling
 
