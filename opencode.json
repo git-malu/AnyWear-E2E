@@ -1,0 +1,9 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "AGENTS.md",
+    "AnyWear-Meta/AGENTS.md",
+    "AnyWear-Client/AGENTS.md",
+    "AnyWear-Service/AGENTS.md"
+  ]
+}
