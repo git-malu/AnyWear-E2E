@@ -39,13 +39,17 @@ flowchart TD
 
     START --> S0["0. setup()<br/>branch + submodule init"]
 
-    S0 --> S1["1. delegate(Meta-Manager)<br/>input: issue, branch"]
-    S1 -- "returns: plan" --> G1["👤 2. Human Approval"]
+    S0 --> LOOP_START
 
-    G1 --> S2["3. delegate_parallel()<br/>├ Service-Manager(plan, branch)<br/>└ Client-Manager(plan, branch)"]
-    S2 -- "returns: done ∥ done" --> S3["4. delegate(E2E-Tester)<br/>input: test scenarios"]
+    subgraph LOOP["loop body (retry on failure/escalation)"]
+        S1["1. delegate(Meta-Manager)<br/>input: issue, branch"]
+        S1 -- "returns: plan" --> G1["👤 2. Human Approval"]
 
-    S3 -- "returns: pass" --> S4["5. delegate(Root-Committer)<br/>input: msg, branch"]
+        G1 --> S2["3. delegate_parallel()<br/>├ Service-Manager(plan, branch)<br/>└ Client-Manager(plan, branch)"]
+        S2 -- "returns: done ∥ done" --> S3["4. delegate(E2E-Tester)<br/>input: test scenarios"]
+
+        S3 -- "returns: pass" --> S4["5. delegate(Root-Committer)<br/>input: msg, branch"]
+    end
 
     S4 --> G2["👤 6. Human Merge Approval"]
 
@@ -150,8 +154,8 @@ Report: `Pipeline complete`. Summarize what was accomplished.
 | Agent | Type | What you give it |
 |-------|------|-----------------|
 | anywear-meta-manager | subagent | Issue + branch → returns plan summary |
-| anywear-service-manager | subagent | Plan + branch → returns implementation summary |
-| anywear-client-manager | subagent | Plan + branch → returns implementation summary |
+| anywear-service-manager | subagent | Issue, plan, branch → returns implementation summary |
+| anywear-client-manager | subagent | Issue, plan, branch → returns implementation summary |
 | anywear-e2e-tester | primary | Test scenarios → returns pass/fail report |
 | anywear-root-committer | subagent | Commit message + branch → commits and pushes |
 
