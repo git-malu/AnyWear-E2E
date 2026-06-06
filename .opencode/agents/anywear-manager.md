@@ -36,21 +36,21 @@ Each domain Manager runs its own independent control loop. How they do that is t
 ```mermaid
 flowchart TD
     START(["Issue"])
-    START --> SETUP["0. REPO SETUP<br/>AnyWear-Manager"]
-    SETUP --> META["1. META PHASE<br/>→ Meta-Manager"]
-    META -.->|design issues| META
-    META --> USER_APPROVAL{"👤 User<br/>Approval?"}
-    USER_APPROVAL -->|revise| META
-    USER_APPROVAL -->|approve| PARALLEL["2. PARALLEL DEV<br/>→ Service-Manager ∥ Client-Manager"]
 
-    PARALLEL --> JOIN{"Both Done?"}
-    JOIN -->|no| PARALLEL
-    JOIN -->|yes| E2E["3. E2E TESTING<br/>→ E2E-Tester"]
-    E2E --> COMMIT["4. ROOT COMMIT<br/>→ Root Committer"]
-    COMMIT --> MERGE_APPROVAL{"👤 User<br/>Merge?"}
-    MERGE_APPROVAL -->|revise| PARALLEL
-    MERGE_APPROVAL -->|approve| MERGE["5. RECURSIVE MERGE<br/>AnyWear-Manager"]
-    MERGE --> DONE(["6. DONE"])
+    START --> S0["0. setup()<br/>branch + submodule init"]
+
+    S0 --> S1["1. delegate(Meta-Manager)<br/>input: issue, branch"]
+    S1 -- "returns: plan" --> G1["👤 2. Human Approval"]
+
+    G1 --> S2["3. delegate_parallel()<br/>├ Service-Manager(plan, branch)<br/>└ Client-Manager(plan, branch)"]
+    S2 -- "returns: done ∥ done" --> S3["4. delegate(E2E-Tester)<br/>input: test scenarios"]
+
+    S3 -- "returns: pass" --> S4["5. delegate(Root-Committer)<br/>input: msg, branch"]
+
+    S4 --> G2["👤 6. Human Merge Approval"]
+
+    G2 --> S5["7. merge()<br/>recursive: submodules → root"]
+    S5 --> DONE(["Done"])
 ```
 
 ### Phase Decision Flow
