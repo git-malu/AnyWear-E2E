@@ -72,10 +72,11 @@ When Reviewer or Tester finds issues, you classify and decide:
 
 #### ① Service-Dev — Backend Implementation
 
-Delegate to `anywear-service-dev` with:
-- The Service tasks from the Implementation Plan
+Delegate to `anywear-service-dev` in **feature development mode**:
+- The Service tasks from the Implementation Plan (what to build)
 - Reference to design docs in `AnyWear-Meta/architecture/`
 - The feature branch name
+- Explicit scope: full backend implementation — routes, services, database, business logic. API contracts were already synced in Meta phase.
 
 Record the returned `task_id`. Reuse on re-delegation.
 
@@ -100,7 +101,6 @@ Record the returned `task_id`. Reuse on re-review.
 Delegate to `anywear-service-tester` with:
 - Summary of what was implemented
 - Test requirements from the Implementation Plan
-- Instruction to write any missing tests first, then run `tsc --noEmit`, lint, `pnpm test:run`, coverage
 
 Record the returned `task_id`. Reuse on re-test.
 

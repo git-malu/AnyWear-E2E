@@ -72,10 +72,11 @@ When Reviewer or Tester finds issues, you classify and decide:
 
 #### ① Client-Dev — Frontend Implementation
 
-Delegate to `anywear-client-dev` with:
-- The Client tasks from the Implementation Plan
+Delegate to `anywear-client-dev` in **feature development mode**:
+- The Client tasks from the Implementation Plan (what to build)
 - Reference to design docs in `AnyWear-Meta/architecture/`
 - The feature branch name
+- Explicit scope: full frontend implementation — pages, components, state, routing. API types were already synced in Meta phase.
 
 Record the returned `task_id`. Reuse on re-delegation.
 
@@ -100,7 +101,6 @@ Record the returned `task_id`. Reuse on re-review.
 Delegate to `anywear-client-tester` with:
 - Summary of what was implemented
 - Test requirements from the Implementation Plan
-- Instruction to write missing tests, then run `tsc --noEmit`, lint, `pnpm test:run`, coverage, `pnpm build`
 
 Record the returned `task_id`. Reuse on re-test.
 

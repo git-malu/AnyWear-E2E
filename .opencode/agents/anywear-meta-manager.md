@@ -92,37 +92,26 @@ Delegate to `anywear-meta-reviewer` with:
 
 **Only run this phase if the Implementation Plan identifies API changes.** If the plan states no API changes are needed, skip to ④.
 
-Delegate to `anywear-meta-service-dev` with:
-- The API change requirements from the Implementation Plan
+Delegate to `anywear-meta-service-dev` in **API sync mode**:
+- The API change requirements from the plan (which endpoints/schemas need updating)
 - The feature branch name
-- Instruction to work in `AnyWear-Service/` repository
+- Explicit scope: update API contracts only — Zod schemas + OpenAPI regeneration. No feature logic.
 
 This is a **new session each time** (API sync is one-shot per pipeline run). Record the `task_id`.
 
-Wait for completion. Verify:
-- Zod schemas updated?
-- `pnpm build` regenerated `api/anywear_openapi.yaml`?
-- Changes committed and pushed?
-
-Report: `API interfaces updated`.
+Wait for completion. Report: `API interfaces updated`.
 
 #### ④ Client-Dev (API Scope) — Sync API Types
 
 **Only run if ③ ran (API changes were made).** If no API changes, skip.
 
-Delegate to `anywear-meta-client-dev` with:
-- Instruction to update `AnyWear-Client/api/` submodule pointer
-- Run `pnpm orval` to regenerate API hooks and models
-- Commit and push
+Delegate to `anywear-meta-client-dev` in **API sync mode**:
+- The feature branch name
+- Explicit scope: pull latest API spec from Service, regenerate Orval types. No UI code.
 
 This is a **new session each time**. Record the `task_id`.
 
-Wait for completion. Verify:
-- `api/` submodule pointer updated?
-- Orval regeneration successful?
-- Changes committed and pushed?
-
-Report: `API types synced`.
+Wait for completion. Report: `API types synced`.
 
 #### ⑤ Committer — Git Commit+Push
 
