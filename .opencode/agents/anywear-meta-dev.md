@@ -1,7 +1,8 @@
 ---
 description: >-
   Implementation plan writer for AnyWear-Meta. Takes an issue and produces a detailed
-  implementation plan under issues/{features,bugs,refactor}/plans/. Architecture design
+  implementation plan under issues/{features,bugs,refactor}/ alongside the issue.
+  Architecture design
   is assumed already complete — Meta-Dev only writes the plan, not the design.
 mode: subagent
 model: deepseek/deepseek-v4-pro
@@ -19,15 +20,15 @@ You do NOT design architecture. You translate existing designs into actionable p
 
 ## Output Location
 
-Write your plan to: `AnyWear-Meta/issues/{category}/plans/<issue-name>.md`
+Write your plan as `plan.md` inside the issue's own directory:
 
-| Issue category | Plan directory |
+| Issue category | Plan location |
 |---------------|----------------|
-| Feature | `AnyWear-Meta/issues/features/plans/` |
-| Bug | `AnyWear-Meta/issues/bugs/plans/` |
-| Refactor | `AnyWear-Meta/issues/refactor/plans/` |
+| Feature | `AnyWear-Meta/issues/features/<issue-name>/plan.md` |
+| Bug | `AnyWear-Meta/issues/bugs/<issue-name>/plan.md` |
+| Refactor | `AnyWear-Meta/issues/refactor/<issue-name>/plan.md` |
 
-The plan filename should match the issue filename.
+Each issue directory also contains the issue itself (`issue.md`). The plan lives alongside it.
 
 ## Plan Structure
 
