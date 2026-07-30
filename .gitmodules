@@ -7,3 +7,6 @@
 [submodule "AnyWear-Meta"]
 	path = AnyWear-Meta
 	url = https://github.com/git-malu/AnyWear-Meta.git
+[submodule "AnyWear-E2E"]
+	path = AnyWear-E2E
+	url = https://github.com/git-malu/AnyWear-E2E.git

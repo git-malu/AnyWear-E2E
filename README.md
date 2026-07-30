@@ -17,6 +17,7 @@ AnyWear is an AI-powered virtual try-on and wardrobe management platform designe
 - **Client**: Cross-platform application (Desktop and Mobile) built with Tauri v2, React 19, TypeScript, Vite, and Tailwind CSS v4.
 - **Service (Backend)**: A modular monolith deployed on AWS ECS Fargate using a "One Task" unified architecture. Built with Node.js, Hono, Drizzle ORM, and LangGraph.js.
 - **Meta Contract**: The `AnyWear-Meta` submodule serves as the single source of truth for OpenAPI specifications and Shared TypeScript interfaces to seamlessly bridge the client and service repositories.
+- **System Tests**: The `AnyWear-E2E` submodule owns Playwright flows that cross the real Client and Service boundary. Root submodule pointers define the exact compatibility set executed by CI.
 - **Cloud Infrastructure**: Embraces AWS managed services including Cognito (with WAF protection for passwordless OTP), Aurora Serverless (PostgreSQL + pgvector), S3, and EventBridge Scheduler.
 
 ## Local Development
@@ -80,10 +81,24 @@ pnpm dev                           # web dev server
 pnpm test                          # vitest (watch mode)
 pnpm test:run                      # vitest single run
 pnpm test:coverage                 # vitest with coverage
-pnpm test:e2e                      # playwright e2e tests
+pnpm test:browser                  # Client-only browser integration tests
 ```
 
-### 4. Syncing the `api` Submodule
+### 4. Run System E2E
+
+System E2E runs from the dedicated repository against the sibling Client and Service revisions pinned by this shell repository:
+
+```bash
+cd AnyWear-E2E
+pnpm install
+pnpm check
+pnpm test:smoke
+pnpm test:full-stack
+```
+
+See [`AnyWear-E2E/README.md`](AnyWear-E2E/README.md) for database, AWS, and environment prerequisites.
+
+### 5. Syncing the `api` Submodule
 
 Both Client and Service share the `api` submodule as the source of truth for OpenAPI specs and shared types.
 
