@@ -27,6 +27,8 @@ test.describe('Wardrobe Management @full-stack', () => {
   });
 
   test('adds, edits, and deletes a wardrobe item', async ({ page }) => {
+    test.setTimeout(120_000);
+
     page.on('dialog', async (dialog) => {
       await dialog.accept();
     });
@@ -38,26 +40,28 @@ test.describe('Wardrobe Management @full-stack', () => {
     await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).toBeVisible();
 
     await page.locator('input[type="file"]').setInputFiles(uploadFixture);
-    await page.getByPlaceholder('e.g. Tops, Pants, Shoes').fill('T-Shirt');
-    await page.getByPlaceholder('e.g. Black, Blue').fill('Blue');
-    await page.getByPlaceholder('e.g. Cotton, Denim').fill('Cotton');
-    await page.getByRole('button', { name: 'Save Item' }).click();
+    await page.getByRole('button', { name: 'Upload & Auto-Tag' }).click();
 
-    await expect(page.getByText('T-Shirt').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText(/blue.*cotton/i).first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).not.toBeVisible();
+    await expect(page.getByText('Analyzing...')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Analyzing...')).not.toBeVisible({ timeout: 90_000 });
 
-    await page.getByText('T-Shirt').first().click();
-    await expect(page.getByRole('heading', { name: 'Edit Wardrobe Item' })).toBeVisible();
+    const itemCardTitle = page.locator('main h3').first();
+    await expect(itemCardTitle).toBeVisible();
+    await itemCardTitle.click();
+    await expect(page.getByRole('heading', { name: 'Item Details' })).toBeVisible();
 
-    await page.locator('div').filter({ hasText: /^Category$/ }).locator('input').fill('Jacket');
-    await page.locator('div').filter({ hasText: /^Color$/ }).locator('input').fill('Red');
+    await page.getByPlaceholder('e.g. My favorite hoodie').fill('E2E Test Sweater');
+    await page.getByPlaceholder('e.g. Top').fill('Jacket');
+    await page.getByPlaceholder('e.g. Black, White').fill('Red');
+    await page.getByPlaceholder('e.g. Cotton').fill('Cotton');
     await page.getByRole('button', { name: 'Save Changes' }).click();
 
-    await expect(page.getByText('Jacket').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('E2E Test Sweater')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(/red.*cotton/i).first()).toBeVisible({ timeout: 5_000 });
 
-    await page.getByText('Jacket').first().click();
-    await page.getByRole('button', { name: 'Delete Item' }).click();
+    await page.getByText('E2E Test Sweater').click();
+    await page.getByRole('button', { name: 'Delete' }).click();
     await expect(page.getByText('Your wardrobe is empty.')).toBeVisible({ timeout: 10_000 });
   });
 });

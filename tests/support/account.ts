@@ -33,6 +33,7 @@ export async function registerAndLogin(page: Page, account: TestAccount): Promis
   await page.locator('input[type="password"]').fill(account.password);
   await page.getByRole('button', { name: 'Sign up' }).click();
   await page.waitForURL('/login');
+  await page.getByRole('heading', { name: 'Sign in' }).waitFor();
 
   await page.locator('input[type="email"]').fill(account.email);
   await page.locator('input[type="password"]').fill(account.password);
