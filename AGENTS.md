@@ -37,7 +37,13 @@ shell root.
 - Use role, label, and visible-text locators before test IDs or CSS selectors.
 - Never commit credentials, browser storage state, reports, traces, screenshots,
   or videos.
+- Treat `compatibility.json` as the system-test compatibility contract. Use only
+  full Client and Service commit SHAs that exist on their remotes; never use a
+  mutable branch or tag.
+- The E2E Integration workflow owns cross-repository checkout and full-stack
+  execution. The AnyWear shell repository is a local workspace and must not own
+  E2E CI credentials.
 
 After committing E2E changes, update the `AnyWear-E2E` submodule pointer in the
-AnyWear shell repository so the exact test revision is reviewed with the Client
-and Service compatibility pair.
+AnyWear shell repository for local workspace reproducibility. This pointer does
+not trigger or select the E2E CI compatibility set.

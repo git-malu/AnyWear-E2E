@@ -19,8 +19,7 @@ boundaries; repository-local tests remain with the Client or Service.
 - AWS credentials for the non-production test environment
 - Sibling `AnyWear-Client` and `AnyWear-Service` checkouts
 
-The preferred layout is the AnyWear shell repository, whose submodule pointers
-pin the exact Client, Service, Meta, and E2E revisions under review:
+The preferred local layout is the AnyWear shell repository:
 
 ```text
 AnyWear/
@@ -69,7 +68,13 @@ already-running or deployed endpoints.
 
 ## CI Model
 
-The E2E repository pipeline validates its own source without selecting mutable
-Client or Service branches. Full system tests run from the AnyWear shell
-repository after recursive submodule checkout, so the reviewed submodule SHAs
-are exactly the revisions executed by CI.
+`compatibility.json` is the CI source of truth for the Client and Service
+revisions under test. It accepts only full commit SHAs; branch and tag names are
+rejected. The E2E Integration workflow checks out those exact private
+repositories, including their recursive API submodules, and records every
+tested revision as an artifact.
+
+The AnyWear shell repository remains a convenient local workspace and may pin
+the same revisions, but it does not run CI or hold cross-repository credentials.
+Update `compatibility.json` only after the peer commits exist on their remotes
+and their repository-owned pipelines pass.

@@ -1,0 +1,205 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/integration.yml
+      - compatibility.json
+      - package.json
+      - pnpm-lock.yaml
+      - playwright.config.ts
+      - scripts/**
+      - tests/**
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/integration.yml
+      - compatibility.json
+      - package.json
+      - pnpm-lock.yaml
+      - playwright.config.ts
+      - scripts/**
+      - tests/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Pinned Client + Service E2E
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/anywear_dev
+      PORT: 3000
+
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: anywear_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+        with:
+          path: AnyWear-E2E
+          persist-credentials: false
+
+      - name: Generate repository token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Load pinned compatibility set
+        id: compatibility
+        shell: bash
+        run: |
+          node AnyWear-E2E/scripts/check-compatibility.mjs
+          {
+            echo "client_repository=$(jq -r '.client.repository' AnyWear-E2E/compatibility.json)"
+            echo "client_sha=$(jq -r '.client.sha' AnyWear-E2E/compatibility.json)"
+            echo "service_repository=$(jq -r '.service.repository' AnyWear-E2E/compatibility.json)"
+            echo "service_sha=$(jq -r '.service.sha' AnyWear-E2E/compatibility.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned Client
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.compatibility.outputs.client_repository }}
+          ref: ${{ steps.compatibility.outputs.client_sha }}
+          path: AnyWear-Client
+          submodules: recursive
+          token: ${{ steps.generate-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Checkout pinned Service
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.compatibility.outputs.service_repository }}
+          ref: ${{ steps.compatibility.outputs.service_sha }}
+          path: AnyWear-Service
+          submodules: recursive
+          token: ${{ steps.generate-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Record tested revisions
+        shell: bash
+        run: |
+          {
+            echo "E2E $(git -C AnyWear-E2E rev-parse HEAD)"
+            echo "Client $(git -C AnyWear-Client rev-parse HEAD)"
+            git -C AnyWear-Client submodule status --recursive
+            echo "Service $(git -C AnyWear-Service rev-parse HEAD)"
+            git -C AnyWear-Service submodule status --recursive
+          } | tee tested-revisions.txt
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            AnyWear-E2E/pnpm-lock.yaml
+            AnyWear-Client/pnpm-lock.yaml
+            AnyWear-Service/pnpm-lock.yaml
+
+      - name: Install Client dependencies
+        working-directory: AnyWear-Client
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Service dependencies
+        working-directory: AnyWear-Service
+        run: pnpm install --frozen-lockfile
+
+      - name: Install E2E dependencies
+        working-directory: AnyWear-E2E
+        run: pnpm install --frozen-lockfile
+
+      - name: Check E2E source
+        working-directory: AnyWear-E2E
+        run: pnpm check
+
+      - name: Apply database migrations
+        working-directory: AnyWear-Service
+        run: pnpm db:migrate
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/dev-github-actions-pipeline-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Load dev configuration from Parameter Store
+        shell: bash
+        run: |
+          pool_id=$(aws ssm get-parameter --name /anywear/dev/cognito_user_pool_id --query Parameter.Value --output text)
+          client_id=$(aws ssm get-parameter --name /anywear/dev/cognito_client_id --query Parameter.Value --output text)
+          bucket=$(aws ssm get-parameter --name /anywear/dev/s3_bucket_name --query Parameter.Value --output text)
+          region=$(aws ssm get-parameter --name /anywear/dev/aws_region --query Parameter.Value --output text)
+          weather_key=$(aws ssm get-parameter --name /anywear/dev/qweather_api_key --query Parameter.Value --output text)
+          weather_host=$(aws ssm get-parameter --name /anywear/dev/qweather_api_host --query Parameter.Value --output text)
+          {
+            echo "STAGE=dev"
+            echo "USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_CLIENT_ID=$client_id"
+            echo "COGNITO_USER_POOL_ID=$pool_id"
+            echo "COGNITO_CLIENT_ID=$client_id"
+            echo "S3_BUCKET_NAME=$bucket"
+            echo "AWS_REGION=$region"
+            echo "QWEATHER_API_KEY=$weather_key"
+            echo "QWEATHER_API_HOST=$weather_host"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Chromium
+        working-directory: AnyWear-E2E
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Run pinned full-stack tests
+        working-directory: AnyWear-E2E
+        run: pnpm test:full-stack
+
+      - name: Upload tested revisions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-revisions
+          path: tested-revisions.txt
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-diagnostics
+          path: |
+            AnyWear-E2E/playwright-report
+            AnyWear-E2E/test-results
+          if-no-files-found: ignore

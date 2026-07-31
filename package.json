@@ -9,7 +9,8 @@
   "packageManager": "pnpm@11.18.0",
   "scripts": {
     "audit": "pnpm audit --audit-level high",
-    "check": "eslint . --max-warnings=0 && tsc --noEmit && playwright test --list",
+    "check": "node scripts/check-compatibility.mjs && eslint . --max-warnings=0 && tsc --noEmit && playwright test --list",
+    "compatibility:check": "node scripts/check-compatibility.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "playwright test",

@@ -7,6 +7,14 @@ export default tseslint.config(
     ignores: ['node_modules/**', 'playwright-report/**', 'test-results/**', 'blob-report/**'],
   },
   {
+    files: ['**/*.mjs'],
+    extends: [eslint.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+    },
+  },
+  {
     files: ['**/*.ts'],
     extends: [eslint.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
