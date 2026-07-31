@@ -151,6 +151,21 @@ jobs:
         working-directory: AnyWear-Service
         run: pnpm db:migrate
 
+      - name: Verify OIDC identity
+        shell: bash
+        run: |
+          response=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          token=$(jq -r '.value' <<< "$response")
+          claims=$(node -e \
+            "const payload = process.argv[1].split('.')[1]; process.stdout.write(Buffer.from(payload, 'base64url').toString())" \
+            "$token")
+          actual_subject=$(jq -r '.sub' <<< "$claims")
+          expected_subject="repo:${GITHUB_REPOSITORY}:environment:dev"
+          jq '{iss, aud, sub}' <<< "$claims"
+          test "$actual_subject" = "$expected_subject"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
