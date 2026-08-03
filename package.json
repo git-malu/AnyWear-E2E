@@ -9,7 +9,7 @@
   "packageManager": "pnpm@11.18.0",
   "scripts": {
     "audit": "pnpm audit --audit-level high",
-    "check": "node scripts/check-compatibility.mjs && eslint . --max-warnings=0 && tsc --noEmit && playwright test --list",
+    "check": "node scripts/check-compatibility.mjs && node --test scripts/*.test.mjs && eslint . --max-warnings=0 && tsc --noEmit && playwright test --list",
     "compatibility:check": "node scripts/check-compatibility.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
@@ -17,6 +17,9 @@
     "test:smoke": "playwright test --grep @smoke",
     "test:full-stack": "playwright test --grep @full-stack",
     "test:list": "playwright test --list",
+    "qualification:collect": "node scripts/collect-deployment-evidence.mjs",
+    "qualification:generate": "node scripts/create-qualification-record.mjs",
+    "qualification:verify": "node scripts/verify-qualification-record.mjs",
     "report": "playwright show-report"
   },
   "devDependencies": {

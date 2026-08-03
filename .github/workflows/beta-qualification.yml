@@ -1,0 +1,103 @@
+name: Beta Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Qualify reviewed revisions on Beta
+    runs-on: ubuntu-latest
+    environment: beta
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_EXTERNAL_SERVERS: true
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check E2E source and reviewed compatibility set
+        run: pnpm check
+
+      - name: Verify deployed revisions
+        run: pnpm qualification:collect
+
+      - name: Configure Beta AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Load Beta test identity configuration
+        shell: bash
+        run: |
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          client_id=$(aws ssm get-parameter --name /anywear/beta/cognito_client_id --query Parameter.Value --output text)
+          {
+            echo "USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_CLIENT_ID=$client_id"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Run complete deployed Beta suite
+        run: pnpm test
+
+      - name: Create and verify qualification record
+        env:
+          QUALIFICATION_RESULT: passed
+        run: |
+          pnpm qualification:generate
+          pnpm qualification:verify
+
+      - name: Upload qualification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            deployment-evidence.json
+            qualification-record.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-playwright-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore

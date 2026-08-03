@@ -66,6 +66,14 @@ Playwright starts the sibling Client and Service automatically. Set
 `E2E_EXTERNAL_SERVERS=true` with `E2E_CLIENT_URL` and `E2E_SERVICE_URL` to test
 already-running or deployed endpoints.
 
+The manual `Beta Qualification` workflow is the production-readiness gate for an
+already-deployed Beta environment. It reads the reviewed full SHAs from
+`compatibility.json`, verifies those identities against the deployed Client
+`build-metadata.json` and Service `/health`, runs the complete suite, and uploads a
+checksummed qualification record. A failed or mismatched run cannot issue a passing
+record. Artifact retention is currently 90 days; durable release-ledger storage remains
+an explicit architecture decision.
+
 ## CI Model
 
 `compatibility.json` is the CI source of truth for the Client and Service
