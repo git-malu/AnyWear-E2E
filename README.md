@@ -71,8 +71,12 @@ already-deployed Beta environment. It reads the reviewed full SHAs from
 `compatibility.json`, verifies those identities against the deployed Client
 `build-metadata.json` and Service `/health`, runs the complete suite, and uploads a
 checksummed qualification record. A failed or mismatched run cannot issue a passing
-record. Artifact retention is currently 90 days; durable release-ledger storage remains
-an explicit architecture decision.
+record. The workflow requests 90-day artifact retention, subject to GitHub's configured
+repository or organization ceiling; durable release-ledger storage remains
+out of scope for the initial Production launch. The finite GitHub retention window is an
+accepted trade-off: after the artifact expires, that qualification can no longer authorize a
+new Production deployment or rollback and the candidate must be qualified again. Persistent
+S3 evidence storage will be reconsidered only if long-term audit or rollback requirements arise.
 
 ## CI Model
 
