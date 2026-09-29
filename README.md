@@ -47,9 +47,11 @@ pnpm db:up
 pnpm db:migrate
 ```
 
-Create `AnyWear-E2E/.env` from `.env.example` and populate the dev Cognito,
-S3, database, and weather configuration. Do not commit `.env` or Playwright
-authentication state.
+After configuring AWS SSO and provisioning the dev secrets, run
+`pnpm sync:dev-env` from `AnyWear-Service` after `aws sso login --profile anywear-dev`. This writes the
+ignored Service, Client, and E2E `.env` files from SSM and Secrets Manager while
+preserving local-only settings such as the database URL and test URLs. Do not commit
+`.env` or Playwright authentication state.
 
 ## Commands
 

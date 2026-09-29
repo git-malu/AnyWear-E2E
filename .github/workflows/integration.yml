@@ -172,15 +172,16 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/dev-github-actions-pipeline-role
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Load dev configuration from Parameter Store
+      - name: Load dev configuration from AWS
         shell: bash
         run: |
           pool_id=$(aws ssm get-parameter --name /anywear/dev/cognito_user_pool_id --query Parameter.Value --output text)
           client_id=$(aws ssm get-parameter --name /anywear/dev/cognito_client_id --query Parameter.Value --output text)
           bucket=$(aws ssm get-parameter --name /anywear/dev/s3_bucket_name --query Parameter.Value --output text)
           region=$(aws ssm get-parameter --name /anywear/dev/aws_region --query Parameter.Value --output text)
-          weather_key=$(aws ssm get-parameter --name /anywear/dev/qweather_api_key --query Parameter.Value --output text)
+          weather_key=$(aws secretsmanager get-secret-value --secret-id /anywear/dev/qweather_api_key --query SecretString --output text)
           weather_host=$(aws ssm get-parameter --name /anywear/dev/qweather_api_host --query Parameter.Value --output text)
+          echo "::add-mask::$weather_key"
           {
             echo "STAGE=dev"
             echo "USER_POOL_ID=$pool_id"
