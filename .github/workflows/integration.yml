@@ -1,26 +1,6 @@
-name: Integration
+name: On-demand Dev Smoke
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/integration.yml
-      - compatibility.json
-      - package.json
-      - pnpm-lock.yaml
-      - playwright.config.ts
-      - scripts/**
-      - tests/**
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/integration.yml
-      - compatibility.json
-      - package.json
-      - pnpm-lock.yaml
-      - playwright.config.ts
-      - scripts/**
-      - tests/**
   workflow_dispatch:
 
 permissions:
@@ -32,7 +12,7 @@ concurrency:
 
 jobs:
   e2e:
-    name: Pinned Client + Service E2E
+    name: Pinned Client + Service Smoke
     runs-on: ubuntu-latest
     environment: dev
     permissions:
@@ -199,9 +179,9 @@ jobs:
         working-directory: AnyWear-E2E
         run: pnpm exec playwright install chromium --with-deps
 
-      - name: Run pinned full-stack tests
+      - name: Run pinned smoke tests
         working-directory: AnyWear-E2E
-        run: pnpm test:full-stack
+        run: pnpm test:smoke
 
       - name: Upload tested revisions
         if: always()

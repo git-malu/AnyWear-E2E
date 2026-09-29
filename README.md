@@ -56,17 +56,37 @@ preserving local-only settings such as the database URL and test URLs. Do not co
 ## Commands
 
 ```bash
-pnpm check             # lint, type check, and test discovery
+pnpm check             # source checks, script tests, and Playwright test discovery; no browser execution
 pnpm audit             # fail on high/critical dependency advisories
-pnpm test:smoke        # stable critical-path gate
-pnpm test:full-stack   # all local Client + Service system tests
-pnpm test              # complete suite
+pnpm test:smoke        # optional on-demand Dev diagnostic
+pnpm test:full-stack   # local-only diagnostic; not a PR/Dev gate
+pnpm test              # complete deployed Beta qualification suite
 pnpm report            # open the latest HTML report
 ```
 
 Playwright starts the sibling Client and Service automatically. Set
 `E2E_EXTERNAL_SERVERS=true` with `E2E_CLIENT_URL` and `E2E_SERVICE_URL` to test
 already-running or deployed endpoints.
+
+## Execution Policy
+
+Pull requests do not run cross-repository browser E2E as a required check. The E2E
+Quality workflow runs compatibility validation, script tests, lint, type checking, and
+Playwright test discovery. Client and Service workflows remain responsible for their
+required unit, repository integration, contract, database, and browser integration tests.
+
+The E2E Integration workflow is an on-demand Dev smoke diagnostic and runs only the small
+`@smoke` subset. The complete suite is not a PR or Dev CI operation. Developers may run
+`pnpm test:full-stack` locally when investigating the composition, but that run is not a
+release gate and produces no qualification evidence.
+
+The complete `pnpm test` suite is reserved for the deployed Beta Qualification workflow.
+Only a passing run against the exact reviewed Client, Service, and E2E revisions produces
+qualification evidence that Production may consume.
+
+Test classification is explicit: `@smoke` marks the small, stable critical path allowed in
+the on-demand Dev diagnostic; `@full-stack` marks cross-repository scenarios that may be
+run locally for investigation. Beta runs every discovered test, regardless of tag.
 
 The manual `Beta Qualification` workflow is the production-readiness gate for an
 already-deployed Beta environment. It reads the reviewed full SHAs from
@@ -84,9 +104,9 @@ S3 evidence storage will be reconsidered only if long-term audit or rollback req
 
 `compatibility.json` is the CI source of truth for the Client and Service
 revisions under test. It accepts only full commit SHAs; branch and tag names are
-rejected. The E2E Integration workflow checks out those exact private
-repositories, including their recursive API submodules, and records every
-tested revision as an artifact.
+rejected. When invoked, the E2E Integration workflow checks out those exact private
+repositories, including their recursive API submodules, and records every tested
+revision as an artifact.
 
 The AnyWear shell repository remains a convenient local workspace and may pin
 the same revisions, but it does not run CI or hold cross-repository credentials.

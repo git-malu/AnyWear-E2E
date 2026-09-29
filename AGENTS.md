@@ -40,9 +40,10 @@ shell root.
 - Treat `compatibility.json` as the system-test compatibility contract. Use only
   full Client and Service commit SHAs that exist on their remotes; never use a
   mutable branch or tag.
-- The E2E Integration workflow owns cross-repository checkout and full-stack
-  execution. The AnyWear shell repository is a local workspace and must not own
-  E2E CI credentials.
+- The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
+  execution. The Beta Qualification workflow owns the complete deployed suite and release
+  evidence. The AnyWear shell repository is a local workspace and must not own E2E CI
+  credentials.
 
 After committing E2E changes, update the `AnyWear-E2E` submodule pointer in the
 AnyWear shell repository for local workspace reproducibility. This pointer does
