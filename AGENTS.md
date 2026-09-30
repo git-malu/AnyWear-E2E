@@ -12,6 +12,14 @@ boundaries. It uses TypeScript, Playwright Test, Node.js 24, and pnpm 11.18.0.
 - Treat Client and Service as black boxes. Do not import their implementation
   modules into E2E tests.
 
+## Stage Policy
+
+- Do not run or gate the `AnyWear-E2E` suite in the dev stage. Dev-stage
+  verification is covered by unit tests and integration tests; those are
+  sufficient for that stage.
+- Run this E2E suite only in the beta stage and later stages, including prod.
+  Do not add dev-stage E2E jobs, release gates, or required checks.
+
 ## Commands
 
 - Install: `pnpm install --frozen-lockfile`
@@ -41,9 +49,9 @@ shell root.
   full Client and Service commit SHAs that exist on their remotes; never use a
   mutable branch or tag.
 - The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
-  execution. The Beta Qualification workflow owns the complete deployed suite and release
-  evidence. The AnyWear shell repository is a local workspace and must not own E2E CI
-  credentials.
+  execution for beta and later stages; it must not target dev. The Beta Qualification
+  workflow owns the complete deployed suite and release evidence. The AnyWear shell
+  repository is a local workspace and must not own E2E CI credentials.
 
 After committing E2E changes, update the `AnyWear-E2E` submodule pointer in the
 AnyWear shell repository for local workspace reproducibility. This pointer does
