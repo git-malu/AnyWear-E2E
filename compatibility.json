@@ -2,10 +2,10 @@
   "version": 1,
   "client": {
     "repository": "git-malu/AnyWear-Client",
-    "sha": "1869100e024bd8b67646aa7e98a6d467d47574b2"
+    "sha": "fe22d9990e289269494bd78869af0ab5b0e1a8aa"
   },
   "service": {
     "repository": "git-malu/AnyWear-Service",
-    "sha": "0b7279bd85e41deae9a4874e615143703c76241c"
+    "sha": "33a912a21d80426e76cc9787d33f58e8917f15a9"
   }
 }
