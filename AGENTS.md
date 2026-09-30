@@ -39,6 +39,10 @@ graph TD
     AnyWear-E2E --> |tests| AnyWear-Service
 ```
 
+## Workflow
+
+Use the [kanban-workflow skill](.agents/skills/kanban-workflow/SKILL.md) to handle issues on the [AnyWear Kanban board](AnyWear-Meta/issues/kanban.md).
+
 ## Subagent policy
 
 - Use subagents proactively for independent, well-scoped tasks such as documentation, code exploration, testing, and review.

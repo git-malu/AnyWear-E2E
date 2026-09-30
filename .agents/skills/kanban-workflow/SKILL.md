@@ -1,13 +1,17 @@
 ---
 name: kanban-workflow
-description: Follow the AnyWear Kanban workflow for delivery, stage gates, closure, and subagent coordination.
+description: Use when handling issues on the AnyWear Kanban board, following its delivery workflow, stage gates, closure, and subagent coordination.
 ---
+
+# Kanban Workflow
+
+Use this skill to process issues tracked on the AnyWear Kanban board, from Backlog through delivery and closure.
 
 - Use the Kanban board as the source of truth; keep issue status, Kanban, and roadmap synchronized.
 - **Control Loop:** Every main-agent or subagent-owned work item follows `define → execute → observe → adjust → verify`, repeating until its acceptance criteria and stage gate pass.
 - The main agent owns the high-level loop across the workflow; each subagent owns a low-level loop within its assigned scope. Feedback flows upward and back into planning, while stage transitions remain synchronous.
 - **Backlog:** Define scope, acceptance criteria, dependencies, and ownership.
-- **Analysis:** Confirm architecture, API contracts, risks, and implementation boundaries.
+- **Analysis:** Develop the design and identify bug root causes as applicable; confirm architecture, API contracts, risks, and implementation boundaries.
 - **Development:** Implement the approved design. After the Service produces and the Client consumes the aligned API contract, Client and Service work may run in parallel with separate subagents.
 - **Testing:** Run development-only Unit Tests and Integration Tests; do not run E2E here. Independent Client and Service test suites may run in parallel when their inputs are ready.
 - **Deployment:** Release to Dev/Beta/Production and run E2E qualification during release, starting in Beta and continuing through Production; parallelize independent environment checks, but keep promotion gates synchronous.
