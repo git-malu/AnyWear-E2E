@@ -1,11 +1,11 @@
 ---
-name: standard-development-process
+name: kanban-workflow
 description: Follow the AnyWear Kanban workflow for delivery, stage gates, closure, and subagent coordination.
 ---
 
 - Use the Kanban board as the source of truth; keep issue status, Kanban, and roadmap synchronized.
-- Apply a low-level Control Loop in every stage: define the gate, execute, collect feedback and evidence, correct, and repeat until the gate passes.
-- Apply a high-level Control Loop across the workflow: feed testing, deployment, closure, and dependency feedback back into planning, analysis, and development before advancing.
+- **Control Loop:** Every main-agent or subagent-owned work item follows `define → execute → observe → adjust → verify`, repeating until its acceptance criteria and stage gate pass.
+- The main agent owns the high-level loop across the workflow; each subagent owns a low-level loop within its assigned scope. Feedback flows upward and back into planning, while stage transitions remain synchronous.
 - **Backlog:** Define scope, acceptance criteria, dependencies, and ownership.
 - **Analysis:** Confirm architecture, API contracts, risks, and implementation boundaries.
 - **Development:** Implement the approved design. After the Service produces and the Client consumes the aligned API contract, Client and Service work may run in parallel with separate subagents.
