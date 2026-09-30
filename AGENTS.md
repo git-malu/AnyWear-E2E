@@ -6,7 +6,7 @@
 > - `AnyWear-Service/AGENTS.md`
 > - `AnyWear-E2E/AGENTS.md`
 > 
-> 💡 **Tip:** To get a comprehensive big picture of the entire project, please read [`AnyWear-Meta/architecture/overall_architecture.md`](AnyWear-Meta/architecture/overall_architecture.md).
+> 💡 **Tip:** For cross-project architecture principles and guidelines, read [`AnyWear-Meta/architecture/architecture_principles.md`](AnyWear-Meta/architecture/architecture_principles.md). For system design details, see the [application architecture](AnyWear-Meta/architecture/system-component-architecture/application-architecture/overview.md) and [technical architecture](AnyWear-Meta/architecture/system-component-architecture/technical-architecture/overview.md) overviews.
 
 This root directory is a **shell repository** containing four Git submodules. **Do not run build or install commands in the root directory.** All code and package configuration lives in the subdirectories.
 
@@ -38,6 +38,13 @@ graph TD
     AnyWear-E2E --> |tests| AnyWear-Client
     AnyWear-E2E --> |tests| AnyWear-Service
 ```
+
+## Subagent policy
+
+- Use subagents proactively for independent, well-scoped tasks such as documentation, code exploration, testing, and review.
+- Split work into parallel subagent tasks when doing so can improve turnaround time or coverage. Give each subagent the relevant context, scope, and acceptance criteria.
+- The primary agent remains responsible for integrating results, resolving conflicts, running final verification, and making final decisions.
+- Review all subagent changes before accepting them, and coordinate explicitly before delegating tightly coupled edits.
 
 ## Git & Submodule Operations
 
