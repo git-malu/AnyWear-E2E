@@ -106,6 +106,31 @@ delivery; and safe replay without duplicate results or credit settlement. Two br
 pages do not prove that requests reached different replicas. Record ECS task identities,
 queue/DLQ observations, task state versions, and settlement outcomes with those drills.
 
+The E2E repository now provides a bounded, read-only preflight and an evidence verifier for
+these drills. They are deliberately separate from `pnpm test` and never run in Dev:
+
+```bash
+pnpm runtime:plan                 # writes runtime-drill-plan.json; no AWS calls
+pnpm runtime:preflight            # reads Beta health, stacks, ECS services, and queue attributes
+pnpm runtime:verify -- evidence.json
+```
+
+Set `E2E_STAGE=beta`, `AWS_ACCOUNT_ID=650880818323`, `AWS_REGION=ap-east-1`, and both
+HTTPS endpoint variables before either AWS-backed command. Preflight fails closed when the
+deployed Client/Service identities do not match `compatibility.json`. It does not restart
+tasks, publish SQS messages, consume queue messages, change desired counts, or touch the
+database. The generated plan describes the operator-approved mutations and requires the
+unique `RUNTIME_DRILL_CONFIRM=beta-runtime-drill` marker before any future executor is
+allowed to perform them.
+
+Evidence verification requires a passed accepted-task restart/rolling drill, a two-replica
+SSE observation with distinct ECS task ARNs, and a retry/visibility/DLQ observation with
+lease renewal, receive count, duplicate-side-effect, and credit-settlement fields. A
+rollback observation is optional in the record until a prior Beta WorkloadStack digest is
+available. Provider-failure injection and database task-row inspection remain operational
+requirements; this tool does not add application test backdoors or claim those gaps are
+covered.
+
 The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
 browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes
 the static build to the Beta PlatformStack's CloudFront distribution; set `BETA_CLIENT_URL`

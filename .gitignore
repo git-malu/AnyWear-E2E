@@ -147,3 +147,8 @@ playwright-report/
 test-results/
 blob-report/
 playwright/.cache/
+
+# Controlled Beta runtime drill outputs
+runtime-drill-plan.json
+runtime-preflight.json
+runtime-drill-evidence.json

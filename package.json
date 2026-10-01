@@ -20,6 +20,9 @@
     "qualification:collect": "node scripts/collect-deployment-evidence.mjs",
     "qualification:generate": "node scripts/create-qualification-record.mjs",
     "qualification:verify": "node scripts/verify-qualification-record.mjs",
+    "runtime:plan": "node scripts/runtime-drill.mjs --plan",
+    "runtime:preflight": "node scripts/runtime-drill.mjs --preflight",
+    "runtime:verify": "node scripts/runtime-drill.mjs --verify",
     "report": "playwright show-report"
   },
   "devDependencies": {
