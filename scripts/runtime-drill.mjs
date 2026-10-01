@@ -337,7 +337,7 @@ async function collectPreflight(config, compatibility) {
     }
   }
   const intake = await awsJson(['ssm', 'get-parameter', '--name', '/anywear/beta/intake_open']);
-  if (intake.Parameter?.Value !== 'true') throw new Error('Beta intake is closed; runtime drills require /anywear/beta/intake_open=true');
+  const intakeOpen = intake.Parameter?.Value === 'true';
   const queues = {};
   for (const [name, url] of Object.entries(stack.queues)) {
     queues[name] = await awsJson(['sqs', 'get-queue-attributes', '--queue-url', url, '--attribute-names', 'All']);
@@ -353,10 +353,11 @@ async function collectPreflight(config, compatibility) {
     }, compatibility),
     stack,
     services: services.services ?? [],
-    intake_open: intake.Parameter.Value === 'true',
+    intake_open: intakeOpen,
     queues,
     notes: [
       'Preflight is read-only and does not restart ECS tasks, publish SQS messages, or mutate database state.',
+      ...(intakeOpen ? [] : ['Task-bearing runtime drills require an approved Beta test window that opens /anywear/beta/intake_open.']),
       'A passing preflight is not runtime reliability evidence.',
     ],
   };

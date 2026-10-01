@@ -107,7 +107,10 @@ pages do not prove that requests reached different replicas. Record ECS task ide
 queue/DLQ observations, task state versions, and settlement outcomes with those drills.
 
 The E2E repository now provides a bounded, read-only preflight and an evidence verifier for
-these drills. They are deliberately separate from `pnpm test` and never run in Dev:
+these drills. Preflight can run while Beta intake is closed; it reports the gate state and
+does not open registration or accept tasks. Task-bearing drills require an approved Beta
+test window with intake open. These tools are deliberately separate from `pnpm test` and
+never run in Dev:
 
 ```bash
 pnpm runtime:plan                 # writes runtime-drill-plan.json; no AWS calls
