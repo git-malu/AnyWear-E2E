@@ -10,24 +10,42 @@ import {
 
 const uploadFixture = fileURLToPath(new URL('./fixtures/dummy.png', import.meta.url));
 
+interface WardrobeStatus {
+  id: string;
+  taggingStatus: string;
+  taggingStateVersion: number;
+}
+
 test.describe('Wardrobe Management @full-stack', () => {
   let account: TestAccount | undefined;
+  let createdItemId: string | undefined;
+  let authorization: string | undefined;
 
   test.beforeEach(async ({ page }) => {
     requireEnvironment('USER_POOL_ID');
     requireEnvironment('VITE_COGNITO_CLIENT_ID');
     account = createTestAccount('wardrobe');
+    createdItemId = undefined;
+    authorization = undefined;
     await registerAndLogin(page, account);
   });
 
-  test.afterEach(async () => {
-    if (account) {
-      await deleteTestAccount(account.email);
+  test.afterEach(async ({ page }) => {
+    try {
+      if (createdItemId && authorization) {
+        const response = await page.request.delete(
+          `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
+          { headers: { Authorization: authorization } },
+        );
+        expect([200, 404]).toContain(response.status());
+      }
+    } finally {
+      if (account) await deleteTestAccount(account.email);
     }
   });
 
-  test('adds, edits, and deletes a wardrobe item', async ({ page }) => {
-    test.setTimeout(120_000);
+  test('recovers an idempotent auto-tag request across reloads and browser pages, then edits and deletes it', async ({ page, context }) => {
+    test.setTimeout(180_000);
 
     page.on('dialog', async (dialog) => {
       await dialog.accept();
@@ -40,11 +58,76 @@ test.describe('Wardrobe Management @full-stack', () => {
     await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).toBeVisible();
 
     await page.locator('input[type="file"]').setInputFiles(uploadFixture);
+    const uploaded = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === '/wardrobe/upload-url'
+      && response.request().method() === 'POST'
+    ));
+    const confirmed = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === '/wardrobe/upload'
+      && response.request().method() === 'POST'
+    ));
     await page.getByRole('button', { name: 'Upload & Auto-Tag' }).click();
 
+    const uploadedResponse = await uploaded;
+    expect(uploadedResponse.status()).toBe(200);
+    createdItemId = ((await uploadedResponse.json()) as { itemId: string }).itemId;
+    authorization = await uploadedResponse.request().headerValue('authorization') ?? undefined;
+    expect(createdItemId).toBeTruthy();
+    expect(authorization).toBeTruthy();
+
+    const confirmedResponse = await confirmed;
+    expect(confirmedResponse.status()).toBe(202);
+    const accepted = await confirmedResponse.json();
+    expect(accepted).toEqual({ itemId: createdItemId, taggingStatus: 'processing' });
+    const idempotencyKey = await confirmedResponse.request().headerValue('idempotency-key');
+    expect(idempotencyKey).toBeTruthy();
+    const headers = { Authorization: authorization!, 'Idempotency-Key': idempotencyKey! };
+    const serviceUrl = requireEnvironment('E2E_SERVICE_URL');
+
+    const replay = await page.request.post(`${serviceUrl}/wardrobe/upload`, {
+      headers,
+      data: { itemId: createdItemId },
+    });
+    expect(replay.status()).toBe(202);
+    expect(await replay.json()).toEqual(accepted);
+
     await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).not.toBeVisible();
-    await expect(page.getByText('Analyzing...')).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText('Analyzing...')).not.toBeVisible({ timeout: 90_000 });
+    const observer = await context.newPage();
+    await Promise.all([page.reload(), observer.goto('/wardrobe')]);
+    await expect(observer.getByRole('heading', { name: 'Wardrobe' })).toBeVisible();
+
+    let latest: WardrobeStatus | undefined;
+    let lastVersion = 0;
+    await expect.poll(async () => {
+      const response = await page.request.get(`${serviceUrl}/wardrobe/items/${createdItemId}`, { headers });
+      expect(response.status()).toBe(200);
+      latest = await response.json() as WardrobeStatus;
+      expect(latest.id).toBe(createdItemId);
+      expect(latest.taggingStateVersion).toBeGreaterThanOrEqual(lastVersion);
+      lastVersion = latest.taggingStateVersion;
+      return latest.taggingStatus;
+    }, { timeout: 120_000, intervals: [1_000, 2_000, 5_000] }).toBe('ready');
+
+    for (const viewer of [page, observer]) {
+      await expect(viewer.getByText('Analyzing...')).not.toBeVisible({ timeout: 15_000 });
+      await expect(viewer.getByText('Failed', { exact: true })).not.toBeVisible();
+      await expect(viewer.locator('main h3').first()).toBeVisible();
+    }
+
+    const terminalReplay = await observer.request.post(`${serviceUrl}/wardrobe/upload`, {
+      headers,
+      data: { itemId: createdItemId },
+    });
+    expect(terminalReplay.status()).toBe(202);
+    expect(await terminalReplay.json()).toEqual(accepted);
+    const afterReplay = await observer.request.get(`${serviceUrl}/wardrobe/items/${createdItemId}`, { headers });
+    expect(afterReplay.status()).toBe(200);
+    expect(await afterReplay.json()).toMatchObject({
+      id: createdItemId,
+      taggingStatus: 'ready',
+      taggingStateVersion: latest!.taggingStateVersion,
+    });
+    await observer.close();
 
     const itemCardTitle = page.locator('main h3').first();
     await expect(itemCardTitle).toBeVisible();

@@ -15,9 +15,8 @@ boundaries; repository-local tests remain with the Client or Service.
 
 - Node.js 24
 - pnpm 11.18.0
-- Docker
-- AWS credentials for the non-production test environment
-- Sibling `AnyWear-Client` and `AnyWear-Service` checkouts
+- AWS credentials for the Beta test identity boundary
+- Deployed Beta Client and Service endpoints with HTTPS
 
 The preferred local layout is the AnyWear shell repository:
 
@@ -31,42 +30,32 @@ AnyWear/
 
 ## Setup
 
-Install dependencies independently in each repository:
+Install dependencies from this repository:
 
 ```bash
-cd AnyWear-E2E && pnpm install
-cd ../AnyWear-Client && pnpm install
-cd ../AnyWear-Service && pnpm install
+pnpm install --frozen-lockfile
 ```
 
-Start PostgreSQL and apply committed migrations:
-
-```bash
-cd AnyWear-Service
-pnpm db:up
-pnpm db:migrate
-```
-
-After configuring AWS SSO and provisioning the dev secrets, run
-`pnpm sync:dev-env` from `AnyWear-Service` after `aws sso login --profile anywear-dev`. This writes the
-ignored Service, Client, and E2E `.env` files from SSM and Secrets Manager while
-preserving local-only settings such as the database URL and test URLs. Do not commit
-`.env` or Playwright authentication state.
+Configure the ignored `.env` from `.env.example` with `E2E_STAGE=beta`,
+`E2E_EXTERNAL_SERVERS=true`, the deployed `E2E_CLIENT_URL` and `E2E_SERVICE_URL`,
+and Beta's Cognito IDs. The deployment workflows load the identity IDs from
+`/anywear/beta/cognito_user_pool_id` and `/anywear/beta/cognito_client_id` in SSM.
+Do not commit `.env` or Playwright authentication state.
 
 ## Commands
 
 ```bash
 pnpm check             # source checks, script tests, and Playwright test discovery; no browser execution
 pnpm audit             # fail on high/critical dependency advisories
-pnpm test:smoke        # optional on-demand Dev diagnostic
-pnpm test:full-stack   # local-only diagnostic; not a PR/Dev gate
+pnpm test:smoke        # on-demand deployed Beta diagnostic
+pnpm test:full-stack   # deployed Beta scenarios marked @full-stack
 pnpm test              # complete deployed Beta qualification suite
 pnpm report            # open the latest HTML report
 ```
 
-Playwright starts the sibling Client and Service automatically. Set
-`E2E_EXTERNAL_SERVERS=true` with `E2E_CLIENT_URL` and `E2E_SERVICE_URL` to test
-already-running or deployed endpoints.
+Playwright verifies the configured deployed stage endpoints. Browser execution fails
+closed unless the stage is Beta or Production, external servers are selected, and both URLs use
+HTTPS. Test discovery and source checks do not connect to the deployed environment.
 
 ## Execution Policy
 
@@ -75,30 +64,52 @@ Quality workflow runs compatibility validation, script tests, lint, type checkin
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
-The E2E Integration workflow is an on-demand Dev smoke diagnostic and runs only the small
-`@smoke` subset. The complete suite is not a PR or Dev CI operation. Developers may run
-`pnpm test:full-stack` locally when investigating the composition, but that run is not a
-release gate and produces no qualification evidence.
+The E2E Integration workflow is an on-demand deployed Beta smoke diagnostic and runs
+only the small `@smoke` subset. It checks out the reviewed peer commits for diagnostic
+revision evidence, verifies their deployed identities, and exercises Beta's real
+identity boundary. It does not run a local database or mutate the deployment.
+Only Beta Qualification can issue a passing qualification record.
 
 The complete `pnpm test` suite is reserved for the deployed Beta Qualification workflow.
 Only a passing run against the exact reviewed Client, Service, and E2E revisions produces
 qualification evidence that Production may consume.
 
-Test classification is explicit: `@smoke` marks the small, stable critical path allowed in
-the on-demand Dev diagnostic; `@full-stack` marks cross-repository scenarios that may be
-run locally for investigation. Beta runs every discovered test, regardless of tag.
+Test classification is explicit: `@smoke` marks the small, stable critical path for the
+on-demand Beta diagnostic; `@full-stack` marks cross-repository scenarios. Beta
+Qualification runs every discovered test, regardless of tag. Dev verification remains
+in the Client and Service unit and integration suites.
 
 The manual `Beta Qualification` workflow is the production-readiness gate for an
 already-deployed Beta environment. It reads the reviewed full SHAs from
 `compatibility.json`, verifies those identities against the deployed Client
-`build-metadata.json` and Service `/health`, runs the complete suite, and uploads a
-checksummed qualification record. A failed or mismatched run cannot issue a passing
-record. The workflow requests 90-day artifact retention, subject to GitHub's configured
+`build-metadata.json` and Service `/health`, runs the complete suite, rechecks both
+identities and the Service image digest, and uploads a checksummed qualification record.
+A failed, mismatched, or changed deployment cannot issue a passing record. The workflow
+requests 90-day artifact retention, subject to GitHub's configured
 repository or organization ceiling; durable release-ledger storage remains
 out of scope for the initial Production launch. The finite GitHub retention window is an
 accepted trade-off: after the artifact expires, that qualification can no longer authorize a
 new Production deployment or rollback and the candidate must be qualified again. Persistent
 S3 evidence storage will be reconsidered only if long-term audit or rollback requirements arise.
+
+## Runtime Reliability Evidence
+
+The wardrobe scenario verifies repeated `Idempotency-Key` confirmation before and after
+completion, recovery after a browser reload, consistent terminal state in two browser
+pages, and a monotonic state version. It requires a successful `ready` state, so a
+provider failure cannot pass merely because the processing indicator disappears.
+
+Live Beta qualification still needs controlled drills for accepted tasks across API and
+worker restarts or rolling deployments; SSE status delivery across identified distinct
+API replicas; lease renewal and visibility expiry; provider retries and dead-letter
+delivery; and safe replay without duplicate results or credit settlement. Two browser
+pages do not prove that requests reached different replicas. Record ECS task identities,
+queue/DLQ observations, task state versions, and settlement outcomes with those drills.
+
+The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
+browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes
+the static build to the Beta PlatformStack's CloudFront distribution; set `BETA_CLIENT_URL`
+to that stable `https://<distribution>.cloudfront.net` endpoint before qualification.
 
 ## CI Model
 

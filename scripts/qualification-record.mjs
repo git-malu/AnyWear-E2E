@@ -96,6 +96,21 @@ export async function collectDeploymentEvidence(input, compatibility, fetcher = 
   };
 }
 
+export function assertStableDeploymentEvidence(before, after) {
+  for (const [component, fields] of [
+    ['client', ['url', 'source_commit', 'built_at']],
+    ['service', ['url', 'source_commit', 'image_digest']],
+  ]) {
+    for (const field of fields) {
+      const original = requireValue(before[component]?.[field], `Initial ${component} ${field}`);
+      const current = requireValue(after[component]?.[field], `Final ${component} ${field}`);
+      if (original !== current) {
+        throw new Error(`Deployed ${component} ${field} changed during qualification`);
+      }
+    }
+  }
+}
+
 export function buildQualificationRecord(input, compatibility, evidence, now = new Date()) {
   if (input.result !== 'passed') {
     throw new Error('Only a completed passing test run can issue a qualification record');

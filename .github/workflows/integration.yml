@@ -1,4 +1,4 @@
-name: On-demand Dev Smoke
+name: E2E Integration
 
 on:
   workflow_dispatch:
@@ -12,31 +12,20 @@ concurrency:
 
 jobs:
   e2e:
-    name: Pinned Client + Service Smoke
+    name: Reviewed revisions on deployed Beta
     runs-on: ubuntu-latest
-    environment: dev
+    environment: beta
     permissions:
       contents: read
       id-token: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/anywear_dev
-      PORT: 3000
-
-    services:
-      db:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: anywear_dev
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      E2E_STAGE: beta
+      E2E_EXTERNAL_SERVERS: true
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
 
     steps:
       - name: Checkout E2E sources
@@ -106,18 +95,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: |
-            AnyWear-E2E/pnpm-lock.yaml
-            AnyWear-Client/pnpm-lock.yaml
-            AnyWear-Service/pnpm-lock.yaml
-
-      - name: Install Client dependencies
-        working-directory: AnyWear-Client
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Service dependencies
-        working-directory: AnyWear-Service
-        run: pnpm install --frozen-lockfile
+          cache-dependency-path: AnyWear-E2E/pnpm-lock.yaml
 
       - name: Install E2E dependencies
         working-directory: AnyWear-E2E
@@ -127,9 +105,9 @@ jobs:
         working-directory: AnyWear-E2E
         run: pnpm check
 
-      - name: Apply database migrations
-        working-directory: AnyWear-Service
-        run: pnpm db:migrate
+      - name: Verify deployed revisions
+        working-directory: AnyWear-E2E
+        run: pnpm qualification:collect
 
       - name: Verify OIDC identity
         shell: bash
@@ -142,44 +120,32 @@ jobs:
             "const payload = process.argv[1].split('.')[1]; process.stdout.write(Buffer.from(payload, 'base64url').toString())" \
             "$token")
           actual_subject=$(jq -r '.sub' <<< "$claims")
-          expected_subject="repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:dev"
+          expected_subject="repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:beta"
           jq '{iss, aud, sub}' <<< "$claims"
           test "$actual_subject" = "$expected_subject"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/dev-github-actions-pipeline-role
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Load dev configuration from AWS
+      - name: Load Beta test identity configuration
         shell: bash
         run: |
-          pool_id=$(aws ssm get-parameter --name /anywear/dev/cognito_user_pool_id --query Parameter.Value --output text)
-          client_id=$(aws ssm get-parameter --name /anywear/dev/cognito_client_id --query Parameter.Value --output text)
-          bucket=$(aws ssm get-parameter --name /anywear/dev/s3_bucket_name --query Parameter.Value --output text)
-          region=$(aws ssm get-parameter --name /anywear/dev/aws_region --query Parameter.Value --output text)
-          weather_key=$(aws secretsmanager get-secret-value --secret-id /anywear/dev/qweather_api_key --query SecretString --output text)
-          weather_host=$(aws ssm get-parameter --name /anywear/dev/qweather_api_host --query Parameter.Value --output text)
-          echo "::add-mask::$weather_key"
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          client_id=$(aws ssm get-parameter --name /anywear/beta/cognito_client_id --query Parameter.Value --output text)
           {
-            echo "STAGE=dev"
             echo "USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
-            echo "COGNITO_USER_POOL_ID=$pool_id"
-            echo "COGNITO_CLIENT_ID=$client_id"
-            echo "S3_BUCKET_NAME=$bucket"
-            echo "AWS_REGION=$region"
-            echo "QWEATHER_API_KEY=$weather_key"
-            echo "QWEATHER_API_HOST=$weather_host"
           } >> "$GITHUB_ENV"
 
       - name: Install Chromium
         working-directory: AnyWear-E2E
         run: pnpm exec playwright install chromium --with-deps
 
-      - name: Run pinned smoke tests
+      - name: Run deployed Beta smoke tests
         working-directory: AnyWear-E2E
         run: pnpm test:smoke
 
@@ -188,7 +154,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tested-revisions
-          path: tested-revisions.txt
+          path: |
+            tested-revisions.txt
+            AnyWear-E2E/deployment-evidence.json
 
       - name: Upload Playwright diagnostics
         if: failure()

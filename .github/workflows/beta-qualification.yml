@@ -20,6 +20,7 @@ jobs:
       id-token: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
       E2E_EXTERNAL_SERVERS: true
       E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
@@ -50,6 +51,8 @@ jobs:
         run: pnpm check
 
       - name: Verify deployed revisions
+        env:
+          QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
       - name: Configure Beta AWS credentials
@@ -75,6 +78,11 @@ jobs:
       - name: Run complete deployed Beta suite
         run: pnpm test
 
+      - name: Confirm deployed identities remained stable
+        env:
+          QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
+        run: pnpm qualification:collect
+
       - name: Create and verify qualification record
         env:
           QUALIFICATION_RESULT: passed
@@ -87,6 +95,7 @@ jobs:
         with:
           name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            deployment-evidence-before.json
             deployment-evidence.json
             qualification-record.json
           retention-days: 90

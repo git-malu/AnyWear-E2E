@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  assertStableDeploymentEvidence,
   buildQualificationRecord,
   collectDeploymentEvidence,
   verifyQualificationRecord,
@@ -59,6 +60,26 @@ test('creates and verifies a checksummed passing record', () => {
   const tampered = structuredClone(record);
   tampered.revisions.service.sha = 'e'.repeat(40);
   assert.throws(() => verifyQualificationRecord(tampered), /checksum mismatch/);
+});
+
+test('accepts stable deployment identities before and after qualification', () => {
+  assert.doesNotThrow(() => assertStableDeploymentEvidence(evidence, structuredClone(evidence)));
+});
+
+test('rejects an image or client rebuild that changes during qualification', () => {
+  const changedImage = structuredClone(evidence);
+  changedImage.service.image_digest = `sha256:${'e'.repeat(64)}`;
+  assert.throws(
+    () => assertStableDeploymentEvidence(evidence, changedImage),
+    /service image_digest changed during qualification/,
+  );
+
+  const changedClient = structuredClone(evidence);
+  changedClient.client.built_at = '2026-08-03T01:00:00.000Z';
+  assert.throws(
+    () => assertStableDeploymentEvidence(evidence, changedClient),
+    /client built_at changed during qualification/,
+  );
 });
 
 test('refuses to issue a record for a failed run', () => {
