@@ -17,6 +17,6 @@ Use this skill to process issues tracked on the AnyWear Kanban board, from Backl
 - **Deployment:** Release to Dev/Beta/Production and run E2E qualification during release, starting in Beta and continuing through Production; parallelize independent environment checks, but keep promotion gates synchronous.
 - **Pending Closure:** Update architecture docs, issue status and acceptance records, Kanban/roadmap views, links, and evidence; verify every dependent work item is complete. If any dependency is incomplete, keep the current item open and do not advance it to Completed. A subagent may own the reconciliation checklist.
 - **Completed:** Mark complete and archive only after all closure work is verified.
-- **Escalation:** Record the blocker and `escalated-from`; resume at the recorded stage after intervention.
+- **Escalation:** Record the blocker and `escalated-from`, update the issue status to `escalation`, and ask for human intervention. Resume at the recorded stage after the intervention is complete.
 - Treat stage transitions as synchronous gates; parallelize only independent work within a stage.
 - Use subagents for stage ownership where useful; the main agent integrates results and verifies each stage gate before advancing.
