@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { deleteCapturedCognitoIdentity, verifyCapturedCognitoIdentity, type CapturedIdentity, type CognitoCleanupIo } from './cognito-cleanup.ts';
 
 const exec = promisify(execFile);
 const parameterPrefix = '/anywear/beta/';
@@ -21,9 +22,30 @@ interface SessionState {
 
 interface CleanupIo {
   oneShot(role: 'lifecycle' | 'tester-cleanup', action: string, payload?: string): Promise<void>;
+  verifyIdentity(email: string, sub: string): Promise<void>;
   deleteObject(bucket: string, key: string): Promise<void>;
-  deleteIdentity(email: string): Promise<void>;
+  deleteIdentity(email: string, sub: string): Promise<void>;
   save(): Promise<void>;
+}
+
+export function buildBetaRecoveryManifest(state: SessionState, userPoolId: string) {
+  const captured = state.identities.filter((identity): identity is CapturedIdentity => typeof identity.sub === 'string')
+    .map(({ email, sub }) => ({ email, sub }));
+  return {
+    schema_version: 1,
+    record_type: 'anywear_beta_allowlist_recovery',
+    stage: 'beta',
+    aws_account_id: '650880818323',
+    aws_region: 'ap-east-1',
+    run_scope: state.runScope,
+    service_commit: state.serviceCommit,
+    image_digest: state.imageDigest,
+    user_pool_id: userPoolId,
+    users: captured,
+    cognito_users: captured.map(({ email, sub }) => ({ email, sub })),
+    objects: state.objects.map(({ bucket, key }) => ({ bucket, key })),
+    cleanup_completed: state.restored,
+  };
 }
 
 export async function restoreBetaSession(state: SessionState, io: CleanupIo): Promise<void> {
@@ -31,17 +53,22 @@ export async function restoreBetaSession(state: SessionState, io: CleanupIo): Pr
   const errors: unknown[] = [];
   const attempt = async (action: () => Promise<void>) => { try { await action(); } catch (error) { errors.push(error); } };
   await attempt(() => io.oneShot('lifecycle', 'close'));
-  const users = state.identities.filter((identity) => identity.sub);
-  let recordsCleaned = users.length === 0;
-  if (users.length > 0) await attempt(async () => {
+  const users = state.identities.filter((identity): identity is CapturedIdentity => typeof identity.sub === 'string');
+  let identitiesVerified = true;
+  for (const { email, sub } of users) await attempt(async () => {
+    try { await io.verifyIdentity(email, sub); }
+    catch (error) { identitiesVerified = false; throw error; }
+  });
+  let recordsCleaned = identitiesVerified && users.length === 0;
+  if (identitiesVerified && users.length > 0) await attempt(async () => {
     await io.oneShot('tester-cleanup', '', JSON.stringify({ runScope: state.runScope, users }));
     recordsCleaned = true;
   });
   for (const { bucket, key } of recordsCleaned ? state.objects : []) {
     await attempt(() => io.deleteObject(bucket, key));
   }
-  for (const { email } of recordsCleaned ? state.identities : []) {
-    await attempt(() => io.deleteIdentity(email));
+  for (const { email, sub } of recordsCleaned ? users : []) {
+    await attempt(() => io.deleteIdentity(email, sub));
   }
   await attempt(() => io.oneShot('lifecycle', 'configure-testers', JSON.stringify(state.original.testerEmails)));
   if (state.original.admissionSuspended) await attempt(() => io.oneShot('lifecycle', 'close'));
@@ -152,8 +179,12 @@ export class BetaAllowlistSession {
   async suspend(): Promise<void> { await this.oneShot('lifecycle', 'close'); }
 
   async recordIdentity(email: string, sub: string): Promise<void> {
-    const identity = this.state.identities.find((entry) => entry.email === email);
-    if (!identity || !/^[a-f0-9-]{36}$/.test(sub)) throw new Error('Only current synthetic identities may be cleaned up');
+    const pattern = new RegExp(`^e2e-beta-allowlist-${this.state.runScope}-(primary|probe|unlisted)@anywear\\.local$`);
+    if (!pattern.test(email) || email.split('@')[0].length > 64
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(sub)) throw new Error('Only current synthetic identities may be cleaned up');
+    let identity = this.state.identities.find((entry) => entry.email === email);
+    if (!identity) { identity = { email }; this.state.identities.push(identity); }
+    if (identity.sub && identity.sub !== sub) throw new Error('Captured synthetic subject changed; cleanup ownership must not be overwritten');
     identity.sub = sub;
     await this.save();
   }
@@ -168,8 +199,10 @@ export class BetaAllowlistSession {
   }
 
   async restore(): Promise<void> {
+    const cognito = cognitoCleanupIo(required('USER_POOL_ID'));
     await restoreBetaSession(this.state, {
       oneShot: (role, action, payload) => this.oneShot(role, action, payload),
+      async verifyIdentity(email, sub) { await verifyCapturedCognitoIdentity({ email, sub }, cognito); },
       async deleteObject(bucket, key) {
         await awsJson(['s3api', 'delete-object', '--bucket', bucket, '--key', key]);
         try {
@@ -180,13 +213,17 @@ export class BetaAllowlistSession {
         }
         throw new Error('Captured synthetic S3 object still exists after cleanup');
       },
-      async deleteIdentity(email) {
-        try { await awsJson(['cognito-idp', 'admin-delete-user', '--user-pool-id', required('USER_POOL_ID'), '--username', email]); }
-        catch (error) { if (!/UserNotFoundException/.test((error as Error).message)) throw error; }
-      },
+      deleteIdentity: (email, sub) => deleteCapturedCognitoIdentity({ email, sub }, cognito),
       save: () => this.save(),
     });
   }
+}
+
+export function cognitoCleanupIo(userPoolId: string): CognitoCleanupIo {
+  return {
+    getUser: async (username) => awsJson(['cognito-idp', 'admin-get-user', '--user-pool-id', userPoolId, '--username', username]),
+    async deleteUser(username) { await awsJson(['cognito-idp', 'admin-delete-user', '--user-pool-id', userPoolId, '--username', username]); },
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href && process.argv[2] === '--restore') {

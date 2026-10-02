@@ -113,6 +113,22 @@ of mailbox delivery. The cleanup helper rejects active work before removing owne
 database records, and the scenario then deletes only captured exact S3 keys and
 synthetic Cognito users. Failed cleanup leaves a retryable runner-local snapshot;
 that snapshot contains the original tester list and must never be uploaded.
+The controlled configuration uses text reporters and disables browser recordings;
+HTML step metadata can contain entered passwords or temporary S3 grants. Uploaded
+`beta-allowlist-acceptance.json` and `beta-allowlist-recovery.json` contain only
+assertion outcomes, revisions, and exact synthetic resource identifiers. The
+recovery manifest excludes passwords, bearer tokens, signed URLs, and the original
+tester list. A failed run's retained resources must be inspected until its task is
+terminal, then cleaned through the pinned Beta cleanup helper before deleting the
+manifest's exact S3 keys and Cognito identities.
+The protected Service recovery workflow invokes
+`node tests/support/beta-allowlist-recovery.ts --recover-manifest` with the exact
+manifest in `BETA_ALLOWLIST_RECOVERY_JSON`. Its revision and digest must match the
+currently ready Beta Service and pinned operator checkout; after a runtime repair,
+update only those deployment fields to the newly verified revision. The recovery
+entry point verifies the deployed Cognito pool, bucket, ownership paths, paused
+admission, and unchanged policy before and after cleanup. It never configures or
+opens admission.
 
 This workflow produces focused allowlist acceptance evidence. It does not issue
 the complete Beta qualification record or satisfy the runtime fault drills below.

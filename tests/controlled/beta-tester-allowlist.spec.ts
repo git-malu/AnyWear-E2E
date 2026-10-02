@@ -6,9 +6,9 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { BetaAllowlistSession } from '../support/beta-allowlist-session.js';
+import { BetaAllowlistSession, buildBetaRecoveryManifest } from '../support/beta-allowlist-session.js';
 import { requireEnvironment } from '../support/account.js';
 
 test('private Beta testers retain verification and lose only new-task access when revoked or suspended @full-stack', async ({ page }, testInfo) => {
@@ -30,12 +30,20 @@ test('private Beta testers retain verification and lose only new-task access whe
     record_type: 'anywear_beta_allowlist_acceptance',
     service_commit: requireEnvironment('SERVICE_COMMIT_SHA'),
     client_commit: requireEnvironment('CLIENT_COMMIT_SHA'),
-    email_confirmation: 'synthetic account explicitly verified and confirmed with Cognito admin commands; inbox delivery not exercised',
+    email_confirmation: 'inbox delivery not exercised; synthetic administrator confirmation pending',
+  };
+  const recoveryPath = testInfo.outputPath('beta-allowlist-recovery.json');
+  const saveRecovery = async () => {
+    if (session) await writeFile(recoveryPath, `${JSON.stringify(buildBetaRecoveryManifest(session.state, poolId), null, 2)}\n`);
   };
 
-  const signUp = (email: string) => cognito.send(new SignUpCommand({
-    ClientId: clientId, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }],
-  }));
+  const signUp = async (email: string) => {
+    const result = await cognito.send(new SignUpCommand({
+      ClientId: clientId, Username: email, Password: password, UserAttributes: [{ Name: 'email', Value: email }],
+    }));
+    if (session && result.UserSub) { await session.recordIdentity(email, result.UserSub); await saveRecovery(); }
+    return result;
+  };
   const profile = async (request: APIRequestContext) => {
     const response = await request.get(`${serviceUrl}/users/me`, { headers: { Authorization: authorization! } });
     expect(response.status()).toBe(200);
@@ -44,6 +52,7 @@ test('private Beta testers retain verification and lose only new-task access whe
 
   try {
     session = await BetaAllowlistSession.start();
+    await saveRecovery();
     const primary = session.state.identities[0].email;
     const probe = session.state.identities[1].email;
     evidence.run_scope = session.state.runScope;
@@ -61,6 +70,8 @@ test('private Beta testers retain verification and lose only new-task access whe
     expect(registered.status()).toBe(200);
     const identity = await registered.json() as { UserConfirmed: boolean; UserSub: string; CodeDeliveryDetails: { DeliveryMedium: string } };
     await session.recordIdentity(primary, identity.UserSub);
+    await saveRecovery();
+    evidence.synthetic_user_id = identity.UserSub;
     expect(identity.UserConfirmed).toBe(false);
     expect(identity.CodeDeliveryDetails.DeliveryMedium).toBe('EMAIL');
     await page.waitForURL(/\/verify\?/);
@@ -86,6 +97,7 @@ test('private Beta testers retain verification and lose only new-task access whe
       UserPoolId: poolId, Username: primary, UserAttributes: [{ Name: 'email_verified', Value: 'true' }],
     }));
     await cognito.send(new AdminConfirmSignUpCommand({ UserPoolId: poolId, Username: primary }));
+    evidence.email_confirmation = 'synthetic account explicitly verified and confirmed with Cognito admin commands; inbox delivery not exercised';
     await page.goto('/login');
     await page.locator('input[type="email"]').fill(primary);
     await page.locator('input[type="password"]').fill(password);
@@ -106,16 +118,24 @@ test('private Beta testers retain verification and lose only new-task access whe
     const target = await upload.json() as { itemId: string; key: string; url: string };
     itemId = target.itemId;
     await session.recordObject(target.key);
-    expect((await page.request.put(target.url, { headers: { 'Content-Type': 'image/png' }, data: fixture })).status()).toBe(200);
+    await saveRecovery();
+    evidence.item_id = itemId;
+    expect((await fetch(target.url, {
+      method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: new Uint8Array(fixture), signal: AbortSignal.timeout(30_000),
+    })).status).toBe(200);
     const accepted = await page.request.post(`${serviceUrl}/wardrobe/upload`, {
       headers: { ...headers, 'Idempotency-Key': randomUUID() }, data: { itemId },
     });
     expect(accepted.status()).toBe(202);
     taskAccepted = true;
+    evidence.auto_tag_task_accepted = true;
     await expect.poll(async () => {
       const result = await page.request.get(`${serviceUrl}/wardrobe/items/${itemId}`, { headers });
       expect(result.status()).toBe(200);
-      return (await result.json() as { taggingStatus: string }).taggingStatus;
+      const status = await result.json() as { taggingStatus: string; taggingStateVersion: number };
+      evidence.auto_tag_last_status = status.taggingStatus;
+      evidence.auto_tag_last_state_version = status.taggingStateVersion;
+      return status.taggingStatus;
     }, { timeout: 180_000, intervals: [2_000, 5_000] }).toBe('ready');
     taskTerminal = true;
     await page.goto('/wardrobe');
@@ -129,7 +149,11 @@ test('private Beta testers retain verification and lose only new-task access whe
     const photo = await basePhoto.json() as { id: string; key: string; uploadUrl: string };
     basePhotoId = photo.id;
     await session.recordObject(photo.key);
-    expect((await page.request.put(photo.uploadUrl, { headers: { 'Content-Type': 'image/png' }, data: fixture })).status()).toBe(200);
+    await saveRecovery();
+    evidence.base_photo_id = basePhotoId;
+    expect((await fetch(photo.uploadUrl, {
+      method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: new Uint8Array(fixture), signal: AbortSignal.timeout(30_000),
+    })).status).toBe(200);
 
     const assertNoNewTasks = async () => {
       const before = await profile(page.request);
@@ -186,7 +210,10 @@ test('private Beta testers retain verification and lose only new-task access whe
     } catch (error) { cleanupErrors.push(error); }
     cognito.destroy();
     evidence.cleanup_passed = cleanupErrors.length === 0;
-    await testInfo.attach('beta-allowlist-acceptance.json', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
+    await saveRecovery();
+    const evidencePath = testInfo.outputPath('beta-allowlist-acceptance.json');
+    await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    await testInfo.attach('beta-allowlist-acceptance.json', { path: evidencePath, contentType: 'application/json' });
   }
   const errors = [...(executionError ? [executionError] : []), ...cleanupErrors];
   if (errors.length > 0) throw new AggregateError(errors, 'Controlled Beta acceptance or cleanup failed');

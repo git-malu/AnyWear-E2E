@@ -9,6 +9,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  reporter: process.env.CI ? [['github'], ['list']] : [['list']],
   timeout: 30 * 60_000,
   use: { ...base.use, trace: 'off', screenshot: 'off', video: 'off' },
 });
