@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["eslint.config.mjs", "playwright.config.ts", "tests/**/*.ts"]
+  "include": ["eslint.config.mjs", "playwright*.config.ts", "tests/**/*.ts"]
 }

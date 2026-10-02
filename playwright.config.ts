@@ -9,6 +9,7 @@ dotenv.config({ path: path.join(repositoryRoot, '.env') });
 
 export default defineConfig({
   testDir: './tests',
+  testIgnore: '**/controlled/**',
   globalSetup: './tests/support/deployed-environment.ts',
   outputDir: 'test-results',
   fullyParallel: true,

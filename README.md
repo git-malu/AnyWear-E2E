@@ -94,6 +94,29 @@ S3 evidence storage will be reconsidered only if long-term audit or rollback req
 
 ## Runtime Reliability Evidence
 
+### Private Tester Acceptance
+
+The Service repository's protected `Beta Allowlist Acceptance` workflow owns the
+`anywear-beta-runtime` lock and runs `playwright.allowlist.config.ts` against the
+exact deployed compatibility set. This controlled scenario is excluded from the
+ordinary qualification suite because it temporarily edits the private tester list
+and admission suspension. It never opens public intake and restores the original
+policy in test teardown and an unconditional workflow cleanup step.
+
+The scenario uses unique `e2e-beta-allowlist-...@anywear.local` identities. It proves
+that registration remains unconfirmed, an invalid confirmation code cannot sign
+in, a verified tester can sign in through the real Client and finish an auto-tag
+task, and revoked or suspended testers cannot create auto-tag or VTO tasks while
+existing profiles, results, and credits remain readable. Cognito admin commands
+explicitly verify and confirm only these synthetic accounts; this is not evidence
+of mailbox delivery. The cleanup helper rejects active work before removing owned
+database records, and the scenario then deletes only captured exact S3 keys and
+synthetic Cognito users. Failed cleanup leaves a retryable runner-local snapshot;
+that snapshot contains the original tester list and must never be uploaded.
+
+This workflow produces focused allowlist acceptance evidence. It does not issue
+the complete Beta qualification record or satisfy the runtime fault drills below.
+
 The wardrobe scenario verifies repeated `Idempotency-Key` confirmation before and after
 completion, recovery after a browser reload, consistent terminal state in two browser
 pages, and a monotonic state version. It requires a successful `ready` state, so a
