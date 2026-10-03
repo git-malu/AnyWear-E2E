@@ -111,8 +111,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: beta-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            test-results/account-budget.json
-            playwright-report
-            test-results
+          path: test-results/account-budget.json
           if-no-files-found: ignore
