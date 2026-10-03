@@ -11,8 +11,8 @@ type WorkerFixtures = {
   workerAccount: TestAccount;
 };
 
-export const test = base.extend<{}, WorkerFixtures>({
-  workerAccount: [async ({}, use, workerInfo) => {
+export const test = base.extend<WorkerFixtures>({
+  workerAccount: [async (_fixtures, use, workerInfo) => {
     const account = createWorkerAccount(workerInfo);
 
     try {

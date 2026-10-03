@@ -25,14 +25,12 @@ test.describe('Wardrobe Management @full-stack', () => {
   });
 
   test.afterEach(async ({ page }) => {
-    try {
-      if (createdItemId && authorization) {
-        const response = await page.request.delete(
-          `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
-          { headers: { Authorization: authorization } },
-        );
-        expect([200, 404]).toContain(response.status());
-      }
+    if (createdItemId && authorization) {
+      const response = await page.request.delete(
+        `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
+        { headers: { Authorization: authorization } },
+      );
+      expect([200, 404]).toContain(response.status());
     }
   });
 
