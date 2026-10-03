@@ -2,23 +2,27 @@ import { expect, test } from '@playwright/test';
 import {
   createTestAccount,
   deleteTestAccount,
+  reserveTestAccount,
   registerAndLogin,
   requireEnvironment,
   type TestAccount,
 } from './support/account.js';
 
 test.describe('Authentication Flow @smoke @full-stack', () => {
+  test.skip(process.env.E2E_PUBLIC_REGISTRATION_OPEN !== 'true',
+    'Public registration is qualified by the controlled Beta allowlist suite when intake is closed');
   let account: TestAccount | undefined;
 
-  test.beforeEach(() => {
+  test.beforeEach(async () => {
     requireEnvironment('USER_POOL_ID');
     requireEnvironment('VITE_COGNITO_CLIENT_ID');
     account = createTestAccount('auth');
+    await reserveTestAccount(account, 'ephemeral');
   });
 
   test.afterEach(async () => {
     if (account) {
-      await deleteTestAccount(account.email);
+      await deleteTestAccount(account);
     }
   });
 

@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: integration-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: beta-e2e-account-pool
+  cancel-in-progress: false
 
 jobs:
   e2e:
@@ -26,6 +26,10 @@ jobs:
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
+      E2E_WORKERS: 2
+      E2E_MAX_ACTIVE_ACCOUNTS: 2
+      E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
+      E2E_MAX_QUARANTINED_ACCOUNTS: 2
 
     steps:
       - name: Checkout E2E sources
@@ -159,11 +163,12 @@ jobs:
             AnyWear-E2E/deployment-evidence.json
 
       - name: Upload Playwright diagnostics
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-diagnostics
+          name: beta-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            test-results/account-budget.json
             AnyWear-E2E/playwright-report
             AnyWear-E2E/test-results
           if-no-files-found: ignore

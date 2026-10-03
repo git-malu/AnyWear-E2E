@@ -1,11 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect, login, test } from './support/fixtures.js';
 import { fileURLToPath } from 'node:url';
 import {
-  createTestAccount,
-  deleteTestAccount,
-  registerAndLogin,
   requireEnvironment,
-  type TestAccount,
 } from './support/account.js';
 
 const uploadFixture = fileURLToPath(new URL('./fixtures/dummy.png', import.meta.url));
@@ -17,30 +13,24 @@ interface WardrobeStatus {
 }
 
 test.describe('Wardrobe Management @full-stack', () => {
-  let account: TestAccount | undefined;
   let createdItemId: string | undefined;
   let authorization: string | undefined;
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, workerAccount }) => {
     requireEnvironment('USER_POOL_ID');
     requireEnvironment('VITE_COGNITO_CLIENT_ID');
-    account = createTestAccount('wardrobe');
     createdItemId = undefined;
     authorization = undefined;
-    await registerAndLogin(page, account);
+    await login(page, workerAccount);
   });
 
   test.afterEach(async ({ page }) => {
-    try {
-      if (createdItemId && authorization) {
-        const response = await page.request.delete(
-          `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
-          { headers: { Authorization: authorization } },
-        );
-        expect([200, 404]).toContain(response.status());
-      }
-    } finally {
-      if (account) await deleteTestAccount(account.email);
+    if (createdItemId && authorization) {
+      const response = await page.request.delete(
+        `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
+        { headers: { Authorization: authorization } },
+      );
+      expect([200, 404]).toContain(response.status());
     }
   });
 

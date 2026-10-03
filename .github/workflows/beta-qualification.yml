@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: beta-qualification
+  group: beta-e2e-account-pool
   cancel-in-progress: false
 
 jobs:
@@ -26,6 +26,10 @@ jobs:
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
+      E2E_WORKERS: 2
+      E2E_MAX_ACTIVE_ACCOUNTS: 2
+      E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
+      E2E_MAX_QUARANTINED_ACCOUNTS: 2
 
     steps:
       - name: Checkout E2E sources
@@ -102,11 +106,12 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Playwright diagnostics
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: beta-playwright-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          name: beta-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            test-results/account-budget.json
             playwright-report
             test-results
           if-no-files-found: ignore

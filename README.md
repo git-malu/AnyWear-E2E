@@ -42,6 +42,14 @@ and Beta's Cognito IDs. The deployment workflows load the identity IDs from
 `/anywear/beta/cognito_user_pool_id` and `/anywear/beta/cognito_client_id` in SSM.
 Do not commit `.env` or Playwright authentication state.
 
+The deployed qualification profile sets two workers, two active-account slots, four new
+accounts per run, and two quarantine slots. Wardrobe tests use one exclusive synthetic
+Cognito account per Playwright parallel slot, provisioned through the protected AWS admin
+path and deleted during worker teardown. Public registration is qualified separately by the
+controlled Beta allowlist suite; ordinary qualification does not require a real mailbox.
+The qualification and integration workflows share a non-cancelling Beta account-pool
+concurrency group, and each run uploads its account-budget manifest for recovery.
+
 ## Commands
 
 ```bash
