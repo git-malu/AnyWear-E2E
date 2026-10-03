@@ -62,18 +62,19 @@ export function configuredE2eWorkers(): number {
   return workers;
 }
 
-export function createWorkerAccount(workerInfo: WorkerInfo): TestAccount {
+export function createWorkerAccount(workerInfo: WorkerInfo, browserName: string): TestAccount {
   const workers = configuredE2eWorkers();
   if (workerInfo.parallelIndex >= workers) {
     throw new Error(`parallelIndex ${workerInfo.parallelIndex} exceeds E2E_WORKERS=${workers}`);
   }
 
   const stage = accountScopeSegment(process.env.E2E_STAGE ?? 'test', 'test', 8);
-  const run = accountScopeSegment(accountRunScope(), `local-${process.pid}`, 38);
+  const run = accountScopeSegment(accountRunScope(), `local-${process.pid}`, 33);
   const slot = String(workerInfo.parallelIndex);
+  const browser = accountScopeSegment(browserName, 'browser', 4);
 
   return {
-    email: `e2e-${stage}-${run}-${slot}-${randomUUID().replaceAll('-', '').slice(0, 8)}@anywear.local`,
+    email: `e2e-${stage}-${run}-${slot}-${browser}-${randomUUID().replaceAll('-', '').slice(0, 8)}@anywear.local`,
     password: process.env.E2E_TEST_PASSWORD ?? DEFAULT_TEST_PASSWORD,
     leaseGeneration: randomUUID(),
   };

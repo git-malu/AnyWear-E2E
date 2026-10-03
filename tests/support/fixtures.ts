@@ -12,8 +12,8 @@ type WorkerFixtures = {
 };
 
 export const test = base.extend<Record<never, never>, WorkerFixtures>({
-  workerAccount: [async ({ browserName: _browserName }, use, workerInfo) => {
-    const account = createWorkerAccount(workerInfo);
+  workerAccount: [async ({ browserName }, use, workerInfo) => {
+    const account = createWorkerAccount(workerInfo, browserName);
 
     try {
       await reserveTestAccount(account, 'worker');
