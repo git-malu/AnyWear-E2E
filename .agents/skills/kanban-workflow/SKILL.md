@@ -14,14 +14,15 @@ Use this skill to process issues tracked on the AnyWear Kanban board, from Backl
 An issue is a standalone Markdown work item under `issues/` that records a feature request,
 bug report, refactor or architecture decision, or maintenance chore. Its YAML frontmatter
 defines the issue metadata and current workflow status; its body contains the problem or
-goal, scope, design, acceptance criteria, dependencies, evidence, and closure notes.
+goal, scope, design, acceptance criteria, prerequisite issue links, technical dependencies,
+evidence, and closure notes.
 
 ### Issue Statuses
 
 Every issue must have exactly one `status`:
 
 - `backlog`: Work is drafted but not yet being analyzed or implemented.
-- `analysis`: Scope, diagnosis, architecture, API contracts, dependencies, or risks are being evaluated.
+- `analysis`: Scope, diagnosis, architecture, API contracts, prerequisite issues, technical dependencies, or risks are being evaluated.
 - `development`: The approved solution is being implemented.
 - `testing`: Development-only unit, integration, and queue-integration validation is in progress.
 - `deployment`: The change is being released or qualified in Dev, Beta, or Production; Beta E2E belongs here.
@@ -30,7 +31,7 @@ Every issue must have exactly one `status`:
 - `escalation`: Human intervention is required. Record `escalated-from` and resume from that stage after resolution.
 
 Stage transitions are synchronous gates. Do not advance an issue while its current stage
-gate or required dependency is incomplete.
+gate, prerequisite issue, technical dependency, or required release/environment gate is incomplete.
 
 ### Issue Fields
 
@@ -73,16 +74,24 @@ become separate Kanban cards unless they are independently actionable.
 ## Workflow
 - **Control Loop:** Every main-agent or subagent-owned work item follows `define → execute → observe → adjust → verify`, repeating until its acceptance criteria and stage gate pass.
 - The main agent owns the high-level loop across the workflow; each subagent owns a low-level loop within its assigned scope. Feedback flows upward and back into planning, while stage transitions remain synchronous.
-- **Backlog:** Define scope, acceptance criteria, dependencies, and ownership.
+- **Backlog:** Define scope, acceptance criteria, prerequisite issue links, technical dependencies, and ownership.
 - **Analysis:** Develop the design and identify bug root causes as applicable; confirm architecture, API contracts, risks, and implementation boundaries.
 - **Development:** Implement the approved design. After the Service produces and the Client consumes the aligned API contract, Client and Service work may run in parallel with separate subagents.
 - **Testing:** Run development-only Unit Tests and Integration Tests; do not run E2E here. Independent Client and Service test suites may run in parallel when their inputs are ready.
 - **Deployment:** Release to Dev/Beta/Production and run E2E qualification during release, starting in Beta and continuing through Production; parallelize independent environment checks, but keep promotion gates synchronous.
-- **Pending Closure:** Update architecture docs, issue status and acceptance records, Kanban/roadmap views, links, and evidence; verify every dependent work item is complete. If any dependency is incomplete, keep the current item open and do not advance it to Completed. A subagent may own the reconciliation checklist.
+- **Pending Closure:** Update architecture docs, issue status and acceptance records, Kanban/roadmap views, links, and evidence; verify every prerequisite issue and required gate for the current issue is complete. If any prerequisite issue, technical dependency, or required gate is incomplete, keep the current item open and do not advance it to Completed. A subagent may own the reconciliation checklist.
 - **Completed:** Mark complete and archive only after all closure work is verified.
 - **Escalation:** Record the blocker and `escalated-from`, update the issue status to `escalation`, and ask for human intervention. Resume at the recorded stage after the intervention is complete.
 - Treat stage transitions as synchronous gates; parallelize only independent work within a stage.
 - Use subagents for stage ownership where useful; the main agent integrates results and verifies each stage gate before advancing.
+
+## Multi-tasking
+
+- Terminology: A `prerequisite/blocking issue` must be completed first; a `dependent issue` waits on it; a `technical dependency` is an API contract, shared schema, service, or external resource, not an issue itself; record release and environment gates separately.
+- Identify `prerequisite/blocking issues` first and execute them in order: complete and pass the stage gate for a prerequisite issue before starting its dependent issue. Record key dependencies in the issue body or frontmatter.
+- Run issues in parallel only when they are independent, have no unresolved prerequisite issues, and do not modify the same files, API contracts, or shared resources. Shared API work must follow the technical dependency order: the Service produces the contract, then the Client consumes it.
+- Give each parallel issue a separate subagent and separate `git worktree` to isolate its branch, working tree, and uncommitted changes; `git worktree` does not isolate ports, databases, credentials, or external services.
+- The main agent owns ordering, integration, and conflict resolution. Recheck prerequisite issues, technical dependencies, API contracts, and stage gates before and after integration; never rely on uncommitted file state from another `git worktree`.
 
 ## Kanban
 
