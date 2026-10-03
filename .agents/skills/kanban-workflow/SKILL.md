@@ -72,23 +72,38 @@ Supporting documents such as `design.md` are represented by their parent issue a
 become separate Kanban cards unless they are independently actionable.
 
 ## Workflow
-- **Control Loop:** Every main-agent or subagent-owned work item follows `define → execute → observe → adjust → verify`, repeating until its acceptance criteria and stage gate pass.
-- The main agent owns the high-level loop across the workflow; each subagent owns a low-level loop within its assigned scope. Feedback flows upward and back into planning, while stage transitions remain synchronous.
-- **Backlog:** Define scope, acceptance criteria, prerequisite issue links, technical dependencies, and ownership.
-- **Analysis:** Develop the design and identify bug root causes as applicable; confirm architecture, API contracts, risks, and implementation boundaries.
-- **Development:** Implement the approved design. After the Service produces and the Client consumes the aligned API contract, Client and Service work may run in parallel with separate subagents.
-- **Testing:** Run development-only Unit Tests and Integration Tests; do not run E2E here. Independent Client and Service test suites may run in parallel when their inputs are ready.
-- **Deployment:** Release to Dev/Beta/Production and run E2E qualification during release, starting in Beta and continuing through Production; parallelize independent environment checks, but keep promotion gates synchronous.
-- **Pending Closure:** Update architecture docs, issue status and acceptance records, Kanban/roadmap views, links, and evidence; verify every prerequisite issue and required gate for the current issue is complete. If any prerequisite issue, technical dependency, or required gate is incomplete, keep the current item open and do not advance it to Completed. A subagent may own the reconciliation checklist.
-- **Completed:** Mark complete and archive only after all closure work is verified.
-- **Escalation:** Record the blocker and `escalated-from`, update the issue status to `escalation`, and ask for human intervention. Resume at the recorded stage after the intervention is complete.
-- Treat stage transitions as synchronous gates; parallelize only independent work within a stage.
-- Use subagents for stage ownership where useful; the main agent integrates results and verifies each stage gate before advancing.
+- **Control Loop:** Every main-agent or subagent-owned work item follows `define → execute → observe → adjust → verify` until its acceptance criteria and stage gate pass. The main agent owns the high-level loop; subagents own their assigned scopes.
+- **Backlog:**
+  - Define scope, acceptance criteria, ownership, upstream blockers, downstream dependents, and technical dependencies. Record each issue relationship explicitly as `A blocks B` / `B depends on A`.
+- **Analysis:**
+  - Confirm the design, root cause, architecture, API contracts, risks, and implementation boundaries.
+- **Development:**
+  - Implement the approved design. After the Service produces and the Client consumes an aligned API contract, independent Client and Service work may run in parallel with separate subagents.
+  - Submit every code change through a GitHub pull request linked to the issue. Do not push directly to protected target branches or merge outside the pull request.
+  - Merge only through the pull request after required approvals and automated checks pass. Treat branch protection and required PR checks as stage gates; if a review or check fails, keep the issue in its current stage, resolve the failure, and rerun it.
+- **Testing:**
+  - Run development-only unit and integration tests; do not run E2E here. Independent Client and Service test suites may run in parallel when their inputs are ready.
+- **Deployment:**
+  - Release to Dev, Beta, or Production and run the required E2E qualification during release, starting in Beta and continuing through Production.
+  - Keep promotion gates synchronous; parallelize only independent environment checks.
+- **Pending Closure:** Complete every item below before moving the issue to `completed`:
+  - Verify that all issue tasks and acceptance criteria are complete.
+  - Verify that required unit and integration tests passed, required E2E tests completed, and the relevant release/deployment gate passed.
+  - Verify that the change is deployed to every environment required by the issue and that the deployed revision is recorded.
+  - Verify that every prerequisite/blocking issue and technical dependency is complete or explicitly accepted as non-blocking.
+  - For each downstream issue that depends on the current issue, check its status and handoff. Mark it complete when required by the acceptance or release plan; otherwise confirm that it is linked and unblocked.
+  - Update the relevant architecture documentation and record the decision or reconciliation evidence.
+  - Record the GitHub PR URL, review approvals, automated check results, issue history, links, evidence, and acceptance status.
+  - Reconcile the issue, Kanban, and roadmap views. A subagent may own the checklist, but the main agent verifies it.
+- Keep the issue open if any required closure item, prerequisite/blocking issue, technical dependency, release gate, or downstream handoff is incomplete.
+- **Completed:** Mark the issue complete and archive it only after all closure checks are verified.
+- **Escalation:** Record the blocker and `escalated-from`, set the status to `escalation`, and request human intervention. Resume at the recorded stage after resolution.
+- Treat stage transitions as synchronous gates; parallelize only independent work within a stage. The main agent integrates results and verifies each gate before advancing.
 
 ## Multi-tasking
 
-- Terminology: A `prerequisite/blocking issue` must be completed first; a `dependent issue` waits on it; a `technical dependency` is an API contract, shared schema, service, or external resource, not an issue itself; record release and environment gates separately.
-- Identify `prerequisite/blocking issues` first and execute them in order: complete and pass the stage gate for a prerequisite issue before starting its dependent issue. Record key dependencies in the issue body or frontmatter.
+- Terminology: If issue A must finish before issue B can proceed, A is B's `prerequisite/blocking issue`, and B is the `dependent issue`; write this as `A blocks B` or `B depends on A`. A `technical dependency` is an API contract, shared schema, service, or external resource, not an issue itself; record release and environment gates separately.
+- Identify each dependency pair as `A blocks B` / `B depends on A`; complete A and pass its stage gate before starting B. Record the direction in the issue body or frontmatter.
 - Run issues in parallel only when they are independent, have no unresolved prerequisite issues, and do not modify the same files, API contracts, or shared resources. Shared API work must follow the technical dependency order: the Service produces the contract, then the Client consumes it.
 - Give each parallel issue a separate subagent and separate `git worktree` to isolate its branch, working tree, and uncommitted changes; `git worktree` does not isolate ports, databases, credentials, or external services.
 - The main agent owns ordering, integration, and conflict resolution. Recheck prerequisite issues, technical dependencies, API contracts, and stage gates before and after integration; never rely on uncommitted file state from another `git worktree`.
