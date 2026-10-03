@@ -6,6 +6,7 @@ description: Use when handling issues on the AnyWear Kanban board, following its
 # Kanban Workflow
 
 Use this skill to process issues tracked on the AnyWear Kanban board, from Backlog through delivery and closure.
+When a user asks you to handle an issue, process that issue through the workflow until it reaches the `completed` status.
 
 - Use issue frontmatter as the source of truth for issue metadata and status; keep issues, the Kanban view, and the roadmap synchronized.
 
