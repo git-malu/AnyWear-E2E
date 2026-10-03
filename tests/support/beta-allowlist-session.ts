@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { deleteCapturedCognitoIdentity, verifyCapturedCognitoIdentity, type CapturedIdentity, type CognitoCleanupIo } from './cognito-cleanup.ts';
+import { markAccountDeleted, quarantineAccount, reserveAccount } from './account-budget.js';
 
 const exec = promisify(execFile);
 const parameterPrefix = '/anywear/beta/';
@@ -68,7 +69,15 @@ export async function restoreBetaSession(state: SessionState, io: CleanupIo): Pr
     await attempt(() => io.deleteObject(bucket, key));
   }
   for (const { email, sub } of recordsCleaned ? users : []) {
-    await attempt(() => io.deleteIdentity(email, sub));
+    await attempt(async () => {
+      await io.deleteIdentity(email, sub);
+      await markAccountDeleted(email);
+    });
+  }
+  if (errors.length > 0) {
+    for (const identity of state.identities) {
+      await attempt(() => quarantineAccount(identity.email, 'controlled Beta recovery did not complete'));
+    }
   }
   await attempt(() => io.oneShot('lifecycle', 'configure-testers', JSON.stringify(state.original.testerEmails)));
   if (state.original.admissionSuspended) await attempt(() => io.oneShot('lifecycle', 'close'));
@@ -139,6 +148,9 @@ export class BetaAllowlistSession {
       throw new Error('Synthetic tester email exceeds the SMTP local-part limit');
     }
     await session.save();
+    for (const identity of session.state.identities) {
+      await reserveAccount(identity.email, 'ephemeral', session.state.runScope);
+    }
     await session.configure(session.state.original.testerEmails.concat(session.state.identities.map(({ email }) => email)));
     return session;
   }

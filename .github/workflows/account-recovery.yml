@@ -1,0 +1,110 @@
+name: E2E Account Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Failed E2E workflow run ID containing the account manifest
+        required: true
+        type: string
+      source_run_attempt:
+        description: Attempt number for the failed E2E workflow run
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: beta-e2e-account-pool
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Recover exact E2E identities and owned resources
+    runs-on: ubuntu-latest
+    environment: beta
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      E2E_STAGE: beta
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
+
+    steps:
+      - name: Checkout E2E recovery tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate repository token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout Service cleanup helper
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Service
+          ref: main
+          path: AnyWear-Service
+          token: ${{ steps.generate-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Download failed-run account manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: beta-account-lifecycle-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
+          path: recovery
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Locate account manifest
+        shell: bash
+        run: |
+          manifest=$(find recovery -name account-budget.json -type f -print -quit)
+          test -n "$manifest"
+          if [[ "$manifest" != recovery/account-budget.json ]]; then cp "$manifest" recovery/account-budget.json; fi
+          jq -e '.version == 1 and (.accounts | type == "array")' recovery/account-budget.json >/dev/null
+
+      - name: Configure Beta AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Load deployed identity configuration
+        shell: bash
+        run: |
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          echo "USER_POOL_ID=$pool_id" >> "$GITHUB_ENV"
+          health=$(curl --fail --silent --show-error "$E2E_SERVICE_URL/readyz")
+          echo "SERVICE_COMMIT_SHA=$(jq -r '.service_commit' <<<"$health")" >> "$GITHUB_ENV"
+          echo "SERVICE_IMAGE_DIGEST=$(jq -r '.image_digest' <<<"$health")" >> "$GITHUB_ENV"
+
+      - name: Clean exact owned Service resources
+        shell: bash
+        run: |
+          payload=$(jq -c '{runScope: .runScope, users: [.accounts[] | select(.status != "deleted" and (.subject | type == "string")) | {sub: .subject, email: .email}]}' recovery/account-budget.json)
+          bash AnyWear-Service/.github/scripts/run-one-shot-task.sh beta tester-cleanup \
+            "$SERVICE_IMAGE_DIGEST" "$SERVICE_COMMIT_SHA" "" "$payload"
+
+      - name: Delete exact recovered Cognito identities
+        run: node scripts/delete-recovered-identities.mjs
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-account-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
+          path: recovery/account-budget.json
+          if-no-files-found: ignore
