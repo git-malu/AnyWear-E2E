@@ -23,6 +23,7 @@ concurrency:
 jobs:
   recover:
     name: Recover exact E2E identities and owned resources
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: beta
     permissions:
