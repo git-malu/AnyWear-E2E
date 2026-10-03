@@ -71,10 +71,13 @@ export function createWorkerAccount(workerInfo: WorkerInfo, browserName: string)
   const stage = accountScopeSegment(process.env.E2E_STAGE ?? 'test', 'test', 8);
   const run = accountScopeSegment(accountRunScope(), `local-${process.pid}`, 33);
   const slot = String(workerInfo.parallelIndex);
-  const browser = accountScopeSegment(browserName, 'browser', 4);
+  const browser = accountScopeSegment(browserName, 'browser', 12);
+  const email = stage === 'beta'
+    ? `e2e-${stage}-worker-${slot}-${browser}@anywear.local`
+    : `e2e-${stage}-${run}-${slot}-${browser}-${randomUUID().replaceAll('-', '').slice(0, 8)}@anywear.local`;
 
   return {
-    email: `e2e-${stage}-${run}-${slot}-${browser}-${randomUUID().replaceAll('-', '').slice(0, 8)}@anywear.local`,
+    email,
     password: process.env.E2E_TEST_PASSWORD ?? DEFAULT_TEST_PASSWORD,
     leaseGeneration: randomUUID(),
   };

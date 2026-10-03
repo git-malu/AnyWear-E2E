@@ -154,13 +154,21 @@ function quarantinedCount(state: AccountBudgetState): number {
   return state.accounts.filter((account) => account.status === 'quarantined').length;
 }
 
+function latestAccountRecord(state: AccountBudgetState, email: string): AccountRecord | undefined {
+  for (let index = state.accounts.length - 1; index >= 0; index -= 1) {
+    const account = state.accounts[index];
+    if (account.email === email) return account;
+  }
+  return undefined;
+}
+
 export async function reserveAccount(
   email: string,
   mode: AccountMode,
   leaseGeneration: string,
 ): Promise<void> {
   await withLockedState(async (state) => {
-    const existing = state.accounts.find((account) => account.email === email);
+    const existing = latestAccountRecord(state, email);
     if (existing && existing.status !== 'deleted') {
       if (existing.leaseGeneration !== leaseGeneration) {
         throw new Error(`Account already has an active lease: ${email}`);
@@ -188,7 +196,7 @@ export async function reserveAccount(
 
 export async function markAccountInUse(email: string): Promise<void> {
   await withLockedState(async (state) => {
-    const account = state.accounts.find((entry) => entry.email === email);
+    const account = latestAccountRecord(state, email);
     if (!account || account.status === 'deleted') throw new Error(`Unknown E2E account lease: ${email}`);
     account.status = 'in_use';
     account.updatedAt = now();
@@ -197,7 +205,7 @@ export async function markAccountInUse(email: string): Promise<void> {
 
 export async function recordAccountSubject(email: string, subject: string): Promise<void> {
   await withLockedState(async (state) => {
-    const account = state.accounts.find((entry) => entry.email === email);
+    const account = latestAccountRecord(state, email);
     if (!account || account.status === 'deleted') throw new Error(`Unknown E2E account lease: ${email}`);
     if (account.subject && account.subject !== subject) {
       throw new Error(`E2E account subject changed for ${email}`);
@@ -209,7 +217,7 @@ export async function recordAccountSubject(email: string, subject: string): Prom
 
 export async function markAccountCleanupPending(email: string): Promise<void> {
   await withLockedState(async (state) => {
-    const account = state.accounts.find((entry) => entry.email === email);
+    const account = latestAccountRecord(state, email);
     if (!account || account.status === 'deleted') return;
     account.status = 'cleanup_pending';
     account.updatedAt = now();
@@ -218,7 +226,7 @@ export async function markAccountCleanupPending(email: string): Promise<void> {
 
 export async function markAccountDeleted(email: string): Promise<void> {
   await withLockedState(async (state) => {
-    const account = state.accounts.find((entry) => entry.email === email);
+    const account = latestAccountRecord(state, email);
     if (!account) return;
     account.status = 'deleted';
     account.updatedAt = now();
@@ -227,7 +235,7 @@ export async function markAccountDeleted(email: string): Promise<void> {
 
 export async function quarantineAccount(email: string, reason: string): Promise<void> {
   await withLockedState(async (state) => {
-    const account = state.accounts.find((entry) => entry.email === email);
+    const account = latestAccountRecord(state, email);
     if (!account || account.status === 'deleted') return;
     if (account.status !== 'quarantined' && quarantinedCount(state) >= state.config.maxQuarantinedAccounts) {
       throw new Error('E2E quarantine budget exhausted; operator recovery is required');
