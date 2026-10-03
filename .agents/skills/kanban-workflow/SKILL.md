@@ -45,11 +45,10 @@ Issue frontmatter supports these fields:
 - `required-before` (optional): Release or environment gate that cannot proceed until the issue is resolved.
 - `escalated-from` (optional): The stage to resume after an escalation is resolved.
 
-### Issue History / Log
+### Issue History
 
-Every issue must include a `History` or `Status Log` section in its body, or an equivalent
-structured `history`/`log` field. It is an append-only record of the issue's workflow
-journey and must show:
+Every issue must include a `History` section in its body, or an equivalent structured
+`history` field. It is an append-only record of the issue's workflow journey and must show:
 
 - the date of each status transition;
 - the previous status and the new status;
@@ -59,7 +58,7 @@ journey and must show:
 Create an initial entry when the issue is opened, then append an entry for every transition,
 including escalation, resumption, reopening, and completion. Do not rewrite or remove past
 entries to hide the issue's history. The current `status` field must agree with the latest
-status recorded in the history/log.
+status recorded in `History`.
 
 Issue types are determined by their category under `issues/`:
 
