@@ -79,12 +79,13 @@ become separate Kanban cards unless they are independently actionable.
   - Confirm the design, root cause, architecture, API contracts, risks, and implementation boundaries.
 - **Development:**
   - Implement the approved design. After the Service produces and the Client consumes an aligned API contract, independent Client and Service work may run in parallel with separate subagents.
-  - Submit every code change through a GitHub pull request linked to the issue. Do not push directly to protected target branches or merge outside the pull request.
-  - Merge only through the pull request after required approvals and automated checks pass. Treat branch protection and required PR checks as stage gates; if a review or check fails, keep the issue in its current stage, resolve the failure, and rerun it.
+  - Submit every code change through a GitHub pull request linked to the issue. The pull request is the code submission and review record; do not push directly to protected target branches or merge outside the pull request.
+  - The PR author or an authorized agent may merge the pull request autonomously once all required branch-protection checks and any configured approvals pass. Never bypass branch protection or required PR checks; if a review or check fails, keep the issue in its current stage, resolve the failure, and rerun it.
 - **Testing:**
-  - Run development-only unit and integration tests; do not run E2E here. Independent Client and Service test suites may run in parallel when their inputs are ready.
+  - Use the GitHub pull request's required checks as the test gate. Run unit and integration tests through PR checks; do not run end-to-end tests in this stage. Independent Client and Service test suites may run in parallel when their inputs are ready.
 - **Deployment:**
-  - Release to Dev, Beta, or Production and run the required E2E qualification during release, starting in Beta and continuing through Production.
+  - Deploy to Dev, Beta, or Production through a GitHub Actions pipeline; do not treat ad hoc manual deployment as the delivery record.
+  - The pipeline must include a post-deployment end-to-end test step, and the deployment or promotion is successful only when that step passes. Start qualification in Beta and continue through Production as required by the release plan.
   - Keep promotion gates synchronous; parallelize only independent environment checks.
 - **Pending Closure:** Complete every item below before moving the issue to `completed`:
   - Verify that all issue tasks and acceptance criteria are complete.
