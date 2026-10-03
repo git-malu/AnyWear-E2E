@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { deleteCapturedCognitoIdentity, verifyCapturedCognitoIdentity, type CapturedIdentity, type CognitoCleanupIo } from './cognito-cleanup.ts';
-import { markAccountDeleted, quarantineAccount, reserveAccount } from './account-budget.js';
+import { markAccountDeleted, quarantineAccount, reserveAccount } from './account-budget.ts';
 
 const exec = promisify(execFile);
 const parameterPrefix = '/anywear/beta/';
