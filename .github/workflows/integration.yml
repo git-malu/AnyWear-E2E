@@ -13,6 +13,7 @@ concurrency:
 jobs:
   e2e:
     name: Reviewed revisions on deployed Beta
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: beta
     permissions:
