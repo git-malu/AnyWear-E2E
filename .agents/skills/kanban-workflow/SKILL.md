@@ -78,6 +78,7 @@ become separate Kanban cards unless they are independently actionable.
   - Define scope, acceptance criteria, ownership, upstream blockers, downstream dependents, and technical dependencies. Record each issue relationship explicitly as `A blocks B` / `B depends on A`.
 - **Analysis:**
   - Confirm the design, root cause, architecture, API contracts, risks, and implementation boundaries.
+  - Check whether the final solution follows best practices and uses modern approaches.
 - **Development:**
   - Implement the approved design. After the Service produces and the Client consumes an aligned API contract, independent Client and Service work may run in parallel with separate subagents.
   - Submit every code change through a GitHub pull request linked to the issue. The pull request is the code submission and review record; do not push directly to protected target branches or merge outside the pull request.
