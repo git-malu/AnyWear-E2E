@@ -26,7 +26,7 @@ test.describe('Authentication Flow @smoke @full-stack', () => {
     }
   });
 
-  test('registers, auto-confirms, and signs in a new user', async ({ page }) => {
+  test('registers, confirms a synthetic user, and signs in', async ({ page }) => {
     await registerAndLogin(page, account!);
 
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({
