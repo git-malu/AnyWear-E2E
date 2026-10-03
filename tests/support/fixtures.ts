@@ -12,7 +12,7 @@ type WorkerFixtures = {
 };
 
 export const test = base.extend<Record<never, never>, WorkerFixtures>({
-  workerAccount: [async (_fixtures, use, workerInfo) => {
+  workerAccount: [async ({ browserName: _browserName }, use, workerInfo) => {
     const account = createWorkerAccount(workerInfo);
 
     try {
