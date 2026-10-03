@@ -14,13 +14,15 @@ type WorkerFixtures = {
 export const test = base.extend<Record<never, never>, WorkerFixtures>({
   workerAccount: [async ({ browserName }, use, workerInfo) => {
     const account = createWorkerAccount(workerInfo, browserName);
+    let reserved = false;
 
     try {
       await reserveTestAccount(account, 'worker');
+      reserved = true;
       await provisionConfirmedTestAccount(account);
       await use(account);
     } finally {
-      await deleteTestAccount(account);
+      if (reserved) await deleteTestAccount(account);
     }
   }, { scope: 'worker' }],
 });
