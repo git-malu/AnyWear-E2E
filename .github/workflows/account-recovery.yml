@@ -43,6 +43,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install E2E dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Generate repository token
         id: generate-token
         uses: actions/create-github-app-token@v1
