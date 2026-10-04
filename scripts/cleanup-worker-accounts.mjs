@@ -17,8 +17,10 @@ async function runServiceCleanup(inputs) {
   const dispatchedAt = new Date().toISOString();
   try {
     await exec('gh', serviceCleanupDispatchArgs(inputs), { maxBuffer: 1024 * 1024 });
-  } catch {
-    throw new Error('Subject-bound Service cleanup workflow dispatch failed; Cognito identities were retained');
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'unknown';
+    console.warn(`Subject-bound Service cleanup dispatch unavailable (gh exit ${code}); cleanup deferred and identities retained`);
+    return false;
   }
   let runId;
   const deadline = Date.now() + 90_000;
@@ -70,10 +72,14 @@ try {
   const io = await cognitoIo();
   try {
     const count = await cleanupWorkerAccounts(manifest, { ...io, runServiceCleanup });
-    for (const account of manifest.accounts) {
-      if (account.mode === 'worker' && account.status === 'cleanup_pending') await markAccountDeleted(account.email);
+    if (count === undefined) {
+      process.stdout.write('Deferred exact E2E worker cleanup; the account manifest remains cleanup_pending for protected recovery.\n');
+    } else {
+      for (const account of manifest.accounts) {
+        if (account.mode === 'worker' && account.status === 'cleanup_pending') await markAccountDeleted(account.email);
+      }
+      process.stdout.write(`Cleaned ${count} exact E2E worker identity record(s).\n`);
     }
-    process.stdout.write(`Cleaned ${count} exact E2E worker identity record(s).\n`);
   } finally {
     io.destroy();
   }
