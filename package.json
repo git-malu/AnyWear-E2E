@@ -16,6 +16,7 @@
     "test": "playwright test",
     "test:smoke": "playwright test --grep @smoke",
     "test:full-stack": "playwright test --grep @full-stack",
+    "accounts:cleanup-workers": "node scripts/cleanup-worker-accounts.mjs",
     "test:list": "playwright test --list",
     "qualification:collect": "node scripts/collect-deployment-evidence.mjs",
     "qualification:generate": "node scripts/create-qualification-record.mjs",
