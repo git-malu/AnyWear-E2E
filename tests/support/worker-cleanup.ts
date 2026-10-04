@@ -24,7 +24,9 @@ export interface ServiceCleanupInputs {
 }
 
 export interface WorkerCleanupIo extends CognitoCleanupIo {
-  runServiceCleanup(inputs: ServiceCleanupInputs): Promise<void>;
+  // false means the dispatch command could not start a Service workflow. Once
+  // dispatch succeeds, failures must reject and keep the lease retained.
+  runServiceCleanup(inputs: ServiceCleanupInputs): Promise<boolean | void>;
 }
 
 export async function releaseWorkerLease(
@@ -72,11 +74,12 @@ export function createServiceCleanupInputs(manifest: WorkerAccountManifest): Ser
 export async function cleanupWorkerAccounts(
   manifest: WorkerAccountManifest,
   io: WorkerCleanupIo,
-): Promise<number> {
+): Promise<number | undefined> {
   const inputs = createServiceCleanupInputs(manifest);
   if (!inputs) return 0;
 
-  await io.runServiceCleanup(inputs);
+  const dispatched = await io.runServiceCleanup(inputs);
+  if (dispatched === false) return undefined;
   const identities: CapturedIdentity[] = JSON.parse(inputs.cleanup_json).users;
   for (const identity of identities) await deleteCapturedCognitoIdentity(identity, io);
   return identities.length;

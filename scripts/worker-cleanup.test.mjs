@@ -15,7 +15,7 @@ function cleanupIo({ serviceCleanup = async () => {}, currentEmail = workerEmail
   const calls = [];
   return {
     calls,
-    async runServiceCleanup(inputs) { calls.push({ service: inputs }); await serviceCleanup(inputs); },
+    async runServiceCleanup(inputs) { calls.push({ service: inputs }); return serviceCleanup(inputs); },
     async getUser(email) {
       calls.push({ get: email });
       return { Username: subject, UserAttributes: [
@@ -78,6 +78,19 @@ test('Service workflow correlation rejects ambiguous candidates instead of watch
 test('failed subject-bound Service cleanup never reads or deletes a Cognito identity', async () => {
   const io = cleanupIo({ serviceCleanup: async () => { throw new Error('Service cleanup refused active resources'); } });
   await assert.rejects(cleanupWorkerAccounts(manifest(), io), /Service cleanup refused/);
+  assert.deepEqual(io.calls, [{
+    service: {
+      action: 'cleanup',
+      emails: '[]',
+      cleanup_json: JSON.stringify({ runScope, users: [{ sub: subject, email: workerEmail }] }),
+    },
+  }]);
+});
+
+test('dispatch initiation failure defers cleanup without reading or deleting Cognito identities', async () => {
+  const io = cleanupIo({ serviceCleanup: async () => false });
+  const count = await cleanupWorkerAccounts(manifest(), io);
+  assert.equal(count, undefined);
   assert.deepEqual(io.calls, [{
     service: {
       action: 'cleanup',
