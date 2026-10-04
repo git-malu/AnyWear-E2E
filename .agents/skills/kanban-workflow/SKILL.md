@@ -8,7 +8,7 @@ description: Use when handling issues on the AnyWear Kanban board, following its
 Use this skill to process issues tracked on the AnyWear Kanban board, from Backlog through delivery and closure.
 When a user asks you to handle an issue, process that issue through the workflow until it reaches the `completed` status.
 
-- Use issue frontmatter as the source of truth for issue metadata and status; keep issues, the Kanban view, and the roadmap synchronized.
+- Use issue frontmatter as the source of truth for issue metadata and status.
 
 ## Issue
 
@@ -73,12 +73,11 @@ Supporting documents such as `design.md` are represented by their parent issue a
 become separate Kanban cards unless they are independently actionable.
 
 ## Workflow
-- **Control Loop:** Every main-agent or subagent-owned work item follows `define → execute → observe → adjust → verify` until its acceptance criteria and stage gate pass. The main agent owns the high-level loop; subagents own their assigned scopes.
+- **Control Loop:** For every issue, follow `define → execute → observe → adjust → verify` until its acceptance criteria and stage gate pass.
 - **Backlog:**
-  - Define scope, acceptance criteria, ownership, upstream blockers, downstream dependents, and technical dependencies. Record each issue relationship explicitly as `A blocks B` / `B depends on A`.
+  - Define scope, acceptance criteria, ownership, upstream blockers, downstream dependents, and technical dependencies.
 - **Analysis:**
   - Confirm the design, root cause, architecture, API contracts, risks, and implementation boundaries.
-  - Check whether the final solution follows best practices and uses modern approaches.
 - **Development:**
   - Implement the approved design. After the Service produces and the Client consumes an aligned API contract, independent Client and Service work may run in parallel with separate subagents.
   - Submit every code change through a GitHub pull request linked to the issue. The pull request is the code submission and review record; do not push directly to protected target branches or merge outside the pull request.
@@ -90,27 +89,27 @@ become separate Kanban cards unless they are independently actionable.
   - The pipeline must include a post-deployment end-to-end test step, and the deployment or promotion is successful only when that step passes. Start qualification in Beta and continue through Production as required by the release plan.
   - Keep promotion gates synchronous; parallelize only independent environment checks.
 - **Pending Closure:** Complete every item below before moving the issue to `completed`:
-  - Verify that all issue tasks and acceptance criteria are complete.
-  - Verify that required unit and integration tests passed, required E2E tests completed, and the relevant release/deployment gate passed.
+  - Verify that all issue tasks and acceptance criteria are complete, required unit, integration, and E2E tests passed, and release/deployment gates passed.
   - Verify that the change is deployed to every environment required by the issue and that the deployed revision is recorded.
   - Verify that every prerequisite/blocking issue and technical dependency is complete or explicitly accepted as non-blocking.
   - For each downstream issue that depends on the current issue, check its status and handoff. Mark it complete when required by the acceptance or release plan; otherwise confirm that it is linked and unblocked.
   - Update the relevant architecture documentation and record the decision or reconciliation evidence.
   - Record the GitHub PR URL, review approvals, automated check results, issue history, links, evidence, and acceptance status.
-  - Reconcile local development state for this issue: remove only obsolete, issue-specific worktrees after verifying they contain no uncommitted, unpushed, or otherwise needed changes; synchronize the relevant local base checkout(s) with the latest remote target-branch state using an update that preserves local work, then verify and record the resulting state and revisions. Preserve unrelated or active worktrees and local changes; mark this item not applicable when no issue-specific local checkout or worktree exists.
+  - Reconcile local development state: after every related PR is merged and the required checks and deployment gates have passed, verify that all changes are committed, pushed, or otherwise preserved, then remove the issue-specific worktree and prune stale worktree metadata. If a PR closes without merging, retain its worktree until its changes are explicitly preserved or discarded. Synchronize the relevant local base checkout(s) with the remote target branch and record the resulting state and revisions without disturbing unrelated worktrees or local changes. Do not complete an issue with an unmerged PR or unresolved worktree changes.
   - Reconcile the issue, Kanban, and roadmap views. A subagent may own the checklist, but the main agent verifies it.
-- Keep the issue open if any required closure item, prerequisite/blocking issue, technical dependency, release gate, or downstream handoff is incomplete.
+- Keep the issue in `pending_closure` until every required closure item is verified.
 - **Completed:** Mark the issue complete and archive it only after all closure checks are verified.
 - **Escalation:** Record the blocker and `escalated-from`, set the status to `escalation`, and request human intervention. Resume at the recorded stage after resolution.
-- Treat stage transitions as synchronous gates; parallelize only independent work within a stage. The main agent integrates results and verifies each gate before advancing.
 
 ## Multi-tasking
 
-- Terminology: If issue A must finish before issue B can proceed, A is B's `prerequisite/blocking issue`, and B is the `dependent issue`; write this as `A blocks B` or `B depends on A`. A `technical dependency` is an API contract, shared schema, service, or external resource, not an issue itself; record release and environment gates separately.
-- Identify each dependency pair as `A blocks B` / `B depends on A`; complete A and pass its stage gate before starting B. Record the direction in the issue body or frontmatter.
+- Record issue dependencies as `A blocks B` / `B depends on A`; B cannot start until A passes its required stage gate. Technical dependencies (such as API contracts, shared schemas, services, or external resources) are distinct from issue dependencies; track release and environment gates separately.
 - Run issues in parallel only when they are independent, have no unresolved prerequisite issues, and do not modify the same files, API contracts, or shared resources. Shared API work must follow the technical dependency order: the Service produces the contract, then the Client consumes it.
-- Give each parallel issue a separate subagent and `git worktree` to isolate its branch, working tree, and uncommitted changes; `git worktree` does not isolate ports, databases, credentials, or external services. During development, fetch remote updates at deliberate checkpoints (for example, before rebasing on the target branch or integrating the issue); fetching updates remote-tracking refs without changing the worktree, so incorporate fetched commits explicitly when needed. Once the issue's changes are integrated or otherwise preserved and the checkout is no longer needed, remove its issue-specific worktree during Pending Closure before moving the issue to `completed`. Keep active or unrelated worktrees, and do not discard uncommitted or otherwise needed changes.
-- The main agent owns ordering, integration, and conflict resolution. Recheck prerequisite issues, technical dependencies, API contracts, and stage gates before and after integration; never rely on uncommitted file state from another `git worktree`.
+- Assign each issue a separate subagent and create one dedicated issue worktree before the first edit. By default, create it from the root repository so the worktree is the issue's clear coordination and integration workspace; initialize the required submodules there. When an issue intentionally changes only one submodule and does not require root-level integration, a dedicated worktree may instead be created directly in that submodule repository. Never create a worktree inside another worktree or inside a submodule directory of a root worktree.
+- For a cross-repository issue, keep all involved submodules in the same root worktree for shared testing and release qualification, while managing each changed submodule as an independent repository with its own issue branch, commits, pushes, and pull request. The root repository records updated submodule commit pins only when the issue requires that integration change.
+- Fetch the target branch before creating the worktree so it starts from current remote state; during development, fetch again only at planned synchronization points, such as before rebasing or integration. Fetching updates remote-tracking refs without changing the worktree, so incorporate fetched commits explicitly. A worktree isolates its branch, files, and uncommitted changes, but not ports, databases, credentials, or external services.
+- Keep each worktree through its PR lifecycle, including review fixes and CI repairs. During Pending Closure, remove it only after the related PRs are merged, required gates have passed, and all changes are committed, pushed, or otherwise preserved. If a PR closes unmerged, retain its worktree until its changes are explicitly preserved or discarded.
+- The main agent coordinates issue ordering and integration, resolves conflicts, verifies dependencies and gates before and after integration, and never treats uncommitted files in another worktree as delivered.
 
 ## Kanban
 
