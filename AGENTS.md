@@ -43,11 +43,13 @@ graph TD
 
 Use the [kanban-workflow skill](.agents/skills/kanban-workflow/SKILL.md) to handle issues on the [AnyWear Kanban board](AnyWear-Meta/issues/kanban.md).
 
+When a task names the `kanban_manager` role, coordinate the Kanban board and assign one `issue_worker` per issue. When a task names the `issue_worker` role, own that issue's complete lifecycle and delegate repository slices to `submodule_worker` agents. When a task names the `submodule_worker` role, stay within the assigned issue, repository, worktree, and scope and return evidence to the issue worker. Project-scoped custom agent files live under `.codex/agents/` and are automatically discovered by Codex.
+
 ## Subagent policy
 
 - Use subagents proactively for independent, well-scoped tasks such as documentation, code exploration, testing, and review.
 - Split work into parallel subagent tasks when doing so can improve turnaround time or coverage. Give each subagent the relevant context, scope, and acceptance criteria.
-- The primary agent remains responsible for integrating results, resolving conflicts, running final verification, and making final decisions.
+- The agent that owns a scope remains responsible for integrating child results, resolving conflicts inside that scope, running its final verification, and making its final decisions. The parent scope verifies the child report and handles cross-scope conflicts.
 - Review all subagent changes before accepting them, and coordinate explicitly before delegating tightly coupled edits.
 
 ## Git & Submodule Operations

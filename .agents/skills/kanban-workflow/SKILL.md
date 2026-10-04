@@ -1,129 +1,167 @@
 ---
 name: kanban-workflow
-description: Use when handling issues on the AnyWear Kanban board, following its delivery workflow, stage gates, closure, and subagent coordination.
+description: Use when coordinating or executing AnyWear Kanban issues across the board, an issue, or its submodule repositories.
 ---
 
 # Kanban Workflow
 
-Use this skill to process issues tracked on the AnyWear Kanban board, from Backlog through delivery and closure.
-When a user asks you to handle an issue, process that issue through the workflow until it reaches the `completed` status.
+Use this skill as the shared contract for AnyWear delivery work. It applies at three nested scopes: the Kanban board, one issue, and one repository or submodule slice. The active role determines which scope the agent owns.
 
-- Use issue frontmatter as the source of truth for issue metadata and status.
+- A board-level agent uses `kanban_manager`.
+- An agent assigned one issue uses `issue_worker` and owns that issue through closure.
+- An agent assigned one repository or submodule slice uses `submodule_worker` and reports to the issue worker.
+- A delegation must state the role, issue, repository, worktree, assigned scope, expected evidence, and stopping condition. Do not infer a role from the word "worker".
 
-## Issue
+## Guiding Principles
 
-An issue is a standalone Markdown work item under `issues/` that records a feature request,
-bug report, refactor or architecture decision, or maintenance chore. Its YAML frontmatter
-defines the issue metadata and current workflow status; its body contains the problem or
-goal, scope, design, acceptance criteria, prerequisite issue links, technical dependencies,
-evidence, and closure notes.
+These principles guide every role and every stage. They describe how to make decisions; the stage gates and evidence requirements below make those decisions executable.
 
-### Issue Statuses
+1. **Lifecycle** - Every scope has a beginning, execution period, feedback and repair period, verification, and closure. Closure includes reconciling records and deleting temporary local resources such as issue worktrees. Do not treat creation, a commit, or a merged PR as the end of a scope.
+2. **Control loop** - Repeatedly `define -> execute -> observe -> adjust -> verify`. Use test results, reviews, CI, deployment checks, dependency changes, and blockers as feedback. A failed check keeps the scope in its current stage or sends it to `escalation`; it does not become success by assertion.
+3. **Isolation** - Progress on one issue must not overwrite another issue's files, branches, uncommitted changes, credentials, or runtime resources. Use one dedicated issue worktree and branch per issue, keep repository work independent, and coordinate ports, databases, and services because Git worktrees do not isolate them automatically.
+4. **Hierarchy** - Scope is divided into layers. The `kanban_manager` coordinates the board, an `issue_worker` owns one complete issue lifecycle, and `submodule_worker` agents execute repository-specific slices. A child reports evidence to its parent; the parent integrates and verifies it. A child must not silently take ownership of a parent's scope.
 
-Every issue must have exactly one `status`:
+## Source of Truth and Issue Records
 
-- `backlog`: Work is drafted but not yet being analyzed or implemented.
-- `analysis`: Scope, diagnosis, architecture, API contracts, prerequisite issues, technical dependencies, or risks are being evaluated.
-- `development`: The approved solution is being implemented.
-- `testing`: Development-only unit, integration, and queue-integration validation is in progress.
-- `deployment`: The change is being released or qualified in Dev, Beta, or Production; Beta E2E belongs here.
-- `pending_closure`: Implementation and delivery are complete, but reconciliation, acceptance records, documentation, or archive preparation remains.
-- `completed`: All acceptance and closure work is verified; the issue may be archived in its category's `archived/` directory.
-- `escalation`: Human intervention is required. Record `escalated-from` and resume from that stage after resolution.
+- Use issue frontmatter as the source of truth for current status and metadata.
+- Each issue is a Markdown work item under `issues/`. Its body records the goal, scope, acceptance criteria, dependencies, technical constraints, evidence, and closure notes.
+- The issue files, Kanban view, and roadmap live in the `AnyWear-Meta` repository. The issue worker owns the assigned issue's frontmatter and History updates; it may delegate architecture or documentation edits to a submodule worker, but it remains responsible for the status record.
+- Every issue has a `History` section or equivalent structured field. Append an entry for creation and every status transition, including escalation, resumption, reopening, and completion. Each entry records the date, previous and new status, reason or gate result, owner, and relevant evidence.
+- The current `status` must agree with the latest history entry. Do not rewrite history to hide a failed attempt.
 
-Stage transitions are synchronous gates. Do not advance an issue while its current stage
-gate, prerequisite issue, technical dependency, or required release/environment gate is incomplete.
+Issue frontmatter supports:
 
-### Issue Fields
-
-Issue frontmatter supports these fields:
-
-- `status` (required): One of the statuses listed above.
+- `status` (required): One of the statuses listed below.
 - `created` (optional): Creation date in `YYYY-MM-DD` format.
 - `scope` (optional): Affected repository, subsystem, or area.
 - `priority` (optional): Planning priority used to order issues within a Kanban column.
 - `parent` (optional): Relative path to the parent issue when this is a sub-issue.
-- `sub-issues` (optional): List of child issue objects with `path` and `relationship` fields.
+- `sub-issues` (optional): Child issue objects with `path` and `relationship` fields.
 - `required-before` (optional): Release or environment gate that cannot proceed until the issue is resolved.
-- `escalated-from` (optional): The stage to resume after an escalation is resolved.
+- `escalated-from` (optional): The stage to resume after escalation is resolved.
 
-### Issue History
+Issue types are determined by their category under `issues/`: `features/` for product capabilities, `bugs/` for defects, `refactor/` for refactors or architecture decisions, and `chores/` for maintenance or operational work. Supporting documents belong to their parent issue unless independently actionable.
 
-Every issue must include a `History` section in its body, or an equivalent structured
-`history` field. It is an append-only record of the issue's workflow journey and must show:
+## Roles and Ownership
 
-- the date of each status transition;
-- the previous status and the new status;
-- the reason, decision, or stage-gate result that caused the transition; and
-- relevant evidence, links, or responsible owner when applicable.
+| Role | Owns | Must deliver | Must not do without explicit reassignment |
+| --- | --- | --- | --- |
+| `kanban_manager` | The Kanban board and its issue scheduling | Dependency order, parallelism decisions, issue-worker assignments, cross-issue coordination, board and roadmap reconciliation | Implement an issue in place, compete with an issue worker for its status, or delete an issue worker's worktree |
+| `issue_worker` | One issue from its current stage through `completed` or `escalation` | Issue status and history, worktree lifecycle, submodule-worker delegation, integration, PR and gate evidence, deployment, closure, and final report | Change unrelated issue statuses or accept unverified child work |
+| `submodule_worker` | One repository or submodule slice of one issue | Repository changes, tests, commits, PR updates, and evidence or blockers | Change issue status, close or archive the issue, change unrelated repositories, or remove an issue worker's shared worktree |
 
-Create an initial entry when the issue is opened, then append an entry for every transition,
-including escalation, resumption, reopening, and completion. Do not rewrite or remove past
-entries to hide the issue's history. The current `status` field must agree with the latest
-status recorded in `History`.
+The issue worker is the lifecycle owner for its issue. The Kanban manager supervises and coordinates many issue workers; it does not replace their issue-level ownership. The issue worker may delegate implementation, testing, investigation, or deployment slices to submodule workers, but remains responsible for integrating and verifying their results.
 
-Issue types are determined by their category under `issues/`:
+## Issue Statuses and Gates
 
-- `features/`: Product capabilities or user-facing feature work.
-- `bugs/`: Defects, regressions, or correctness problems.
-- `refactor/`: Refactors, architecture changes, technical decisions, or reliability work.
-- `chores/`: Maintenance, operational, release, or lifecycle work that is not primarily a feature or bug.
+Every issue has exactly one status:
 
-Supporting documents such as `design.md` are represented by their parent issue and do not
-become separate Kanban cards unless they are independently actionable.
+- `backlog`: Work is drafted but not yet analyzed or implemented.
+- `analysis`: Scope, diagnosis, architecture, API contracts, prerequisites, dependencies, and risks are being evaluated.
+- `development`: The approved solution is being implemented.
+- `testing`: Development-only unit, integration, and queue-integration validation is in progress.
+- `deployment`: The change is released or qualified in Dev, Beta, or Production; Beta E2E belongs here.
+- `pending_closure`: Implementation and delivery are complete, but reconciliation, acceptance records, documentation, or cleanup remains.
+- `completed`: All acceptance and closure work is verified; the issue may be archived in its category's `archived/` directory.
+- `escalation`: Human intervention is required. Record `escalated-from` and resume at that stage after resolution.
+
+The normal path is `backlog -> analysis -> development -> testing -> deployment -> pending_closure -> completed`. Stage transitions are synchronous gates: do not advance while the current gate, prerequisite issue, technical dependency, or release/environment gate is incomplete.
+
+If a PR closes without merging, the issue worker retains its worktree and records the decision. Continue in `development` or `testing` when work will continue, or enter `escalation` when a human decision is required. An unmerged PR cannot lead to `pending_closure` or `completed`.
+
+## Control Loop at Every Scope
+
+Apply this loop at board, issue, and repository scope:
+
+1. **Define** the goal, scope boundary, dependencies, acceptance criteria, and evidence needed to exit the current stage.
+2. **Execute** only work inside that scope and its assigned worktree or repository.
+3. **Observe** code review, tests, CI, deployment results, runtime behavior, dependency changes, and child reports.
+4. **Adjust** the plan, assignments, ordering, or implementation in response to observed feedback. Record blockers and decisions.
+5. **Verify** the exit gate and evidence. Repeat the loop if the gate fails; escalate when the remaining action requires human intervention.
 
 ## Workflow
-- **Control Loop:** For every issue, follow `define → execute → observe → adjust → verify` until its acceptance criteria and stage gate pass.
-- **Backlog:**
-  - Define scope, acceptance criteria, ownership, upstream blockers, downstream dependents, and technical dependencies.
-- **Analysis:**
-  - Confirm the design, root cause, architecture, API contracts, risks, and implementation boundaries.
-- **Development:**
-  - Implement the approved design. After the Service produces and the Client consumes an aligned API contract, independent Client and Service work may run in parallel with separate subagents.
-  - Submit every code change through a GitHub pull request linked to the issue. The pull request is the code submission and review record; do not push directly to protected target branches or merge outside the pull request.
-  - The PR author or an authorized agent may merge the pull request autonomously once all required branch-protection checks and any configured approvals pass. Never bypass branch protection or required PR checks; if a review or check fails, keep the issue in its current stage, resolve the failure, and rerun it.
-- **Testing:**
-  - Use the GitHub pull request's required checks as the test gate. Run unit and integration tests through PR checks; do not run end-to-end tests in this stage. Independent Client and Service test suites may run in parallel when their inputs are ready.
-- **Deployment:**
-  - Deploy to Dev, Beta, or Production through a GitHub Actions pipeline; do not treat ad hoc manual deployment as the delivery record.
-  - The pipeline must include a post-deployment end-to-end test step, and the deployment or promotion is successful only when that step passes. Start qualification in Beta and continue through Production as required by the release plan.
-  - Keep promotion gates synchronous; parallelize only independent environment checks.
-- **Pending Closure:** Complete every item below before moving the issue to `completed`:
-  - Verify that all issue tasks and acceptance criteria are complete, required unit, integration, and E2E tests passed, and release/deployment gates passed.
-  - Verify that the change is deployed to every environment required by the issue and that the deployed revision is recorded.
-  - Verify that every prerequisite/blocking issue and technical dependency is complete or explicitly accepted as non-blocking.
-  - For each downstream issue that depends on the current issue, check its status and handoff. Mark it complete when required by the acceptance or release plan; otherwise confirm that it is linked and unblocked.
-  - Update the relevant architecture documentation and record the decision or reconciliation evidence.
-  - Record the GitHub PR URL, review approvals, automated check results, issue history, links, evidence, and acceptance status.
-  - Reconcile local development state: after every related PR is merged and the required checks and deployment gates have passed, verify that all changes are committed, pushed, or otherwise preserved, then remove the issue-specific worktree and prune stale worktree metadata. If a PR closes without merging, retain its worktree until its changes are explicitly preserved or discarded. Synchronize the relevant local base checkout(s) with the remote target branch and record the resulting state and revisions without disturbing unrelated worktrees or local changes. Do not complete an issue with an unmerged PR or unresolved worktree changes.
-  - Reconcile the issue, Kanban, and roadmap views. A subagent may own the checklist, but the main agent verifies it.
-- Keep the issue in `pending_closure` until every required closure item is verified.
-- **Completed:** Mark the issue complete and archive it only after all closure checks are verified.
-- **Escalation:** Record the blocker and `escalated-from`, set the status to `escalation`, and request human intervention. Resume at the recorded stage after resolution.
 
-## Multi-tasking
+The `issue_worker` drives the issue through the following gates while the `kanban_manager` coordinates dependencies between issues:
 
-- Record issue dependencies as `A blocks B` / `B depends on A`; B cannot start until A passes its required stage gate. Technical dependencies (such as API contracts, shared schemas, services, or external resources) are distinct from issue dependencies; track release and environment gates separately.
-- Run issues in parallel only when they are independent, have no unresolved prerequisite issues, and do not modify the same files, API contracts, or shared resources. Shared API work must follow the technical dependency order: the Service produces the contract, then the Client consumes it.
-- Assign each issue a separate subagent and create one dedicated issue worktree before the first edit. By default, create it from the root repository so the worktree is the issue's clear coordination and integration workspace; initialize the required submodules there. When an issue intentionally changes only one submodule and does not require root-level integration, a dedicated worktree may instead be created directly in that submodule repository. Never create a worktree inside another worktree or inside a submodule directory of a root worktree.
-- For a cross-repository issue, keep all involved submodules in the same root worktree for shared testing and release qualification, while managing each changed submodule as an independent repository with its own issue branch, commits, pushes, and pull request. The root repository records updated submodule commit pins only when the issue requires that integration change.
-- Fetch the target branch before creating the worktree so it starts from current remote state; during development, fetch again only at planned synchronization points, such as before rebasing or integration. Fetching updates remote-tracking refs without changing the worktree, so incorporate fetched commits explicitly. A worktree isolates its branch, files, and uncommitted changes, but not ports, databases, credentials, or external services.
-- Keep each worktree through its PR lifecycle, including review fixes and CI repairs. During Pending Closure, remove it only after the related PRs are merged, required gates have passed, and all changes are committed, pushed, or otherwise preserved. If a PR closes unmerged, retain its worktree until its changes are explicitly preserved or discarded.
-- The main agent coordinates issue ordering and integration, resolves conflicts, verifies dependencies and gates before and after integration, and never treats uncommitted files in another worktree as delivered.
+- **Backlog:** Define scope, acceptance criteria, ownership, upstream blockers, downstream dependents, technical dependencies, and the required worktree shape.
+- **Analysis:** Confirm design, root cause, architecture, API contracts, risks, repository boundaries, and implementation order.
+- **Development:** Implement the approved design through submodule workers. For API work, the Service produces the contract first and the Client consumes the resulting API revision. Submit every code change through a GitHub pull request linked to the issue; do not push directly to protected target branches.
+- **Testing:** Use PR required checks as the test gate. Run unit and integration tests through PR checks; do not run cross-repository E2E here. Independent repository test suites may run in parallel when their inputs are ready.
+- **Deployment:** Deploy through the GitHub Actions pipeline. The pipeline must include post-deployment E2E; promotion succeeds only when that step passes. Start qualification in Beta and continue through Production as required by the release plan.
+- **Pending Closure:** Complete every closure item below before changing the issue to `completed`.
+- **Completed:** The issue worker marks the issue complete and archives it only after all closure checks pass. The Kanban manager then reconciles the board and roadmap.
+- **Escalation:** Record the blocker and `escalated-from`, set `escalation`, and request human intervention. Resume at the recorded stage after resolution.
 
-## Kanban
+The PR author or an explicitly authorized issue worker may merge a PR after required branch-protection checks and approvals pass. Never bypass branch protection or required checks. A failed review or check feeds back into the control loop.
 
-Kanban is a derived view that displays issues as cards grouped into workflow-status columns.
-It is not a replacement for issue frontmatter: update the issue first, then reconcile the
-Kanban view and roadmap. A board may be split into category-specific Mermaid diagrams, but
-each actionable issue should appear exactly once in the appropriate status column.
+## Lifecycle and Isolation Rules During Execution
 
-Use Mermaid's `kanban` diagram syntax for the board. Card titles should link to the issue
-files with paths relative to the Kanban document. Column names should correspond to the
-workflow statuses, with `Escalation (Human Intervention Required)` shown as an exception
-column rather than a normal transition.
+- The issue worker allocates one dedicated issue worktree before the first edit. By default it is a root-repository worktree with initialized submodules, because it is the issue's coordination and integration workspace.
+- The Kanban manager keeps board and roadmap edits in its own clean Meta or root workspace. It must not edit those files inside an issue worker's worktree or share a writable Meta checkout with another issue worker.
+- For a cross-repository issue, all involved submodules used for shared testing stay in that same root worktree. Each changed submodule remains an independent repository with its own issue branch, commits, pushes, and PR. The issue worker owns the root worktree; submodule workers receive repository-specific paths and may not create a second root worktree for the same issue.
+- If an issue intentionally changes only one submodule and needs no root-level integration, the issue worker may allocate a worktree directly in that submodule repository. In this mode it uses a separate issue-owned Meta or base checkout for the issue record; it must not write issue metadata in the submodule worker's checkout or the manager's board workspace. The issue worker still owns the issue record and lifecycle. Never create a worktree inside another worktree or inside a submodule directory of a root worktree.
+- At most one agent edits a given repository directory at a time. The issue worker owns issue frontmatter and History in `AnyWear-Meta`; any delegated Meta documentation work must be serialized with those edits. A submodule worker must not run root-level checkout, reset, recursive submodule switching, or commands that change another worker's repository state. The issue worker coordinates integration pins and shared nested submodules.
+- A worktree isolates its branch, files, and uncommitted changes, but not ports, databases, credentials, or external services. The issue worker assigns safe resource names or coordinates serialized access before parallel execution.
+- Fetch the target branch before allocating a worktree. During development, fetch again only at planned synchronization points, such as before rebasing or integration; fetching alone does not incorporate commits into the worktree.
+- All issues may have isolated worktrees prepared in parallel, but actual execution may overlap only when issues have no unresolved prerequisites and do not modify the same files, API contracts, or shared resources. Isolation does not override dependency order.
 
-Within every column, sort cards by `priority` from highest to lowest so that the highest-
-priority issue appears at the top and is handled first. Use a stable order for equal
-priorities. If an issue has no explicit priority, place it after prioritized issues and
-preserve its existing relative order; do not silently invent a priority value.
+## Pending Closure
+
+The issue worker must verify all of the following and record the evidence:
+
+- All issue tasks and acceptance criteria are complete; required unit, integration, and E2E tests passed; and release/deployment gates passed.
+- Every required environment has the intended deployed revision recorded.
+- Every prerequisite, blocker, and technical dependency is complete or explicitly accepted as non-blocking.
+- Downstream issues have a verified handoff. Do not change another issue's status unless explicitly assigned that issue and its gate is verified.
+- Relevant architecture documentation and decision or reconciliation evidence are updated.
+- PR URLs, approvals, automated results, issue history, links, evidence, and acceptance status are recorded.
+- Every touched repository has been reconciled. After related PRs merge and all gates pass, check the root repository and each changed submodule for uncommitted changes and unpushed commits. If a submodule pointer is an intentional integration pin, preserve it through its own integration commit and PR. If it was only a temporary test pin, restore the clean baseline before checking status. Never treat a temporary pointer change as delivered work.
+- After repositories are clean and all delivered changes are preserved, remove the issue-specific worktree from the repository that owns it and prune stale worktree metadata there. Only then fetch each relevant target branch and fast-forward a clean base checkout without overwriting unrelated local work; record branches and revisions.
+- If any PR is unmerged, any work is uncommitted or unpushed, or any required cleanup is unresolved, keep the issue out of `completed`.
+- The issue worker reconciles the issue record and evidence. The Kanban manager verifies and updates the Kanban and roadmap views.
+
+## Multi-Issue Coordination
+
+- Record dependencies as `A blocks B` / `B depends on A`. The Kanban manager does not assign B for execution until A passes its required gate.
+- Technical dependencies are distinct from issue dependencies. Shared API work follows Service produces -> API revision is available -> Client consumes.
+- The Kanban manager assigns one issue worker and requires one isolated issue worktree per issue. The issue worker creates and owns that worktree. The manager supplies dependency and resource context needed to avoid cross-issue interference.
+- The issue worker assigns submodule workers only after defining repository boundaries and the required evidence. A child's commit or PR is input to the issue worker's control loop, not automatic issue completion.
+- The Kanban manager resolves conflicts between issue workers, shared resources, and release order. It must not use a child's uncommitted files as delivered evidence.
+
+## Kanban and Roadmap
+
+Kanban and roadmap files are derived views; issue frontmatter remains authoritative. Update the issue record first, then reconcile the views.
+
+- Use Mermaid `kanban` diagrams with one linked card for every actionable issue file. Supporting documents do not become separate cards unless independently actionable.
+- Maintain Feature, Refactor, Bug, and Chore boards with the workflow columns: Backlog, Analysis, Development, Testing, Deployment, Pending Closure, and Completed. Keep `Escalation (Human Intervention Required)` as a separate exception column.
+- Sort cards by `priority` from highest to lowest, with stable order for ties. Issues without priority follow prioritized issues in their existing relative order.
+- Update `Last reconciled` whenever the board or roadmap is reconciled. The Kanban manager verifies that every actionable issue appears once and every issue is covered by the roadmap.
+
+## Role Prompt Examples
+
+Kanban manager:
+
+```text
+Use the kanban_manager role.
+Coordinate the AnyWear Kanban board, issue dependencies, parallelism, issue-worker assignments, shared resources, and Kanban/roadmap reconciliation.
+Do not take ownership of an issue implementation unless explicitly reassigned as its issue_worker.
+```
+
+Issue worker:
+
+```text
+Use the issue_worker role.
+Issue: <issue path>
+Own this issue from its current status through completed or escalation. Create and clean up its issue worktree, delegate repository slices to submodule workers, integrate and verify their results, and return status, PR, test, deployment, and closure evidence to the kanban_manager.
+```
+
+Submodule worker:
+
+```text
+Use the submodule_worker role.
+Issue: <issue path>
+Repository: <repository>
+Worktree: <worktree path>
+Assigned scope: <scope>
+Execute only this repository slice, return commits, PR URL, tests, deployment evidence, and blockers, and stop when the assigned deliverable is ready for issue-worker verification. Do not change issue status or remove shared worktrees.
+```
