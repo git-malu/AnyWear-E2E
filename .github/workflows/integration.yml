@@ -135,6 +135,16 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Generate Service cleanup token
+        id: service-cleanup-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-actions: write
+
       - name: Load Beta test identity configuration
         shell: bash
         run: |
@@ -151,8 +161,20 @@ jobs:
         run: pnpm exec playwright install chromium --with-deps
 
       - name: Run deployed Beta smoke tests
+        id: beta-suite
         working-directory: AnyWear-E2E
         run: pnpm test:smoke
+
+      - name: Clean up exact Beta worker identities
+        if: ${{ always() && steps.beta-suite.outcome != 'skipped' && steps.service-cleanup-token.outcome == 'success' }}
+        working-directory: AnyWear-E2E
+        env:
+          GH_TOKEN: ${{ steps.service-cleanup-token.outputs.token }}
+        run: pnpm accounts:cleanup-workers
+
+      - name: Preserve Beta smoke failure
+        if: ${{ always() && steps.beta-suite.outcome == 'failure' }}
+        run: exit 1
 
       - name: Upload tested revisions
         if: always()
