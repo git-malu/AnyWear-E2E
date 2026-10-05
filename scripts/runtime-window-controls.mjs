@@ -48,7 +48,8 @@ export async function auditRuntimePolicy(io, scope, snapshot, { requireEmpty = f
 
 export async function captureRuntimeWindow(io, scope) {
   const baseline = await readRuntimePolicy(io);
-  scope.runtimeWindow = { baseline, expected: baseline, write_ledger: [], phase: 'captured', restored: false };
+  scope.runtimeWindow = { run_scope: scope.runScope, synthetic_owner: { sub: scope.subject, email: scope.email },
+    baseline, expected: baseline, write_ledger: [], phase: 'captured', restored: false };
   if (io.saveRecovery) await io.saveRecovery(scope);
   scope.runtimeWindow.baseline_audit = await auditRuntimePolicy(io, scope, baseline, { requireEmpty: true });
   if (io.saveRecovery) await io.saveRecovery(scope);
@@ -81,6 +82,7 @@ export async function reconcilePendingPolicy(io, scope) {
   await auditRuntimePolicy(io, scope, after);
   scope.runtimeWindow.expected = after;
   scope.runtimeWindow.write_ledger.push({ ...intent, recovered: true,
+    extraction: operation.proof,
     after_versions: Object.fromEntries(POLICY_KEYS.map((key) => [key, after[key].version])) });
   delete scope.runtimeWindow.pending_write;
   if (io.saveRecovery) await io.saveRecovery(scope);
@@ -88,11 +90,12 @@ export async function reconcilePendingPolicy(io, scope) {
 
 async function writePolicy(io, scope, action, emails) {
   const before = await guardRuntimeWindow(io, scope);
-  const intent = { action, before_versions: Object.fromEntries(POLICY_KEYS.map((key) => [key, before[key].version])),
+  const intent = { run_scope: scope.runScope, action, before_versions: Object.fromEntries(POLICY_KEYS.map((key) => [key, before[key].version])),
     tester_hash: emails ? testerHash(emails) : testerHash(JSON.parse(before.tester_allowlist.value)) };
   scope.runtimeWindow.pending_write = intent;
   if (io.saveRecovery) await io.saveRecovery(scope);
-  await io.runLifecycle({ scope, action, payload: emails === undefined ? '' : JSON.stringify(emails) });
+  const operation = await io.runLifecycle({ scope, action, payload: emails === undefined ? '' : JSON.stringify(emails) });
+  if (operation?.operation?.proof) intent.extraction = operation.operation.proof;
   const after = await readRuntimePolicy(io);
   const deltas = action === 'configure-testers' ? { intake_open: 0, tester_allowlist: 1, admission_suspended: 2 }
     : { intake_open: 0, tester_allowlist: 0, admission_suspended: 1 };
@@ -125,12 +128,16 @@ export async function pauseRuntimeWindow(io, scope) {
 }
 
 export async function restoreRuntimeWindow(io, scope) {
-  if (!scope.runtimeWindow || scope.runtimeWindow.restored) return;
+  if (!scope.runtimeWindow) return;
   if (!scope.ownedCleanupCompleted || (scope.runtimeControl && !scope.runtimeControl.restored)) {
     throw new Error('Admission restoration withheld until owned cleanup and exact worker restoration pass');
   }
   await guardRuntimeWindow(io, scope, { requireEmpty: true });
   const baseline = scope.runtimeWindow.baseline;
+  if (scope.runtimeWindow.restored) {
+    if (POLICY_KEYS.some((key) => scope.runtimeWindow.expected[key].value !== baseline[key].value)) throw new Error('Saved restored policy values differ from baseline');
+    return;
+  }
   await writePolicy(io, scope, 'configure-testers', JSON.parse(baseline.tester_allowlist.value));
   if (baseline.admission_suspended.value === 'true') await writePolicy(io, scope, 'close');
   const actual = await guardRuntimeWindow(io, scope, { requireEmpty: true });
@@ -139,5 +146,6 @@ export async function restoreRuntimeWindow(io, scope) {
   }
   scope.runtimeWindow.restored = true;
   scope.runtimeWindow.phase = 'restored';
+  scope.runtimeWindow.final_audit = await auditRuntimePolicy(io, scope, actual, { requireEmpty: true });
   if (io.saveRecovery) await io.saveRecovery(scope);
 }

@@ -61,11 +61,11 @@ test('clone refuses unknown provider settings, incorrect pin/key, and non-shared
   }
 });
 
-function controlHarness({ dirtyQueue = false, foreignDrift = false, failStability = false } = {}) {
+function controlHarness({ dirtyQueue = false, foreignDrift = false, failStability = false, initiallyOpen = false, failDeregister = false } = {}) {
   const calls = [];
   const records = [];
   const definitions = new Map();
-  const policy = { intake_open: { value: 'false', version: 1 }, admission_suspended: { value: 'true', version: 1 },
+  const policy = { intake_open: { value: 'false', version: 1 }, admission_suspended: { value: initiallyOpen ? 'false' : 'true', version: 1 },
     tester_allowlist: { value: '[]', version: 1 } };
   let workerDefinition = definitionArn;
   let drift = false;
@@ -84,6 +84,7 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
         updated_at: '2026-10-05T01:00:00Z' }, scope };
     },
     async runLifecycle({ action, payload }) {
+      calls.push(['lifecycle', action]);
       if (action === 'configure-testers') {
         policy.tester_allowlist.value = payload;
         policy.tester_allowlist.version += 1;
@@ -114,11 +115,13 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
         taskArn: id, taskDefinitionArn: id.startsWith('api') ? apiDefinitionArn : workerDefinition,
         lastStatus: 'RUNNING', containers: [{ name: 'WorkerContainer', imageDigest: digest }] })) };
       if (args[1] === 'register-task-definition') {
+        assert.equal(policy.admission_suspended.value, 'true');
         const arn = `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-${runScope}:1`;
         const registered = { ...JSON.parse(args[args.indexOf('--cli-input-json') + 1]), taskDefinitionArn: arn };
         definitions.set(arn, registered);
         return { taskDefinition: registered };
       }
+      if (args[1] === 'deregister-task-definition' && !failDeregister) definitions.get(args.at(-1)).status = 'INACTIVE';
       if (args[1] === 'update-service') { workerDefinition = args[args.indexOf('--task-definition') + 1]; }
       return {};
     },
@@ -182,4 +185,18 @@ test('restoration stability failure propagates and recovery can resume an alread
   harness.setBaseline();
   await restoreNonPaidRuntime({ scope }, io, async () => {});
   assert.equal(scope.runtimeControl.restored, true);
+});
+
+test('initial private admission closes before worker registration and deregistration requires INACTIVE readback', async () => {
+  const paused = controlHarness({ initiallyOpen: true });
+  await prepareNonPaidRuntime({ scope: paused.scope, fixture: paused.fixture }, paused.io, paused.environment, paused.wait);
+  const closed = paused.calls.findIndex((args) => args[0] === 'lifecycle' && args[1] === 'close');
+  const registered = paused.calls.findIndex((args) => args[1] === 'register-task-definition');
+  const ownTester = paused.calls.findIndex((args) => args[0] === 'lifecycle' && args[1] === 'configure-testers');
+  assert.ok(closed >= 0 && closed < registered && ownTester > registered);
+  const failed = controlHarness({ failDeregister: true });
+  await prepareNonPaidRuntime({ scope: failed.scope, fixture: failed.fixture }, failed.io, failed.environment, failed.wait);
+  failed.scope.ownedCleanupCompleted = true;
+  await assert.rejects(restoreNonPaidRuntime({ scope: failed.scope }, failed.io, failed.wait), /INACTIVE/);
+  assert.equal(failed.scope.runtimeControl.restored, false);
 });

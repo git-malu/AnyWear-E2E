@@ -1,12 +1,13 @@
 import { AdminDeleteUserCommand, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
-import { cleanupOneShotDefinitions, recoverOneShotRegistrations } from './runtime-one-shot.mjs';
+import { cleanupOneShotDefinitions, recoverOneShotRegistrations, verifyOneShotTask } from './runtime-one-shot.mjs';
+import { cleanupPayload, collectCleanupEvidence, readOneShotLog, validateCleanupEvidence, validateKnownDLQDeletionEvidence } from './runtime-one-shot-logs.mjs';
 import { pauseRuntimeWindow, reconcilePendingPolicy, restoreRuntimeWindow } from './runtime-window-controls.mjs';
 import { restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const RECORD_KEYS = ['schema_version', 'record_type', 'stage', 'aws_account_id', 'aws_region', 'run_scope', 'marker',
   'user_pool_id', 'users', 'items', 'resources', 'runtime_control', 'known_dlq_message', 'owned_cleanup_completed',
-  'runtime_window', 'one_shots', 'stack', 'service_url', 'deployment', 'database_cleanup_completed', 'cleanup_evidence'];
+  'runtime_window', 'one_shots', 'stack', 'service_url', 'deployment', 'database_cleanup_completed', 'cleanup_evidence', 'cognito_deletion_intent', 'known_dlq_deletion_evidence'];
 
 export function parseRuntimeRecovery(json) {
   if (Buffer.byteLength(json) > 262_144) throw new Error('Runtime recovery record exceeds its bounded size');
@@ -26,6 +27,14 @@ export function parseRuntimeRecovery(json) {
     || !new RegExp(`^e2e-beta-${record.run_scope}-0-[a-f0-9]{8}@anywear\\.local$`).test(user.email ?? '')
     || record.items?.length > 50 || record.resources?.length > 50 || record.one_shots?.length > 100
     || !Array.isArray(record.items) || record.items.some((id) => !UUID.test(id))) throw new Error('Runtime recovery requires exact synthetic identity/items');
+  if (!Array.isArray(record.resources) || !Array.isArray(record.one_shots)
+    || (record.runtime_control && record.runtime_control.run_scope !== record.run_scope)
+    || (record.runtime_window && (record.runtime_window.run_scope !== record.run_scope
+      || record.runtime_window.synthetic_owner?.sub !== user.sub || record.runtime_window.synthetic_owner.email !== user.email))
+    || (record.cognito_deletion_intent && (record.cognito_deletion_intent.sub !== user.sub
+      || record.cognito_deletion_intent.username !== user.username || record.cognito_deletion_intent.email !== user.email))) {
+    throw new Error('Runtime recovery control/deletion intent belongs to a foreign run/user');
+  }
   for (const object of record.resources ?? []) {
     const parts = object.key?.split('/');
     if (object.bucket !== record.stack.bucket || parts?.length !== 4 || parts[0] !== 'wearable-items'
@@ -54,42 +63,82 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
   const platform = await io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta']);
   const outputs = Object.fromEntries((platform.Stacks?.[0]?.Outputs ?? []).map(({ OutputKey, OutputValue }) => [OutputKey, OutputValue]));
   if (outputs.EcsClusterName !== record.stack.cluster || outputs.WardrobeBucketName !== record.stack.bucket
-    || outputs.UserPoolId !== record.user_pool_id) throw new Error('Recovery platform binding changed');
+    || outputs.UserPoolId !== record.user_pool_id
+    || outputs.OneShotExecutionRoleArn !== record.stack.oneShotExecutionRoleArn
+    || outputs.VerificationTaskRoleArn !== record.stack.verificationTaskRoleArn
+    || outputs.LifecycleTaskRoleArn !== record.stack.lifecycleTaskRoleArn) throw new Error('Recovery platform binding changed');
   const user = record.users[0];
   const scope = { runScope: record.run_scope, marker: record.marker, email: user.email, subject: user.sub,
     cognitoUsername: user.username, userPoolId: record.user_pool_id, stack: record.stack,
     deployment: record.deployment, config: { serviceUrl: record.service_url }, items: record.items, resources: record.resources,
     runtimeControl: record.runtime_control, runtimeWindow: record.runtime_window, oneShots: record.one_shots,
     knownDLQMessageId: record.known_dlq_message, ownedCleanupCompleted: record.owned_cleanup_completed,
-    databaseCleanupCompleted: record.database_cleanup_completed, cleanupEvidence: record.cleanup_evidence };
+    databaseCleanupCompleted: record.database_cleanup_completed, cleanupEvidence: record.cleanup_evidence,
+    cognitoDeletionIntent: record.cognito_deletion_intent };
   if (io.saveRecovery) await io.saveRecovery(scope);
+  if (record.known_dlq_deletion_evidence) {
+    const captured = record.known_dlq_deletion_evidence;
+    const operation = scope.oneShots.find((entry) => entry.task_arn === captured.extraction?.task_arn && entry.purpose === 'tester-cleanup');
+    if (!operation) throw new Error('Saved DLQ deletion has no captured exact helper operation');
+    await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
+    const { event } = await readOneShotLog(io, operation.proof, 'beta-tester-dlq-cleanup');
+    scope.knownDLQDeletionEvidence = validateKnownDLQDeletionEvidence({ extraction: operation.proof, deletion: event }, scope);
+  }
   await recoverOneShotRegistrations(io, scope);
   await reconcilePendingPolicy(io, scope);
   await pauseRuntimeWindow(io, scope);
-  if (!scope.ownedCleanupCompleted) {
-    const captured = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId, Username: user.username }));
+  // Saved completion flags are hints only. Reconstruct proof from exact helper logs after runner loss.
+  scope.ownedCleanupCompleted = false;
+  scope.databaseCleanupCompleted = false;
+  let captured;
+  try { captured = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId, Username: user.username })); }
+  catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
+  if (captured) {
     const attributes = Object.fromEntries((captured.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
     if (captured.Username !== user.username || attributes.sub !== user.sub || attributes.email !== user.email) {
       throw new Error('Recovery Cognito identity drift; all deletions refused');
     }
-    const payload = JSON.stringify({ runScope: scope.runScope, users: [{ sub: user.sub, email: user.email }],
-      ...(scope.knownDLQMessageId ? { knownDLQMessageId: scope.knownDLQMessageId } : {}) });
-    if (!scope.databaseCleanupCompleted) {
-      await io.runOneShotCleanup({ scope, payload });
+  }
+  let payload = cleanupPayload(scope);
+  for (const operation of scope.oneShots ?? []) {
+    if (operation.purpose !== 'tester-cleanup' || !operation.task_arn
+      || ![payload, cleanupPayload(scope, { original: true })].includes(operation.request_payload)) continue;
+    await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
+    const original = operation.request_payload === cleanupPayload(scope, { original: true });
+    try {
+      scope.cleanupEvidence = await collectCleanupEvidence(io, original ? { ...scope, knownDLQDeletionEvidence: undefined } : scope,
+        operation, { requireSuccess: false });
       scope.databaseCleanupCompleted = true;
+      break;
+    } catch (error) {
+      if (error.message !== 'Exact one-shot log did not expose the authoritative committed record' || !original || !scope.knownDLQMessageId) throw error;
+      const { event } = await readOneShotLog(io, operation.proof, 'beta-tester-dlq-cleanup');
+      scope.knownDLQDeletionEvidence = validateKnownDLQDeletionEvidence({ extraction: operation.proof, deletion: event }, scope);
+      payload = cleanupPayload(scope);
       if (io.saveRecovery) await io.saveRecovery(scope);
     }
-    for (const object of scope.resources) {
-      await io.aws(['s3api', 'delete-object', '--bucket', object.bucket, '--key', object.key]);
-      let absent = false;
-      try { await io.aws(['s3api', 'head-object', '--bucket', object.bucket, '--key', object.key]); }
-      catch (error) { if (/Not Found|404/.test(error.message)) absent = true; else throw error; }
-      if (!absent) throw new Error('Recovery captured S3 object remains after exact deletion');
-    }
-    await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: user.username }));
-    scope.ownedCleanupCompleted = true;
-    if (io.saveRecovery) await io.saveRecovery(scope);
   }
+  if (!scope.databaseCleanupCompleted) {
+    scope.cleanupEvidence = await io.runOneShotCleanup({ scope, payload });
+    validateCleanupEvidence(scope.cleanupEvidence, scope);
+    scope.databaseCleanupCompleted = true;
+  }
+  if (io.saveRecovery) await io.saveRecovery(scope);
+  for (const object of scope.resources) {
+    await io.aws(['s3api', 'delete-object', '--bucket', object.bucket, '--key', object.key]);
+    let absent = false;
+    try { await io.aws(['s3api', 'head-object', '--bucket', object.bucket, '--key', object.key]); }
+    catch (error) { if (/Not Found|404/.test(error.message)) absent = true; else throw error; }
+    if (!absent) throw new Error('Recovery captured S3 object remains after exact deletion');
+  }
+  if (captured) {
+    scope.cognitoDeletionIntent = { sub: user.sub, email: user.email, username: user.username };
+    if (io.saveRecovery) await io.saveRecovery(scope);
+    try { await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: user.username })); }
+    catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
+  }
+  scope.ownedCleanupCompleted = true;
+  if (io.saveRecovery) await io.saveRecovery(scope);
   await restoreNonPaidRuntime({ scope }, io, waitStable);
   await restoreRuntimeWindow(io, scope);
   await cleanupOneShotDefinitions(io, scope);

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { FIXTURE_DELAY_MS, FIXTURE_KEY, FIXTURE_PORTS, fixtureProcessSource } from './nonpaid-provider-fixture.mjs';
-import { activateRuntimeWindow, captureRuntimeWindow, guardRuntimeWindow } from './runtime-window-controls.mjs';
+import { activateRuntimeWindow, captureRuntimeWindow, guardRuntimeWindow, pauseRuntimeWindow } from './runtime-window-controls.mjs';
 
 const TASK_DEFINITION = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/[a-zA-Z0-9_-]+:[1-9][0-9]*$/;
 const IMAGE = /^650880818323\.dkr\.ecr\.ap-east-1\.amazonaws\.com\/[^@:]+(?:[:@].+)?$/;
@@ -106,6 +106,8 @@ export async function prepareNonPaidRuntime({ scope, fixture }, io, environment,
     throw new Error('Non-paid runtime requires an approved exclusive window and exact reviewed fixture');
   }
   await captureRuntimeWindow(io, scope);
+  await pauseRuntimeWindow(io, scope);
+  await guardRuntimeWindow(io, scope, { requireEmpty: true });
   const autoscaling = await captureAutoscaling(io, scope.stack);
   await assertQueuesEmpty(io, scope.stack);
   const worker = await exactService(io, scope.stack, scope.stack.workerService);
@@ -120,7 +122,7 @@ export async function prepareNonPaidRuntime({ scope, fixture }, io, environment,
   const tasks = await verifyRevision(io, scope.stack, scope.stack.workerService, worker.taskDefinition, pick(worker, SERVICE_FIELDS));
   if (tasks.some((task) => !task.containers?.some((container) => container.name === definition.containerDefinitions[0].name
     && container.imageDigest === deployment.image_digest))) throw new Error('Baseline running worker digest is not the pinned Service digest');
-  scope.runtimeControl = { baseline_worker_task_definition: worker.taskDefinition,
+  scope.runtimeControl = { run_scope: scope.runScope, baseline_worker_task_definition: worker.taskDefinition,
     baseline_api_task_definition: api.taskDefinition, baseline_worker_config: pick(worker, SERVICE_FIELDS),
     baseline_api_config: pick(api, SERVICE_FIELDS), baseline_definition_hash: hash(pick(definition, DEFINITION_FIELDS)),
     baseline_roles: { task: definition.taskRoleArn, execution: definition.executionRoleArn },
@@ -167,6 +169,7 @@ export async function switchNonPaidMode(scope, mode, io, waitStable) {
   const control = scope.runtimeControl;
   if (!control || !scope.runtimeDefinitions?.[mode]) throw new Error('Non-paid runtime is not prepared');
   await guardRuntimeWindow(io, scope, { requireEmpty: true });
+  if (scope.runtimeWindow.expected.admission_suspended.value !== 'true') throw new Error('Worker fixture switch requires admission paused');
   await guardAutoscaling(io, scope);
   await verifyRevision(io, scope.stack, scope.stack.workerService, control.expected_worker_task_definition, control.baseline_worker_config);
   const intent = { mode, definition_hash: hash(scope.runtimeDefinitions[mode]), registered: false };
@@ -196,7 +199,7 @@ export async function switchNonPaidMode(scope, mode, io, waitStable) {
 
 export async function restoreNonPaidRuntime({ scope }, io, waitStable) {
   const control = scope.runtimeControl;
-  if (!control || control.restored) return;
+  if (!control) return;
   if (!scope.ownedCleanupCompleted) throw new Error('Restoration withheld until run-owned task/queue cleanup succeeds; recovery record retained');
   await guardRuntimeWindow(io, scope, { requireEmpty: true });
   await guardAutoscaling(io, scope);
@@ -223,6 +226,8 @@ export async function restoreNonPaidRuntime({ scope }, io, waitStable) {
   await verifyRevision(io, scope.stack, scope.stack.apiService, control.baseline_api_task_definition, control.baseline_api_config);
   for (const arn of control.fixture_task_definitions) {
     await io.aws(['ecs', 'deregister-task-definition', '--task-definition', arn]);
+    const response = await io.aws(['ecs', 'describe-task-definition', '--task-definition', arn, '--include', 'TAGS']);
+    if (response.taskDefinition?.taskDefinitionArn !== arn || response.taskDefinition.status !== 'INACTIVE') throw new Error('Fixture deregistration not confirmed INACTIVE');
   }
   control.restored = true;
   control.phase = 'restored';
@@ -237,7 +242,8 @@ export async function recoverFixtureRegistrations(io, scope) {
     || hash(pick(baseline, DEFINITION_FIELDS)) !== control.baseline_definition_hash) throw new Error('Immutable baseline task definition changed');
   const listed = await io.aws(['ecs', 'list-task-definitions', '--family-prefix', `beta-anywear-nonpaid-${scope.runScope}`, '--status', 'ACTIVE']);
   if (listed.nextToken || listed.taskDefinitionArns?.length > 20) throw new Error('Fixture orphan definition search is incomplete or exceeds budget');
-  for (const arn of listed.taskDefinitionArns ?? []) {
+  for (const arn of new Set([...(listed.taskDefinitionArns ?? []), ...control.fixture_task_definitions])) {
+    if (!new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-${scope.runScope}:[1-9][0-9]*$`).test(arn)) throw new Error('Captured fixture definition is outside owned family');
     const response = await io.aws(['ecs', 'describe-task-definition', '--task-definition', arn, '--include', 'TAGS']);
     const definition = response.taskDefinition;
     if (Object.fromEntries((response.tags ?? []).map(({ key, value }) => [key, value]))['anywear-runtime-run-scope'] !== scope.runScope) {

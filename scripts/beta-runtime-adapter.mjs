@@ -1,13 +1,14 @@
 import { execFile, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { prepareNonPaidRuntime, restoreNonPaidRuntime, switchNonPaidMode } from './nonpaid-runtime-controls.mjs';
-import { auditRequest, assertStableAudits, extractAuditLog, extractAuditTaskBinding,
+import { auditRequest, assertStableAudits, extractAuditTaskBinding,
   TERMINAL_STABILITY_MS, validateTaskAudit } from './runtime-task-audit.mjs';
 import { cleanupOneShotDefinitions, runOwnedOneShot } from './runtime-one-shot.mjs';
-import { pauseRuntimeWindow, restoreRuntimeWindow } from './runtime-window-controls.mjs';
+import { collectCleanupEvidence, readOneShotLog, validateCleanupEvidence } from './runtime-one-shot-logs.mjs';
+import { activateRuntimeWindow, pauseRuntimeWindow, restoreRuntimeWindow } from './runtime-window-controls.mjs';
 import { recoverRuntimeRecord } from './runtime-recovery.mjs';
 import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
 import {
@@ -26,7 +27,6 @@ const SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-
 const EMAIL_PATTERN = /^e2e-beta-([1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16})-0-([a-f0-9]{8})@anywear\.local$/;
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const TASK_ARN_PATTERN = /^arn:aws:ecs:[^:]+:\d+:task\/[^/]+\/[0-9a-f-]+$/;
-const DEFAULT_PASSWORD = 'TestPassword123!';
 const API_LOG_GROUP = '/anywear/beta/api';
 const WORKER_LOG_GROUP = '/anywear/beta/worker';
 
@@ -76,6 +76,10 @@ async function liveAws(args) {
     const { stdout } = await exec('aws', [...args, '--output', 'json'], { maxBuffer: 20 * 1024 * 1024 });
     return parseJson(stdout.trim(), `aws ${args[0]} ${args[1]}`);
   } catch (error) {
+    if (args[0] === 'logs' && args[1] === 'get-log-events' && /ResourceNotFoundException/.test(error.stderr ?? '')) {
+      // Retain only the safe retry classification, never raw CLI argv.
+      throw Object.assign(new Error('Exact one-shot stream is not visible yet'), { name: 'ResourceNotFoundException' });
+    }
     if (args[0] === 's3api' && args[1] === 'head-object' && /Not Found|404/.test(error.stderr ?? '')) {
       // eslint-disable-next-line preserve-caught-error -- AWS errors may embed sensitive task-definition argv.
       throw new Error('Not Found');
@@ -99,20 +103,24 @@ function liveIo(environment) {
       let stdout = '';
       let buffered = '';
       let lines = Promise.resolve();
-      const timer = setTimeout(() => child.kill(), 600_000);
+      let failure;
+      const fail = (error) => { failure ??= error; child.kill(); };
+      const timer = setTimeout(() => fail(new Error('One-shot execution deadline exceeded')), 600_000);
       child.stdout.on('data', (chunk) => {
         stdout += chunk.toString();
         buffered += chunk.toString();
         const complete = buffered.split(/\r?\n/);
         buffered = complete.pop();
-        for (const line of complete) lines = lines.then(() => onLine(line));
-        if (stdout.length > 2 * 1024 * 1024) child.kill();
+        for (const line of complete) lines = lines.then(() => onLine(line)).catch(fail);
+        if (stdout.length > 2 * 1024 * 1024) fail(new Error('One-shot output budget exceeded'));
       });
       child.stderr.resume();
       child.on('error', () => { clearTimeout(timer); reject(new Error(`One-shot ${purpose} could not start`)); });
       child.on('close', (code) => {
         clearTimeout(timer);
-        lines.then(() => code === 0 ? resolve({ stdout }) : reject(new Error(`One-shot ${purpose} failed; owned recovery metadata retained`)), reject);
+        if (buffered) lines = lines.then(() => onLine(buffered)).catch(fail);
+        lines.then(() => !failure && code === 0 ? resolve({ stdout })
+          : reject(failure ?? new Error(`One-shot ${purpose} failed; owned recovery metadata retained`)), reject);
       });
     });
   };
@@ -138,6 +146,8 @@ function liveIo(environment) {
         runtime_window: scope.runtimeWindow, one_shots: scope.oneShots ?? [],
         stack: scope.stack, service_url: scope.config.serviceUrl, deployment: scope.deployment,
         database_cleanup_completed: scope.databaseCleanupCompleted === true, cleanup_evidence: scope.cleanupEvidence,
+        cognito_deletion_intent: scope.cognitoDeletionIntent,
+        known_dlq_deletion_evidence: scope.knownDLQDeletionEvidence,
       }, null, 2)}\n`, { mode: 0o600 });
       if (environment.GITHUB_ACTIONS === 'true') {
         if (++snapshotNumber > 150) throw new Error('Runtime recovery snapshot budget exhausted');
@@ -148,7 +158,10 @@ function liveIo(environment) {
       }
     },
     async runOneShotCleanup({ scope, payload }) {
-      return runOwnedOneShot(io, scope, 'tester-cleanup', '', payload, runner);
+      const result = await runOwnedOneShot(io, scope, 'tester-cleanup', '', payload, runner);
+      scope.cleanupEvidence = await collectCleanupEvidence(io, scope, result.operation);
+      await io.saveRecovery(scope);
+      return scope.cleanupEvidence;
     },
     async runLifecycle({ scope, action, payload }) {
       return runOwnedOneShot(io, scope, 'lifecycle', action, payload, runner);
@@ -157,26 +170,13 @@ function liveIo(environment) {
       return io.auditOwnedTask(args);
     },
     async auditOwnedTask({ scope, request }) {
-      const { stdout } = await runOwnedOneShot(io, scope, 'task-audit', '', JSON.stringify(request), runner);
+      const { stdout, operation } = await runOwnedOneShot(io, scope, 'task-audit', '', JSON.stringify(request), runner);
       const binding = extractAuditTaskBinding(stdout);
-      const events = [];
-      let token;
-      for (let page = 0; page < 20; page += 1) {
-        const response = await liveAws(['logs', 'get-log-events', '--log-group-name', binding.logGroup,
-          '--log-stream-name', binding.logStream, '--start-from-head', ...(token ? ['--next-token', token] : [])]);
-        events.push(...(response.events ?? []));
-        if (response.nextForwardToken === token || !response.nextForwardToken) {
-          const data = request.mode === 'window-preflight' ? events.flatMap((event) => {
-            try { const parsed = JSON.parse(event.message); return parsed.source === 'durable-runtime-window-audit' ? [parsed] : []; }
-            catch { return []; }
-          }) : [extractAuditLog(events, request)];
-          if (data.length !== 1) throw new Error('Exact one-shot stream did not contain one window audit');
-          return { ...data[0], extraction: { task_arn: binding.taskArn,
-            log_group: binding.logGroup, log_stream: binding.logStream, exit_code: 0 } };
-        }
-        token = response.nextForwardToken;
-      }
-      throw new Error('One-shot audit log pagination was incomplete');
+      if (binding.taskArn !== operation.proof.task_arn || binding.logStream !== operation.proof.log_stream) throw new Error('Audit stdout/log proof disagrees');
+      const { event } = await readOneShotLog(io, operation.proof,
+        request.mode === 'window-preflight' ? 'durable-runtime-window-audit' : 'durable-task-audit');
+      if (request.mode !== 'window-preflight') validateTaskAudit(event, request);
+      return { ...event, extraction: operation.proof };
     },
     async close() { cognito.destroy(); },
   };
@@ -346,14 +346,16 @@ async function readTerminalStream(stream) {
   }
 }
 
-async function createSyntheticAccount({ config, marker, stack }, io, environment) {
+async function createSyntheticAccount({ config, marker, stack, deployment }, io, environment) {
   if (typeof io.auditOwnedTask !== 'function') {
     throw new Error('Runtime execution requires a reviewed authoritative task audit before any cloud mutation');
   }
   const runScope = boundedRunScope(environment);
+  if (deployment?.service?.source_commit !== environment.RUNTIME_DRILL_SERVICE_SHA
+    || !DIGEST_PATTERN.test(deployment?.service?.image_digest ?? '')) throw new Error('Synthetic setup requires exact pinned deployment before mutation');
   const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
   const email = `e2e-beta-${runScope}-0-${suffix}@anywear.local`;
-  const password = environment.RUNTIME_DRILL_PASSWORD ?? DEFAULT_PASSWORD;
+  const password = environment.RUNTIME_DRILL_PASSWORD ?? `Aa1!${randomBytes(32).toString('base64url')}`;
   const userPoolId = required(stack?.userPoolId ?? environment.USER_POOL_ID, 'Cognito user pool id');
   const clientId = required(stack?.userPoolClientId ?? environment.VITE_COGNITO_CLIENT_ID, 'Cognito user pool client id');
   let created = false;
@@ -368,7 +370,7 @@ async function createSyntheticAccount({ config, marker, stack }, io, environment
     const createdAttributes = Object.fromEntries((createdUser.User?.Attributes ?? []).map(({ Name, Value }) => [Name, Value]));
     capturedSubject = createdAttributes.sub;
     capturedUsername = createdUser.User?.Username;
-    if (io.saveRecovery) await io.saveRecovery({ config, marker, runScope, stack, email,
+    if (io.saveRecovery) await io.saveRecovery({ config, marker, runScope, stack, email, deployment,
       subject: capturedSubject, cognitoUsername: capturedUsername, userPoolId });
     if (createdAttributes.email !== email || !SUBJECT_PATTERN.test(capturedSubject ?? '') || !capturedUsername) {
       throw new Error('Cognito creation did not capture an immutable owned identity');
@@ -388,7 +390,7 @@ async function createSyntheticAccount({ config, marker, stack }, io, environment
     const accessToken = auth.AuthenticationResult?.AccessToken;
     required(accessToken, 'Cognito access token');
     const scope = {
-      config, marker, runScope, stack, accessToken, password,
+      config, marker, runScope, stack, deployment, accessToken,
       email, subject: attributes.sub, cognitoUsername: capturedUsername, resources: [], requestIds: [],
       userPoolId, userPoolClientId: clientId,
     };
@@ -586,6 +588,9 @@ async function captureReplicaAttribution({ scope, replacement }, io) {
   if (reconnectIds.length < 2 || reconnectEvents.some((entry) => entry.length === 0)) throw new Error('Replica attribution could not prove two post-replacement reconnects');
   return {
     api_task_arns: ensureTaskArns(apiTaskArns, 'api_task_arns'),
+    api_task_arns_after: replacement.api_task_arns_after,
+    reconnected_request_ids: reconnectIds,
+    item_id: scope.item.itemId,
     stream_task_arns: [...new Set(streamTaskArns)],
     request_attribution: requestIds.map((id, index) => ({ request_id: id, task_arn: streamTaskArns[index] })),
     terminal_observers: replacement.terminal_observers,
@@ -603,7 +608,9 @@ async function runProviderFailureFixture({ scope, fixture, marker }, io) {
   if (fixture.application_backdoor !== false || fixture.approved !== true || fixture.source !== 'beta-provider-nonpaid-loopback') {
     throw new Error('Provider failure fixture is not the approved non-paid loopback fixture');
   }
+  await pauseRuntimeWindow(io, scope);
   await switchNonPaidMode(scope, 'failure', io, waitServiceStable);
+  await activateRuntimeWindow(io, scope);
   if (!fixture.image_path.startsWith('tests/fixtures/') || fixture.image_path.includes('..')) throw new Error('Provider failure fixture image path is not checked in');
   await stat(fixture.image_path);
   const details = await uploadItem(io, scope, fixture.image_path, marker);
@@ -801,7 +808,9 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
   }
   if (errors.length > 0) throw new AggregateError(errors, 'Wardrobe API item cleanup failed; database cleanup was withheld');
   try {
-    await io.runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload, scope });
+    scope.cleanupEvidence = await io.runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload, scope });
+    validateCleanupEvidence(scope.cleanupEvidence, { ...scope, deployment: { service: {
+      source_commit: serviceCommit, image_digest: imageDigest } } });
     scope.databaseCleanupCompleted = true;
     if (io.saveRecovery) await io.saveRecovery(scope);
   } catch (error) {
@@ -818,6 +827,8 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
     const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
     if (attributes.sub !== scope.subject || attributes.email !== scope.email
       || user.Username !== (scope.cognitoUsername ?? scope.subject)) throw new Error('Cognito ownership changed during cleanup');
+    scope.cognitoDeletionIntent = { sub: scope.subject, email: scope.email, username: user.Username };
+    if (io.saveRecovery) await io.saveRecovery(scope);
     await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: user.Username }));
   } catch (error) {
     if (!/UserNotFoundException/.test(error?.name ?? error?.message ?? '')) errors.push(error);

@@ -149,14 +149,14 @@ provider failure cannot pass merely because the processing indicator disappears.
 Live Beta qualification still needs controlled drills for accepted tasks across API and
 worker restarts or rolling deployments; SSE status delivery across identified distinct
 API replicas; lease renewal and visibility expiry; provider retries and dead-letter
-delivery; and safe replay without duplicate results or credit settlement. Two browser
+delivery; and exact current-state replay. Auto-tagging credit settlement is not applicable. Two browser
 pages do not prove that requests reached different replicas. Record ECS task identities,
-queue/DLQ observations, task state versions, and settlement outcomes with those drills.
+queue/DLQ observations and task state versions with those drills.
 
 The E2E repository now provides a bounded, read-only preflight and an evidence verifier for
 these drills. Preflight can run while Beta intake is closed; it reports the gate state and
 does not open registration or accept tasks. Task-bearing drills require an approved Beta
-test window with intake open. These tools are deliberately separate from `pnpm test` and
+private-only test window with `intake_open=false`. These tools are deliberately separate from `pnpm test` and
 never run in Dev:
 
 ```bash
@@ -173,13 +173,39 @@ database. The generated plan describes the operator-approved mutations and requi
 unique `RUNTIME_DRILL_CONFIRM=beta-runtime-drill` marker before any future executor is
 allowed to perform them.
 
-Evidence verification requires a passed accepted-task restart/rolling drill, a two-replica
-SSE observation with distinct ECS task ARNs, and a retry/visibility/DLQ observation with
-lease renewal, receive count, duplicate-side-effect, and credit-settlement fields. A
+The non-paid executor and restore-only recovery workflow are source checkpoints, locked
+by `LIVE_RUNTIME_SOURCE_READY=false`. Neither has collected Beta runtime evidence. A
+window owner must suspend dynamic scale-in, scale-out, and scheduled scaling for both
+services before execution; the executor captures and checks these settings, but never
+changes them. It closes private admission before worker replacement and admits only the
+single run-owned synthetic tester after selecting the loopback fixture. Workers retain
+their original IAM roles and network access; this is not IAM or network isolation.
+
+Schema 2 evidence requires a passed accepted-task restart/rolling drill, raw two-replica
+request attribution and matching terminal observers, and a retry/visibility/DLQ observation
+with successful lease/visibility renewal and canonical worker receive counts. Two pinned
+read-only DB audits must retain identical terminal snapshots for 440000ms. This finite
+window proves neither historical uniqueness nor late stale-worker rejection or missed
+heartbeats. Same-token StopTask completion is graceful drain; only a greater token is
+takeover. Actual passing DB-enabled Service main CI at the deployed SHA supplies the
+separate post-provider fencing assertions. Auto-tagging credit is explicitly N/A. A
 rollback observation is optional in the record until a prior Beta WorkloadStack digest is
 available. Provider-failure injection and database task-row inspection remain operational
-requirements; this tool does not add application test backdoors or claim those gaps are
-covered.
+requirements; the fixture sidecar uses only loopback, a dummy provider key, and no paid
+provider forwarding. Exact run/user ownership, helper commands and task definitions,
+baseline private-policy restoration, and committed cleanup logs are mandatory.
+
+`Beta Runtime Recovery` selects one immutable recovery snapshot by source run, attempt,
+snapshot number, and original run scope. It shares the protected Beta environment and
+`anywear-beta-runtime` concurrency lock. It only reconciles and restores captured state;
+it does not start a drill. Recovery rechecks actual helper tasks and their exact logs,
+never trusting saved completion booleans. An irreversible known-DLQ deletion without a
+committed DB cleanup record is not success. Only its exact original helper deletion
+marker authorizes omitting that known message on a DB-cleanup retry; a separate committed
+cleanup record is still required. Missing or foreign evidence fails closed. Recovery
+snapshots contain baseline policy values and must remain restricted artifacts; they
+exclude passwords, bearer tokens, and signed URLs. Runner-loss snapshots are uploaded
+before subsequent mutations, not only by the final `always()` step.
 
 The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
 browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes

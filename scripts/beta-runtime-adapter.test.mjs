@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRuntimeDrillAdapter } from './beta-runtime-adapter.mjs';
-import { auditFixture } from './fixtures/runtime-evidence.mjs';
+import { auditFixture, cleanupFixture } from './fixtures/runtime-evidence.mjs';
 
 const environment = {
   AWS_REGION: 'ap-east-1',
@@ -11,6 +11,7 @@ const environment = {
 };
 const subject = '123e4567-e89b-12d3-a456-426614174000';
 const email = 'e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local';
+const deployment = { service: { source_commit: 'b'.repeat(40), image_digest: `sha256:${'c'.repeat(64)}` } };
 
 function identity(address = email) {
   return { Username: subject, UserAttributes: [{ Name: 'email', Value: address }, { Name: 'sub', Value: subject }] };
@@ -72,7 +73,7 @@ test('synthetic account creation is bound to the current run scope and returned 
     },
   }, environment);
   const scope = await adapter.createSyntheticAccount({
-    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1',
+    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client', bucket: 'bucket' },
   });
   assert.match(scope.email, /^e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-[a-f0-9]{8}@anywear\.local$/);
@@ -100,10 +101,43 @@ test('synthetic account setup compensates a Cognito user when authentication set
     },
   }, environment);
   await assert.rejects(adapter.createSyntheticAccount({
-    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1',
+    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client', bucket: 'bucket' },
   }), /auth unavailable/);
   assert.equal(commands.at(-1), 'AdminDeleteUserCommand');
+});
+
+test('synthetic setup snapshots always include pinned deployment and use unique memory-only default passwords', async () => {
+  const passwords = [];
+  for (const failure of [undefined, 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand', 'AdminGetUserCommand', 'InitiateAuthCommand']) {
+    const snapshots = [];
+    let address;
+    let failed = false;
+    const adapter = createRuntimeDrillAdapter({ async auditOwnedTask() {},
+      async saveRecovery(scope) { snapshots.push(structuredClone(scope)); },
+      async cognitoSend(command) {
+        const name = command.constructor.name;
+        if (name === 'AdminCreateUserCommand') { address = command.input.Username; return { User: { Username: subject, Attributes: identity(address).UserAttributes } }; }
+        if (name === 'AdminSetUserPasswordCommand') passwords.push(command.input.Password);
+        if (name === failure && !failed) { failed = true; throw new Error('setup boundary failure'); }
+        if (name === 'AdminGetUserCommand') return identity(address);
+        if (name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
+        return {};
+      },
+    }, environment);
+    const promise = adapter.createSyntheticAccount({ config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-123-1', deployment,
+      stack: { userPoolId: 'ap-east-1_pool', userPoolClientId: 'client', bucket: 'bucket' } });
+    if (failure) await assert.rejects(promise, /setup boundary failure/);
+    else assert.equal((await promise).password, undefined);
+    assert.ok(snapshots.length > 0);
+    for (const snapshot of snapshots) {
+      assert.deepEqual(snapshot.deployment, deployment);
+      assert.equal(snapshot.password, undefined);
+    }
+  }
+  assert.equal(new Set(passwords).size, passwords.length);
+  assert.ok(passwords.every((password) => password !== 'TestPassword123!' && password.length > 32
+    && /[A-Z]/.test(password) && /[a-z]/.test(password) && /[0-9]/.test(password) && /[!]/.test(password)));
 });
 
 test('worker replacement passes the Beta cluster/service to stability waits and captures changed tasks', async () => {
@@ -161,7 +195,7 @@ test('cleanup deletes API-owned items before pinned Service cleanup, S3, and Cog
       order.push(`api:${url}`);
       return response(204);
     },
-    async runOneShotCleanup() { order.push('service'); },
+    async runOneShotCleanup({ scope }) { order.push('service'); return cleanupFixture(scope); },
     async aws(args) {
       order.push(args[0]);
       if (args[0] === 's3api' && args[1] === 'head-object') throw new Error('Not Found');
@@ -205,7 +239,7 @@ test('cleanup accepts already absent and unaccepted version-zero uploading items
         return options.method === 'GET' ? response(state ? 200 : 404, state) : response(404);
       },
       async cognitoSend(command) { calls.push(command.constructor.name); return identity(); },
-      async runOneShotCleanup() { calls.push('service'); },
+      async runOneShotCleanup({ scope }) { calls.push('service'); return cleanupFixture(scope); },
       async saveRecovery() { calls.push('recovery'); },
     }, environment).cleanupOwnedResources({ scope: cleanupScope(), stack: { bucket: 'bucket' } });
     assert.ok(calls.includes('service'));
@@ -241,7 +275,7 @@ test('cleanup delegates exact task DLQ cleanup to the pinned Service helper with
     async fetch(_url, options) { return options.method === 'GET'
       ? response(200, { id: 'item', taggingStatus: 'failed', taggingStateVersion: 3 }) : response(204); },
     async cognitoSend() { return identity(); },
-    async runOneShotCleanup(args) { calls.push(args); },
+    async runOneShotCleanup(args) { calls.push(args); return cleanupFixture(args.scope); },
     async aws() { throw new Error('E2E must not observe or delete queues during cleanup'); },
   }, environment).cleanupOwnedResources({ scope, stack: { bucket: 'bucket', queues: { autoTaggingDlq: 'owned-dlq' } } });
   assert.equal(calls.length, 1);
@@ -266,7 +300,7 @@ test('Cognito compensation refuses an identity whose immutable subject changed',
         UserAttributes: [{ Name: 'email', Value: address }, { Name: 'sub', Value: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }] };
     },
   }, environment);
-  await assert.rejects(adapter.createSyntheticAccount({ config: {}, marker: 'drill',
+  await assert.rejects(adapter.createSyntheticAccount({ config: {}, marker: 'drill', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client' } }), /setup and compensation failed/);
   assert.ok(!calls.includes('AdminDeleteUserCommand'));
 });
