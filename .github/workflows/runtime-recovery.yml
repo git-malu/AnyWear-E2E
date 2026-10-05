@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       source_snapshot:
-        description: Exact immutable three-digit recovery snapshot number (001 to 150)
+        description: Exact immutable three-digit recovery snapshot number (001 to 400)
         required: true
         type: string
       original_run_scope:
@@ -67,7 +67,7 @@ jobs:
           persist-credentials: false
       - name: Validate bounded artifact inputs
         run: |
-          node --input-type=module -e "for (const name of ['SOURCE_RUN_ID','SOURCE_RUN_ATTEMPT']) if (!/^[1-9][0-9]{0,19}$/.test(process.env[name] ?? '')) throw Error('Invalid source run'); if (!/^[0-9]{3}$/.test(process.env.SOURCE_SNAPSHOT ?? '') || Number(process.env.SOURCE_SNAPSHOT) < 1 || Number(process.env.SOURCE_SNAPSHOT) > 150) throw Error('Invalid snapshot');"
+          node scripts/runtime-recovery-snapshots.mjs
       - name: Generate repository token
         id: token
         uses: actions/create-github-app-token@v1

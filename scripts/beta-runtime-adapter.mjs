@@ -11,6 +11,7 @@ import { collectCleanupEvidence, readOneShotLog, validateCleanupEvidence } from 
 import { activateRuntimeWindow, pauseRuntimeWindow, restoreRuntimeWindow } from './runtime-window-controls.mjs';
 import { recoverRuntimeRecord } from './runtime-recovery.mjs';
 import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
+import { MAX_RECOVERY_SNAPSHOTS, validateRecoverySnapshot } from './runtime-recovery-snapshots.mjs';
 import {
   AdminConfirmSignUpCommand,
   AdminCreateUserCommand,
@@ -92,7 +93,6 @@ async function liveAws(args) {
 
 function liveIo(environment) {
   const cognito = new CognitoIdentityProviderClient({ region: environment.AWS_REGION ?? 'ap-east-1' });
-  let snapshotNumber = 0;
   const runner = async ({ scope, purpose, action, payload, onLine }) => {
     assertLiveRuntimeSourceReady();
     const checkout = required(environment.E2E_SERVICE_CHECKOUT, 'E2E_SERVICE_CHECKOUT');
@@ -124,7 +124,7 @@ function liveIo(environment) {
       });
     });
   };
-  const io = {
+  return createOwnedRuntimeIo({
     async aws(args) {
       if (['register-task-definition', 'deregister-task-definition', 'update-service', 'stop-task',
         'receive-message', 'change-message-visibility', 'delete-object'].includes(args[1])) assertLiveRuntimeSourceReady();
@@ -133,9 +133,30 @@ function liveIo(environment) {
     async fetch(url, options) { return fetch(url, options); },
     async sleep(ms) { await delay(ms); },
     async cognitoSend(command) { assertLiveRuntimeSourceReady(); return cognito.send(command); },
+    writeRecoveryFile: writeFile,
+    async uploadRecoveryArtifact(...args) {
+      const { DefaultArtifactClient } = await import('@actions/artifact');
+      return new DefaultArtifactClient().uploadArtifact(...args);
+    },
+    async close() { cognito.destroy(); },
+  }, runner, environment);
+}
+
+// Compose owned helper execution around external transports without replacing its durability protocol.
+export function createOwnedRuntimeIo(transport, runner, environment) {
+  let snapshotNumber = 0;
+  const io = {
+    aws: transport.aws,
+    fetch: transport.fetch,
+    sleep: transport.sleep,
+    cognitoSend: transport.cognitoSend,
+    close: transport.close,
     async saveRecovery(scope) {
+      if (environment.GITHUB_ACTIONS === 'true' && snapshotNumber >= MAX_RECOVERY_SNAPSHOTS) {
+        throw new Error('Runtime recovery snapshot budget exhausted');
+      }
       const recoveryPath = environment.RUNTIME_DRILL_RECOVERY_PATH ?? 'runtime-drill-recovery.json';
-      await writeFile(recoveryPath, `${JSON.stringify({
+      await transport.writeRecoveryFile(recoveryPath, `${JSON.stringify({
         schema_version: 2, record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
         aws_account_id: '650880818323', aws_region: 'ap-east-1',
         run_scope: scope.runScope, marker: scope.marker, user_pool_id: scope.userPoolId,
@@ -150,10 +171,9 @@ function liveIo(environment) {
         known_dlq_deletion_evidence: scope.knownDLQDeletionEvidence,
       }, null, 2)}\n`, { mode: 0o600 });
       if (environment.GITHUB_ACTIONS === 'true') {
-        if (++snapshotNumber > 150) throw new Error('Runtime recovery snapshot budget exhausted');
-        const { DefaultArtifactClient } = await import('@actions/artifact');
-        await new DefaultArtifactClient().uploadArtifact(
-          `beta-runtime-recovery-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${String(snapshotNumber).padStart(3, '0')}`,
+        const snapshot = validateRecoverySnapshot(String(++snapshotNumber).padStart(3, '0'));
+        await transport.uploadRecoveryArtifact(
+          `beta-runtime-recovery-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${snapshot}`,
           [path.resolve(recoveryPath)], path.dirname(path.resolve(recoveryPath)), { retentionDays: 90 });
       }
     },
@@ -178,7 +198,6 @@ function liveIo(environment) {
       if (request.mode !== 'window-preflight') validateTaskAudit(event, request);
       return { ...event, extraction: operation.proof };
     },
-    async close() { cognito.destroy(); },
   };
   return io;
 }

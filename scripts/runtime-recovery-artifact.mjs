@@ -1,11 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseRuntimeRecovery } from './runtime-recovery.mjs';
+import { validateRecoverySourceInputs } from './runtime-recovery-snapshots.mjs';
 
 export function validateRecoveryArtifactBinding(metadata, record, environment, compatibility) {
-  if (!/^[1-9][0-9]{0,19}$/.test(environment.SOURCE_RUN_ID ?? '') || !/^[1-9][0-9]{0,5}$/.test(environment.SOURCE_RUN_ATTEMPT ?? '')
-    || !/^[0-9]{3}$/.test(environment.SOURCE_SNAPSHOT ?? '') || Number(environment.SOURCE_SNAPSHOT) < 1
-    || Number(environment.SOURCE_SNAPSHOT) > 150 || String(metadata.id) !== environment.SOURCE_RUN_ID
+  validateRecoverySourceInputs(environment);
+  if (String(metadata.id) !== environment.SOURCE_RUN_ID
     || String(metadata.run_attempt) !== environment.SOURCE_RUN_ATTEMPT || metadata.event !== 'workflow_dispatch'
     || metadata.head_branch !== 'main' || metadata.repository?.full_name !== 'git-malu/AnyWear-E2E'
     || !/^[a-f0-9]{40}$/.test(metadata.head_sha ?? '')

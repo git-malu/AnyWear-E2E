@@ -207,6 +207,19 @@ snapshots contain baseline policy values and must remain restricted artifacts; t
 exclude passwords, bearer tokens, and signed URLs. Runner-loss snapshots are uploaded
 before subsequent mutations, not only by the final `always()` step.
 
+Every durable save uploads an immutable three-digit snapshot (`001` through `400`).
+At the shared hard bound, snapshots plus the final outcome use 401 artifacts, leaving
+99 slots under GitHub's 500-artifact per-job limit. Cloud-mocked production orchestration
+measures 197 saves / 31 helpers for an initially unpaused baseline and 202 / 32 for a
+paused baseline. Replaying the snapshot-150 interruption in a fresh recovery run needs
+97 or 107 uploads respectively, with its own counter. All snapshots remain parseable
+under the 262144-byte and 100-helper record limits; observed maximum size is below 91 KB.
+These are source regression measurements, not Beta or timing evidence. At an assumed
+5 seconds per artifact, 202 sequential uploads add about 16.8 minutes, in addition to
+the 14.7-minute terminal stability waits and cloud operations. The 60-minute workflow
+deadline still needs live qualification; a larger snapshot allowance does not guarantee
+that deadline. Exhaustion or upload failure fails closed before subsequent mutation.
+
 The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
 browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes
 the static build to the Beta PlatformStack's CloudFront distribution; set `BETA_CLIENT_URL`
