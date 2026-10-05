@@ -9,8 +9,7 @@ on:
         type: string
       provider_failure_fixture:
         description: Approved provider-failure-*.json manifest supplied by the protected Beta operator
-        required: false
-        default: scripts/provider-failure-invalid-image.json
+        required: true
         type: string
 
 permissions:
@@ -130,5 +129,6 @@ jobs:
             runtime-drill-plan.json
             runtime-preflight.json
             runtime-drill-evidence.json
+            runtime-drill-recovery.json
           retention-days: 90
           if-no-files-found: ignore
