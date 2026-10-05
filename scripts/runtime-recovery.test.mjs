@@ -51,6 +51,92 @@ test('commit-before-save and already absent Cognito reconstruct exact original h
   assert.equal(h.snapshots.at(-1).oneShots[0].deregistered, true);
 });
 
+test('Cognito absence is freshly checked and durably saved before helper teardown', async () => {
+  const h = oneShotHarness();
+  const cognito = h.io.cognitoSend;
+  let authoritativeAbsence = false;
+  h.io.cognitoSend = async (command) => {
+    assert.deepEqual(command.input, { UserPoolId: h.scope.userPoolId, Username: h.scope.cognitoUsername });
+    try { return await cognito(command); }
+    catch (error) {
+      if (error.name === 'UserNotFoundException') authoritativeAbsence = true;
+      throw error;
+    }
+  };
+  const save = h.io.saveRecovery;
+  h.io.saveRecovery = async (scope) => {
+    if (scope.ownedCleanupCompleted) assert.equal(authoritativeAbsence, true);
+    return save(scope);
+  };
+  const aws = h.io.aws;
+  h.io.aws = async (args) => {
+    if (args[1] === 'deregister-task-definition') assert.equal(h.snapshots.at(-1).ownedCleanupCompleted, true);
+    return aws(args);
+  };
+  assert.equal((await recoverRuntimeRecord(parseRuntimeRecovery(JSON.stringify(recordFor(h))), h.io, environment, async () => {})).recovered, true);
+  assert.deepEqual(h.calls.filter(([name]) => name.startsWith('Admin')).map(([name]) => name),
+    ['AdminGetUserCommand', 'AdminDeleteUserCommand', 'AdminGetUserCommand']);
+});
+
+for (const response of ['retained', 'lookup-error', 'undefined', 'null', 'partial', 'delete-not-found']) {
+  test(`Cognito post-delete ${response} withholds cleanup completion and retains exact intent`, async () => {
+    const h = oneShotHarness();
+    const cognito = h.io.cognitoSend;
+    let deleted = false;
+    h.io.cognitoSend = async (command) => {
+      assert.deepEqual(command.input, { UserPoolId: h.scope.userPoolId, Username: h.scope.cognitoUsername });
+      if (command.constructor.name === 'AdminDeleteUserCommand') {
+        assert.deepEqual(h.snapshots.at(-1).cognitoDeletionIntent,
+          { sub: h.scope.subject, email: h.scope.email, username: h.scope.cognitoUsername });
+        deleted = true;
+        if (response === 'delete-not-found') throw Object.assign(new Error('delete reports absent'), { name: 'UserNotFoundException' });
+        return {};
+      }
+      if (!deleted || response === 'retained' || response === 'delete-not-found') return cognito(command);
+      if (response === 'lookup-error') throw Object.assign(new Error('lookup unavailable'), { name: 'InternalErrorException' });
+      return response === 'undefined' ? undefined : response === 'null' ? null : {};
+    };
+    await assert.rejects(recoverRuntimeRecord(parseRuntimeRecovery(JSON.stringify(recordFor(h))), h.io, environment, async () => {}),
+      /absence is not authoritative|lookup unavailable/);
+    assert.equal(deleted, true);
+    assert.equal(h.snapshots.at(-1).ownedCleanupCompleted, false);
+    assert.equal(h.snapshots.at(-1).cognitoDeletionIntent.username, h.scope.cognitoUsername);
+    assert.ok(!h.calls.some((args) => args[1] === 'deregister-task-definition'));
+  });
+}
+
+for (const response of ['reappeared', 'lookup-error']) {
+  test(`initial Cognito absence followed by ${response} cannot authorize restoration`, async () => {
+    const h = oneShotHarness();
+    const cognito = h.io.cognitoSend;
+    let lookups = 0;
+    h.io.cognitoSend = async (command) => {
+      assert.equal(command.constructor.name, 'AdminGetUserCommand');
+      assert.deepEqual(command.input, { UserPoolId: h.scope.userPoolId, Username: h.scope.cognitoUsername });
+      if (++lookups === 1) throw Object.assign(new Error('initially absent'), { name: 'UserNotFoundException' });
+      if (response === 'lookup-error') throw new Error('lookup unavailable');
+      return cognito(command);
+    };
+    await assert.rejects(recoverRuntimeRecord(parseRuntimeRecovery(JSON.stringify(recordFor(h))), h.io, environment, async () => {}),
+      /absence is not authoritative|lookup unavailable/);
+    assert.equal(lookups, 2);
+    assert.equal(h.snapshots.at(-1).ownedCleanupCompleted, false);
+    assert.equal(h.snapshots.at(-1).cognitoDeletionIntent.username, h.scope.cognitoUsername);
+    assert.ok(!h.calls.some((args) => args[1] === 'deregister-task-definition'));
+  });
+}
+
+test('successful empty Cognito lookup is not an absence proof and refuses deletion', async () => {
+  for (const response of [undefined, null, {}]) {
+    const h = oneShotHarness();
+    let calls = 0;
+    h.io.cognitoSend = async (command) => { calls++; assert.equal(command.constructor.name, 'AdminGetUserCommand'); return response; };
+    await assert.rejects(recoverRuntimeRecord(parseRuntimeRecovery(JSON.stringify(recordFor(h))), h.io, environment, async () => {}), /identity drift/);
+    assert.equal(calls, 1);
+    assert.ok(!h.snapshots.some((scope) => scope.ownedCleanupCompleted));
+  }
+});
+
 test('delete-before-rollback only omits the known message after exact original helper deletion proof', async () => {
   const h = oneShotHarness();
   h.scope.knownDLQMessageId = { taskId: h.request.taskId, messageId: h.request.itemId };

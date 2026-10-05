@@ -16,6 +16,7 @@ export function oneShotHarness() {
   const tasks = new Map();
   const logs = new Map();
   const snapshots = [];
+  let userExists = true;
   const io = {
     async saveRecovery(value) { snapshots.push(structuredClone(value)); },
     async sleep() {},
@@ -37,6 +38,9 @@ export function oneShotHarness() {
     },
     async cognitoSend(command) {
       calls.push([command.constructor.name]);
+      if (command.constructor.name === 'AdminDeleteUserCommand') { userExists = false; return {}; }
+      if (command.constructor.name !== 'AdminGetUserCommand') throw new Error('Unexpected mock Cognito operation');
+      if (!userExists) throw Object.assign(new Error('absent'), { name: 'UserNotFoundException' });
       return { Username: scope.cognitoUsername, UserAttributes: [{ Name: 'sub', Value: scope.subject }, { Name: 'email', Value: scope.email }] };
     },
   };

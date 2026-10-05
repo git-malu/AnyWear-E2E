@@ -107,11 +107,12 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
   scope.ownedCleanupCompleted = false;
   scope.databaseCleanupCompleted = false;
   let captured;
+  let initiallyAbsent = false;
   try { captured = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId, Username: user.username })); }
-  catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
-  if (captured) {
-    const attributes = Object.fromEntries((captured.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
-    if (captured.Username !== user.username || attributes.sub !== user.sub || attributes.email !== user.email) {
+  catch (error) { if (error?.name !== 'UserNotFoundException') throw error; initiallyAbsent = true; }
+  if (!initiallyAbsent) {
+    const attributes = Object.fromEntries((captured?.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
+    if (captured?.Username !== user.username || attributes.sub !== user.sub || attributes.email !== user.email) {
       throw new Error('Recovery Cognito identity drift; all deletions refused');
     }
   }
@@ -147,12 +148,16 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
     catch (error) { if (/Not Found|404/.test(error.message)) absent = true; else throw error; }
     if (!absent) throw new Error('Recovery captured S3 object remains after exact deletion');
   }
-  if (captured) {
-    scope.cognitoDeletionIntent = { sub: user.sub, email: user.email, username: user.username };
-    if (io.saveRecovery) await io.saveRecovery(scope);
+  scope.cognitoDeletionIntent = { sub: user.sub, email: user.email, username: user.username };
+  if (io.saveRecovery) await io.saveRecovery(scope);
+  if (!initiallyAbsent) {
     try { await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: user.username })); }
     catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
   }
+  let identityAbsent = false;
+  try { await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId, Username: user.username })); }
+  catch (error) { if (error?.name !== 'UserNotFoundException') throw error; identityAbsent = true; }
+  if (!identityAbsent) throw new Error('Recovery Cognito identity absence is not authoritative; restoration refused');
   scope.ownedCleanupCompleted = true;
   if (io.saveRecovery) await io.saveRecovery(scope);
   await restoreNonPaidRuntime({ scope }, io, waitStable);

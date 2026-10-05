@@ -65,7 +65,7 @@ for (const suspended of [false, true]) {
     const result = await recovery.adapter.recoverOwnedRuntime(record);
     assert.deepEqual(result, { recovered: true, run_scope: h.environment.RUNTIME_DRILL_RUN_SCOPE });
     const saves = h.writes.length - beforeWrites;
-    assert.equal(saves, suspended ? 108 : 85);
+    assert.equal(saves, suspended ? 109 : 86);
     const recoveryUploads = h.uploads.filter((upload) => upload.name.startsWith('beta-runtime-recovery-124-1-'));
     assert.equal(recoveryUploads.length, saves);
     assert.ok(recoveryUploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
@@ -118,3 +118,42 @@ test('an awaited recovery upload failure prevents starting the next owned helper
   assert.equal(h.mutations.length, 0);
   verifySnapshots(h);
 });
+
+for (const boundary of ['retained-after-delete', 'post-delete-lookup-error', 'initially-absent-then-reappeared']) {
+  test(`production recovery keeps Beta suspended without baseline restore on ${boundary}`, async () => {
+    const h = runtimeCloudHarness({ originalUploadLimit: 150 });
+    await assert.rejects(h.execute(), /Mocked original snapshot upload exhausted/);
+    const record = parseRuntimeRecovery(h.uploads.at(-1).json);
+    const recovery = h.makeAdapter({ ...h.environment, GITHUB_RUN_ID: '126' });
+    let lookups = 0;
+    let deletes = 0;
+    let terminalMutationCount;
+    recovery.io.cognitoSend = async (command) => {
+      assert.deepEqual(command.input, { UserPoolId: record.user_pool_id, Username: record.users[0].username });
+      if (command.constructor.name === 'AdminDeleteUserCommand') { deletes++; return {}; }
+      assert.equal(command.constructor.name, 'AdminGetUserCommand');
+      lookups++;
+      if (lookups === 1 && boundary === 'initially-absent-then-reappeared') {
+        throw Object.assign(new Error('initially absent'), { name: 'UserNotFoundException' });
+      }
+      if (lookups === 2) {
+        terminalMutationCount = h.mutations.length;
+        if (boundary === 'post-delete-lookup-error') throw new Error('lookup unavailable');
+      }
+      return { Username: record.users[0].username, UserAttributes: [
+        { Name: 'sub', Value: record.users[0].sub }, { Name: 'email', Value: record.users[0].email },
+      ] };
+    };
+    await assert.rejects(recovery.adapter.recoverOwnedRuntime(record), /absence is not authoritative|lookup unavailable/);
+    assert.equal(lookups, 2);
+    assert.equal(deletes, boundary === 'initially-absent-then-reappeared' ? 0 : 1);
+    assert.equal(h.mutations.length, terminalMutationCount);
+    assert.equal(h.policy.admission_suspended.Value, 'true');
+    const final = parseRuntimeRecovery(h.uploads.at(-1).json);
+    assert.equal(final.owned_cleanup_completed, false);
+    assert.equal(final.runtime_window.restored, false);
+    assert.deepEqual(final.cognito_deletion_intent, record.users[0]);
+    assert.ok(final.one_shots.some((operation) => !operation.deregistered));
+    verifySnapshots(h);
+  });
+}
