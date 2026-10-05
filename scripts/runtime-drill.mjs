@@ -13,6 +13,7 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const DRILL_ID_PATTERN = /^beta-runtime-[a-z0-9-]+$/;
 const FIXTURE_MANIFEST_PATTERN = /^provider-failure-[a-z0-9-]+\.json$/;
 const APPROVED_PROVIDER_FIXTURE_SOURCE = /^beta-provider-(?:timeout|invalid-image)$/;
+const RUN_SCOPE_PATTERN = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 const REQUIRED_DRILLS = [
   'accepted-task-restart',
   'multi-replica-sse',
@@ -91,6 +92,9 @@ export function assertRuntimeDrillExecutionEnvironment(environment = process.env
     || environment.RUNTIME_DRILL_SERVICE_SHA !== compatibility?.service?.sha) {
     throw new Error('Runtime mutations require Client and Service pins to match compatibility.json');
   }
+  if (!RUN_SCOPE_PATTERN.test(environment.RUNTIME_DRILL_RUN_SCOPE ?? '')) {
+    throw new Error('Runtime mutations require a bounded RUNTIME_DRILL_RUN_SCOPE');
+  }
   assertRuntimeDrillMutationConfirmation(environment);
   if (!DRILL_ID_PATTERN.test(environment.RUNTIME_DRILL_ID ?? '')) {
     throw new Error('Runtime mutations require RUNTIME_DRILL_ID=beta-runtime-<unique-id>');
@@ -122,6 +126,9 @@ export async function readProviderFailureFixture(fixturePath) {
     || !APPROVED_PROVIDER_FIXTURE_SOURCE.test(fixture.source)
     || fixture.approved !== true || typeof fixture.image_path !== 'string') {
     throw new Error('Provider failure fixture must be an approved external failure image and have no application backdoor');
+  }
+  if (!fixture.image_path.startsWith('tests/fixtures/') || fixture.image_path.includes('..')) {
+    throw new Error('Provider failure fixture image must be checked in under tests/fixtures');
   }
   const image = await stat(fixture.image_path).catch(() => undefined);
   if (!image?.isFile()) throw new Error('Provider failure fixture image does not exist');
@@ -368,6 +375,9 @@ async function collectPreflight(config, compatibility) {
     cluster: platformOutputs.EcsClusterName,
     apiService: workloadOutputs.ApiServiceName,
     workerService: workloadOutputs.WorkerServiceName,
+    userPoolId: platformOutputs.UserPoolId,
+    userPoolClientId: platformOutputs.UserPoolClientId,
+    bucket: platformOutputs.WardrobeBucketName,
     queues: {
       vto: platformOutputs.VtoQueueUrl,
       autoTagging: platformOutputs.AutoTaggingQueueUrl,
@@ -379,6 +389,9 @@ async function collectPreflight(config, compatibility) {
     cluster: 'ECS cluster',
     apiService: 'API service',
     workerService: 'worker service',
+    userPoolId: 'Cognito user pool',
+    userPoolClientId: 'Cognito user pool client',
+    bucket: 'Wardrobe bucket',
     'queues.vto': 'VTO queue',
     'queues.autoTagging': 'auto-tagging queue',
     'queues.vtoDlq': 'VTO DLQ',
@@ -446,7 +459,7 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
 } = {}) {
   const config = assertRuntimeDrillExecutionEnvironment(environment, compatibility);
   assertRuntimeDrillExecutorAdapter(adapter);
-  await fixtureReader(environment.RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE);
+  const providerFixture = await fixtureReader(environment.RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE);
   const preflight = await preflightCollector(config, compatibility);
   if (!preflight.intake_open) throw new Error('Task-bearing runtime drills require /anywear/beta/intake_open=true');
 
@@ -454,7 +467,8 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
   let result;
   let operationError;
   try {
-    scope = await adapter.createSyntheticAccount({ config, marker: config.drillId });
+    scope = await adapter.createSyntheticAccount({ config, marker: config.drillId, stack: preflight.stack });
+    scope.deployment = preflight.deployment;
     const restart = await adapter.runWardrobeApiFlow({ scope, marker: config.drillId });
     const replacement = await adapter.replaceAndRestoreEcs({ stack: preflight.stack, scope, marker: config.drillId });
     const replica = await adapter.captureReplicaAttribution({ scope, marker: config.drillId, replacement });
@@ -462,9 +476,10 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
       || new Set(replica.stream_task_arns).size < 2) {
       throw new Error('Runtime executor refused SSE evidence without two distinct request-attributed ECS replicas');
     }
-    verifyRestartDrillEvidence(restart);
+    const restartEvidence = replacement.restart_evidence ?? restart;
+    verifyRestartDrillEvidence(restartEvidence);
     verifyReplicaDrillEvidence(replica);
-    const failure = await adapter.runProviderFailureFixture({ scope, marker: config.drillId });
+    const failure = await adapter.runProviderFailureFixture({ scope, marker: config.drillId, fixture: providerFixture });
     const retry = await adapter.collectRetryEvidence({ scope, marker: config.drillId, failure });
     verifyRetryDrillEvidence(retry);
     result = {
@@ -478,7 +493,7 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
         service_image_digest: preflight.deployment.service.image_digest,
       },
       drills: [
-        { id: 'accepted-task-restart', status: 'passed', evidence: restart },
+        { id: 'accepted-task-restart', status: 'passed', evidence: restartEvidence },
         { id: 'multi-replica-sse', status: 'passed', evidence: replica },
         { id: 'retry-visibility-dlq', status: 'passed', evidence: retry },
       ],

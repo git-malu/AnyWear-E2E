@@ -9,7 +9,8 @@ on:
         type: string
       provider_failure_fixture:
         description: Approved provider-failure-*.json manifest supplied by the protected Beta operator
-        required: true
+        required: false
+        default: scripts/provider-failure-invalid-image.json
         type: string
 
 permissions:
@@ -41,14 +42,38 @@ jobs:
       RUNTIME_DRILL_ID: beta-runtime-${{ github.run_id }}-${{ github.run_attempt }}
       RUNTIME_DRILL_E2E_SHA: ${{ github.sha }}
       RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE: ${{ inputs.provider_failure_fixture }}
-      RUNTIME_DRILL_ADAPTER_MODULE: ${{ vars.RUNTIME_DRILL_ADAPTER_MODULE }}
+      RUNTIME_DRILL_ADAPTER_MODULE: ./beta-runtime-adapter.mjs
       RUNTIME_DRILL_EVIDENCE_PATH: runtime-drill-evidence.json
       RUNTIME_PREFLIGHT_OUTPUT_PATH: runtime-preflight.json
+      E2E_SERVICE_CHECKOUT: AnyWear-Service
 
     steps:
       - name: Checkout reviewed E2E main revision
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
+
+      - name: Generate repository token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Load pinned Service revision
+        id: compatibility
+        shell: bash
+        run: echo "service_sha=$(jq -r '.service.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned Service cleanup helper
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Service
+          ref: ${{ steps.compatibility.outputs.service_sha }}
+          path: AnyWear-Service
+          submodules: recursive
+          token: ${{ steps.generate-token.outputs.token }}
           persist-credentials: false
 
       - name: Setup pnpm
@@ -74,6 +99,8 @@ jobs:
           {
             echo "RUNTIME_DRILL_CLIENT_SHA=$(jq -r '.client.sha' compatibility.json)"
             echo "RUNTIME_DRILL_SERVICE_SHA=$(jq -r '.service.sha' compatibility.json)"
+            echo "SERVICE_COMMIT_SHA=$(jq -r '.service.sha' compatibility.json)"
+            echo "RUNTIME_DRILL_RUN_SCOPE=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA:0:16}"
           } >> "$GITHUB_ENV"
 
       - name: Configure protected Beta AWS credentials
