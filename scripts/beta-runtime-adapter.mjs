@@ -1,8 +1,19 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { prepareNonPaidRuntime, restoreNonPaidRuntime, switchNonPaidMode } from './nonpaid-runtime-controls.mjs';
+import { auditRequest, assertStableAudits, extractAuditTaskBinding,
+  TERMINAL_STABILITY_MS, validateTaskAudit } from './runtime-task-audit.mjs';
+import { cleanupOneShotDefinitions, runOwnedOneShot } from './runtime-one-shot.mjs';
+import { collectCleanupEvidence, readOneShotLog, validateCleanupEvidence } from './runtime-one-shot-logs.mjs';
+import { activateRuntimeWindow, pauseRuntimeWindow, restoreRuntimeWindow } from './runtime-window-controls.mjs';
+import { recoverRuntimeRecord } from './runtime-recovery.mjs';
+import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
+import { MAX_RECOVERY_SNAPSHOTS, validateRecoverySnapshot } from './runtime-recovery-snapshots.mjs';
+import { captureCreatedIdentity, compensateCreationIdentity, remainingCreationBudget } from './runtime-identity-creation.mjs';
+import { createOneShotRunner } from './runtime-one-shot-runner.mjs';
 import {
   AdminConfirmSignUpCommand,
   AdminCreateUserCommand,
@@ -19,7 +30,6 @@ const SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-
 const EMAIL_PATTERN = /^e2e-beta-([1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16})-0-([a-f0-9]{8})@anywear\.local$/;
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const TASK_ARN_PATTERN = /^arn:aws:ecs:[^:]+:\d+:task\/[^/]+\/[0-9a-f-]+$/;
-const DEFAULT_PASSWORD = 'TestPassword123!';
 const API_LOG_GROUP = '/anywear/beta/api';
 const WORKER_LOG_GROUP = '/anywear/beta/worker';
 
@@ -65,34 +75,108 @@ async function responseJson(response, label) {
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function liveAws(args) {
-  const { stdout } = await exec('aws', [...args, '--output', 'json'], { maxBuffer: 20 * 1024 * 1024 });
-  return parseJson(stdout.trim(), `aws ${args.join(' ')}`);
+  try {
+    const { stdout } = await exec('aws', [...args, '--output', 'json'], { maxBuffer: 20 * 1024 * 1024 });
+    return parseJson(stdout.trim(), `aws ${args[0]} ${args[1]}`);
+  } catch (error) {
+    if (args[0] === 'logs' && args[1] === 'get-log-events' && /ResourceNotFoundException/.test(error.stderr ?? '')) {
+      // Retain only the safe retry classification, never raw CLI argv.
+      throw Object.assign(new Error('Exact one-shot stream is not visible yet'), { name: 'ResourceNotFoundException' });
+    }
+    if (args[0] === 's3api' && args[1] === 'head-object' && /Not Found|404/.test(error.stderr ?? '')) {
+      // eslint-disable-next-line preserve-caught-error -- AWS errors may embed sensitive task-definition argv.
+      throw new Error('Not Found');
+    }
+    // Task-definition input can contain baseline environment values; never print argv/stderr.
+    // eslint-disable-next-line preserve-caught-error -- Do not retain unredacted AWS argv/stderr in recovery failures.
+    throw new Error(`AWS operation failed: ${args[0]} ${args[1]}`);
+  }
 }
 
 function liveIo(environment) {
   const cognito = new CognitoIdentityProviderClient({ region: environment.AWS_REGION ?? 'ap-east-1' });
-  return {
-    async aws(args) { return liveAws(args); },
+  const ownedRunner = createOneShotRunner(environment);
+  const runner = async (args) => {
+    assertLiveRuntimeSourceReady();
+    return ownedRunner(args);
+  };
+  return createOwnedRuntimeIo({
+    async aws(args) {
+      if (['register-task-definition', 'deregister-task-definition', 'update-service', 'stop-task',
+        'receive-message', 'change-message-visibility', 'delete-object'].includes(args[1])) assertLiveRuntimeSourceReady();
+      return liveAws(args);
+    },
     async fetch(url, options) { return fetch(url, options); },
     async sleep(ms) { await delay(ms); },
-    async cognitoSend(command) { return cognito.send(command); },
-    async saveRecovery(scope) {
-      await writeFile(environment.RUNTIME_DRILL_RECOVERY_PATH ?? 'runtime-drill-recovery.json', `${JSON.stringify({
-        record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
-        run_scope: scope.runScope, marker: scope.marker, user_pool_id: scope.userPoolId,
-        users: [{ email: scope.email, sub: scope.subject, username: scope.cognitoUsername }],
-        items: scope.items ?? [], resources: scope.resources ?? [],
-      }, null, 2)}\n`, { mode: 0o600 });
-    },
-    async runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload }) {
-      const { stdout, stderr } = await exec('bash', [
-        '.github/scripts/run-one-shot-task.sh', 'beta', 'tester-cleanup',
-        imageDigest, serviceCommit, '', payload,
-      ], { cwd: path.resolve(checkout), maxBuffer: 20 * 1024 * 1024 });
-      return { stdout, stderr };
+    async cognitoSend(command, options) { assertLiveRuntimeSourceReady(); return cognito.send(command, options); },
+    writeRecoveryFile: writeFile,
+    async uploadRecoveryArtifact(...args) {
+      const { DefaultArtifactClient } = await import('@actions/artifact');
+      return new DefaultArtifactClient().uploadArtifact(...args);
     },
     async close() { cognito.destroy(); },
+  }, runner, environment);
+}
+
+// Compose owned helper execution around external transports without replacing its durability protocol.
+export function createOwnedRuntimeIo(transport, runner, environment) {
+  let snapshotNumber = 0;
+  const io = {
+    aws: transport.aws,
+    fetch: transport.fetch,
+    sleep: transport.sleep,
+    cognitoSend: transport.cognitoSend,
+    close: transport.close,
+    async saveRecovery(scope) {
+      if (environment.GITHUB_ACTIONS === 'true' && snapshotNumber >= MAX_RECOVERY_SNAPSHOTS) {
+        throw new Error('Runtime recovery snapshot budget exhausted');
+      }
+      const recoveryPath = environment.RUNTIME_DRILL_RECOVERY_PATH ?? 'runtime-drill-recovery.json';
+      await transport.writeRecoveryFile(recoveryPath, `${JSON.stringify({
+        schema_version: 2, record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
+        aws_account_id: '650880818323', aws_region: 'ap-east-1',
+        run_scope: scope.runScope, marker: scope.marker, user_pool_id: scope.userPoolId,
+        users: scope.subject ? [{ email: scope.email, sub: scope.subject, username: scope.cognitoUsername }] : [],
+        creation_intent: scope.creationIntent,
+        items: scope.items ?? [], resources: scope.resources ?? [],
+        runtime_control: scope.runtimeControl, known_dlq_message: scope.knownDLQMessageId,
+        owned_cleanup_completed: scope.ownedCleanupCompleted === true,
+        runtime_window: scope.runtimeWindow, one_shots: scope.oneShots ?? [],
+        stack: scope.stack, service_url: scope.config.serviceUrl, deployment: scope.deployment,
+        database_cleanup_completed: scope.databaseCleanupCompleted === true, cleanup_evidence: scope.cleanupEvidence,
+        cognito_deletion_intent: scope.cognitoDeletionIntent,
+        known_dlq_deletion_evidence: scope.knownDLQDeletionEvidence,
+      }, null, 2)}\n`, { mode: 0o600 });
+      if (environment.GITHUB_ACTIONS === 'true') {
+        const snapshot = validateRecoverySnapshot(String(++snapshotNumber).padStart(3, '0'));
+        await transport.uploadRecoveryArtifact(
+          `beta-runtime-recovery-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${snapshot}`,
+          [path.resolve(recoveryPath)], path.dirname(path.resolve(recoveryPath)), { retentionDays: 90 });
+      }
+    },
+    async runOneShotCleanup({ scope, payload }) {
+      const result = await runOwnedOneShot(io, scope, 'tester-cleanup', '', payload, runner);
+      scope.cleanupEvidence = await collectCleanupEvidence(io, scope, result.operation);
+      await io.saveRecovery(scope);
+      return scope.cleanupEvidence;
+    },
+    async runLifecycle({ scope, action, payload }) {
+      return runOwnedOneShot(io, scope, 'lifecycle', action, payload, runner);
+    },
+    async auditRuntimeWindow(args) {
+      return io.auditOwnedTask(args);
+    },
+    async auditOwnedTask({ scope, request }) {
+      const { stdout, operation } = await runOwnedOneShot(io, scope, 'task-audit', '', JSON.stringify(request), runner);
+      const binding = extractAuditTaskBinding(stdout);
+      if (binding.taskArn !== operation.proof.task_arn || binding.logStream !== operation.proof.log_stream) throw new Error('Audit stdout/log proof disagrees');
+      const { event } = await readOneShotLog(io, operation.proof,
+        request.mode === 'window-preflight' ? 'durable-runtime-window-audit' : 'durable-task-audit');
+      if (request.mode !== 'window-preflight') validateTaskAudit(event, request);
+      return { ...event, extraction: operation.proof };
+    },
   };
+  return io;
 }
 
 function ensureTaskArns(value, label) {
@@ -258,33 +342,34 @@ async function readTerminalStream(stream) {
   }
 }
 
-async function createSyntheticAccount({ config, marker, stack }, io, environment) {
+async function createSyntheticAccount({ config, marker, stack, deployment }, io, environment) {
   if (typeof io.auditOwnedTask !== 'function') {
     throw new Error('Runtime execution requires a reviewed authoritative task audit before any cloud mutation');
   }
   const runScope = boundedRunScope(environment);
+  if (deployment?.service?.source_commit !== environment.RUNTIME_DRILL_SERVICE_SHA
+    || !DIGEST_PATTERN.test(deployment?.service?.image_digest ?? '')) throw new Error('Synthetic setup requires exact pinned deployment before mutation');
   const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
   const email = `e2e-beta-${runScope}-0-${suffix}@anywear.local`;
-  const password = environment.RUNTIME_DRILL_PASSWORD ?? DEFAULT_PASSWORD;
+  const password = environment.RUNTIME_DRILL_PASSWORD ?? `Aa1!${randomBytes(32).toString('base64url')}`;
   const userPoolId = required(stack?.userPoolId ?? environment.USER_POOL_ID, 'Cognito user pool id');
   const clientId = required(stack?.userPoolClientId ?? environment.VITE_COGNITO_CLIENT_ID, 'Cognito user pool client id');
-  let created = false;
-  let capturedSubject;
-  let capturedUsername;
+  if (typeof io.saveRecovery !== 'function') throw new Error('Synthetic creation requires durable recovery persistence');
+  try {
+    await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
+    throw new Error('Synthetic creation email already exists; creation refused');
+  } catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
+  const scope = { config, marker, runScope, stack, deployment, email, userPoolId, userPoolClientId: clientId,
+    resources: [], items: [], requestIds: [],
+    creationIntent: { run_scope: runScope, user_pool_id: userPoolId, email, requested_at: new Date().toISOString(), stage: 'requested' } };
+  await io.saveRecovery(scope);
+  const createBudget = remainingCreationBudget(scope.creationIntent);
   try {
     const createdUser = await io.cognitoSend(new AdminCreateUserCommand({
       UserPoolId: userPoolId, Username: email, MessageAction: 'SUPPRESS',
       UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }, { Name: 'custom:e2e_bootstrap', Value: 'true' }],
-    }));
-    created = true;
-    const createdAttributes = Object.fromEntries((createdUser.User?.Attributes ?? []).map(({ Name, Value }) => [Name, Value]));
-    capturedSubject = createdAttributes.sub;
-    capturedUsername = createdUser.User?.Username;
-    if (io.saveRecovery) await io.saveRecovery({ config, marker, runScope, stack, email,
-      subject: capturedSubject, cognitoUsername: capturedUsername, userPoolId });
-    if (createdAttributes.email !== email || !SUBJECT_PATTERN.test(capturedSubject ?? '') || !capturedUsername) {
-      throw new Error('Cognito creation did not capture an immutable owned identity');
-    }
+    }), { abortSignal: AbortSignal.timeout(createBudget) });
+    const { subject: capturedSubject, cognitoUsername: capturedUsername } = await captureCreatedIdentity(io, scope, createdUser);
     await io.cognitoSend(new AdminSetUserPasswordCommand({ UserPoolId: userPoolId, Username: capturedUsername, Password: password, Permanent: true }));
     try { await io.cognitoSend(new AdminConfirmSignUpCommand({ UserPoolId: userPoolId, Username: capturedUsername })); } catch (error) {
       if (!/NotAuthorizedException|already confirmed/i.test(error?.name ?? error?.message ?? '')) throw error;
@@ -299,26 +384,14 @@ async function createSyntheticAccount({ config, marker, stack }, io, environment
     }));
     const accessToken = auth.AuthenticationResult?.AccessToken;
     required(accessToken, 'Cognito access token');
-    const scope = {
-      config, marker, runScope, stack, accessToken, password,
-      email, subject: attributes.sub, cognitoUsername: capturedUsername, resources: [], requestIds: [],
-      userPoolId, userPoolClientId: clientId,
-    };
-    if (io.saveRecovery) await io.saveRecovery(scope);
+    scope.accessToken = accessToken;
+    scope.creationIntent.stage = 'ready';
+    await io.saveRecovery(scope);
     return scope;
   } catch (error) {
-    if (created) {
-      try {
-        if (!capturedSubject || !capturedUsername) throw new Error('Cognito compensation has no captured immutable identity', { cause: error });
-        const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
-        const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
-        if (attributes.email !== email || attributes.sub !== capturedSubject || user.Username !== capturedUsername) {
-          throw new Error('Cognito compensation ownership check failed', { cause: error });
-        }
-        await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Synthetic Cognito account setup and compensation failed', { cause: cleanupError });
-      }
+    try { await compensateCreationIdentity(io, scope); }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Synthetic Cognito account setup and compensation failed', { cause: cleanupError });
     }
     throw error;
   }
@@ -338,6 +411,8 @@ async function runWardrobeApiFlow({ scope, marker }, io, environment) {
     throw new Error(`Accepted wardrobe task reached ${initial.state.taggingStatus} before replacement; restart evidence refused`);
   }
   scope.taskId = await findTaskIdForItem(io, details.itemId);
+  const execution = await exactExecution(io, scope.taskId, details.itemId);
+  scope.initialExecutionToken = execution.parsed.executionToken;
   scope.stateVersions = initial.versions;
   return {
     task_id: scope.taskId,
@@ -345,7 +420,6 @@ async function runWardrobeApiFlow({ scope, marker }, io, environment) {
     worker_restart: false,
     rolling_deployment: false,
     idempotency_replay_same_response: false,
-    no_duplicate_terminal_effect: false,
     state_versions: initial.versions,
     api_task_arns: [],
     worker_task_arns: [],
@@ -361,10 +435,13 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
   if (apiBefore.taskArns.length < 2) throw new Error('Runtime drill requires at least two API replicas before SSE observation');
   const executionLogs = await logsForTask(io, scope.taskId);
   const executionStreams = executionLogs.filter((entry) => entry.parsed?.event === 'task_execution_started'
-    && entry.parsed?.taskType === 'auto-tagging' && entry.parsed?.resourceId === scope.item.itemId);
+    && entry.parsed?.taskType === 'auto-tagging' && entry.parsed?.resourceId === scope.item.itemId
+    && Number.isInteger(entry.parsed.executionToken) && entry.parsed.executionToken > 0);
   const workerToStop = workerBefore.taskArns.find((arn) => executionStreams.some((entry) =>
     entry.logStreamName?.endsWith(`/${arn.split('/').at(-1)}`)));
   if (!workerToStop) throw new Error('Active task is not attributed to a current worker ECS task; mutation refused');
+  const beforeToken = Math.max(...executionStreams.map((entry) => entry.parsed.executionToken));
+  scope.initialExecutionToken = beforeToken;
   const active = await pollItem(io, scope, scope.item.itemId, { timeoutMs: 15_000 });
   if (active.state.taggingStatus !== 'processing') throw new Error('Task is no longer processing; ECS mutation refused');
   const streams = [];
@@ -398,10 +475,14 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
       throw new Error('Idempotency replay did not return the original accepted response');
     }
     const terminal = await pollItem(io, scope, scope.item.itemId, { terminal: true });
-    const stable = await pollItem(io, scope, scope.item.itemId, { terminal: true, timeoutMs: 15_000 });
-    if (stable.state.taggingStatus !== terminal.state.taggingStatus
-      || stable.state.taggingStateVersion !== terminal.state.taggingStateVersion) {
-      throw new Error('Idempotent terminal observation changed state after replay');
+    if (terminal.state.taggingStatus !== 'ready') throw new Error('Non-paid success fixture did not reach ready');
+    const stable = await observeTerminalStability(io, scope, scope.item, scope.taskId, terminal.state);
+    const finalToken = stable.after.task.execution_token;
+    if (finalToken < beforeToken) throw new Error('Final task execution token regressed');
+    const completionLogs = await logsForTask(io, scope.taskId);
+    if (!completionLogs.some((entry) => entry.parsed.event === 'task_execution_started'
+      && entry.parsed.resourceId === scope.item.itemId && entry.parsed.executionToken === finalToken)) {
+      throw new Error('Final execution token has no exact canonical worker claim event');
     }
     reconnected.push(await openStream(io, scope, scope.item.itemId));
     reconnected.push(await openStream(io, scope, scope.item.itemId));
@@ -420,8 +501,12 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
         worker_restart: workerChanged,
         rolling_deployment: apiChanged && workerChanged,
         idempotency_replay_same_response: true,
-        no_duplicate_terminal_effect: false,
         terminal_snapshot_stable: true,
+        execution_token_before: beforeToken,
+        execution_token_after: finalToken,
+        recovery_kind: finalToken === beforeToken ? 'graceful-drain' : 'takeover',
+        terminal_audit: stable,
+        credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
         state_versions: versions,
         api_task_arns: [...new Set([...apiBefore.taskArns, ...apiAfter.taskArns])],
         worker_task_arns: [...new Set([...workerBefore.taskArns, ...workerAfter.taskArns])],
@@ -486,6 +571,9 @@ async function captureReplicaAttribution({ scope, replacement }, io) {
   if (reconnectIds.length < 2 || reconnectEvents.some((entry) => entry.length === 0)) throw new Error('Replica attribution could not prove two post-replacement reconnects');
   return {
     api_task_arns: ensureTaskArns(apiTaskArns, 'api_task_arns'),
+    api_task_arns_after: replacement.api_task_arns_after,
+    reconnected_request_ids: reconnectIds,
+    item_id: scope.item.itemId,
     stream_task_arns: [...new Set(streamTaskArns)],
     request_attribution: requestIds.map((id, index) => ({ request_id: id, task_arn: streamTaskArns[index] })),
     terminal_observers: replacement.terminal_observers,
@@ -500,9 +588,12 @@ async function captureReplicaAttribution({ scope, replacement }, io) {
 
 async function runProviderFailureFixture({ scope, fixture, marker }, io) {
   asObject(fixture, 'provider failure fixture');
-  if (fixture.application_backdoor !== false || fixture.approved !== true || fixture.source !== 'beta-provider-invalid-image') {
-    throw new Error('Provider failure fixture is not an approved external invalid-image fixture');
+  if (fixture.application_backdoor !== false || fixture.approved !== true || fixture.source !== 'beta-provider-nonpaid-loopback') {
+    throw new Error('Provider failure fixture is not the approved non-paid loopback fixture');
   }
+  await pauseRuntimeWindow(io, scope);
+  await switchNonPaidMode(scope, 'failure', io, waitServiceStable);
+  await activateRuntimeWindow(io, scope);
   if (!fixture.image_path.startsWith('tests/fixtures/') || fixture.image_path.includes('..')) throw new Error('Provider failure fixture image path is not checked in');
   await stat(fixture.image_path);
   const details = await uploadItem(io, scope, fixture.image_path, marker);
@@ -530,8 +621,17 @@ async function inspectQueue(io, queueUrl, taskId) {
 }
 
 async function logsForTask(io, taskId) {
-  const result = await io.aws(['logs', 'filter-log-events', '--log-group-name', WORKER_LOG_GROUP, '--filter-pattern', taskId]);
-  return (result.events ?? []).map((event) => {
+  const events = [];
+  let token;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await io.aws(['logs', 'filter-log-events', '--log-group-name', WORKER_LOG_GROUP, '--filter-pattern', taskId,
+      ...(token ? ['--next-token', token] : [])]);
+    events.push(...(result.events ?? []));
+    if (!result.nextToken) break;
+    if (page === 19 || result.nextToken === token) throw new Error('Canonical worker log pagination incomplete');
+    token = result.nextToken;
+  }
+  return events.map((event) => {
     let parsed;
     try { parsed = JSON.parse(event.message ?? ''); } catch { parsed = {}; }
     return { ...event, parsed };
@@ -562,12 +662,29 @@ async function findTaskIdForItem(io, itemId, timeoutMs = 30_000) {
   throw new Error(`Worker CloudWatch logs did not expose an exact task id for item ${itemId}`);
 }
 
+async function exactExecution(io, taskId, itemId) {
+  const entries = (await logsForTask(io, taskId)).filter((entry) => entry.parsed.event === 'task_execution_started'
+    && entry.parsed.resourceId === itemId && Number.isInteger(entry.parsed.executionToken) && entry.parsed.executionToken > 0);
+  if (!entries.length) throw new Error('Canonical worker logs did not expose an exact task/resource/execution token');
+  return entries.sort((a, b) => b.parsed.executionToken - a.parsed.executionToken)[0];
+}
+
+async function observeTerminalStability(io, scope, details, taskId, state) {
+  if (typeof io.auditOwnedTask !== 'function') throw new Error('Runtime evidence requires an authoritative run-owned durable task audit');
+  const request = auditRequest(scope, details, taskId);
+  const before = validateTaskAudit(await io.auditOwnedTask({ scope, request }), request, state.taggingStatus);
+  if (before.resource.state_version !== state.taggingStateVersion) throw new Error('API/audit state versions disagree');
+  await io.sleep(TERMINAL_STABILITY_MS);
+  const after = validateTaskAudit(await io.auditOwnedTask({ scope, request }), request, state.taggingStatus);
+  return assertStableAudits(before, after);
+}
+
 async function collectRetryEvidence({ scope, failure }, io) {
-  const terminal = await pollItem(io, scope, failure.item_id, { terminal: true, timeoutMs: 180_000 });
+  const terminal = await pollItem(io, scope, failure.item_id, { terminal: true, timeoutMs: 600_000 });
   if (terminal.state.taggingStatus !== 'failed') throw new Error('Provider failure fixture did not reach terminal failed state');
   const started = Date.now();
   let visible = false;
-  while (Date.now() - started < 180_000) {
+  while (Date.now() - started < 600_000) {
     const queue = await io.aws(['sqs', 'get-queue-attributes', '--queue-url', scope.stack.queues.autoTaggingDlq,
       '--attribute-names', 'ApproximateNumberOfMessages']);
     if (Number(queue.Attributes?.ApproximateNumberOfMessages) > 0) { visible = true; break; }
@@ -581,24 +698,33 @@ async function collectRetryEvidence({ scope, failure }, io) {
   const receiveCount = Math.max(0, ...receiveCounts);
   const retryableFailures = workerEvents.filter((event) => event.parsed?.event === 'task_processing_failed'
     && event.parsed?.retryable === true).length;
+  const claims = workerEvents.filter((entry) => entry.parsed.event === 'task_execution_started'
+    && entry.parsed.resourceId === failure.item_id && Number.isInteger(entry.parsed.executionToken)
+    && entry.parsed.executionToken > 0 && /^[^\n]+\/[a-f0-9]{32}$/.test(entry.logStreamName ?? '')
+    && Number.isFinite(entry.timestamp));
   const databaseLeaseRenewed = workerEvents.some((event) => event.parsed?.event === 'task_db_lease_renewed'
-    && event.parsed?.databaseLeaseRenewed === true);
+    && event.parsed?.databaseLeaseRenewed === true && event.parsed.resourceId === failure.item_id
+    && claims.some((claim) => claim.parsed.executionToken === event.parsed.executionToken
+      && claim.logStreamName === event.logStreamName && event.timestamp >= claim.timestamp));
   const sqsVisibilityExtended = workerEvents.some((event) => event.parsed?.event === 'task_sqs_visibility_renewed'
-    && event.parsed?.sqsVisibilityExtended === true);
+    && event.parsed?.sqsVisibilityExtended === true && claims.some((claim) => claim.logStreamName === event.logStreamName
+      && event.timestamp >= claim.timestamp));
   const uniqueDlq = [...new Map(dlqMessages.map((message) => [message.MessageId, message])).values()];
   const dlq = uniqueDlq.find((message) => message.body?.task_id === failure.task_id);
   if (uniqueDlq.length > 1) throw new Error('DLQ observation found duplicate matching task messages');
   if (!dlq) throw new Error('Matching task was not observed in the Beta auto-tagging DLQ');
+  scope.knownDLQMessageId = { taskId: failure.task_id, messageId: dlq.MessageId };
+  if (io.saveRecovery) await io.saveRecovery(scope);
   if (!databaseLeaseRenewed || !sqsVisibilityExtended) {
     throw new Error('Worker CloudWatch logs do not prove successful database lease and SQS visibility renewal; runtime evidence refused');
   }
   if (receiveCount < 3 || retryableFailures < 1) throw new Error('Worker/SQS observations do not prove bounded retries');
-  if (typeof io.auditOwnedTask !== 'function') throw new Error('Runtime evidence requires an authoritative run-owned durable settlement audit; logs cannot prove side effects');
-  const audit = await io.auditOwnedTask({ subject: scope.subject, itemId: failure.item_id, taskId: failure.task_id, runScope: scope.runScope });
-  if (audit?.source !== 'durable-task-audit' || audit.taskId !== failure.task_id || audit.subject !== scope.subject
-    || audit.noDuplicateSideEffects !== true || !Number.isInteger(audit.creditSettlementCount)
-    || audit.creditSettlementCount < 0 || audit.creditSettlementCount > 1) {
-    throw new Error('Run-owned durable settlement audit did not establish single terminal side effects');
+  const details = scope.failure ?? { itemId: failure.item_id, idempotencyKey: failure.idempotency_key };
+  const audit = await observeTerminalStability(io, scope, details, failure.task_id, terminal.state);
+  const token = audit.after.task.execution_token;
+  if (!workerEvents.some((entry) => entry.parsed.event === 'task_execution_started'
+    && entry.parsed.resourceId === failure.item_id && entry.parsed.executionToken === token)) {
+    throw new Error('Terminal failure token lacks an exact canonical worker execution event');
   }
   return {
     task_id: failure.task_id,
@@ -606,8 +732,9 @@ async function collectRetryEvidence({ scope, failure }, io) {
     receive_count: receiveCount,
     database_lease_renewed: true,
     sqs_visibility_extended: true,
-    no_duplicate_side_effects: audit.noDuplicateSideEffects,
-    credit_settlement_count: audit.creditSettlementCount,
+    terminal_audit: audit,
+    credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
+    execution_token: token,
     dlq_message_id: dlq.MessageId,
     terminal_status: 'failed',
     item_id: failure.item_id,
@@ -634,7 +761,8 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
     ?? environment.SERVICE_IMAGE_DIGEST, 'Service image digest');
   if (!DIGEST_PATTERN.test(imageDigest)) throw new Error('Cleanup requires an immutable Service image digest');
   const checkout = required(environment.E2E_SERVICE_CHECKOUT, 'E2E_SERVICE_CHECKOUT');
-  const payload = JSON.stringify({ runScope: scope.runScope, users: [{ sub: scope.subject, email: scope.email }] });
+  const payload = JSON.stringify({ runScope: scope.runScope, users: [{ sub: scope.subject, email: scope.email }],
+    ...(scope.knownDLQMessageId ? { knownDLQMessageId: scope.knownDLQMessageId } : {}) });
   const errors = [];
   const capturedUser = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId,
     Username: scope.cognitoUsername ?? scope.subject }));
@@ -663,7 +791,11 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
   }
   if (errors.length > 0) throw new AggregateError(errors, 'Wardrobe API item cleanup failed; database cleanup was withheld');
   try {
-    await io.runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload });
+    scope.cleanupEvidence = await io.runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload, scope });
+    validateCleanupEvidence(scope.cleanupEvidence, { ...scope, deployment: { service: {
+      source_commit: serviceCommit, image_digest: imageDigest } } });
+    scope.databaseCleanupCompleted = true;
+    if (io.saveRecovery) await io.saveRecovery(scope);
   } catch (error) {
     throw new Error('Pinned Service tester-cleanup failed; Cognito and S3 cleanup were withheld', { cause: error });
   }
@@ -678,16 +810,29 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
     const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
     if (attributes.sub !== scope.subject || attributes.email !== scope.email
       || user.Username !== (scope.cognitoUsername ?? scope.subject)) throw new Error('Cognito ownership changed during cleanup');
+    scope.cognitoDeletionIntent = { sub: scope.subject, email: scope.email, username: user.Username };
+    if (io.saveRecovery) await io.saveRecovery(scope);
     await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: user.Username }));
   } catch (error) {
     if (!/UserNotFoundException/.test(error?.name ?? error?.message ?? '')) errors.push(error);
   }
   if (errors.length) throw new AggregateError(errors, 'Owned runtime resources did not fully clean up');
+  scope.ownedCleanupCompleted = true;
+  if (io.saveRecovery) await io.saveRecovery(scope);
 }
 
-export function createRuntimeDrillAdapter(io = liveIo(process.env), environment = process.env) {
+export function createRuntimeDrillAdapter(io, environment = process.env) {
+  io ??= liveIo(environment);
   return {
     createSyntheticAccount: (args) => createSyntheticAccount(args, io, environment),
+    prepareNonPaidRuntime: (args) => prepareNonPaidRuntime(args, io, environment, waitServiceStable),
+    restoreNonPaidRuntime: (args) => restoreNonPaidRuntime(args, io, waitServiceStable),
+    pauseRuntimeWindow: ({ scope }) => pauseRuntimeWindow(io, scope),
+    restoreRuntimeWindow: async ({ scope }) => {
+      await restoreRuntimeWindow(io, scope);
+      await cleanupOneShotDefinitions(io, scope);
+    },
+    recoverOwnedRuntime: (record) => recoverRuntimeRecord(record, io, environment, waitServiceStable),
     runWardrobeApiFlow: (args) => runWardrobeApiFlow(args, io, environment),
     replaceAndRestoreEcs: (args) => replaceAndRestoreEcs(args, io),
     captureReplicaAttribution: (args) => captureReplicaAttribution(args, io),

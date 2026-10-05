@@ -1,0 +1,139 @@
+name: Beta Runtime Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type beta-runtime-recovery to authorize restore-only recovery
+        required: true
+        type: string
+      exclusive_window:
+        description: Type beta-exclusive-runtime after reserving the original shared Beta window
+        required: true
+        type: string
+      source_run_id:
+        description: Exact original drill or recovery workflow run ID
+        required: true
+        type: string
+      source_run_attempt:
+        description: Exact source workflow attempt
+        required: true
+        type: string
+      source_snapshot:
+        description: Exact immutable three-digit recovery snapshot number (001 to 400)
+        required: true
+        type: string
+      original_run_scope:
+        description: Exact original run scope recorded in the selected recovery snapshot
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: anywear-beta-runtime
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: beta
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+      SOURCE_SNAPSHOT: ${{ inputs.source_snapshot }}
+      ORIGINAL_RUN_SCOPE: ${{ inputs.original_run_scope }}
+      E2E_STAGE: beta
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      RUNTIME_DRILL_CONFIRM: ${{ inputs.confirmation }}
+      RUNTIME_DRILL_EXCLUSIVE_WINDOW: ${{ inputs.exclusive_window }}
+      RUNTIME_DRILL_CONCURRENCY: anywear-beta-runtime
+      RUNTIME_DRILL_E2E_SHA: ${{ github.sha }}
+      RUNTIME_DRILL_ADAPTER_MODULE: ./beta-runtime-adapter.mjs
+      E2E_SERVICE_CHECKOUT: AnyWear-Service
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate bounded artifact inputs
+        run: |
+          node scripts/runtime-recovery-snapshots.mjs
+      - name: Generate repository token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - name: Retain exact source workflow metadata
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh api "repos/git-malu/AnyWear-E2E/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT" > recovery-source-run.json
+      - name: Download exact immutable recovery snapshot
+        uses: actions/download-artifact@v4
+        with:
+          repository: git-malu/AnyWear-E2E
+          github-token: ${{ steps.token.outputs.token }}
+          run-id: ${{ inputs.source_run_id }}
+          name: beta-runtime-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.source_snapshot }}
+          path: recovery-source
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Verify original recovery binding
+        run: node scripts/runtime-recovery-artifact.mjs > recovery-binding.json
+      - name: Load exact reviewed recovery pins
+        id: pins
+        shell: bash
+        run: |
+          echo "service_sha=$(jq -r '.service_sha' recovery-binding.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "RUNTIME_DRILL_RUN_SCOPE=$(jq -r '.run_scope' recovery-binding.json)"
+            echo "RUNTIME_DRILL_ID=$(jq -r '.marker' recovery-binding.json)"
+            echo "RUNTIME_DRILL_SERVICE_SHA=$(jq -r '.service_sha' recovery-binding.json)"
+            echo "RUNTIME_DRILL_CLIENT_SHA=$(jq -r '.client.sha' compatibility.json)"
+            echo "RUNTIME_RECOVERY_SOURCE_COMPLETED=$(jq -r '.source_completed' recovery-binding.json)"
+          } >> "$GITHUB_ENV"
+      - name: Checkout exact Service restore helper
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Service
+          ref: ${{ steps.pins.outputs.service_sha }}
+          path: AnyWear-Service
+          token: ${{ steps.token.outputs.token }}
+          persist-credentials: false
+      - name: Reject incomplete source before AWS credentials
+        run: node --input-type=module -e "import {assertLiveRuntimeSourceReady} from './scripts/runtime-source-readiness.mjs'; assertLiveRuntimeSourceReady();"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Restore captured resources and original private policy only
+        run: pnpm exec node scripts/runtime-drill.mjs --recover recovery-source/runtime-drill-recovery.json
+      - name: Retain recovery outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-runtime-recovery-outcome-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            recovery-source-run.json
+            recovery-binding.json
+            runtime-drill-recovery.json
+          retention-days: 90
+          if-no-files-found: ignore

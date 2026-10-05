@@ -3,6 +3,14 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { collectDeploymentEvidence } from './qualification-record.mjs';
+import { readFencingCiEvidence, verifyFencingCiEvidence } from './runtime-fencing-evidence.mjs';
+import { assertStableAudits, TERMINAL_STABILITY_MS, validateTaskAudit } from './runtime-task-audit.mjs';
+import { parseRuntimeRecovery } from './runtime-recovery.mjs';
+import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
+import { validateOneShotProof } from './runtime-one-shot.mjs';
+import { validateCleanupEvidence } from './runtime-one-shot-logs.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { testerHash } from './runtime-window-controls.mjs';
 
 const exec = promisify(execFile);
 export const TARGET_ACCOUNT = '650880818323';
@@ -12,7 +20,7 @@ const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const DRILL_ID_PATTERN = /^beta-runtime-[a-z0-9-]+$/;
 const FIXTURE_MANIFEST_PATTERN = /^provider-failure-[a-z0-9-]+\.json$/;
-const APPROVED_PROVIDER_FIXTURE_SOURCE = /^beta-provider-(?:timeout|invalid-image)$/;
+const APPROVED_PROVIDER_FIXTURE_SOURCE = /^beta-provider-nonpaid-loopback$/;
 const RUN_SCOPE_PATTERN = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 const REQUIRED_DRILLS = [
   'accepted-task-restart',
@@ -95,6 +103,9 @@ export function assertRuntimeDrillExecutionEnvironment(environment = process.env
   if (!RUN_SCOPE_PATTERN.test(environment.RUNTIME_DRILL_RUN_SCOPE ?? '')) {
     throw new Error('Runtime mutations require a bounded RUNTIME_DRILL_RUN_SCOPE');
   }
+  if (environment.RUNTIME_DRILL_EXCLUSIVE_WINDOW !== 'beta-exclusive-runtime') {
+    throw new Error('Runtime mutations require a manager-reserved beta-exclusive-runtime window');
+  }
   assertRuntimeDrillMutationConfirmation(environment);
   if (!DRILL_ID_PATTERN.test(environment.RUNTIME_DRILL_ID ?? '')) {
     throw new Error('Runtime mutations require RUNTIME_DRILL_ID=beta-runtime-<unique-id>');
@@ -104,6 +115,13 @@ export function assertRuntimeDrillExecutionEnvironment(environment = process.env
     throw new Error('Runtime mutations require full pinned Client and Service commit SHAs');
   }
   return { ...config, drillId: environment.RUNTIME_DRILL_ID, concurrency: RUNTIME_DRILL_CONCURRENCY };
+}
+
+export function assertRuntimeRecoveryExecutionEnvironment(environment, compatibility, record) {
+  if (environment.RUNTIME_DRILL_CONFIRM !== 'beta-runtime-recovery') throw new Error('Recovery requires beta-runtime-recovery confirmation');
+  assertRuntimeDrillExecutionEnvironment({ ...environment, RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill' }, compatibility);
+  if (environment.RUNTIME_DRILL_RUN_SCOPE !== record.run_scope || environment.RUNTIME_DRILL_ID !== record.marker
+    || record.deployment.service.source_commit !== compatibility.service.sha) throw new Error('Recovery original run/marker/Service pins disagree');
 }
 
 export async function readProviderFailureFixture(fixturePath) {
@@ -124,8 +142,10 @@ export async function readProviderFailureFixture(fixturePath) {
   if (fixture?.schema_version !== 1 || fixture.kind !== 'provider-failure'
     || fixture.application_backdoor !== false || typeof fixture.source !== 'string'
     || !APPROVED_PROVIDER_FIXTURE_SOURCE.test(fixture.source)
-    || fixture.approved !== true || typeof fixture.image_path !== 'string') {
-    throw new Error('Provider failure fixture must be an approved external failure image and have no application backdoor');
+    || fixture.approved !== true || typeof fixture.image_path !== 'string'
+    || fixture.delay_ms !== 45_000 || fixture.failure_status !== 500 || fixture.forwards_requests !== false
+    || fixture.provider_billing_applicability !== 'not-applicable') {
+    throw new Error('Provider failure fixture must be the approved non-paid loopback fixture and have no application backdoor');
   }
   if (!fixture.image_path.startsWith('tests/fixtures/') || fixture.image_path.includes('..')) {
     throw new Error('Provider failure fixture image must be checked in under tests/fixtures');
@@ -172,7 +192,8 @@ export function buildRuntimeDrillPlan(config, stack = {}) {
         ],
         pass_conditions: [
           'The item id and original idempotency response are unchanged.',
-          'State versions never decrease and exactly one terminal result is visible.',
+          'State versions never decrease; exact current terminal task/resource snapshots remain stable over 440000ms (lease + provider deadline + grace).',
+          'Same token proves graceful drain; an increased token identifies takeover. Ordinary StopTask is not stale-worker or missed-heartbeat proof.',
           'The replacement task ARNs and CloudWatch logs are retained with the evidence.',
         ],
         cleanup: 'Delete the item and Cognito user after the terminal observation; restore service desired counts and autoscaling.',
@@ -188,7 +209,7 @@ export function buildRuntimeDrillPlan(config, stack = {}) {
         pass_conditions: [
           'At least two distinct API task ARNs delivered or reconciled the same resource.',
           'Both observers reach the same terminal state and monotonic state version.',
-          'A reconnect after task replacement receives the database snapshot without duplicate terminal effects.',
+          'A reconnect after task replacement receives the same terminal database snapshot/version.',
         ],
         cleanup: 'Close both streams and delete the unique item and user.',
       },
@@ -253,7 +274,15 @@ export function verifyRestartDrillEvidence(evidence) {
   requireBoolean(evidence.worker_restart, 'accepted-task-restart worker_restart');
   requireBoolean(evidence.rolling_deployment, 'accepted-task-restart rolling_deployment');
   requireBoolean(evidence.idempotency_replay_same_response, 'accepted-task-restart idempotency_replay_same_response');
-  requireBoolean(evidence.no_duplicate_terminal_effect, 'accepted-task-restart no_duplicate_terminal_effect');
+  if ('no_duplicate_terminal_effect' in evidence) throw new Error('Current snapshots do not prove terminal-effect history');
+  verifyTerminalAuditEvidence(evidence, 'ready');
+  requireInteger(evidence.execution_token_before, 'execution_token_before', { minimum: 1 });
+  requireInteger(evidence.execution_token_after, 'execution_token_after', { minimum: 1 });
+  if (evidence.execution_token_after < evidence.execution_token_before
+    || evidence.execution_token_after !== evidence.terminal_audit.after.task.execution_token
+    || evidence.recovery_kind !== (evidence.execution_token_after === evidence.execution_token_before ? 'graceful-drain' : 'takeover')) {
+    throw new Error('Restart recovery classification must match the exact before/after execution tokens');
+  }
   if (!Array.isArray(evidence.state_versions) || evidence.state_versions.length < 2) {
     throw new Error('accepted-task-restart state_versions must contain at least 2 values');
   }
@@ -275,6 +304,20 @@ export function verifyReplicaDrillEvidence(evidence) {
   requireBoolean(evidence.reconnected_after_replacement, 'multi-replica-sse reconnected_after_replacement');
   requireBoolean(evidence.both_observers_terminal, 'multi-replica-sse both_observers_terminal');
   requireBoolean(evidence.monotonic_state_versions, 'multi-replica-sse monotonic_state_versions');
+  const arn = /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/;
+  if ([...evidence.api_task_arns, ...evidence.stream_task_arns].some((value) => !arn.test(value))
+    || !Array.isArray(evidence.api_task_arns_after) || evidence.api_task_arns_after.some((value) => !evidence.api_task_arns.includes(value))
+    || !Array.isArray(evidence.request_attribution) || evidence.request_attribution.length < 4
+    || new Set(evidence.request_attribution.map((entry) => entry.request_id)).size !== evidence.request_attribution.length
+    || evidence.request_attribution.some((entry) => typeof entry.request_id !== 'string' || !entry.request_id
+      || !evidence.api_task_arns.includes(entry.task_arn) || !evidence.stream_task_arns.includes(entry.task_arn))
+    || !Array.isArray(evidence.reconnected_request_ids) || evidence.reconnected_request_ids.length !== 2
+    || new Set(evidence.reconnected_request_ids).size !== 2) throw new Error('Replica raw request/task attribution is not exact');
+  const after = evidence.reconnected_request_ids.map((id) => evidence.request_attribution.find((entry) => entry.request_id === id)?.task_arn);
+  if (new Set(after).size !== 2 || after.some((value) => !evidence.api_task_arns_after.includes(value))) throw new Error('Reconnects did not use two distinct post-replacement API tasks');
+  if (!Array.isArray(evidence.terminal_observers) || evidence.terminal_observers.length !== 2
+    || evidence.terminal_observers.some((entry) => !['ready', 'failed'].includes(entry.status) || !Number.isInteger(entry.version) || entry.version < 1)
+    || !isDeepStrictEqual(evidence.terminal_observers[0], evidence.terminal_observers[1])) throw new Error('Replica observers have inconsistent terminal snapshots');
 }
 
 export function verifyRetryDrillEvidence(evidence) {
@@ -283,13 +326,37 @@ export function verifyRetryDrillEvidence(evidence) {
   requireInteger(evidence.receive_count, 'retry-visibility-dlq receive_count', { minimum: 3 });
   requireBoolean(evidence.database_lease_renewed, 'retry-visibility-dlq database_lease_renewed');
   requireBoolean(evidence.sqs_visibility_extended, 'retry-visibility-dlq sqs_visibility_extended');
-  requireBoolean(evidence.no_duplicate_side_effects, 'retry-visibility-dlq no_duplicate_side_effects');
-  requireInteger(evidence.credit_settlement_count, 'retry-visibility-dlq credit_settlement_count');
-  if (evidence.credit_settlement_count > 1) throw new Error('retry-visibility-dlq settled credits more than once');
+  if ('no_duplicate_side_effects' in evidence || 'credit_settlement_count' in evidence) {
+    throw new Error('Auto-tagging has no credit settlement; current rows do not establish side-effect history');
+  }
+  verifyTerminalAuditEvidence(evidence, 'failed');
+  if (evidence.execution_token !== evidence.terminal_audit.after.task.execution_token) throw new Error('Failure token differs from exact terminal audit');
   requireString(evidence.dlq_message_id, 'retry-visibility-dlq dlq_message_id');
-  if (!['failed', 'ready', 'Complete'].includes(evidence.terminal_status)) {
+  if (evidence.terminal_status !== 'failed') {
     throw new Error('retry-visibility-dlq terminal_status is invalid');
   }
+}
+
+function verifyTerminalAuditEvidence(evidence, status) {
+  const audit = evidence.terminal_audit;
+  const request = audit?.before?.binding;
+  if (!RUN_SCOPE_PATTERN.test(request?.runScope ?? '')
+    || !new RegExp(`^e2e-beta-${request.runScope}-0-[a-f0-9]{8}@anywear\\.local$`).test(request?.user?.email ?? '')
+    || !/^[0-9a-f-]{36}$/i.test(request?.user?.sub ?? '') || request?.taskId !== evidence.task_id
+    || !/^[0-9a-f-]{36}$/i.test(request?.itemId ?? '') || !/^[0-9a-f-]{36}$/i.test(request?.idempotencyKey ?? '')
+    || audit?.scope !== 'current-terminal-snapshot-only' || audit.late_stale_rejection_proven !== false
+    || audit.missed_heartbeat_proven !== false || evidence.credit?.applicability !== 'not-applicable'
+    || evidence.credit.reason !== 'auto-tagging') throw new Error('Terminal evidence must bind exact synthetic task/resource and honest snapshot/credit scope');
+  validateTaskAudit(audit.before, request, status);
+  validateTaskAudit(audit.after, request, status);
+  assertStableAudits(audit.before, audit.after, audit.observation_window_ms);
+  if (audit.observation_window_ms < TERMINAL_STABILITY_MS) throw new Error('Terminal observation window is shorter than policy lease/provider bounds');
+  for (const snapshot of [audit.before, audit.after]) {
+    const id = snapshot.extraction?.task_arn?.match(/^arn:aws:ecs:ap-east-1:650880818323:task\/[^/]+\/([a-f0-9]{32})$/)?.[1];
+    if (!id || snapshot.extraction.exit_code !== 0 || snapshot.extraction.log_group !== '/anywear/beta/one-shot'
+      || snapshot.extraction.log_stream !== `beta-anywear-task-audit/OneShot/${id}`) throw new Error('Terminal audit must originate from the exact successful one-shot ECS task log stream');
+  }
+  if (audit.before.extraction.task_arn === audit.after.extraction.task_arn) throw new Error('Terminal stability needs two distinct read-only one-shot audits');
 }
 
 function verifyRollbackDrill(evidence) {
@@ -316,14 +383,29 @@ function verifyRollbackDrill(evidence) {
 }
 
 export function verifyRuntimeDrillEvidence(record, compatibility) {
-  if (record?.schema_version !== 1 || record.record_type !== 'anywear_beta_runtime_drill') {
+  if (record?.schema_version !== 2 || record.record_type !== 'anywear_beta_runtime_drill') {
     throw new Error('Unsupported runtime drill evidence schema');
   }
   if (!DRILL_ID_PATTERN.test(record.drill_id ?? '')) {
     throw new Error('Runtime evidence drill_id must match beta-runtime-<unique-id>');
   }
   assertDeploymentBinding(record, compatibility);
+  if (!RUN_SCOPE_PATTERN.test(record.run_scope ?? '')
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(record.synthetic_owner?.sub ?? '')
+    || !new RegExp(`^e2e-beta-${record.run_scope}-0-[a-f0-9]{8}@anywear\\.local$`).test(record.synthetic_owner?.email ?? '')) {
+    throw new Error('Runtime record requires one exact run-owned synthetic identity');
+  }
+  const scope = { runScope: record.run_scope, subject: record.synthetic_owner.sub, email: record.synthetic_owner.email,
+    deployment: { service: { source_commit: record.deployment.service_source_commit, image_digest: record.deployment.service_image_digest } } };
+  verifyFencingCiEvidence(record.fencing_ci, compatibility.service.sha);
+  if (record.runtime_control?.run_scope !== scope.runScope || record.runtime_control?.restored !== true || record.runtime_control.phase !== 'restored'
+    || record.runtime_control.nonpaid_provider_only !== true || record.runtime_control.shared_worker_iam_and_network !== true
+    || record.runtime_control.service_source_commit !== compatibility.service.sha
+    || record.runtime_control.service_image_digest !== record.deployment.service_image_digest) {
+    throw new Error('Runtime evidence requires exact non-paid baseline restoration and explicit shared IAM/network scope');
+  }
   const drills = new Map((record.drills ?? []).map((drill) => [drill.id, drill]));
+  if (drills.size !== record.drills?.length) throw new Error('Duplicate runtime drill records');
   for (const id of REQUIRED_DRILLS) {
     const drill = drills.get(id);
     if (!drill || drill.status !== 'passed') throw new Error(`Required runtime drill ${id} did not pass`);
@@ -331,6 +413,36 @@ export function verifyRuntimeDrillEvidence(record, compatibility) {
     if (id === 'multi-replica-sse') verifyReplicaDrillEvidence(drill.evidence);
     if (id === 'retry-visibility-dlq') verifyRetryDrillEvidence(drill.evidence);
   }
+  const restart = drills.get('accepted-task-restart').evidence;
+  const retry = drills.get('retry-visibility-dlq').evidence;
+  const replica = drills.get('multi-replica-sse').evidence;
+  if (replica.item_id !== restart.terminal_audit.after.binding.itemId
+    || replica.terminal_observers.some((observer) => observer.status !== restart.terminal_audit.after.resource.tagging_status
+      || observer.version !== restart.terminal_audit.after.resource.state_version)
+    || replica.api_task_arns.some((arn) => !restart.api_task_arns.includes(arn))) throw new Error('Replica evidence differs from exact restart item/tasks/terminal snapshot');
+  const requests = [restart, retry].map((evidence) => evidence.terminal_audit.before.binding);
+  if (requests[0].taskId === requests[1].taskId || requests[0].itemId === requests[1].itemId
+    || requests[0].idempotencyKey === requests[1].idempotencyKey) throw new Error('Restart and retry must use distinct tasks/items/idempotency keys');
+  const helperTasks = [];
+  for (const evidence of [restart, retry]) {
+    for (const audit of [evidence.terminal_audit.before, evidence.terminal_audit.after]) {
+      if (audit.binding.runScope !== scope.runScope || !isDeepStrictEqual(audit.binding.user, record.synthetic_owner)) {
+        throw new Error('Terminal audit belongs to a foreign run/user');
+      }
+      validateOneShotProof(audit.extraction, scope, 'task-audit', JSON.stringify(audit.binding));
+      helperTasks.push(audit.extraction.task_arn);
+    }
+  }
+  for (const arn of record.runtime_control.fixture_task_definitions ?? []) {
+    if (!new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-${scope.runScope}:[1-9][0-9]*$`).test(arn)) {
+      throw new Error('Fixture task definition belongs to a foreign family/run');
+    }
+  }
+  verifyWindowEvidence(record.window_control, scope, helperTasks);
+  scope.knownDLQMessageId = { taskId: retry.task_id, messageId: retry.dlq_message_id };
+  validateCleanupEvidence(record.cleanup_evidence, scope);
+  helperTasks.push(record.cleanup_evidence.extraction.task_arn);
+  if (new Set(helperTasks).size !== helperTasks.length) throw new Error('Helper evidence reuses an ECS task across distinct operations');
   const rollback = drills.get('rollback');
   if (rollback?.status === 'failed') throw new Error('Optional rollback drill is marked failed');
   if (rollback?.status === 'passed') verifyRollbackDrill(rollback.evidence);
@@ -339,6 +451,61 @@ export function verifyRuntimeDrillEvidence(record, compatibility) {
     required_drills: [...REQUIRED_DRILLS],
     rollback: rollback?.status ?? 'not_recorded',
   };
+}
+
+function verifyWindowEvidence(window, scope, helperTasks) {
+  if (window?.run_scope !== scope.runScope || !isDeepStrictEqual(window.synthetic_owner, { sub: scope.subject, email: scope.email })
+    || window.restored !== true || window.phase !== 'restored' || !Array.isArray(window.write_ledger) || window.write_ledger.length < 3) {
+    throw new Error('Admission ledger lacks exact restored run/user binding');
+  }
+  const keys = ['intake_open', 'tester_allowlist', 'admission_suspended'];
+  let versions = window.baseline_versions;
+  const lastConfigure = window.write_ledger.findLast((entry) => entry.action === 'configure-testers');
+  let activated = false;
+  for (const entry of window.write_ledger) {
+    if (entry.run_scope !== scope.runScope || !isDeepStrictEqual(entry.before_versions, versions)) throw new Error('Foreign run or discontinuous admission write ledger');
+    const deltas = entry.action === 'configure-testers' ? [0, 1, 2] : [0, 0, 1];
+    if (!['configure-testers', 'close', 'open'].includes(entry.action) || keys.some((key, offset) =>
+      !Number.isInteger(versions?.[key]) || versions[key] < 1 || entry.after_versions?.[key] !== versions[key] + deltas[offset])) {
+      throw new Error('Admission write ledger has non-nominal versions');
+    }
+    const payload = entry.extraction?.command?.[3] ?? '';
+    validateOneShotProof(entry.extraction, scope, 'lifecycle', payload, entry.action);
+    if (entry.action === 'configure-testers') {
+      const emails = JSON.parse(payload);
+      if (!Array.isArray(emails) || emails.some((email) => typeof email !== 'string') || testerHash(emails) !== entry.tester_hash
+        || (entry !== lastConfigure && payload !== JSON.stringify([scope.email]))
+        || (entry === lastConfigure && entry.tester_hash !== window.baseline_audit?.policy?.tester_allowlist_hash)) {
+        throw new Error('Admission tester writes are not bound to synthetic activation or exact baseline restoration');
+      }
+    }
+    if (!activated && entry.action !== 'close') {
+      if (entry.action !== 'configure-testers' || payload !== JSON.stringify([scope.email])) throw new Error('Admission did not begin with the exact run-owned tester');
+      activated = true;
+    }
+    helperTasks.push(entry.extraction.task_arn);
+    versions = entry.after_versions;
+  }
+  if (!activated || !isDeepStrictEqual(versions, window.final_versions)) throw new Error('Admission final versions do not match the write ledger');
+  for (const audit of [window.baseline_audit, window.final_audit]) {
+    const request = { runScope: scope.runScope, mode: 'window-preflight' };
+    if (audit?.source !== 'durable-runtime-window-audit' || audit.schema_version !== 1
+      || !isDeepStrictEqual(audit.binding, request) || audit.policy?.intake_open !== false
+      || !Number.isFinite(Date.parse(audit.observed_at)) || !Number.isFinite(Date.parse(audit.policy.updated_at))
+      || typeof audit.policy.admission_suspended !== 'boolean' || !/^[a-f0-9]{64}$/.test(audit.policy.tester_allowlist_hash ?? '')
+      || !Number.isInteger(audit.policy.tester_count) || audit.policy.tester_count < 0 || audit.policy.tester_count > 50
+      || ['active_tasks', 'unpublished_outbox', 'manual_intervention_outbox'].some((key) => audit.current_rows?.[key] !== 0)) {
+      throw new Error('Admission requires exact before/after empty durable census');
+    }
+    validateOneShotProof(audit.extraction, scope, 'task-audit', JSON.stringify(request));
+    helperTasks.push(audit.extraction.task_arn);
+  }
+  if (!isDeepStrictEqual(window.baseline_audit.policy, window.final_audit.policy)) {
+    const { updated_at: ignoredBefore, ...before } = window.baseline_audit.policy;
+    const { updated_at: ignoredAfter, ...after } = window.final_audit.policy;
+    void ignoredBefore; void ignoredAfter;
+    if (!isDeepStrictEqual(before, after)) throw new Error('Original private admission policy was not restored');
+  }
 }
 
 function outputMap(outputs) {
@@ -378,6 +545,9 @@ async function collectPreflight(config, compatibility) {
     userPoolId: platformOutputs.UserPoolId,
     userPoolClientId: platformOutputs.UserPoolClientId,
     bucket: platformOutputs.WardrobeBucketName,
+    oneShotExecutionRoleArn: platformOutputs.OneShotExecutionRoleArn,
+    verificationTaskRoleArn: platformOutputs.VerificationTaskRoleArn,
+    lifecycleTaskRoleArn: platformOutputs.LifecycleTaskRoleArn,
     queues: {
       vto: platformOutputs.VtoQueueUrl,
       autoTagging: platformOutputs.AutoTaggingQueueUrl,
@@ -392,6 +562,9 @@ async function collectPreflight(config, compatibility) {
     userPoolId: 'Cognito user pool',
     userPoolClientId: 'Cognito user pool client',
     bucket: 'Wardrobe bucket',
+    oneShotExecutionRoleArn: 'one-shot execution role',
+    verificationTaskRoleArn: 'verification task role',
+    lifecycleTaskRoleArn: 'lifecycle task role',
     'queues.vto': 'VTO queue',
     'queues.autoTagging': 'auto-tagging queue',
     'queues.vtoDlq': 'VTO DLQ',
@@ -431,7 +604,8 @@ async function collectPreflight(config, compatibility) {
     queues,
     notes: [
       'Preflight is read-only and does not restart ECS tasks, publish SQS messages, or mutate database state.',
-      ...(intakeOpen ? [] : ['Task-bearing runtime drills require an approved Beta test window that opens /anywear/beta/intake_open.']),
+      'Task-bearing runtime drills require a reserved private-only Beta window: /anywear/beta/intake_open=false and one exact run-owned tester.',
+      ...(intakeOpen ? ['Public intake is open; runtime execution is refused.'] : []),
       'A passing preflight is not runtime reliability evidence.',
     ],
   };
@@ -440,6 +614,10 @@ async function collectPreflight(config, compatibility) {
 export function assertRuntimeDrillExecutorAdapter(adapter) {
   const required = [
     'createSyntheticAccount',
+    'prepareNonPaidRuntime',
+    'restoreNonPaidRuntime',
+    'pauseRuntimeWindow',
+    'restoreRuntimeWindow',
     'runWardrobeApiFlow',
     'replaceAndRestoreEcs',
     'captureReplicaAttribution',
@@ -456,19 +634,22 @@ export function assertRuntimeDrillExecutorAdapter(adapter) {
 export async function executeRuntimeDrill(environment, compatibility, adapter, {
   preflightCollector = collectPreflight,
   fixtureReader = readProviderFailureFixture,
+  fencingReader = readFencingCiEvidence,
 } = {}) {
   const config = assertRuntimeDrillExecutionEnvironment(environment, compatibility);
   assertRuntimeDrillExecutorAdapter(adapter);
   const providerFixture = await fixtureReader(environment.RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE);
+  const fencingCi = await fencingReader(environment, compatibility.service.sha);
   const preflight = await preflightCollector(config, compatibility);
-  if (!preflight.intake_open) throw new Error('Task-bearing runtime drills require /anywear/beta/intake_open=true');
+  if (preflight.intake_open !== false) throw new Error('Runtime drills require private-only /anywear/beta/intake_open=false');
 
   let scope;
   let result;
   let operationError;
   try {
-    scope = await adapter.createSyntheticAccount({ config, marker: config.drillId, stack: preflight.stack });
+    scope = await adapter.createSyntheticAccount({ config, marker: config.drillId, stack: preflight.stack, deployment: preflight.deployment });
     scope.deployment = preflight.deployment;
+    await adapter.prepareNonPaidRuntime({ scope, fixture: providerFixture });
     const restart = await adapter.runWardrobeApiFlow({ scope, marker: config.drillId });
     const replacement = await adapter.replaceAndRestoreEcs({ stack: preflight.stack, scope, marker: config.drillId });
     const replica = await adapter.captureReplicaAttribution({ scope, marker: config.drillId, replacement });
@@ -483,36 +664,56 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
     const retry = await adapter.collectRetryEvidence({ scope, marker: config.drillId, failure });
     verifyRetryDrillEvidence(retry);
     result = {
-      schema_version: 1,
+      schema_version: 2,
       record_type: 'anywear_beta_runtime_drill',
       drill_id: config.drillId,
+      run_scope: scope.runScope,
+      synthetic_owner: { sub: scope.subject, email: scope.email },
       environment: { stage: 'beta', aws_account_id: TARGET_ACCOUNT, aws_region: TARGET_REGION, client_url: config.clientUrl, service_url: config.serviceUrl },
       deployment: {
         client_source_commit: preflight.deployment.client.source_commit,
         service_source_commit: preflight.deployment.service.source_commit,
         service_image_digest: preflight.deployment.service.image_digest,
       },
+      fencing_ci: fencingCi,
       drills: [
         { id: 'accepted-task-restart', status: 'passed', evidence: restartEvidence },
         { id: 'multi-replica-sse', status: 'passed', evidence: replica },
         { id: 'retry-visibility-dlq', status: 'passed', evidence: retry },
       ],
     };
-    verifyRuntimeDrillEvidence(result, compatibility);
   } catch (error) {
     operationError = error;
   }
   let cleanupError;
+  let restorationError;
+  let pauseError;
+  let policyRestorationError;
   if (scope) {
+    try { await adapter.pauseRuntimeWindow({ scope }); }
+    catch (error) { pauseError = error; }
     try {
+      if (pauseError) throw new Error('Resource cleanup withheld because admission pause/ownership guard failed', { cause: pauseError });
       await adapter.cleanupOwnedResources({ scope, marker: config.drillId, stack: preflight.stack });
     } catch (error) {
       cleanupError = error;
     }
+    try { await adapter.restoreNonPaidRuntime({ scope }); }
+    catch (error) { restorationError = error; }
+    try { await adapter.restoreRuntimeWindow({ scope }); }
+    catch (error) { policyRestorationError = error; }
   }
-  if (operationError && cleanupError) throw new AggregateError([operationError, cleanupError], 'Runtime drill and cleanup both failed');
-  if (operationError) throw operationError;
-  if (cleanupError) throw cleanupError;
+  const errors = [operationError, pauseError, cleanupError, restorationError, policyRestorationError].filter(Boolean);
+  if (errors.length > 1) throw new AggregateError(errors, 'Runtime drill/cleanup/restoration failed; recovery artifact retained');
+  if (errors.length) throw errors[0];
+  result.runtime_control = scope.runtimeControl;
+  result.window_control = { run_scope: scope.runScope, synthetic_owner: { sub: scope.subject, email: scope.email },
+    restored: scope.runtimeWindow?.restored === true, phase: scope.runtimeWindow?.phase, write_ledger: scope.runtimeWindow?.write_ledger,
+    baseline_audit: scope.runtimeWindow?.baseline_audit, final_audit: scope.runtimeWindow?.final_audit,
+    baseline_versions: Object.fromEntries(Object.entries(scope.runtimeWindow?.baseline ?? {}).map(([key, value]) => [key, value.version])),
+    final_versions: Object.fromEntries(Object.entries(scope.runtimeWindow?.expected ?? {}).map(([key, value]) => [key, value.version])) };
+  result.cleanup_evidence = scope.cleanupEvidence;
+  verifyRuntimeDrillEvidence(result, compatibility);
   return result;
 }
 
@@ -527,6 +728,7 @@ export async function loadExecutionAdapter(environment) {
     throw new Error('Runtime drill adapter must be a relative module under scripts');
   }
   const module = await import(new URL(modulePath, import.meta.url));
+  if (typeof module.createRuntimeDrillAdapter === 'function') return module.createRuntimeDrillAdapter(undefined, environment);
   return module.default ?? module.runtimeDrillAdapter;
 }
 
@@ -537,6 +739,7 @@ function usage() {
     '  node scripts/runtime-drill.mjs --preflight',
     '  node scripts/runtime-drill.mjs --execute',
     '  node scripts/runtime-drill.mjs --verify <evidence.json>',
+    '  node scripts/runtime-drill.mjs --recover <recovery.json>',
     '',
     'All modes are Beta-only. --plan and --preflight are read-only.',
     '--execute requires main, anywear-beta-runtime concurrency, explicit confirmation, and an approved provider-failure fixture.',
@@ -557,7 +760,16 @@ if (isMain) {
         const record = JSON.parse(await readFile(requireString(evidencePath, 'Evidence path'), 'utf8'));
         const result = verifyRuntimeDrillEvidence(record, compatibility);
         console.log(`Verified Beta runtime drill evidence: ${result.required_drills.join(', ')}; rollback=${result.rollback}`);
+      } else if (mode === '--recover') {
+        assertLiveRuntimeSourceReady();
+        const record = parseRuntimeRecovery(await readFile(requireString(process.argv[3], 'Recovery path'), 'utf8'));
+        const environment = { ...process.env };
+        assertRuntimeRecoveryExecutionEnvironment(environment, compatibility, record);
+        const adapter = await loadExecutionAdapter(environment);
+        if (typeof adapter?.recoverOwnedRuntime !== 'function') throw new Error('Protected adapter has no runtime recovery hook');
+        console.log(JSON.stringify(await adapter.recoverOwnedRuntime(record)));
       } else if (mode === '--execute') {
+        assertLiveRuntimeSourceReady();
         const adapter = await loadExecutionAdapter(process.env);
         const execution = await executeRuntimeDrill(process.env, compatibility, adapter);
         const outputPath = process.env.RUNTIME_DRILL_EVIDENCE_PATH ?? 'runtime-drill-evidence.json';

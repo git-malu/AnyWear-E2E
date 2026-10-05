@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "provider-failure",
+  "source": "beta-provider-nonpaid-loopback",
+  "application_backdoor": false,
+  "approved": true,
+  "image_path": "tests/fixtures/dummy.png",
+  "delay_ms": 45000,
+  "failure_status": 500,
+  "forwards_requests": false,
+  "provider_billing_applicability": "not-applicable"
+}

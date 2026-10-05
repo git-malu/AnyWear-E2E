@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRuntimeDrillAdapter } from './beta-runtime-adapter.mjs';
+import { auditFixture, cleanupFixture } from './fixtures/runtime-evidence.mjs';
 
 const environment = {
   AWS_REGION: 'ap-east-1',
@@ -10,10 +11,14 @@ const environment = {
 };
 const subject = '123e4567-e89b-12d3-a456-426614174000';
 const email = 'e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local';
+const deployment = { service: { source_commit: 'b'.repeat(40), image_digest: `sha256:${'c'.repeat(64)}` } };
 
 function identity(address = email) {
-  return { Username: subject, UserAttributes: [{ Name: 'email', Value: address }, { Name: 'sub', Value: subject }] };
+  return { Username: subject, UserCreateDate: new Date(), UserAttributes: [{ Name: 'email', Value: address },
+    { Name: 'sub', Value: subject }, { Name: 'custom:e2e_bootstrap', Value: 'true' }] };
 }
+
+function userNotFound() { return Object.assign(new Error('User not found'), { name: 'UserNotFoundException' }); }
 
 function cleanupScope() {
   return {
@@ -40,7 +45,8 @@ test('runtime adapter exposes every protected hook without making calls at const
   assert.deepEqual(Object.keys(adapter).sort(), [
     'captureReplicaAttribution', 'cleanupOwnedResources', 'collectRetryEvidence',
     'createSyntheticAccount', 'replaceAndRestoreEcs', 'runProviderFailureFixture',
-    'runWardrobeApiFlow',
+    'runWardrobeApiFlow', 'prepareNonPaidRuntime', 'restoreNonPaidRuntime',
+    'pauseRuntimeWindow', 'restoreRuntimeWindow', 'recoverOwnedRuntime',
   ].sort());
   assert.deepEqual(calls, []);
 });
@@ -50,8 +56,10 @@ test('synthetic account creation is bound to the current run scope and returned 
   let createdEmail;
   const adapter = createRuntimeDrillAdapter({
     async auditOwnedTask() {},
+    async saveRecovery() {},
     async cognitoSend(command) {
       commands.push(command.constructor.name);
+      if (command.constructor.name === 'AdminGetUserCommand' && !createdEmail) throw userNotFound();
       if (command.constructor.name !== 'AdminCreateUserCommand' && command.input.Username) {
         assert.equal(command.input.Username, subject);
       }
@@ -60,24 +68,21 @@ test('synthetic account creation is bound to the current run scope and returned 
         return { User: { Username: subject, Attributes: identity(createdEmail).UserAttributes } };
       }
       if (command.constructor.name === 'AdminGetUserCommand') {
-        return { Username: subject, UserAttributes: [
-          { Name: 'email', Value: createdEmail },
-          { Name: 'sub', Value: '123e4567-e89b-12d3-a456-426614174000' },
-        ] };
+        return identity(createdEmail);
       }
       if (command.constructor.name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
       return {};
     },
   }, environment);
   const scope = await adapter.createSyntheticAccount({
-    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1',
+    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client', bucket: 'bucket' },
   });
   assert.match(scope.email, /^e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-[a-f0-9]{8}@anywear\.local$/);
   assert.equal(scope.subject, '123e4567-e89b-12d3-a456-426614174000');
   assert.equal(scope.accessToken, 'token');
   assert.deepEqual(commands, [
-    'AdminCreateUserCommand', 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand',
+    'AdminGetUserCommand', 'AdminCreateUserCommand', 'AdminGetUserCommand', 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand',
     'AdminGetUserCommand', 'InitiateAuthCommand',
   ]);
 });
@@ -86,22 +91,59 @@ test('synthetic account setup compensates a Cognito user when authentication set
   const commands = [];
   const adapter = createRuntimeDrillAdapter({
     async auditOwnedTask() {},
+    async saveRecovery() {},
     async cognitoSend(command) {
       commands.push(command.constructor.name);
       if (command.constructor.name === 'AdminCreateUserCommand') {
         this.email = command.input.Username;
         return { User: { Username: subject, Attributes: identity(this.email).UserAttributes } };
       }
-      if (command.constructor.name === 'AdminGetUserCommand') return identity(this.email);
+      if (command.constructor.name === 'AdminGetUserCommand') { if (!this.email) throw userNotFound(); return identity(this.email); }
       if (command.constructor.name === 'InitiateAuthCommand') throw new Error('auth unavailable');
+      if (command.constructor.name === 'AdminDeleteUserCommand') this.email = undefined;
       return {};
     },
   }, environment);
   await assert.rejects(adapter.createSyntheticAccount({
-    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1',
+    config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client', bucket: 'bucket' },
   }), /auth unavailable/);
-  assert.equal(commands.at(-1), 'AdminDeleteUserCommand');
+  assert.equal(commands.at(-2), 'AdminDeleteUserCommand');
+});
+
+test('synthetic setup snapshots always include pinned deployment and use unique memory-only default passwords', async () => {
+  const passwords = [];
+  for (const failure of [undefined, 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand', 'AdminGetUserCommand', 'InitiateAuthCommand']) {
+    const snapshots = [];
+    let address;
+    let failed = false;
+    const adapter = createRuntimeDrillAdapter({ async auditOwnedTask() {},
+      async saveRecovery(scope) { snapshots.push(structuredClone(scope)); },
+      async cognitoSend(command) {
+        const name = command.constructor.name;
+        if (name === 'AdminGetUserCommand' && !address) throw userNotFound();
+        if (name === 'AdminCreateUserCommand') { address = command.input.Username; return { User: { Username: subject, Attributes: identity(address).UserAttributes } }; }
+        if (name === 'AdminSetUserPasswordCommand') passwords.push(command.input.Password);
+        if (name === failure && !failed) { failed = true; throw new Error('setup boundary failure'); }
+        if (name === 'AdminGetUserCommand') return identity(address);
+        if (name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
+        if (name === 'AdminDeleteUserCommand') address = undefined;
+        return {};
+      },
+    }, environment);
+    const promise = adapter.createSyntheticAccount({ config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-123-1', deployment,
+      stack: { userPoolId: 'ap-east-1_pool', userPoolClientId: 'client', bucket: 'bucket' } });
+    if (failure) await assert.rejects(promise, /setup boundary failure/);
+    else assert.equal((await promise).password, undefined);
+    assert.ok(snapshots.length > 0);
+    for (const snapshot of snapshots) {
+      assert.deepEqual(snapshot.deployment, deployment);
+      assert.equal(snapshot.password, undefined);
+    }
+  }
+  assert.equal(new Set(passwords).size, passwords.length);
+  assert.ok(passwords.every((password) => password !== 'TestPassword123!' && password.length > 32
+    && /[A-Z]/.test(password) && /[a-z]/.test(password) && /[0-9]/.test(password) && /[!]/.test(password)));
 });
 
 test('worker replacement passes the Beta cluster/service to stability waits and captures changed tasks', async () => {
@@ -111,11 +153,14 @@ test('worker replacement passes the Beta cluster/service to stability waits and 
   const newWorker = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'d'.repeat(32)}`;
   const waits = [];
   let replaced = false;
+  let audits = 0;
   const io = {
+    async auditOwnedTask({ request }) { return auditFixture(request, { after: audits++ > 0 }); },
+    async sleep(ms) { assert.equal(ms, 440_000); },
     async aws(args) {
       if (args[0] === 'logs') return { events: [{
         logStreamName: `worker/WorkerContainer/${'c'.repeat(32)}`,
-        message: JSON.stringify({ taskId: 'task', event: 'task_execution_started', taskType: 'auto-tagging', resourceId: 'item' }),
+        message: JSON.stringify({ taskId: 'task', event: 'task_execution_started', taskType: 'auto-tagging', resourceId: 'item', executionToken: 1 }),
       }] };
       if (args[1] === 'describe-services') return { services: [{ desiredCount: 1 }] };
       if (args[1] === 'list-tasks') {
@@ -142,7 +187,8 @@ test('worker replacement passes the Beta cluster/service to stability waits and 
   });
   assert.ok(waits.some(([cluster, service]) => cluster === 'beta-anywear' && service === 'worker'));
   assert.equal(result.restart_evidence.worker_restart, true);
-  assert.equal(result.restart_evidence.no_duplicate_terminal_effect, false);
+  assert.equal(result.restart_evidence.recovery_kind, 'graceful-drain');
+  assert.ok(!('no_duplicate_terminal_effect' in result.restart_evidence));
   assert.equal(result.restart_evidence.terminal_snapshot_stable, true);
   assert.deepEqual(result.terminal_observers, [{ status: 'ready', version: 3 }, { status: 'ready', version: 3 }]);
 });
@@ -155,7 +201,7 @@ test('cleanup deletes API-owned items before pinned Service cleanup, S3, and Cog
       order.push(`api:${url}`);
       return response(204);
     },
-    async runOneShotCleanup() { order.push('service'); },
+    async runOneShotCleanup({ scope }) { order.push('service'); return cleanupFixture(scope); },
     async aws(args) {
       order.push(args[0]);
       if (args[0] === 's3api' && args[1] === 'head-object') throw new Error('Not Found');
@@ -199,12 +245,13 @@ test('cleanup accepts already absent and unaccepted version-zero uploading items
         return options.method === 'GET' ? response(state ? 200 : 404, state) : response(404);
       },
       async cognitoSend(command) { calls.push(command.constructor.name); return identity(); },
-      async runOneShotCleanup() { calls.push('service'); },
+      async runOneShotCleanup({ scope }) { calls.push('service'); return cleanupFixture(scope); },
       async saveRecovery() { calls.push('recovery'); },
     }, environment).cleanupOwnedResources({ scope: cleanupScope(), stack: { bucket: 'bucket' } });
     assert.ok(calls.includes('service'));
     assert.equal(calls[0], 'recovery');
-    assert.equal(calls.at(-1), 'AdminDeleteUserCommand');
+    assert.ok(calls.includes('AdminDeleteUserCommand'));
+    assert.equal(calls.at(-1), 'recovery');
   }
 });
 
@@ -234,7 +281,7 @@ test('cleanup delegates exact task DLQ cleanup to the pinned Service helper with
     async fetch(_url, options) { return options.method === 'GET'
       ? response(200, { id: 'item', taggingStatus: 'failed', taggingStateVersion: 3 }) : response(204); },
     async cognitoSend() { return identity(); },
-    async runOneShotCleanup(args) { calls.push(args); },
+    async runOneShotCleanup(args) { calls.push(args); return cleanupFixture(args.scope); },
     async aws() { throw new Error('E2E must not observe or delete queues during cleanup'); },
   }, environment).cleanupOwnedResources({ scope, stack: { bucket: 'bucket', queues: { autoTaggingDlq: 'owned-dlq' } } });
   assert.equal(calls.length, 1);
@@ -248,18 +295,21 @@ test('Cognito compensation refuses an identity whose immutable subject changed',
   let address;
   const adapter = createRuntimeDrillAdapter({
     async auditOwnedTask() {},
+    async saveRecovery() {},
     async cognitoSend(command) {
       calls.push(command.constructor.name);
+      if (command.constructor.name === 'AdminGetUserCommand' && !address) throw userNotFound();
       if (command.constructor.name === 'AdminCreateUserCommand') {
         address = command.input.Username;
         return { User: { Username: subject, Attributes: identity(address).UserAttributes } };
       }
       if (command.constructor.name === 'AdminSetUserPasswordCommand') throw new Error('setup failed');
       if (command.constructor.name === 'AdminGetUserCommand') return { ...identity(address),
-        UserAttributes: [{ Name: 'email', Value: address }, { Name: 'sub', Value: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }] };
+        UserAttributes: identity(address).UserAttributes.map((attribute) => attribute.Name === 'sub'
+          ? { ...attribute, Value: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' } : attribute) };
     },
   }, environment);
-  await assert.rejects(adapter.createSyntheticAccount({ config: {}, marker: 'drill',
+  await assert.rejects(adapter.createSyntheticAccount({ config: {}, marker: 'drill', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client' } }), /setup and compensation failed/);
   assert.ok(!calls.includes('AdminDeleteUserCommand'));
 });
@@ -274,7 +324,7 @@ function replacementHarness({ failSecondStream = false, failRestoration = false,
       calls.push(args[1]);
       if (args[0] === 'logs') return { events: [{ logStreamName: `worker/WorkerContainer/${'c'.repeat(32)}`,
         message: JSON.stringify({ taskId: foreignTask ? 'other-task' : 'task', event: 'task_execution_started',
-          taskType: 'auto-tagging', resourceId: 'item', note: 'task' }) }] };
+          taskType: 'auto-tagging', resourceId: 'item', executionToken: 1, note: 'task' }) }] };
       if (args[1] === 'describe-services') return { services: [{ desiredCount: 1 }] };
       if (args[1] === 'list-tasks') return { taskArns: args.includes('api') ? [apiArn, `${apiArn}e`] : [workerArn] };
       if (args[1] === 'update-service') throw new Error('replacement failed');
@@ -332,9 +382,10 @@ function retryHarness({ workerReceives = 3, retryable = true, audit = true } = {
   const failure = { item_id: 'item', task_id: taskId };
   const calls = [];
   const events = [
+    { event: 'task_execution_started', resourceId: 'item', executionToken: 3 },
     { event: 'task_sqs_message_received', receiveCount: workerReceives },
     { event: 'task_processing_failed', retryable },
-    { event: 'task_db_lease_renewed', databaseLeaseRenewed: true },
+    { event: 'task_db_lease_renewed', databaseLeaseRenewed: true, resourceId: 'item', executionToken: 3 },
     { event: 'task_sqs_visibility_renewed', sqsVisibilityExtended: true },
     { event: 'untrusted-side-effect-claim', noDuplicateSideEffects: true, creditSettlementCount: 0 },
   ];
@@ -343,6 +394,7 @@ function retryHarness({ workerReceives = 3, retryable = true, audit = true } = {
     async aws(args) {
       calls.push(args);
       if (args[0] === 'logs') return { events: events.map((entry) => ({
+        timestamp: 1791158400000, logStreamName: `worker/WorkerContainer/${'c'.repeat(32)}`,
         message: JSON.stringify({ taskId, taskType: 'auto-tagging', ...entry }),
       })) };
       if (args[1] === 'get-queue-attributes') return { Attributes: { ApproximateNumberOfMessages: '1' } };
@@ -351,8 +403,10 @@ function retryHarness({ workerReceives = 3, retryable = true, audit = true } = {
       return {};
     },
   };
-  if (audit) io.auditOwnedTask = async () => ({ source: 'durable-task-audit', taskId, subject,
-    noDuplicateSideEffects: true, creditSettlementCount: 0 });
+  let audits = 0;
+  io.sleep = async () => {};
+  if (audit) io.auditOwnedTask = async ({ request }) => auditFixture(request,
+    { status: 'failed', token: 3, version: 4, after: audits++ > 0 });
   return { adapter: createRuntimeDrillAdapter(io, environment), args: { scope, failure }, calls };
 }
 
@@ -366,5 +420,5 @@ test('retry evidence refuses non-retryable canonical failures and log-only settl
   const nonRetryable = retryHarness({ retryable: false });
   await assert.rejects(nonRetryable.adapter.collectRetryEvidence(nonRetryable.args), /bounded retries/);
   const noAudit = retryHarness({ audit: false });
-  await assert.rejects(noAudit.adapter.collectRetryEvidence(noAudit.args), /authoritative run-owned durable settlement audit/);
+  await assert.rejects(noAudit.adapter.collectRetryEvidence(noAudit.args), /authoritative run-owned durable task audit/);
 });

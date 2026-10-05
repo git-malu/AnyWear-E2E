@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { cleanupFixture, fencingCiFixture, scopeFixture, stableAuditFixture, windowFixture } from './fixtures/runtime-evidence.mjs';
 import {
   assertRuntimeDrillEnvironment,
   assertRuntimeDrillExecutionEnvironment,
@@ -21,6 +22,7 @@ const environment = {
   AWS_REGION: 'ap-east-1',
   E2E_CLIENT_URL: 'https://d2rztl7o0y7rf8.cloudfront.net',
   E2E_SERVICE_URL: 'https://dapi.example.cloudfront.net',
+  RUNTIME_DRILL_EXCLUSIVE_WINDOW: 'beta-exclusive-runtime',
 };
 const compatibility = {
   client: { sha: 'a'.repeat(40) },
@@ -28,10 +30,19 @@ const compatibility = {
 };
 
 function validEvidence() {
+  const request = { runScope: '123-1-aaaaaaaaaaaaaaaa',
+    user: { sub: '123e4567-e89b-12d3-a456-426614174000', email: 'e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local' },
+    taskId: '123e4567-e89b-12d3-a456-426614174001', itemId: '123e4567-e89b-12d3-a456-426614174002',
+    idempotencyKey: '123e4567-e89b-12d3-a456-426614174003' };
+  const retryRequest = { ...request, taskId: '123e4567-e89b-12d3-a456-426614174004',
+    itemId: '123e4567-e89b-12d3-a456-426614174005', idempotencyKey: '123e4567-e89b-12d3-a456-426614174006' };
+  const scope = { ...scopeFixture(request), knownDLQMessageId: { taskId: retryRequest.taskId, messageId: 'message-1' } };
+  const apiArns = ['5', '6'].map((id) => `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${id.repeat(32)}`);
   return {
-    schema_version: 1,
+    schema_version: 2,
     record_type: 'anywear_beta_runtime_drill',
     drill_id: 'beta-runtime-test-001',
+    run_scope: request.runScope, synthetic_owner: request.user,
     environment: {
       stage: 'beta',
       aws_account_id: '650880818323',
@@ -44,19 +55,25 @@ function validEvidence() {
       service_source_commit: compatibility.service.sha,
       service_image_digest: `sha256:${'c'.repeat(64)}`,
     },
+    fencing_ci: fencingCiFixture(compatibility.service.sha),
+    window_control: windowFixture(scope), cleanup_evidence: cleanupFixture(scope),
+    runtime_control: { run_scope: request.runScope, restored: true, phase: 'restored', nonpaid_provider_only: true, shared_worker_iam_and_network: true,
+      service_source_commit: compatibility.service.sha, service_image_digest: `sha256:${'c'.repeat(64)}` },
     drills: [
       {
         id: 'accepted-task-restart',
         status: 'passed',
         evidence: {
-          task_id: 'task-1',
+          task_id: request.taskId,
           api_restart: true,
           worker_restart: true,
           rolling_deployment: true,
           idempotency_replay_same_response: true,
-          no_duplicate_terminal_effect: true,
+          terminal_audit: stableAuditFixture(request),
+          execution_token_before: 1, execution_token_after: 1, recovery_kind: 'graceful-drain',
+          credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
           state_versions: [1, 2, 3],
-          api_task_arns: ['api-a', 'api-b'],
+          api_task_arns: apiArns,
           worker_task_arns: ['worker-a', 'worker-b'],
           terminal_status: 'ready',
         },
@@ -65,8 +82,11 @@ function validEvidence() {
         id: 'multi-replica-sse',
         status: 'passed',
         evidence: {
-          api_task_arns: ['api-a', 'api-b'],
-          stream_task_arns: ['api-a', 'api-b'],
+          api_task_arns: apiArns, api_task_arns_after: apiArns,
+          stream_task_arns: apiArns,
+          item_id: request.itemId, reconnected_request_ids: ['r3', 'r4'],
+          request_attribution: ['r1', 'r2', 'r3', 'r4'].map((id, index) => ({ request_id: id, task_arn: apiArns[index % 2] })),
+          terminal_observers: [{ status: 'ready', version: 3 }, { status: 'ready', version: 3 }],
           distinct_replica_logs: true,
           reconnected_after_replacement: true,
           both_observers_terminal: true,
@@ -77,13 +97,13 @@ function validEvidence() {
         id: 'retry-visibility-dlq',
         status: 'passed',
         evidence: {
-          task_id: 'task-1',
+          task_id: retryRequest.taskId,
           retryable_failures: 2,
           receive_count: 3,
           database_lease_renewed: true,
           sqs_visibility_extended: true,
-          no_duplicate_side_effects: true,
-          credit_settlement_count: 1,
+          terminal_audit: stableAuditFixture(retryRequest, { status: 'failed', token: 3 }),
+          execution_token: 3, credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
           dlq_message_id: 'message-1',
           terminal_status: 'failed',
         },
@@ -142,10 +162,11 @@ test('retry execution refuses missing or unapproved provider-failure fixtures', 
     await writeFile(manifestPath, JSON.stringify({
       schema_version: 1,
       kind: 'provider-failure',
-      source: 'beta-provider-timeout',
+      source: 'beta-provider-nonpaid-loopback',
       application_backdoor: false,
       approved: true,
       image_path: 'tests/fixtures/dummy.png',
+      delay_ms: 45000, failure_status: 500, forwards_requests: false, provider_billing_applicability: 'not-applicable',
     }));
     const fixture = await readProviderFailureFixture(manifestPath);
     assert.equal(fixture.application_backdoor, false);
@@ -160,6 +181,8 @@ test('runtime executor refuses adapters without exact cleanup and replica attrib
     'createSyntheticAccount', 'runWardrobeApiFlow', 'replaceAndRestoreEcs',
     'captureReplicaAttribution', 'runProviderFailureFixture', 'collectRetryEvidence',
     'cleanupOwnedResources',
+    'prepareNonPaidRuntime', 'restoreNonPaidRuntime',
+    'pauseRuntimeWindow', 'restoreRuntimeWindow',
   ];
   const adapter = Object.fromEntries(names.map((name) => [name, () => undefined]));
   assert.equal(assertRuntimeDrillExecutorAdapter(adapter), adapter);
@@ -190,6 +213,8 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     'createSyntheticAccount', 'runWardrobeApiFlow', 'replaceAndRestoreEcs',
     'captureReplicaAttribution', 'runProviderFailureFixture', 'collectRetryEvidence',
     'cleanupOwnedResources',
+    'prepareNonPaidRuntime', 'restoreNonPaidRuntime',
+    'pauseRuntimeWindow', 'restoreRuntimeWindow',
   ];
   const adapter = Object.fromEntries(names.map((name) => [name, async () => undefined]));
   adapter.createSyntheticAccount = async () => ({ owned: true });
@@ -198,7 +223,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     cleaned = scope.owned === true && marker === executionEnvironment.RUNTIME_DRILL_ID;
   };
   const preflight = {
-    intake_open: true,
+    intake_open: false,
     stack: { cluster: 'beta', apiService: 'api', workerService: 'worker' },
     deployment: {
       client: { source_commit: compatibility.client.sha },
@@ -208,6 +233,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
   await assert.rejects(executeRuntimeDrill(executionEnvironment, compatibility, adapter, {
     fixtureReader: async () => ({ image_path: 'unused' }),
     preflightCollector: async () => preflight,
+    fencingReader: async () => fencingCiFixture(compatibility.service.sha),
   }), /synthetic adapter failure/);
   assert.equal(cleaned, true);
 });
@@ -291,4 +317,57 @@ test('runtime evidence rejects an explicitly failed rollback drill', () => {
     () => verifyRuntimeDrillEvidence(evidence, compatibility),
     /Optional rollback drill is marked failed/,
   );
+});
+
+test('runtime verifier refuses foreign run/user/family, reused task/item, missing restoration and uncommitted cleanup', () => {
+  for (const mutate of [
+    (record) => { record.run_scope = '124-1-aaaaaaaaaaaaaaaa'; record.synthetic_owner.email = 'e2e-beta-124-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local'; },
+    (record) => { record.synthetic_owner.sub = '123e4567-e89b-12d3-a456-426614174099'; },
+    (record) => { delete record.window_control; },
+    (record) => { record.window_control.restored = false; },
+    (record) => { delete record.cleanup_evidence; },
+    (record) => { record.cleanup_evidence.committed.transaction_committed = false; },
+    (record) => { record.cleanup_evidence.deletion.known_message.taskId = 'foreign'; },
+    (record) => { record.window_control.write_ledger[0].run_scope = 'foreign'; },
+    (record) => { record.drills[0].evidence.terminal_audit.before.extraction.task_definition_arn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-lifecycle:1'; },
+    (record) => { record.drills[2].evidence.terminal_audit.before.binding.itemId = record.drills[0].evidence.terminal_audit.before.binding.itemId; },
+    (record) => { record.drills[1].evidence.terminal_observers[1].version = 4; },
+    (record) => { record.drills[1].evidence.reconnected_request_ids = ['r3', 'r3']; },
+    (record) => { record.drills[1].evidence.api_task_arns_after = [record.drills[1].evidence.api_task_arns[0]]; },
+  ]) {
+    const evidence = structuredClone(validEvidence());
+    mutate(evidence);
+    assert.throws(() => verifyRuntimeDrillEvidence(evidence, compatibility));
+  }
+});
+
+test('complete mocked executor retains bound audit/window/cleanup evidence and refuses public intake before account creation', async () => {
+  const record = validEvidence();
+  const runEnvironment = { ...environment, GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: 'a'.repeat(40),
+    RUNTIME_DRILL_CONCURRENCY: 'anywear-beta-runtime', RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill', RUNTIME_DRILL_ID: record.drill_id,
+    RUNTIME_DRILL_E2E_SHA: 'a'.repeat(40), RUNTIME_DRILL_CLIENT_SHA: compatibility.client.sha, RUNTIME_DRILL_SERVICE_SHA: compatibility.service.sha,
+    RUNTIME_DRILL_RUN_SCOPE: record.run_scope };
+  const scope = scopeFixture(record.drills[0].evidence.terminal_audit.before.binding);
+  const calls = [];
+  const adapter = Object.fromEntries(['prepareNonPaidRuntime', 'pauseRuntimeWindow', 'restoreNonPaidRuntime', 'restoreRuntimeWindow'].map((name) => [name, async () => calls.push(name)]));
+  adapter.createSyntheticAccount = async ({ deployment }) => { assert.equal(deployment.service.source_commit, compatibility.service.sha); calls.push('account'); return scope; };
+  adapter.runWardrobeApiFlow = async () => record.drills[0].evidence;
+  adapter.replaceAndRestoreEcs = async () => ({ restart_evidence: record.drills[0].evidence });
+  adapter.captureReplicaAttribution = async () => record.drills[1].evidence;
+  adapter.runProviderFailureFixture = async () => ({});
+  adapter.collectRetryEvidence = async () => record.drills[2].evidence;
+  adapter.cleanupOwnedResources = async () => {
+    scope.runtimeControl = record.runtime_control;
+    scope.cleanupEvidence = record.cleanup_evidence;
+    scope.runtimeWindow = { ...record.window_control,
+      baseline: Object.fromEntries(Object.entries(record.window_control.baseline_versions).map(([key, version]) => [key, { version }])),
+      expected: Object.fromEntries(Object.entries(record.window_control.final_versions).map(([key, version]) => [key, { version }])) };
+  };
+  const options = { fixtureReader: async () => ({}), fencingReader: async () => record.fencing_ci,
+    preflightCollector: async () => ({ intake_open: false, stack: {}, deployment: { client: { source_commit: compatibility.client.sha }, service: scope.deployment.service } }) };
+  assert.equal(verifyRuntimeDrillEvidence(await executeRuntimeDrill(runEnvironment, compatibility, adapter, options), compatibility).passed, true);
+  calls.length = 0;
+  await assert.rejects(executeRuntimeDrill(runEnvironment, compatibility, adapter, { ...options,
+    preflightCollector: async () => ({ intake_open: true }) }), /private-only/);
+  assert.deepEqual(calls, []);
 });

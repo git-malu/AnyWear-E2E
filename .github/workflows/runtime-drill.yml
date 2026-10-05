@@ -8,7 +8,19 @@ on:
         required: true
         type: string
       provider_failure_fixture:
-        description: Approved provider-failure-*.json manifest supplied by the protected Beta operator
+        description: Reviewed non-paid fixture manifest (scripts/provider-failure-nonpaid.json)
+        required: true
+        type: string
+      exclusive_window:
+        description: Type beta-exclusive-runtime after the manager reserves the shared Beta window
+        required: true
+        type: string
+      fencing_ci_run_id:
+        description: Successful Service main CI run at the exact deployed compatibility pin
+        required: true
+        type: string
+      fencing_ci_run_attempt:
+        description: Exact Service CI run attempt containing the DB fencing artifact
         required: true
         type: string
 
@@ -24,6 +36,7 @@ jobs:
     name: Protected Beta runtime drill
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: beta
     permissions:
       contents: read
@@ -41,6 +54,10 @@ jobs:
       RUNTIME_DRILL_ID: beta-runtime-${{ github.run_id }}-${{ github.run_attempt }}
       RUNTIME_DRILL_E2E_SHA: ${{ github.sha }}
       RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE: ${{ inputs.provider_failure_fixture }}
+      RUNTIME_DRILL_EXCLUSIVE_WINDOW: ${{ inputs.exclusive_window }}
+      RUNTIME_DRILL_FENCING_RUN_ID: ${{ inputs.fencing_ci_run_id }}
+      RUNTIME_DRILL_FENCING_RUN_ATTEMPT: ${{ inputs.fencing_ci_run_attempt }}
+      RUNTIME_DRILL_FENCING_EVIDENCE_DIRECTORY: fencing-ci
       RUNTIME_DRILL_ADAPTER_MODULE: ./beta-runtime-adapter.mjs
       RUNTIME_DRILL_EVIDENCE_PATH: runtime-drill-evidence.json
       RUNTIME_PREFLIGHT_OUTPUT_PATH: runtime-preflight.json
@@ -79,6 +96,15 @@ jobs:
         uses: pnpm/action-setup@v6
         with:
           version: 11.18.0
+
+      - name: Download exact pinned Service DB fencing evidence
+        uses: actions/download-artifact@v4
+        with:
+          repository: git-malu/AnyWear-Service
+          github-token: ${{ steps.generate-token.outputs.token }}
+          run-id: ${{ inputs.fencing_ci_run_id }}
+          name: service-database-integration-${{ inputs.fencing_ci_run_id }}-${{ inputs.fencing_ci_run_attempt }}
+          path: fencing-ci
 
       - name: Setup Node
         uses: actions/setup-node@v4
