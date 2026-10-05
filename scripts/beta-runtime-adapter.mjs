@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -39,7 +39,7 @@ function boundedRunScope(environment) {
   return value;
 }
 
-function requestId() { return randomUUID(); }
+function requestId(marker) { return marker ? `${marker}-${randomUUID()}` : randomUUID(); }
 
 function jsonHeaders(token, request) {
   return {
@@ -76,11 +76,19 @@ function liveIo(environment) {
     async fetch(url, options) { return fetch(url, options); },
     async sleep(ms) { await delay(ms); },
     async cognitoSend(command) { return cognito.send(command); },
+    async saveRecovery(scope) {
+      await writeFile(environment.RUNTIME_DRILL_RECOVERY_PATH ?? 'runtime-drill-recovery.json', `${JSON.stringify({
+        record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
+        run_scope: scope.runScope, marker: scope.marker, user_pool_id: scope.userPoolId,
+        users: [{ email: scope.email, sub: scope.subject, username: scope.cognitoUsername }],
+        items: scope.items ?? [], resources: scope.resources ?? [],
+      }, null, 2)}\n`, { mode: 0o600 });
+    },
     async runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload }) {
       const { stdout, stderr } = await exec('bash', [
-        path.join(checkout, '.github/scripts/run-one-shot-task.sh'), 'beta', 'tester-cleanup',
+        '.github/scripts/run-one-shot-task.sh', 'beta', 'tester-cleanup',
         imageDigest, serviceCommit, '', payload,
-      ], { cwd: checkout, maxBuffer: 20 * 1024 * 1024 });
+      ], { cwd: path.resolve(checkout), maxBuffer: 20 * 1024 * 1024 });
       return { stdout, stderr };
     },
     async close() { cognito.destroy(); },
@@ -114,6 +122,7 @@ async function serviceRequest(io, baseUrl, method, pathname, token, body, header
     method,
     headers: { ...jsonHeaders(token, id), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   return { id, body: await responseJson(response, `${method} ${pathname}`), response };
 }
@@ -121,18 +130,25 @@ async function serviceRequest(io, baseUrl, method, pathname, token, body, header
 async function uploadItem(io, scope, fixturePath, marker) {
   const { serviceUrl } = scope.config;
   const uploadUrl = await serviceRequest(io, serviceUrl, 'POST', '/wardrobe/upload-url', scope.accessToken,
-    { contentType: 'image/png', extension: 'png' });
+    { contentType: 'image/png', extension: 'png' }, { 'X-Request-ID': requestId(marker) });
   const target = asObject(uploadUrl.body, 'upload-url response');
   required(target.itemId, 'upload itemId');
   required(target.key, 'upload S3 key');
   required(target.url, 'upload URL');
-  const image = await readFile(fixturePath);
-  const putResponse = await io.fetch(target.url, { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: image });
-  if (!putResponse.ok) throw new Error(`S3 upload failed (${putResponse.status})`);
+  if (!/^[0-9a-f-]{36}$/i.test(target.itemId) || !target.key.includes(scope.subject)) {
+    throw new Error('Upload response does not expose an exact owned item/object');
+  }
+  scope.items ??= [];
+  scope.items.push(target.itemId);
   scope.resources.push({ bucket: scope.stack.bucket, key: target.key });
+  if (io.saveRecovery) await io.saveRecovery(scope);
+  const image = await readFile(fixturePath);
+  const putResponse = await io.fetch(target.url, { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: image,
+    signal: AbortSignal.timeout(30_000) });
+  if (!putResponse.ok) throw new Error(`S3 upload failed (${putResponse.status})`);
   const idempotencyKey = randomUUID();
   const accepted = await serviceRequest(io, serviceUrl, 'POST', '/wardrobe/upload', scope.accessToken,
-    { itemId: target.itemId }, { 'Idempotency-Key': idempotencyKey });
+    { itemId: target.itemId }, { 'Idempotency-Key': idempotencyKey, 'X-Request-ID': requestId(marker) });
   if (accepted.response.status !== 202 || accepted.body.itemId !== target.itemId) {
     throw new Error('Wardrobe upload did not return the expected accepted task');
   }
@@ -146,14 +162,24 @@ async function uploadItem(io, scope, fixturePath, marker) {
   };
 }
 
-async function pollItem(io, scope, itemId, { terminal = false, timeoutMs = 180_000 } = {}) {
+async function pollItem(io, scope, itemId, { terminal = false, timeoutMs = 180_000, cleanup = false } = {}) {
   const started = Date.now();
   let state;
   const versions = [];
   while (Date.now() - started < timeoutMs) {
-    const result = await serviceRequest(io, scope.config.serviceUrl, 'GET', `/wardrobe/items/${itemId}`, scope.accessToken);
+    const id = requestId(scope.marker);
+    const response = await io.fetch(`${scope.config.serviceUrl}/wardrobe/items/${itemId}`, {
+      method: 'GET', headers: jsonHeaders(scope.accessToken, id), signal: AbortSignal.timeout(30_000),
+    });
+    if (cleanup && response.status === 404) return { absent: true, versions, requestId: id };
+    const result = { id, body: await responseJson(response, `GET /wardrobe/items/${itemId}`) };
     state = asObject(result.body, 'wardrobe item response');
-    if (Number.isInteger(state.taggingStateVersion)) versions.push(state.taggingStateVersion);
+    const minimumVersion = cleanup && state.taggingStatus === 'uploading' ? 0 : 1;
+    if (state.id !== itemId || !Number.isInteger(state.taggingStateVersion) || state.taggingStateVersion < minimumVersion
+      || !['uploading', 'processing', 'ready', 'failed'].includes(state.taggingStatus)) {
+      throw new Error('Wardrobe response does not match the item/state-version contract');
+    }
+    versions.push(state.taggingStateVersion);
     if (!terminal || ['ready', 'failed'].includes(state.taggingStatus)) {
       return { state, versions, requestId: result.id };
     }
@@ -187,15 +213,26 @@ async function waitServiceStable(io, stack, service) {
 }
 
 async function openStream(io, scope, itemId) {
-  const id = requestId();
-  const response = await io.fetch(`${scope.config.serviceUrl}/wardrobe/items/${itemId}/stream`, {
-    headers: { Authorization: `Bearer ${scope.accessToken}`, Accept: 'text/event-stream', 'X-Request-ID': id },
-  });
-  if (!response.ok || !response.body) throw new Error(`SSE stream failed (${response.status})`);
-  return { id, response };
+  const id = requestId(scope.marker);
+  const controller = new AbortController();
+  let response;
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    response = await io.fetch(`${scope.config.serviceUrl}/wardrobe/items/${itemId}/stream`, {
+      headers: { Authorization: `Bearer ${scope.accessToken}`, Accept: 'text/event-stream', 'X-Request-ID': id },
+      signal: controller.signal,
+    });
+    if (!response.ok || !response.body) throw new Error(`SSE stream failed (${response.status})`);
+    return { id, response, controller };
+  } catch (error) {
+    controller.abort();
+    if (response?.body) await closeStream({ response, controller });
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
 async function closeStream(stream) {
+  stream.controller?.abort();
   try { await stream.response.body?.cancel(); } catch { /* best effort after replacement */ }
 }
 
@@ -206,49 +243,100 @@ async function readTerminalStream(stream) {
       stream.response.text(),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('SSE terminal observation timed out')), 15_000); }),
     ]);
-    const match = String(body).match(/"tagging_status"\s*:\s*"(ready|failed)"/);
-    if (!match) throw new Error('SSE stream did not deliver a terminal wardrobe state');
-    return match[1];
+    const snapshots = String(body).split(/\r?\n\r?\n/).flatMap((frame) => {
+      const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart()).join('\n');
+      if (!data) return [];
+      try { return [JSON.parse(data)]; } catch { return []; }
+    });
+    const terminal = snapshots.find((snapshot) => ['ready', 'failed'].includes(snapshot.tagging_status)
+      && Number.isInteger(snapshot.state_version) && snapshot.state_version > 0);
+    if (!terminal) throw new Error('SSE stream did not deliver a terminal wardrobe snapshot');
+    return { status: terminal.tagging_status, version: terminal.state_version };
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
 
 async function createSyntheticAccount({ config, marker, stack }, io, environment) {
+  if (typeof io.auditOwnedTask !== 'function') {
+    throw new Error('Runtime execution requires a reviewed authoritative task audit before any cloud mutation');
+  }
   const runScope = boundedRunScope(environment);
   const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
   const email = `e2e-beta-${runScope}-0-${suffix}@anywear.local`;
   const password = environment.RUNTIME_DRILL_PASSWORD ?? DEFAULT_PASSWORD;
   const userPoolId = required(stack?.userPoolId ?? environment.USER_POOL_ID, 'Cognito user pool id');
   const clientId = required(stack?.userPoolClientId ?? environment.VITE_COGNITO_CLIENT_ID, 'Cognito user pool client id');
-  await io.cognitoSend(new AdminCreateUserCommand({
-    UserPoolId: userPoolId, Username: email, MessageAction: 'SUPPRESS',
-    UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }, { Name: 'custom:e2e_bootstrap', Value: 'true' }],
-  }));
-  await io.cognitoSend(new AdminSetUserPasswordCommand({ UserPoolId: userPoolId, Username: email, Password: password, Permanent: true }));
-  try { await io.cognitoSend(new AdminConfirmSignUpCommand({ UserPoolId: userPoolId, Username: email })); } catch (error) {
-    if (!/NotAuthorizedException|already confirmed/i.test(error?.name ?? error?.message ?? '')) throw error;
+  let created = false;
+  let capturedSubject;
+  let capturedUsername;
+  try {
+    const createdUser = await io.cognitoSend(new AdminCreateUserCommand({
+      UserPoolId: userPoolId, Username: email, MessageAction: 'SUPPRESS',
+      UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }, { Name: 'custom:e2e_bootstrap', Value: 'true' }],
+    }));
+    created = true;
+    const createdAttributes = Object.fromEntries((createdUser.User?.Attributes ?? []).map(({ Name, Value }) => [Name, Value]));
+    capturedSubject = createdAttributes.sub;
+    capturedUsername = createdUser.User?.Username;
+    if (io.saveRecovery) await io.saveRecovery({ config, marker, runScope, stack, email,
+      subject: capturedSubject, cognitoUsername: capturedUsername, userPoolId });
+    if (createdAttributes.email !== email || !SUBJECT_PATTERN.test(capturedSubject ?? '') || !capturedUsername) {
+      throw new Error('Cognito creation did not capture an immutable owned identity');
+    }
+    await io.cognitoSend(new AdminSetUserPasswordCommand({ UserPoolId: userPoolId, Username: capturedUsername, Password: password, Permanent: true }));
+    try { await io.cognitoSend(new AdminConfirmSignUpCommand({ UserPoolId: userPoolId, Username: capturedUsername })); } catch (error) {
+      if (!/NotAuthorizedException|already confirmed/i.test(error?.name ?? error?.message ?? '')) throw error;
+    }
+    const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
+    const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
+    if (attributes.email !== email || attributes.sub !== capturedSubject || user.Username !== capturedUsername) {
+      throw new Error('Cognito synthetic identity changed after creation');
+    }
+    const auth = await io.cognitoSend(new InitiateAuthCommand({
+      ClientId: clientId, AuthFlow: 'USER_PASSWORD_AUTH', AuthParameters: { USERNAME: capturedUsername, PASSWORD: password },
+    }));
+    const accessToken = auth.AuthenticationResult?.AccessToken;
+    required(accessToken, 'Cognito access token');
+    const scope = {
+      config, marker, runScope, stack, accessToken, password,
+      email, subject: attributes.sub, cognitoUsername: capturedUsername, resources: [], requestIds: [],
+      userPoolId, userPoolClientId: clientId,
+    };
+    if (io.saveRecovery) await io.saveRecovery(scope);
+    return scope;
+  } catch (error) {
+    if (created) {
+      try {
+        if (!capturedSubject || !capturedUsername) throw new Error('Cognito compensation has no captured immutable identity', { cause: error });
+        const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
+        const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
+        if (attributes.email !== email || attributes.sub !== capturedSubject || user.Username !== capturedUsername) {
+          throw new Error('Cognito compensation ownership check failed', { cause: error });
+        }
+        await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Synthetic Cognito account setup and compensation failed', { cause: cleanupError });
+      }
+    }
+    throw error;
   }
-  const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
-  const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
-  if (attributes.email !== email || !SUBJECT_PATTERN.test(attributes.sub ?? '')) throw new Error('Cognito synthetic identity did not return an owned subject');
-  const auth = await io.cognitoSend(new InitiateAuthCommand({
-    ClientId: clientId, AuthFlow: 'USER_PASSWORD_AUTH', AuthParameters: { USERNAME: email, PASSWORD: password },
-  }));
-  const accessToken = auth.AuthenticationResult?.AccessToken;
-  required(accessToken, 'Cognito access token');
-  return {
-    config, marker, runScope, stack, accessToken, password,
-    email, subject: attributes.sub, resources: [], requestIds: [],
-    userPoolId, userPoolClientId: clientId,
-  };
 }
 
 async function runWardrobeApiFlow({ scope, marker }, io, environment) {
+  const profile = await serviceRequest(io, scope.config.serviceUrl, 'GET', '/users/me', scope.accessToken, undefined,
+    { 'X-Request-ID': requestId(marker) });
+  if (profile.body?.id !== scope.subject || profile.body?.email !== scope.email) {
+    throw new Error('Service profile bootstrap did not return the captured Cognito subject');
+  }
   const fixture = environment.RUNTIME_DRILL_SUCCESS_FIXTURE ?? 'tests/fixtures/dummy.png';
   const details = await uploadItem(io, scope, fixture, marker);
   scope.item = details;
   const initial = await pollItem(io, scope, details.itemId, { timeoutMs: 15_000 });
+  if (initial.state.taggingStatus !== 'processing') {
+    throw new Error(`Accepted wardrobe task reached ${initial.state.taggingStatus} before replacement; restart evidence refused`);
+  }
   scope.taskId = await findTaskIdForItem(io, details.itemId);
   scope.stateVersions = initial.versions;
   return {
@@ -258,7 +346,7 @@ async function runWardrobeApiFlow({ scope, marker }, io, environment) {
     rolling_deployment: false,
     idempotency_replay_same_response: false,
     no_duplicate_terminal_effect: false,
-    state_versions: initial.versions.length ? initial.versions : [1, 1],
+    state_versions: initial.versions,
     api_task_arns: [],
     worker_task_arns: [],
     terminal_status: initial.state.taggingStatus,
@@ -271,41 +359,70 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
   const apiBefore = await describeTasks(io, stack, stack.apiService);
   const workerBefore = await describeTasks(io, stack, stack.workerService);
   if (apiBefore.taskArns.length < 2) throw new Error('Runtime drill requires at least two API replicas before SSE observation');
-  const streams = await Promise.all([openStream(io, scope, scope.item.itemId), openStream(io, scope, scope.item.itemId)]);
+  const executionLogs = await logsForTask(io, scope.taskId);
+  const executionStreams = executionLogs.filter((entry) => entry.parsed?.event === 'task_execution_started'
+    && entry.parsed?.taskType === 'auto-tagging' && entry.parsed?.resourceId === scope.item.itemId);
+  const workerToStop = workerBefore.taskArns.find((arn) => executionStreams.some((entry) =>
+    entry.logStreamName?.endsWith(`/${arn.split('/').at(-1)}`)));
+  if (!workerToStop) throw new Error('Active task is not attributed to a current worker ECS task; mutation refused');
+  const active = await pollItem(io, scope, scope.item.itemId, { timeoutMs: 15_000 });
+  if (active.state.taggingStatus !== 'processing') throw new Error('Task is no longer processing; ECS mutation refused');
+  const streams = [];
+  try {
+    streams.push(await openStream(io, scope, scope.item.itemId));
+    streams.push(await openStream(io, scope, scope.item.itemId));
+  } catch (error) {
+    await Promise.all(streams.map(closeStream));
+    throw error;
+  }
   scope.replacement = { streams, streamRequestIds: streams.map(({ id }) => id) };
   let apiAfter;
   let workerAfter;
+  let reconnected = [];
+  let operationError;
+  let restorationErrors;
+  let result;
   try {
+    await io.aws(['ecs', 'stop-task', '--cluster', stack.cluster, '--task', workerToStop, '--reason', 'beta runtime drill controlled replacement']);
     await io.aws(['ecs', 'update-service', '--cluster', stack.cluster, '--service', stack.apiService, '--force-new-deployment']);
     await waitServiceStable(io, stack, stack.apiService);
-    const workerToStop = workerBefore.taskArns[0];
-    await io.aws(['ecs', 'stop-task', '--cluster', stack.cluster, '--task', workerToStop, '--reason', 'beta runtime drill controlled replacement']);
-    await waitServiceStable(io, stack.workerService);
+    await waitServiceStable(io, stack, stack.workerService);
     apiAfter = await describeTasks(io, stack, stack.apiService);
     workerAfter = await describeTasks(io, stack, stack.workerService);
+    const apiChanged = apiAfter.taskArns.some((arn) => !apiBefore.taskArns.includes(arn));
+    const workerChanged = workerAfter.taskArns.some((arn) => !workerBefore.taskArns.includes(arn));
+    if (!apiChanged || !workerChanged) throw new Error('ECS replacement did not produce a changed API and worker task set');
     const replay = await serviceRequest(io, scope.config.serviceUrl, 'POST', '/wardrobe/upload', scope.accessToken,
-      { itemId: scope.item.itemId }, { 'Idempotency-Key': scope.item.idempotencyKey });
+      { itemId: scope.item.itemId }, { 'Idempotency-Key': scope.item.idempotencyKey, 'X-Request-ID': requestId(scope.marker) });
     if (replay.response.status !== 202 || JSON.stringify(replay.body) !== JSON.stringify(scope.item.accepted)) {
       throw new Error('Idempotency replay did not return the original accepted response');
     }
     const terminal = await pollItem(io, scope, scope.item.itemId, { terminal: true });
-    const reconnected = await Promise.all([
-      openStream(io, scope, scope.item.itemId),
-      openStream(io, scope, scope.item.itemId),
-    ]);
+    const stable = await pollItem(io, scope, scope.item.itemId, { terminal: true, timeoutMs: 15_000 });
+    if (stable.state.taggingStatus !== terminal.state.taggingStatus
+      || stable.state.taggingStateVersion !== terminal.state.taggingStateVersion) {
+      throw new Error('Idempotent terminal observation changed state after replay');
+    }
+    reconnected.push(await openStream(io, scope, scope.item.itemId));
+    reconnected.push(await openStream(io, scope, scope.item.itemId));
     const terminalObservers = await Promise.all(reconnected.map(readTerminalStream));
+    if (terminalObservers.some((observer) => observer.status !== terminal.state.taggingStatus
+      || observer.version !== terminal.state.taggingStateVersion)) {
+      throw new Error('SSE observers did not deliver the same terminal state/version as the database snapshot');
+    }
     scope.replacement.reconnectedRequestIds = reconnected.map(({ id }) => id);
     const versions = [...(scope.stateVersions ?? []), ...terminal.versions];
     scope.stateVersions = versions;
-    return {
+    result = {
       restart_evidence: {
         task_id: scope.taskId,
-        api_restart: true,
-        worker_restart: true,
-        rolling_deployment: true,
+        api_restart: apiChanged,
+        worker_restart: workerChanged,
+        rolling_deployment: apiChanged && workerChanged,
         idempotency_replay_same_response: true,
-        no_duplicate_terminal_effect: true,
-        state_versions: versions.length > 1 ? versions : [1, 1],
+        no_duplicate_terminal_effect: false,
+        terminal_snapshot_stable: true,
+        state_versions: versions,
         api_task_arns: [...new Set([...apiBefore.taskArns, ...apiAfter.taskArns])],
         worker_task_arns: [...new Set([...workerBefore.taskArns, ...workerAfter.taskArns])],
         terminal_status: terminal.state.taggingStatus,
@@ -318,11 +435,20 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
       reconnected_request_ids: scope.replacement.reconnectedRequestIds,
       terminal_observers: terminalObservers,
     };
+  } catch (error) {
+    operationError = error;
   } finally {
     await Promise.all(streams.map(closeStream));
-    await waitServiceStable(io, stack, stack.apiService).catch(() => undefined);
-    await waitServiceStable(io, stack, stack.workerService).catch(() => undefined);
+    await Promise.all(reconnected.map(closeStream));
+    const restored = await Promise.allSettled([
+      waitServiceStable(io, stack, stack.apiService), waitServiceStable(io, stack, stack.workerService),
+    ]);
+    restorationErrors = restored.filter((result) => result.status === 'rejected').map((result) => result.reason);
   }
+  if (restorationErrors.length) throw new AggregateError([...(operationError ? [operationError] : []), ...restorationErrors],
+    'Runtime replacement restoration did not reach stable API and worker services');
+  if (operationError) throw operationError;
+  return result;
 }
 
 async function logsForRequest(io, group, request) {
@@ -353,17 +479,21 @@ async function captureReplicaAttribution({ scope, replacement }, io) {
   }
   const apiTaskArns = [...new Set([...(replacement.api_task_arns_before ?? []), ...(replacement.api_task_arns_after ?? []), ...streamTaskArns])];
   ensureTaskArns(streamTaskArns, 'stream_task_arns');
-  if (new Set(streamTaskArns).size < 2) throw new Error('Replica attribution requires two distinct ECS task ARNs');
+  const reconnectTaskArns = streamTaskArns.slice(requestIds.length - (replacement.reconnected_request_ids ?? []).length);
+  if (new Set(reconnectTaskArns).size < 2) throw new Error('Replica attribution requires two distinct ECS task ARNs in the post-replacement observer phase');
   const reconnectIds = replacement.reconnected_request_ids ?? [];
   const reconnectEvents = await Promise.all(reconnectIds.map((id) => logsForRequest(io, API_LOG_GROUP, id)));
   if (reconnectIds.length < 2 || reconnectEvents.some((entry) => entry.length === 0)) throw new Error('Replica attribution could not prove two post-replacement reconnects');
   return {
     api_task_arns: ensureTaskArns(apiTaskArns, 'api_task_arns'),
     stream_task_arns: [...new Set(streamTaskArns)],
+    request_attribution: requestIds.map((id, index) => ({ request_id: id, task_arn: streamTaskArns[index] })),
+    terminal_observers: replacement.terminal_observers,
     distinct_replica_logs: true,
     reconnected_after_replacement: true,
     both_observers_terminal: Array.isArray(replacement.terminal_observers) && replacement.terminal_observers.length === 2
-      && replacement.terminal_observers.every((status) => ['ready', 'failed'].includes(status)),
+      && replacement.terminal_observers.every((observer) => ['ready', 'failed'].includes(observer.status)
+        && Number.isInteger(observer.version) && observer.version > 0),
     monotonic_state_versions: Array.isArray(scope.stateVersions) && scope.stateVersions.every((version, index, values) => index === 0 || version >= values[index - 1]),
   };
 }
@@ -405,7 +535,7 @@ async function logsForTask(io, taskId) {
     let parsed;
     try { parsed = JSON.parse(event.message ?? ''); } catch { parsed = {}; }
     return { ...event, parsed };
-  }).filter((event) => event.parsed?.taskId === taskId || event.parsed?.task_id === taskId || String(event.message ?? '').includes(taskId));
+  }).filter((event) => event.parsed?.taskId === taskId && event.parsed?.taskType === 'auto-tagging');
 }
 
 async function logsForItem(io, itemId) {
@@ -414,8 +544,8 @@ async function logsForItem(io, itemId) {
     let parsed;
     try { parsed = JSON.parse(event.message ?? ''); } catch { parsed = {}; }
     return { ...event, parsed };
-  }).filter((event) => event.parsed?.itemId === itemId || event.parsed?.item_id === itemId
-    || String(event.message ?? '').includes(itemId));
+  }).filter((event) => event.parsed?.event === 'task_execution_started'
+    && event.parsed?.taskType === 'auto-tagging' && event.parsed?.resourceId === itemId);
 }
 
 async function findTaskIdForItem(io, itemId, timeoutMs = 30_000) {
@@ -436,26 +566,25 @@ async function collectRetryEvidence({ scope, failure }, io) {
   const terminal = await pollItem(io, scope, failure.item_id, { terminal: true, timeoutMs: 180_000 });
   if (terminal.state.taggingStatus !== 'failed') throw new Error('Provider failure fixture did not reach terminal failed state');
   const started = Date.now();
-  const mainMessages = [];
-  const dlqMessages = [];
-  let workerEvents = [];
+  let visible = false;
   while (Date.now() - started < 180_000) {
-    workerEvents = await logsForTask(io, failure.task_id);
-    mainMessages.push(...await inspectQueue(io, scope.stack.queues.autoTagging, failure.task_id));
-    dlqMessages.push(...await inspectQueue(io, scope.stack.queues.autoTaggingDlq, failure.task_id));
-    if (dlqMessages.length > 0) break;
+    const queue = await io.aws(['sqs', 'get-queue-attributes', '--queue-url', scope.stack.queues.autoTaggingDlq,
+      '--attribute-names', 'ApproximateNumberOfMessages']);
+    if (Number(queue.Attributes?.ApproximateNumberOfMessages) > 0) { visible = true; break; }
     await io.sleep(2_000);
   }
-  const receiveCounts = [
-    ...mainMessages,
-    ...dlqMessages,
-    ...workerEvents,
-  ].map((event) => Number(event.Attributes?.ApproximateReceiveCount ?? event.parsed?.receiveCount ?? 0)).filter(Number.isFinite);
+  if (!visible) throw new Error('No visible Beta auto-tagging DLQ payload appeared within the evidence window');
+  const workerEvents = await logsForTask(io, failure.task_id);
+  const dlqMessages = await inspectQueue(io, scope.stack.queues.autoTaggingDlq, failure.task_id);
+  const receiveCounts = workerEvents.filter((event) => event.parsed?.event === 'task_sqs_message_received')
+    .map((event) => Number(event.parsed.receiveCount)).filter((count) => Number.isInteger(count) && count >= 1);
   const receiveCount = Math.max(0, ...receiveCounts);
-  const retryableFailures = workerEvents.filter((event) => /processing failed|retry|provider/i.test(event.message ?? '')
-    && event.parsed?.retryable !== false).length;
-  const databaseLeaseRenewed = workerEvents.some((event) => event.parsed?.databaseLeaseRenewed === true || event.parsed?.leaseRenewed === true);
-  const sqsVisibilityExtended = workerEvents.some((event) => event.parsed?.sqsVisibilityExtended === true || event.parsed?.visibilityExtended === true);
+  const retryableFailures = workerEvents.filter((event) => event.parsed?.event === 'task_processing_failed'
+    && event.parsed?.retryable === true).length;
+  const databaseLeaseRenewed = workerEvents.some((event) => event.parsed?.event === 'task_db_lease_renewed'
+    && event.parsed?.databaseLeaseRenewed === true);
+  const sqsVisibilityExtended = workerEvents.some((event) => event.parsed?.event === 'task_sqs_visibility_renewed'
+    && event.parsed?.sqsVisibilityExtended === true);
   const uniqueDlq = [...new Map(dlqMessages.map((message) => [message.MessageId, message])).values()];
   const dlq = uniqueDlq.find((message) => message.body?.task_id === failure.task_id);
   if (uniqueDlq.length > 1) throw new Error('DLQ observation found duplicate matching task messages');
@@ -464,14 +593,21 @@ async function collectRetryEvidence({ scope, failure }, io) {
     throw new Error('Worker CloudWatch logs do not prove successful database lease and SQS visibility renewal; runtime evidence refused');
   }
   if (receiveCount < 3 || retryableFailures < 1) throw new Error('Worker/SQS observations do not prove bounded retries');
+  if (typeof io.auditOwnedTask !== 'function') throw new Error('Runtime evidence requires an authoritative run-owned durable settlement audit; logs cannot prove side effects');
+  const audit = await io.auditOwnedTask({ subject: scope.subject, itemId: failure.item_id, taskId: failure.task_id, runScope: scope.runScope });
+  if (audit?.source !== 'durable-task-audit' || audit.taskId !== failure.task_id || audit.subject !== scope.subject
+    || audit.noDuplicateSideEffects !== true || !Number.isInteger(audit.creditSettlementCount)
+    || audit.creditSettlementCount < 0 || audit.creditSettlementCount > 1) {
+    throw new Error('Run-owned durable settlement audit did not establish single terminal side effects');
+  }
   return {
     task_id: failure.task_id,
     retryable_failures: retryableFailures,
     receive_count: receiveCount,
     database_lease_renewed: true,
     sqs_visibility_extended: true,
-    no_duplicate_side_effects: true,
-    credit_settlement_count: 0,
+    no_duplicate_side_effects: audit.noDuplicateSideEffects,
+    credit_settlement_count: audit.creditSettlementCount,
     dlq_message_id: dlq.MessageId,
     terminal_status: 'failed',
     item_id: failure.item_id,
@@ -485,6 +621,7 @@ async function assertObjectGone(io, object) {
 }
 
 async function cleanupOwnedResources({ scope, stack }, io, environment) {
+  if (io.saveRecovery) await io.saveRecovery(scope);
   assertOwnedIdentity(scope, scope.runScope);
   const bucket = required(stack.bucket, 'Wardrobe bucket');
   const objects = [...(scope.resources ?? [])];
@@ -499,12 +636,27 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
   const checkout = required(environment.E2E_SERVICE_CHECKOUT, 'E2E_SERVICE_CHECKOUT');
   const payload = JSON.stringify({ runScope: scope.runScope, users: [{ sub: scope.subject, email: scope.email }] });
   const errors = [];
-  const itemIds = [...new Set([scope.item?.itemId, scope.failure?.itemId].filter(Boolean))];
+  const capturedUser = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId,
+    Username: scope.cognitoUsername ?? scope.subject }));
+  const capturedAttributes = Object.fromEntries((capturedUser.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
+  if (capturedAttributes.sub !== scope.subject || capturedAttributes.email !== scope.email
+    || capturedUser.Username !== (scope.cognitoUsername ?? scope.subject)) {
+    throw new Error('Cognito ownership changed before resource cleanup; all deletions refused');
+  }
+  const itemIds = [...new Set([...(scope.items ?? []), scope.item?.itemId, scope.failure?.itemId].filter(Boolean))];
+  for (const itemId of itemIds) {
+    const observed = await pollItem(io, scope, itemId, { timeoutMs: 15_000, cleanup: true });
+    if (observed.absent) continue;
+    if (observed.state.taggingStatus === 'processing') {
+      await pollItem(io, scope, itemId, { terminal: true });
+    }
+  }
   for (const itemId of itemIds) {
     try {
       const response = await io.fetch(`${scope.config.serviceUrl}/wardrobe/items/${itemId}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${scope.accessToken}`, 'X-Request-ID': requestId() },
+        headers: { Authorization: `Bearer ${scope.accessToken}`, 'X-Request-ID': requestId(scope.marker) },
+        signal: AbortSignal.timeout(30_000),
       });
       if (![200, 204, 404].includes(response.status)) throw new Error(`Wardrobe item DELETE failed (${response.status})`);
     } catch (error) { errors.push(error); }
@@ -518,20 +670,15 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
   for (const object of objects) {
     try { await assertObjectGone(io, object); } catch (error) { errors.push(error); }
   }
-  const dlqUrl = stack.queues?.autoTaggingDlq;
-  const dlqTaskId = scope.failure?.taskId;
-  if (dlqUrl && dlqTaskId) {
-    const messages = await inspectQueue(io, dlqUrl, dlqTaskId);
-    const owned = messages.find((message) => message.body?.task_id === dlqTaskId);
-    if (owned?.ReceiptHandle) {
-      await io.aws(['sqs', 'delete-message', '--queue-url', dlqUrl, '--receipt-handle', owned.ReceiptHandle]);
-    }
-  }
+  // The pinned Service helper sweeps exact database-proven task IDs transactionally;
+  // a single observer receive cannot establish that all owned DLQ work is gone.
   try {
-    const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId, Username: scope.email }));
+    const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId,
+      Username: scope.cognitoUsername ?? scope.subject }));
     const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
-    if (attributes.sub !== scope.subject || attributes.email !== scope.email) throw new Error('Cognito ownership changed during cleanup');
-    await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: scope.email }));
+    if (attributes.sub !== scope.subject || attributes.email !== scope.email
+      || user.Username !== (scope.cognitoUsername ?? scope.subject)) throw new Error('Cognito ownership changed during cleanup');
+    await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: scope.userPoolId, Username: user.Username }));
   } catch (error) {
     if (!/UserNotFoundException/.test(error?.name ?? error?.message ?? '')) errors.push(error);
   }
