@@ -1,15 +1,18 @@
 import { execFile } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { collectDeploymentEvidence } from './qualification-record.mjs';
 
 const exec = promisify(execFile);
-const TARGET_ACCOUNT = '650880818323';
-const TARGET_REGION = 'ap-east-1';
+export const TARGET_ACCOUNT = '650880818323';
+export const TARGET_REGION = 'ap-east-1';
+export const RUNTIME_DRILL_CONCURRENCY = 'anywear-beta-runtime';
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const DRILL_ID_PATTERN = /^beta-runtime-[a-z0-9-]+$/;
+const FIXTURE_MANIFEST_PATTERN = /^provider-failure-[a-z0-9-]+\.json$/;
+const APPROVED_PROVIDER_FIXTURE_SOURCE = /^beta-provider-(?:timeout|invalid-image)$/;
 const REQUIRED_DRILLS = [
   'accepted-task-restart',
   'multi-replica-sse',
@@ -65,6 +68,64 @@ export function assertRuntimeDrillMutationConfirmation(environment = process.env
   if (environment.RUNTIME_DRILL_CONFIRM !== 'beta-runtime-drill') {
     throw new Error('Runtime mutations require RUNTIME_DRILL_CONFIRM=beta-runtime-drill');
   }
+}
+
+export function assertRuntimeDrillExecutionEnvironment(environment = process.env, compatibility) {
+  const config = assertRuntimeDrillEnvironment(environment);
+  if (environment.GITHUB_REF !== 'refs/heads/main') {
+    throw new Error('Runtime mutations require the main branch');
+  }
+  if (environment.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
+    throw new Error('Runtime mutations require a workflow_dispatch event');
+  }
+  if (environment.RUNTIME_DRILL_CONCURRENCY !== RUNTIME_DRILL_CONCURRENCY) {
+    throw new Error(`Runtime mutations require concurrency=${RUNTIME_DRILL_CONCURRENCY}`);
+  }
+  if (!COMMIT_PATTERN.test(environment.GITHUB_SHA ?? '')) {
+    throw new Error('Runtime mutations require the full current E2E commit SHA');
+  }
+  if (environment.RUNTIME_DRILL_E2E_SHA !== environment.GITHUB_SHA) {
+    throw new Error('Runtime mutations require RUNTIME_DRILL_E2E_SHA to match the current workflow revision');
+  }
+  if (environment.RUNTIME_DRILL_CLIENT_SHA !== compatibility?.client?.sha
+    || environment.RUNTIME_DRILL_SERVICE_SHA !== compatibility?.service?.sha) {
+    throw new Error('Runtime mutations require Client and Service pins to match compatibility.json');
+  }
+  assertRuntimeDrillMutationConfirmation(environment);
+  if (!DRILL_ID_PATTERN.test(environment.RUNTIME_DRILL_ID ?? '')) {
+    throw new Error('Runtime mutations require RUNTIME_DRILL_ID=beta-runtime-<unique-id>');
+  }
+  if (!compatibility?.client?.sha || !COMMIT_PATTERN.test(compatibility.client.sha)
+    || !compatibility?.service?.sha || !COMMIT_PATTERN.test(compatibility.service.sha)) {
+    throw new Error('Runtime mutations require full pinned Client and Service commit SHAs');
+  }
+  return { ...config, drillId: environment.RUNTIME_DRILL_ID, concurrency: RUNTIME_DRILL_CONCURRENCY };
+}
+
+export async function readProviderFailureFixture(fixturePath) {
+  if (typeof fixturePath !== 'string' || fixturePath.length === 0) {
+    throw new Error('retry-visibility-dlq requires RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE');
+  }
+  if (!FIXTURE_MANIFEST_PATTERN.test(fixturePath.split(/[\\/]/).pop() ?? '')) {
+    throw new Error('Provider failure fixture must be an approved provider-failure-*.json manifest');
+  }
+  const details = await stat(fixturePath).catch(() => undefined);
+  if (!details?.isFile()) throw new Error('Provider failure fixture manifest does not exist');
+  let fixture;
+  try {
+    fixture = JSON.parse(await readFile(fixturePath, 'utf8'));
+  } catch (error) {
+    throw new Error('Provider failure fixture manifest is not valid JSON', { cause: error });
+  }
+  if (fixture?.schema_version !== 1 || fixture.kind !== 'provider-failure'
+    || fixture.application_backdoor !== false || typeof fixture.source !== 'string'
+    || !APPROVED_PROVIDER_FIXTURE_SOURCE.test(fixture.source)
+    || fixture.approved !== true || typeof fixture.image_path !== 'string') {
+    throw new Error('Provider failure fixture must be an approved external failure image and have no application backdoor');
+  }
+  const image = await stat(fixture.image_path).catch(() => undefined);
+  if (!image?.isFile()) throw new Error('Provider failure fixture image does not exist');
+  return fixture;
 }
 
 export function buildRuntimeDrillPlan(config, stack = {}) {
@@ -179,7 +240,7 @@ function assertDeploymentBinding(record, compatibility) {
   }
 }
 
-function verifyRestartDrill(evidence) {
+export function verifyRestartDrillEvidence(evidence) {
   requireString(evidence.task_id, 'accepted-task-restart task_id');
   requireBoolean(evidence.api_restart, 'accepted-task-restart api_restart');
   requireBoolean(evidence.worker_restart, 'accepted-task-restart worker_restart');
@@ -200,7 +261,7 @@ function verifyRestartDrill(evidence) {
   if (!['ready', 'Complete'].includes(evidence.terminal_status)) throw new Error('accepted-task-restart must reach a terminal success state');
 }
 
-function verifyReplicaDrill(evidence) {
+export function verifyReplicaDrillEvidence(evidence) {
   requireUniqueStrings(evidence.api_task_arns, 'multi-replica-sse api_task_arns', { minimum: 2 });
   requireUniqueStrings(evidence.stream_task_arns, 'multi-replica-sse stream_task_arns', { minimum: 2 });
   requireBoolean(evidence.distinct_replica_logs, 'multi-replica-sse distinct_replica_logs');
@@ -209,7 +270,7 @@ function verifyReplicaDrill(evidence) {
   requireBoolean(evidence.monotonic_state_versions, 'multi-replica-sse monotonic_state_versions');
 }
 
-function verifyRetryDrill(evidence) {
+export function verifyRetryDrillEvidence(evidence) {
   requireString(evidence.task_id, 'retry-visibility-dlq task_id');
   requireInteger(evidence.retryable_failures, 'retry-visibility-dlq retryable_failures', { minimum: 1 });
   requireInteger(evidence.receive_count, 'retry-visibility-dlq receive_count', { minimum: 3 });
@@ -259,9 +320,9 @@ export function verifyRuntimeDrillEvidence(record, compatibility) {
   for (const id of REQUIRED_DRILLS) {
     const drill = drills.get(id);
     if (!drill || drill.status !== 'passed') throw new Error(`Required runtime drill ${id} did not pass`);
-    if (id === 'accepted-task-restart') verifyRestartDrill(drill.evidence);
-    if (id === 'multi-replica-sse') verifyReplicaDrill(drill.evidence);
-    if (id === 'retry-visibility-dlq') verifyRetryDrill(drill.evidence);
+    if (id === 'accepted-task-restart') verifyRestartDrillEvidence(drill.evidence);
+    if (id === 'multi-replica-sse') verifyReplicaDrillEvidence(drill.evidence);
+    if (id === 'retry-visibility-dlq') verifyRetryDrillEvidence(drill.evidence);
   }
   const rollback = drills.get('rollback');
   if (rollback?.status === 'failed') throw new Error('Optional rollback drill is marked failed');
@@ -363,8 +424,95 @@ async function collectPreflight(config, compatibility) {
   };
 }
 
+export function assertRuntimeDrillExecutorAdapter(adapter) {
+  const required = [
+    'createSyntheticAccount',
+    'runWardrobeApiFlow',
+    'replaceAndRestoreEcs',
+    'captureReplicaAttribution',
+    'runProviderFailureFixture',
+    'collectRetryEvidence',
+    'cleanupOwnedResources',
+  ];
+  if (!adapter || required.some((name) => typeof adapter[name] !== 'function')) {
+    throw new Error(`Runtime executor requires a reviewed adapter implementing: ${required.join(', ')}`);
+  }
+  return adapter;
+}
+
+export async function executeRuntimeDrill(environment, compatibility, adapter, {
+  preflightCollector = collectPreflight,
+  fixtureReader = readProviderFailureFixture,
+} = {}) {
+  const config = assertRuntimeDrillExecutionEnvironment(environment, compatibility);
+  assertRuntimeDrillExecutorAdapter(adapter);
+  await fixtureReader(environment.RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE);
+  const preflight = await preflightCollector(config, compatibility);
+  if (!preflight.intake_open) throw new Error('Task-bearing runtime drills require /anywear/beta/intake_open=true');
+
+  let scope;
+  let result;
+  let operationError;
+  try {
+    scope = await adapter.createSyntheticAccount({ config, marker: config.drillId });
+    const restart = await adapter.runWardrobeApiFlow({ scope, marker: config.drillId });
+    const replacement = await adapter.replaceAndRestoreEcs({ stack: preflight.stack, scope, marker: config.drillId });
+    const replica = await adapter.captureReplicaAttribution({ scope, marker: config.drillId, replacement });
+    if (!replica.distinct_replica_logs || !Array.isArray(replica.stream_task_arns)
+      || new Set(replica.stream_task_arns).size < 2) {
+      throw new Error('Runtime executor refused SSE evidence without two distinct request-attributed ECS replicas');
+    }
+    verifyRestartDrillEvidence(restart);
+    verifyReplicaDrillEvidence(replica);
+    const failure = await adapter.runProviderFailureFixture({ scope, marker: config.drillId });
+    const retry = await adapter.collectRetryEvidence({ scope, marker: config.drillId, failure });
+    verifyRetryDrillEvidence(retry);
+    result = {
+      schema_version: 1,
+      record_type: 'anywear_beta_runtime_drill',
+      drill_id: config.drillId,
+      environment: { stage: 'beta', aws_account_id: TARGET_ACCOUNT, aws_region: TARGET_REGION, client_url: config.clientUrl, service_url: config.serviceUrl },
+      deployment: {
+        client_source_commit: preflight.deployment.client.source_commit,
+        service_source_commit: preflight.deployment.service.source_commit,
+        service_image_digest: preflight.deployment.service.image_digest,
+      },
+      drills: [
+        { id: 'accepted-task-restart', status: 'passed', evidence: restart },
+        { id: 'multi-replica-sse', status: 'passed', evidence: replica },
+        { id: 'retry-visibility-dlq', status: 'passed', evidence: retry },
+      ],
+    };
+    verifyRuntimeDrillEvidence(result, compatibility);
+  } catch (error) {
+    operationError = error;
+  }
+  let cleanupError;
+  if (scope) {
+    try {
+      await adapter.cleanupOwnedResources({ scope, marker: config.drillId, stack: preflight.stack });
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  if (operationError && cleanupError) throw new AggregateError([operationError, cleanupError], 'Runtime drill and cleanup both failed');
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+  return result;
+}
+
 async function loadCompatibility() {
   return JSON.parse(await readFile(new URL('../compatibility.json', import.meta.url), 'utf8'));
+}
+
+export async function loadExecutionAdapter(environment) {
+  const modulePath = environment.RUNTIME_DRILL_ADAPTER_MODULE;
+  if (!modulePath) return undefined;
+  if (modulePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(modulePath) || modulePath.includes('..') || modulePath.includes('\\')) {
+    throw new Error('Runtime drill adapter must be a relative module under scripts');
+  }
+  const module = await import(new URL(modulePath, import.meta.url));
+  return module.default ?? module.runtimeDrillAdapter;
 }
 
 function usage() {
@@ -372,10 +520,11 @@ function usage() {
     'Usage:',
     '  node scripts/runtime-drill.mjs --plan',
     '  node scripts/runtime-drill.mjs --preflight',
+    '  node scripts/runtime-drill.mjs --execute',
     '  node scripts/runtime-drill.mjs --verify <evidence.json>',
     '',
     'All modes are Beta-only. --plan and --preflight are read-only.',
-    'The drill plan describes operator-approved ECS/SQS mutations but never executes them.',
+    '--execute requires main, anywear-beta-runtime concurrency, explicit confirmation, and an approved provider-failure fixture.',
   ].join('\n'));
 }
 
@@ -393,6 +542,12 @@ if (isMain) {
         const record = JSON.parse(await readFile(requireString(evidencePath, 'Evidence path'), 'utf8'));
         const result = verifyRuntimeDrillEvidence(record, compatibility);
         console.log(`Verified Beta runtime drill evidence: ${result.required_drills.join(', ')}; rollback=${result.rollback}`);
+      } else if (mode === '--execute') {
+        const adapter = await loadExecutionAdapter(process.env);
+        const execution = await executeRuntimeDrill(process.env, compatibility, adapter);
+        const outputPath = process.env.RUNTIME_DRILL_EVIDENCE_PATH ?? 'runtime-drill-evidence.json';
+        await writeFile(outputPath, `${JSON.stringify(execution, null, 2)}\n`, 'utf8');
+        console.log(`Wrote Beta runtime drill evidence to ${outputPath}`);
       } else {
         const config = assertRuntimeDrillEnvironment();
         if (mode === '--plan') {

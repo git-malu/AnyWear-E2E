@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   assertRuntimeDrillEnvironment,
+  assertRuntimeDrillExecutionEnvironment,
+  assertRuntimeDrillExecutorAdapter,
   assertRuntimeDrillMutationConfirmation,
   buildRuntimeDrillPlan,
+  executeRuntimeDrill,
+  loadExecutionAdapter,
+  readProviderFailureFixture,
   verifyRuntimeDrillEvidence,
 } from './runtime-drill.mjs';
 
@@ -101,6 +109,107 @@ test('runtime mutations require the explicit Beta confirmation token', () => {
     () => assertRuntimeDrillMutationConfirmation({ RUNTIME_DRILL_CONFIRM: 'production' }),
     /RUNTIME_DRILL_CONFIRM=beta-runtime-drill/,
   );
+});
+
+test('runtime execution requires main, Beta concurrency, and a unique marker', () => {
+  const executionEnvironment = {
+    ...environment,
+    GITHUB_REF: 'refs/heads/main',
+    GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_SHA: 'a'.repeat(40),
+    RUNTIME_DRILL_CONCURRENCY: 'anywear-beta-runtime',
+    RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill',
+    RUNTIME_DRILL_ID: 'beta-runtime-test-001',
+    RUNTIME_DRILL_E2E_SHA: 'a'.repeat(40),
+    RUNTIME_DRILL_CLIENT_SHA: 'a'.repeat(40),
+    RUNTIME_DRILL_SERVICE_SHA: 'b'.repeat(40),
+  };
+  const compatibilitySet = { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } };
+  assert.equal(assertRuntimeDrillExecutionEnvironment(executionEnvironment, compatibilitySet).drillId, 'beta-runtime-test-001');
+  assert.throws(() => assertRuntimeDrillExecutionEnvironment({ ...executionEnvironment, GITHUB_REF: 'refs/heads/codex/test' }, compatibilitySet), /main branch/);
+  assert.throws(() => assertRuntimeDrillExecutionEnvironment({ ...executionEnvironment, RUNTIME_DRILL_CONCURRENCY: 'other' }, compatibilitySet), /concurrency/);
+  assert.throws(() => assertRuntimeDrillExecutionEnvironment({ ...executionEnvironment, RUNTIME_DRILL_ID: 'prod-runtime-test' }, compatibilitySet), /RUNTIME_DRILL_ID/);
+  assert.throws(() => assertRuntimeDrillExecutionEnvironment({ ...executionEnvironment, GITHUB_EVENT_NAME: undefined }, compatibilitySet), /workflow_dispatch/);
+});
+
+test('retry execution refuses missing or unapproved provider-failure fixtures', async () => {
+  await assert.rejects(readProviderFailureFixture(), /requires RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE/);
+  await assert.rejects(readProviderFailureFixture('tests/fixtures/dummy.png'), /approved provider-failure/);
+  const directory = await mkdtemp(path.join(tmpdir(), 'anywear-runtime-drill-'));
+  const manifestPath = path.join(directory, 'provider-failure-test.json');
+  const imagePath = path.join(directory, 'provider-failure.png');
+  try {
+    await writeFile(imagePath, await readFile('tests/fixtures/dummy.png'));
+    await writeFile(manifestPath, JSON.stringify({
+      schema_version: 1,
+      kind: 'provider-failure',
+      source: 'beta-provider-timeout',
+      application_backdoor: false,
+      approved: true,
+      image_path: imagePath,
+    }));
+    const fixture = await readProviderFailureFixture(manifestPath);
+    assert.equal(fixture.application_backdoor, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime executor refuses adapters without exact cleanup and replica attribution hooks', () => {
+  assert.throws(() => assertRuntimeDrillExecutorAdapter({}), /cleanupOwnedResources/);
+  const names = [
+    'createSyntheticAccount', 'runWardrobeApiFlow', 'replaceAndRestoreEcs',
+    'captureReplicaAttribution', 'runProviderFailureFixture', 'collectRetryEvidence',
+    'cleanupOwnedResources',
+  ];
+  const adapter = Object.fromEntries(names.map((name) => [name, () => undefined]));
+  assert.equal(assertRuntimeDrillExecutorAdapter(adapter), adapter);
+});
+
+test('runtime executor adapter loading rejects absent or escaping modules', async () => {
+  assert.equal(await loadExecutionAdapter({}), undefined);
+  await assert.rejects(loadExecutionAdapter({ RUNTIME_DRILL_ADAPTER_MODULE: '../adapter.mjs' }), /relative module/);
+  await assert.rejects(loadExecutionAdapter({ RUNTIME_DRILL_ADAPTER_MODULE: 'C:\\adapter.mjs' }), /relative module/);
+});
+
+test('runtime executor cleans the owned scope after an adapter failure', async () => {
+  const executionEnvironment = {
+    ...environment,
+    GITHUB_REF: 'refs/heads/main',
+    GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_SHA: 'a'.repeat(40),
+    RUNTIME_DRILL_CONCURRENCY: 'anywear-beta-runtime',
+    RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill',
+    RUNTIME_DRILL_ID: 'beta-runtime-cleanup-test',
+    RUNTIME_DRILL_E2E_SHA: 'a'.repeat(40),
+    RUNTIME_DRILL_CLIENT_SHA: compatibility.client.sha,
+    RUNTIME_DRILL_SERVICE_SHA: compatibility.service.sha,
+  };
+  let cleaned = false;
+  const names = [
+    'createSyntheticAccount', 'runWardrobeApiFlow', 'replaceAndRestoreEcs',
+    'captureReplicaAttribution', 'runProviderFailureFixture', 'collectRetryEvidence',
+    'cleanupOwnedResources',
+  ];
+  const adapter = Object.fromEntries(names.map((name) => [name, async () => undefined]));
+  adapter.createSyntheticAccount = async () => ({ owned: true });
+  adapter.runWardrobeApiFlow = async () => { throw new Error('synthetic adapter failure'); };
+  adapter.cleanupOwnedResources = async ({ scope, marker }) => {
+    cleaned = scope.owned === true && marker === executionEnvironment.RUNTIME_DRILL_ID;
+  };
+  const preflight = {
+    intake_open: true,
+    stack: { cluster: 'beta', apiService: 'api', workerService: 'worker' },
+    deployment: {
+      client: { source_commit: compatibility.client.sha },
+      service: { source_commit: compatibility.service.sha, image_digest: `sha256:${'c'.repeat(64)}` },
+    },
+  };
+  await assert.rejects(executeRuntimeDrill(executionEnvironment, compatibility, adapter, {
+    fixtureReader: async () => ({ image_path: 'unused' }),
+    preflightCollector: async () => preflight,
+  }), /synthetic adapter failure/);
+  assert.equal(cleaned, true);
 });
 
 test('runtime plan names bounded drills and cleanup controls', () => {
