@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import {
   requireEnvironment,
 } from './support/account.js';
+import { isTerminalTaggingStatus } from './support/wardrobe-lifecycle.js';
 
 const uploadFixture = fileURLToPath(new URL('./fixtures/dummy.png', import.meta.url));
 
@@ -13,19 +14,25 @@ interface WardrobeStatus {
 }
 
 test.describe('Wardrobe Management @full-stack', () => {
+  // This scenario invokes the external VLM. A failed attempt must not be
+  // repeated automatically; protected recovery owns non-terminal resources.
+  test.describe.configure({ retries: 0 });
+
   let createdItemId: string | undefined;
   let authorization: string | undefined;
+  let observedTerminalState = false;
 
   test.beforeEach(async ({ page, workerAccount }) => {
     requireEnvironment('USER_POOL_ID');
     requireEnvironment('VITE_COGNITO_CLIENT_ID');
     createdItemId = undefined;
     authorization = undefined;
+    observedTerminalState = false;
     await login(page, workerAccount);
   });
 
   test.afterEach(async ({ page }) => {
-    if (createdItemId && authorization) {
+    if (createdItemId && authorization && observedTerminalState) {
       const response = await page.request.delete(
         `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
         { headers: { Authorization: authorization } },
@@ -95,6 +102,7 @@ test.describe('Wardrobe Management @full-stack', () => {
       expect(latest.id).toBe(createdItemId);
       expect(latest.taggingStateVersion).toBeGreaterThanOrEqual(lastVersion);
       lastVersion = latest.taggingStateVersion;
+      observedTerminalState = isTerminalTaggingStatus(latest.taggingStatus);
       return latest.taggingStatus;
     }, { timeout: 120_000, intervals: [1_000, 2_000, 5_000] }).toBe('ready');
 
