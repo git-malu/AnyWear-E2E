@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -123,6 +123,7 @@ test('runtime execution requires main, Beta concurrency, and a unique marker', (
     RUNTIME_DRILL_E2E_SHA: 'a'.repeat(40),
     RUNTIME_DRILL_CLIENT_SHA: 'a'.repeat(40),
     RUNTIME_DRILL_SERVICE_SHA: 'b'.repeat(40),
+    RUNTIME_DRILL_RUN_SCOPE: '123-1-aaaaaaaaaaaaaaaa',
   };
   const compatibilitySet = { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } };
   assert.equal(assertRuntimeDrillExecutionEnvironment(executionEnvironment, compatibilitySet).drillId, 'beta-runtime-test-001');
@@ -137,16 +138,14 @@ test('retry execution refuses missing or unapproved provider-failure fixtures', 
   await assert.rejects(readProviderFailureFixture('tests/fixtures/dummy.png'), /approved provider-failure/);
   const directory = await mkdtemp(path.join(tmpdir(), 'anywear-runtime-drill-'));
   const manifestPath = path.join(directory, 'provider-failure-test.json');
-  const imagePath = path.join(directory, 'provider-failure.png');
   try {
-    await writeFile(imagePath, await readFile('tests/fixtures/dummy.png'));
     await writeFile(manifestPath, JSON.stringify({
       schema_version: 1,
       kind: 'provider-failure',
       source: 'beta-provider-timeout',
       application_backdoor: false,
       approved: true,
-      image_path: imagePath,
+      image_path: 'tests/fixtures/dummy.png',
     }));
     const fixture = await readProviderFailureFixture(manifestPath);
     assert.equal(fixture.application_backdoor, false);
@@ -184,6 +183,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     RUNTIME_DRILL_E2E_SHA: 'a'.repeat(40),
     RUNTIME_DRILL_CLIENT_SHA: compatibility.client.sha,
     RUNTIME_DRILL_SERVICE_SHA: compatibility.service.sha,
+    RUNTIME_DRILL_RUN_SCOPE: '123-1-bbbbbbbbbbbbbbbb',
   };
   let cleaned = false;
   const names = [

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "kind": "provider-failure",
+  "source": "beta-provider-invalid-image",
+  "approved": true,
+  "application_backdoor": false,
+  "image_path": "tests/fixtures/provider-failure-invalid-image.png"
+}
