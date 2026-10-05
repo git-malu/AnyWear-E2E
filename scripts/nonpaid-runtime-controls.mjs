@@ -13,9 +13,33 @@ const SERVICE_FIELDS = ['serviceArn', 'clusterArn', 'serviceName', 'desiredCount
   'networkConfiguration', 'placementConstraints', 'placementStrategy', 'schedulingStrategy',
   'enableExecuteCommand', 'enableECSManagedTags', 'propagateTags', 'loadBalancers', 'serviceRegistries',
   'serviceConnectConfiguration', 'volumeConfigurations', 'vpcLatticeConfigurations'];
+const TASK_DEFINITION_METADATA_FIELDS = new Set(['taskDefinitionArn', 'revision', 'status', 'registeredAt', 'registeredBy',
+  'requiresAttributes', 'compatibilities', 'deregisteredAt', 'deleteRequestedAt']);
+const TASK_DEFINITION_DEFAULTS = new Map([['volumes', []], ['placementConstraints', []], ['requiresCompatibilities', []],
+  ['inferenceAccelerators', []], ['enableFaultInjection', false]]);
+const CONTAINER_DEFAULTS = new Map([['essential', true], ['privileged', false], ['readonlyRootFilesystem', false],
+  ['mountPoints', []], ['portMappings', []], ['systemControls', []], ['ulimits', []], ['resourceRequirements', []],
+  ['dependsOn', []], ['environmentFiles', []], ['volumesFrom', []], ['links', []], ['cpu', 0], ['environment', []], ['secrets', []]]);
 
 function hash(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function pick(value, keys) { return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]])); }
+function withoutAwsDefaults(value, defaults) {
+  return Object.fromEntries(Object.entries(value ?? {}).filter(([key, child]) => !defaults.has(key) || !isDeepStrictEqual(child, defaults.get(key))));
+}
+export function normalizeFixtureDefinition(definition) {
+  if (!definition || typeof definition !== 'object' || Array.isArray(definition)) throw new Error('Fixture task definition is not an object');
+  const unknown = Object.keys(definition).filter((key) => !DEFINITION_FIELDS.includes(key) && key !== 'family' && !TASK_DEFINITION_METADATA_FIELDS.has(key));
+  if (unknown.length) throw new Error(`Fixture task definition has unexpected fields: ${unknown.join(',')}`);
+  if (!Array.isArray(definition.containerDefinitions) || definition.containerDefinitions.length !== 2) throw new Error('Fixture task definition must contain exactly worker and sidecar containers');
+  const normalized = withoutAwsDefaults({ ...pick(definition, DEFINITION_FIELDS), family: definition.family }, TASK_DEFINITION_DEFAULTS);
+  normalized.containerDefinitions = definition.containerDefinitions.map((container) => {
+    const allowed = ['name', 'image', 'repositoryCredentials', 'cpu', 'memory', 'memoryReservation', 'links', 'portMappings', 'essential', 'entryPoint', 'command', 'environment', 'environmentFiles', 'mountPoints', 'volumesFrom', 'linuxParameters', 'secrets', 'dependsOn', 'startTimeout', 'stopTimeout', 'hostname', 'user', 'workingDirectory', 'disableNetworking', 'privileged', 'readonlyRootFilesystem', 'dnsServers', 'dnsSearchDomains', 'extraHosts', 'pseudoTerminal', 'systemControls', 'resourceRequirements', 'firelensConfiguration', 'credentialSpecs', 'ulimits', 'healthCheck', 'logConfiguration'];
+    const unknownContainer = Object.keys(container).filter((key) => !allowed.includes(key));
+    if (unknownContainer.length) throw new Error(`Fixture container has unexpected fields: ${unknownContainer.join(',')}`);
+    return withoutAwsDefaults(structuredClone(container), CONTAINER_DEFAULTS);
+  });
+  return normalized;
+}
 
 export async function exactService(io, stack, name) {
   const result = await io.aws(['ecs', 'describe-services', '--cluster', stack.cluster, '--services', name]);
@@ -224,6 +248,7 @@ export async function restoreNonPaidRuntime({ scope }, io, waitStable) {
   await waitStable(io, scope.stack, scope.stack.apiService);
   await verifyRevision(io, scope.stack, scope.stack.workerService, control.baseline_worker_task_definition, control.baseline_worker_config);
   await verifyRevision(io, scope.stack, scope.stack.apiService, control.baseline_api_task_definition, control.baseline_api_config);
+  await assertFixtureTasksStopped(io, scope);
   for (const arn of control.fixture_task_definitions) {
     await io.aws(['ecs', 'deregister-task-definition', '--task-definition', arn]);
     const response = await io.aws(['ecs', 'describe-task-definition', '--task-definition', arn, '--include', 'TAGS']);
@@ -241,8 +266,9 @@ export async function recoverFixtureRegistrations(io, scope) {
   if (baseline?.taskDefinitionArn !== control.baseline_worker_task_definition
     || hash(pick(baseline, DEFINITION_FIELDS)) !== control.baseline_definition_hash) throw new Error('Immutable baseline task definition changed');
   const listed = await io.aws(['ecs', 'list-task-definitions', '--family-prefix', `beta-anywear-nonpaid-${scope.runScope}`, '--status', 'ACTIVE']);
-  if (listed.nextToken || listed.taskDefinitionArns?.length > 20) throw new Error('Fixture orphan definition search is incomplete or exceeds budget');
-  for (const arn of new Set([...(listed.taskDefinitionArns ?? []), ...control.fixture_task_definitions])) {
+  if (listed.nextToken || !Array.isArray(listed.taskDefinitionArns) || listed.taskDefinitionArns.length > 20) throw new Error('Fixture orphan definition search is incomplete or exceeds budget');
+  const tasks = await listFixtureTasks(io, scope);
+  for (const arn of new Set([...listed.taskDefinitionArns, ...control.fixture_task_definitions, ...tasks.map((task) => task.taskDefinitionArn)])) {
     if (!new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-${scope.runScope}:[1-9][0-9]*$`).test(arn)) throw new Error('Captured fixture definition is outside owned family');
     const response = await io.aws(['ecs', 'describe-task-definition', '--task-definition', arn, '--include', 'TAGS']);
     const definition = response.taskDefinition;
@@ -253,14 +279,8 @@ export async function recoverFixtureRegistrations(io, scope) {
       const expected = cloneFixtureDefinition(baseline, { runScope: scope.runScope, imageDigest: control.service_image_digest,
         serviceCommit: control.service_source_commit, mode: intent.mode });
       if (intent.definition_hash !== hash(expected)) return false;
-      return definition?.family === expected.family && definition.taskRoleArn === expected.taskRoleArn
-        && definition.executionRoleArn === expected.executionRoleArn && definition.networkMode === expected.networkMode
-        && definition.cpu === expected.cpu && definition.memory === expected.memory
-        && definition.containerDefinitions?.length === 2
-        && expected.containerDefinitions.every((container) => {
-          const actual = definition.containerDefinitions.find((value) => value.name === container.name);
-          return actual && Object.entries(container).every(([key, value]) => isDeepStrictEqual(actual[key], value));
-        });
+      try { return isDeepStrictEqual(normalizeFixtureDefinition(definition), normalizeFixtureDefinition(expected)); }
+      catch { return false; }
     });
     if (!matches.length) throw new Error('Tagged fixture definition does not match a saved reviewed registration intent');
     if (!control.fixture_task_definitions.includes(arn)) control.fixture_task_definitions.push(arn);
@@ -269,4 +289,38 @@ export async function recoverFixtureRegistrations(io, scope) {
     if (!intent.registered && !control.fixture_task_definitions.length) intent.proven_no_active_definition = true;
   }
   if (io.saveRecovery) await io.saveRecovery(scope);
+}
+
+async function listFixtureTasks(io, scope) {
+  const family = `beta-anywear-nonpaid-${scope.runScope}`;
+  const tasks = new Map();
+  for (const status of ['RUNNING', 'STOPPED']) {
+    const listed = await io.aws(['ecs', 'list-tasks', '--cluster', scope.stack.cluster, '--family', family, '--desired-status', status]);
+    if (listed.nextToken || !Array.isArray(listed.taskArns) || listed.taskArns.length > 100
+      || new Set(listed.taskArns).size !== listed.taskArns.length
+      || listed.taskArns.some((arn) => !/^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/.test(arn))) {
+      throw new Error('Fixture task drain scan incomplete');
+    }
+    if (!listed.taskArns.length) continue;
+    const described = await io.aws(['ecs', 'describe-tasks', '--cluster', scope.stack.cluster, '--tasks', ...listed.taskArns]);
+    if (described.failures?.length || !Array.isArray(described.tasks) || described.tasks.length !== listed.taskArns.length
+      || new Set(described.tasks.map((task) => task.taskArn)).size !== listed.taskArns.length
+      || described.tasks.some((task) => !listed.taskArns.includes(task.taskArn)
+        || !new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/${family}:[1-9][0-9]*$`).test(task.taskDefinitionArn ?? ''))) {
+      throw new Error('Fixture task drain scan had unresolved or foreign tasks');
+    }
+    for (const task of described.tasks) tasks.set(task.taskArn, task);
+  }
+  return [...tasks.values()];
+}
+
+async function assertFixtureTasksStopped(io, scope) {
+  const owned = new Set(scope.runtimeControl.fixture_task_definitions);
+  for (let attempt = 0; attempt < 7; attempt++) {
+    const tasks = await listFixtureTasks(io, scope);
+    if (tasks.some((task) => !owned.has(task.taskDefinitionArn))) throw new Error('Fixture drain found an uncaptured definition');
+    if (tasks.every((task) => task.lastStatus === 'STOPPED')) return;
+    if (attempt < 6) await io.sleep(5_000);
+  }
+  throw new Error('Owned non-paid fixture tasks are not fully STOPPED; deregistration withheld');
 }

@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,6 +12,8 @@ import { activateRuntimeWindow, pauseRuntimeWindow, restoreRuntimeWindow } from 
 import { recoverRuntimeRecord } from './runtime-recovery.mjs';
 import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
 import { MAX_RECOVERY_SNAPSHOTS, validateRecoverySnapshot } from './runtime-recovery-snapshots.mjs';
+import { captureCreatedIdentity, compensateCreationIdentity, remainingCreationBudget } from './runtime-identity-creation.mjs';
+import { createOneShotRunner } from './runtime-one-shot-runner.mjs';
 import {
   AdminConfirmSignUpCommand,
   AdminCreateUserCommand,
@@ -93,36 +95,10 @@ async function liveAws(args) {
 
 function liveIo(environment) {
   const cognito = new CognitoIdentityProviderClient({ region: environment.AWS_REGION ?? 'ap-east-1' });
-  const runner = async ({ scope, purpose, action, payload, onLine }) => {
+  const ownedRunner = createOneShotRunner(environment);
+  const runner = async (args) => {
     assertLiveRuntimeSourceReady();
-    const checkout = required(environment.E2E_SERVICE_CHECKOUT, 'E2E_SERVICE_CHECKOUT');
-    return new Promise((resolve, reject) => {
-      const child = spawn('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', purpose,
-        scope.deployment.service.image_digest, scope.deployment.service.source_commit, action, payload],
-      { cwd: path.resolve(checkout), env: { ...environment, RUNTIME_DRILL_RUN_SCOPE: scope.runScope }, stdio: ['ignore', 'pipe', 'pipe'] });
-      let stdout = '';
-      let buffered = '';
-      let lines = Promise.resolve();
-      let failure;
-      const fail = (error) => { failure ??= error; child.kill(); };
-      const timer = setTimeout(() => fail(new Error('One-shot execution deadline exceeded')), 600_000);
-      child.stdout.on('data', (chunk) => {
-        stdout += chunk.toString();
-        buffered += chunk.toString();
-        const complete = buffered.split(/\r?\n/);
-        buffered = complete.pop();
-        for (const line of complete) lines = lines.then(() => onLine(line)).catch(fail);
-        if (stdout.length > 2 * 1024 * 1024) fail(new Error('One-shot output budget exceeded'));
-      });
-      child.stderr.resume();
-      child.on('error', () => { clearTimeout(timer); reject(new Error(`One-shot ${purpose} could not start`)); });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (buffered) lines = lines.then(() => onLine(buffered)).catch(fail);
-        lines.then(() => !failure && code === 0 ? resolve({ stdout })
-          : reject(failure ?? new Error(`One-shot ${purpose} failed; owned recovery metadata retained`)), reject);
-      });
-    });
+    return ownedRunner(args);
   };
   return createOwnedRuntimeIo({
     async aws(args) {
@@ -132,7 +108,7 @@ function liveIo(environment) {
     },
     async fetch(url, options) { return fetch(url, options); },
     async sleep(ms) { await delay(ms); },
-    async cognitoSend(command) { assertLiveRuntimeSourceReady(); return cognito.send(command); },
+    async cognitoSend(command, options) { assertLiveRuntimeSourceReady(); return cognito.send(command, options); },
     writeRecoveryFile: writeFile,
     async uploadRecoveryArtifact(...args) {
       const { DefaultArtifactClient } = await import('@actions/artifact');
@@ -160,7 +136,8 @@ export function createOwnedRuntimeIo(transport, runner, environment) {
         schema_version: 2, record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
         aws_account_id: '650880818323', aws_region: 'ap-east-1',
         run_scope: scope.runScope, marker: scope.marker, user_pool_id: scope.userPoolId,
-        users: [{ email: scope.email, sub: scope.subject, username: scope.cognitoUsername }],
+        users: scope.subject ? [{ email: scope.email, sub: scope.subject, username: scope.cognitoUsername }] : [],
+        creation_intent: scope.creationIntent,
         items: scope.items ?? [], resources: scope.resources ?? [],
         runtime_control: scope.runtimeControl, known_dlq_message: scope.knownDLQMessageId,
         owned_cleanup_completed: scope.ownedCleanupCompleted === true,
@@ -377,23 +354,22 @@ async function createSyntheticAccount({ config, marker, stack, deployment }, io,
   const password = environment.RUNTIME_DRILL_PASSWORD ?? `Aa1!${randomBytes(32).toString('base64url')}`;
   const userPoolId = required(stack?.userPoolId ?? environment.USER_POOL_ID, 'Cognito user pool id');
   const clientId = required(stack?.userPoolClientId ?? environment.VITE_COGNITO_CLIENT_ID, 'Cognito user pool client id');
-  let created = false;
-  let capturedSubject;
-  let capturedUsername;
+  if (typeof io.saveRecovery !== 'function') throw new Error('Synthetic creation requires durable recovery persistence');
+  try {
+    await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
+    throw new Error('Synthetic creation email already exists; creation refused');
+  } catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
+  const scope = { config, marker, runScope, stack, deployment, email, userPoolId, userPoolClientId: clientId,
+    resources: [], items: [], requestIds: [],
+    creationIntent: { run_scope: runScope, user_pool_id: userPoolId, email, requested_at: new Date().toISOString(), stage: 'requested' } };
+  await io.saveRecovery(scope);
+  const createBudget = remainingCreationBudget(scope.creationIntent);
   try {
     const createdUser = await io.cognitoSend(new AdminCreateUserCommand({
       UserPoolId: userPoolId, Username: email, MessageAction: 'SUPPRESS',
       UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }, { Name: 'custom:e2e_bootstrap', Value: 'true' }],
-    }));
-    created = true;
-    const createdAttributes = Object.fromEntries((createdUser.User?.Attributes ?? []).map(({ Name, Value }) => [Name, Value]));
-    capturedSubject = createdAttributes.sub;
-    capturedUsername = createdUser.User?.Username;
-    if (io.saveRecovery) await io.saveRecovery({ config, marker, runScope, stack, email, deployment,
-      subject: capturedSubject, cognitoUsername: capturedUsername, userPoolId });
-    if (createdAttributes.email !== email || !SUBJECT_PATTERN.test(capturedSubject ?? '') || !capturedUsername) {
-      throw new Error('Cognito creation did not capture an immutable owned identity');
-    }
+    }), { abortSignal: AbortSignal.timeout(createBudget) });
+    const { subject: capturedSubject, cognitoUsername: capturedUsername } = await captureCreatedIdentity(io, scope, createdUser);
     await io.cognitoSend(new AdminSetUserPasswordCommand({ UserPoolId: userPoolId, Username: capturedUsername, Password: password, Permanent: true }));
     try { await io.cognitoSend(new AdminConfirmSignUpCommand({ UserPoolId: userPoolId, Username: capturedUsername })); } catch (error) {
       if (!/NotAuthorizedException|already confirmed/i.test(error?.name ?? error?.message ?? '')) throw error;
@@ -408,26 +384,14 @@ async function createSyntheticAccount({ config, marker, stack, deployment }, io,
     }));
     const accessToken = auth.AuthenticationResult?.AccessToken;
     required(accessToken, 'Cognito access token');
-    const scope = {
-      config, marker, runScope, stack, deployment, accessToken,
-      email, subject: attributes.sub, cognitoUsername: capturedUsername, resources: [], requestIds: [],
-      userPoolId, userPoolClientId: clientId,
-    };
-    if (io.saveRecovery) await io.saveRecovery(scope);
+    scope.accessToken = accessToken;
+    scope.creationIntent.stage = 'ready';
+    await io.saveRecovery(scope);
     return scope;
   } catch (error) {
-    if (created) {
-      try {
-        if (!capturedSubject || !capturedUsername) throw new Error('Cognito compensation has no captured immutable identity', { cause: error });
-        const user = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
-        const attributes = Object.fromEntries((user.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
-        if (attributes.email !== email || attributes.sub !== capturedSubject || user.Username !== capturedUsername) {
-          throw new Error('Cognito compensation ownership check failed', { cause: error });
-        }
-        await io.cognitoSend(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: capturedUsername }));
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Synthetic Cognito account setup and compensation failed', { cause: cleanupError });
-      }
+    try { await compensateCreationIdentity(io, scope); }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Synthetic Cognito account setup and compensation failed', { cause: cleanupError });
     }
     throw error;
   }

@@ -14,8 +14,11 @@ const email = 'e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local';
 const deployment = { service: { source_commit: 'b'.repeat(40), image_digest: `sha256:${'c'.repeat(64)}` } };
 
 function identity(address = email) {
-  return { Username: subject, UserAttributes: [{ Name: 'email', Value: address }, { Name: 'sub', Value: subject }] };
+  return { Username: subject, UserCreateDate: new Date(), UserAttributes: [{ Name: 'email', Value: address },
+    { Name: 'sub', Value: subject }, { Name: 'custom:e2e_bootstrap', Value: 'true' }] };
 }
+
+function userNotFound() { return Object.assign(new Error('User not found'), { name: 'UserNotFoundException' }); }
 
 function cleanupScope() {
   return {
@@ -53,8 +56,10 @@ test('synthetic account creation is bound to the current run scope and returned 
   let createdEmail;
   const adapter = createRuntimeDrillAdapter({
     async auditOwnedTask() {},
+    async saveRecovery() {},
     async cognitoSend(command) {
       commands.push(command.constructor.name);
+      if (command.constructor.name === 'AdminGetUserCommand' && !createdEmail) throw userNotFound();
       if (command.constructor.name !== 'AdminCreateUserCommand' && command.input.Username) {
         assert.equal(command.input.Username, subject);
       }
@@ -63,10 +68,7 @@ test('synthetic account creation is bound to the current run scope and returned 
         return { User: { Username: subject, Attributes: identity(createdEmail).UserAttributes } };
       }
       if (command.constructor.name === 'AdminGetUserCommand') {
-        return { Username: subject, UserAttributes: [
-          { Name: 'email', Value: createdEmail },
-          { Name: 'sub', Value: '123e4567-e89b-12d3-a456-426614174000' },
-        ] };
+        return identity(createdEmail);
       }
       if (command.constructor.name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
       return {};
@@ -80,7 +82,7 @@ test('synthetic account creation is bound to the current run scope and returned 
   assert.equal(scope.subject, '123e4567-e89b-12d3-a456-426614174000');
   assert.equal(scope.accessToken, 'token');
   assert.deepEqual(commands, [
-    'AdminCreateUserCommand', 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand',
+    'AdminGetUserCommand', 'AdminCreateUserCommand', 'AdminGetUserCommand', 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand',
     'AdminGetUserCommand', 'InitiateAuthCommand',
   ]);
 });
@@ -89,14 +91,16 @@ test('synthetic account setup compensates a Cognito user when authentication set
   const commands = [];
   const adapter = createRuntimeDrillAdapter({
     async auditOwnedTask() {},
+    async saveRecovery() {},
     async cognitoSend(command) {
       commands.push(command.constructor.name);
       if (command.constructor.name === 'AdminCreateUserCommand') {
         this.email = command.input.Username;
         return { User: { Username: subject, Attributes: identity(this.email).UserAttributes } };
       }
-      if (command.constructor.name === 'AdminGetUserCommand') return identity(this.email);
+      if (command.constructor.name === 'AdminGetUserCommand') { if (!this.email) throw userNotFound(); return identity(this.email); }
       if (command.constructor.name === 'InitiateAuthCommand') throw new Error('auth unavailable');
+      if (command.constructor.name === 'AdminDeleteUserCommand') this.email = undefined;
       return {};
     },
   }, environment);
@@ -104,7 +108,7 @@ test('synthetic account setup compensates a Cognito user when authentication set
     config: { serviceUrl: 'https://service.example' }, marker: 'beta-runtime-1', deployment,
     stack: { userPoolId: 'pool', userPoolClientId: 'client', bucket: 'bucket' },
   }), /auth unavailable/);
-  assert.equal(commands.at(-1), 'AdminDeleteUserCommand');
+  assert.equal(commands.at(-2), 'AdminDeleteUserCommand');
 });
 
 test('synthetic setup snapshots always include pinned deployment and use unique memory-only default passwords', async () => {
@@ -117,11 +121,13 @@ test('synthetic setup snapshots always include pinned deployment and use unique 
       async saveRecovery(scope) { snapshots.push(structuredClone(scope)); },
       async cognitoSend(command) {
         const name = command.constructor.name;
+        if (name === 'AdminGetUserCommand' && !address) throw userNotFound();
         if (name === 'AdminCreateUserCommand') { address = command.input.Username; return { User: { Username: subject, Attributes: identity(address).UserAttributes } }; }
         if (name === 'AdminSetUserPasswordCommand') passwords.push(command.input.Password);
         if (name === failure && !failed) { failed = true; throw new Error('setup boundary failure'); }
         if (name === 'AdminGetUserCommand') return identity(address);
         if (name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
+        if (name === 'AdminDeleteUserCommand') address = undefined;
         return {};
       },
     }, environment);
@@ -289,15 +295,18 @@ test('Cognito compensation refuses an identity whose immutable subject changed',
   let address;
   const adapter = createRuntimeDrillAdapter({
     async auditOwnedTask() {},
+    async saveRecovery() {},
     async cognitoSend(command) {
       calls.push(command.constructor.name);
+      if (command.constructor.name === 'AdminGetUserCommand' && !address) throw userNotFound();
       if (command.constructor.name === 'AdminCreateUserCommand') {
         address = command.input.Username;
         return { User: { Username: subject, Attributes: identity(address).UserAttributes } };
       }
       if (command.constructor.name === 'AdminSetUserPasswordCommand') throw new Error('setup failed');
       if (command.constructor.name === 'AdminGetUserCommand') return { ...identity(address),
-        UserAttributes: [{ Name: 'email', Value: address }, { Name: 'sub', Value: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }] };
+        UserAttributes: identity(address).UserAttributes.map((attribute) => attribute.Name === 'sub'
+          ? { ...attribute, Value: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' } : attribute) };
     },
   }, environment);
   await assert.rejects(adapter.createSyntheticAccount({ config: {}, marker: 'drill', deployment,

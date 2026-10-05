@@ -43,7 +43,7 @@ for (const suspended of [false, true]) {
     assert.equal(verifyRuntimeDrillEvidence(result, h.compatibility).passed, true);
     const final = parseRuntimeRecovery(h.writes.at(-1).json);
     verifyRestored(h, final);
-    assert.equal(h.writes.length, suspended ? 202 : 197);
+    assert.equal(h.writes.length, suspended ? 203 : 198);
     assert.equal(h.uploads.length, h.writes.length);
     assert.ok(h.uploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
     assert.equal(final.one_shots.length, suspended ? 32 : 31);
@@ -65,7 +65,7 @@ for (const suspended of [false, true]) {
     const result = await recovery.adapter.recoverOwnedRuntime(record);
     assert.deepEqual(result, { recovered: true, run_scope: h.environment.RUNTIME_DRILL_RUN_SCOPE });
     const saves = h.writes.length - beforeWrites;
-    assert.equal(saves, suspended ? 107 : 97);
+    assert.equal(saves, suspended ? 108 : 85);
     const recoveryUploads = h.uploads.filter((upload) => upload.name.startsWith('beta-runtime-recovery-124-1-'));
     assert.equal(recoveryUploads.length, saves);
     assert.ok(recoveryUploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
@@ -73,7 +73,7 @@ for (const suspended of [false, true]) {
     assert.equal(recoveryUploads.at(-1).name, `beta-runtime-recovery-124-1-${String(saves).padStart(3, '0')}`);
     const final = parseRuntimeRecovery(h.writes.at(-1).json);
     verifyRestored(h, final);
-    assert.equal(final.one_shots.length, suspended ? 41 : 39);
+    assert.equal(final.one_shots.length, suspended ? 41 : 37);
     context.diagnostic(JSON.stringify({ saves, helpers: final.one_shots.length,
       bytes: Buffer.byteLength(h.writes.at(-1).json), maxBytes: verifySnapshots(h) }));
   });

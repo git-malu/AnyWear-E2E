@@ -87,3 +87,72 @@ test('irreversible DLQ deletion followed by rollback never qualifies as committe
   delete evidence.committed;
   assert.throws(() => validateCleanupEvidence(evidence, h.scope), /committed/);
 });
+
+test('actual Service-approved helper blueprint accepts all owned purposes and documented ECS defaults', async () => {
+  for (const [purpose, action, payload] of [['task-audit', '', undefined], ['lifecycle', 'close', ''],
+    ['lifecycle', 'open', ''], ['lifecycle', 'configure-testers', '[]'], ['tester-cleanup', '', undefined]]) {
+    const h = oneShotHarness();
+    const request = purpose === 'tester-cleanup' ? JSON.stringify({ runScope: h.scope.runScope, users: [{ sub: h.scope.subject, email: h.scope.email }] })
+      : JSON.stringify({ runScope: h.scope.runScope, mode: 'window-preflight' });
+    const { operation } = await runOwnedOneShot(h.io, h.scope, purpose, action, payload ?? request, h.runner);
+    const definition = h.definitions.get(operation.task_definition_arn).taskDefinition;
+    Object.assign(definition, { revision: 1, registeredBy: 'aws', registeredAt: new Date(), requiresAttributes: [],
+      compatibilities: ['FARGATE', 'EC2'], volumes: [], placementConstraints: [], enableFaultInjection: false });
+    Object.assign(definition.containerDefinitions[0], { cpu: 0, essential: true, privileged: false, readonlyRootFilesystem: false,
+      mountPoints: [], volumesFrom: [], portMappings: [], systemControls: [], environmentFiles: [], secrets: [] });
+    definition.containerDefinitions[0].environment.reverse();
+    await verifyOneShotTask(h.io, h.scope, operation);
+    definition.status = 'INACTIVE';
+    definition.deregisteredAt = new Date();
+    definition.deleteRequestedAt = new Date();
+    await verifyOneShotTask(h.io, h.scope, operation);
+  }
+});
+
+test('all one-shot behavioral fields and environment values are exact, including duplicate names', async () => {
+  for (const mutate of [
+    (d) => { d.cpu = '1024'; }, (d) => { d.memory = '2048'; },
+    (d) => { d.runtimePlatform = { cpuArchitecture: 'ARM64' }; }, (d) => { d.volumes = [{ name: 'host-volume' }]; },
+    (d) => { d.unknownFutureBehavior = true; },
+    (d) => { d.containerDefinitions[0].environment.push({ name: 'STAGE', value: 'beta' }); },
+    (d) => { d.containerDefinitions[0].environment.unshift({ name: 'STAGE', value: 'prod' }); },
+    (d) => { d.containerDefinitions[0].environment.push({ name: 'DATABASE_URL', value: 'foreign' }); },
+    (d) => { d.containerDefinitions[0].environment.find(({ name }) => name === 'DB_HOST').value = 'foreign'; },
+    (d) => { d.containerDefinitions[0].environment.find(({ name }) => name === 'SQS_VTO_QUEUE_URL').value = 'foreign'; },
+    (d) => { d.containerDefinitions[0].privileged = true; }, (d) => { d.containerDefinitions[0].readonlyRootFilesystem = true; },
+    (d) => { d.containerDefinitions[0].environmentFiles = [{ value: 'foreign', type: 's3' }]; },
+    (d) => { d.containerDefinitions[0].mountPoints = [{ sourceVolume: 'host-volume', containerPath: '/host' }]; },
+    (d) => { d.containerDefinitions[0].linuxParameters = { capabilities: { add: ['SYS_ADMIN'] } }; },
+    (d) => { d.containerDefinitions[0].healthCheck = { command: ['CMD', 'false'] }; },
+    (d) => { d.containerDefinitions[0].dependsOn = [{ containerName: 'foreign', condition: 'START' }]; },
+    (d) => { d.containerDefinitions[0].user = 'root'; }, (d) => { d.containerDefinitions[0].workingDirectory = '/foreign'; },
+    (d) => { d.containerDefinitions[0].logConfiguration.options['awslogs-group'] = '/foreign'; },
+    (d) => { d.containerDefinitions[0].unknownFutureBehavior = true; },
+  ]) {
+    const h = oneShotHarness();
+    const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
+    mutate(h.definitions.get(operation.task_definition_arn).taskDefinition);
+    await assert.rejects(verifyOneShotTask(h.io, h.scope, operation));
+  }
+});
+
+test('actual tasks accept only absent or inert name-only override readback, never resource or command overrides', async () => {
+  for (const overrides of [undefined, {}, { containerOverrides: [] }, { containerOverrides: [{ name: 'OneShot' }] }]) {
+    const h = oneShotHarness();
+    const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
+    h.tasks.get(operation.task_arn).overrides = overrides;
+    await verifyOneShotTask(h.io, h.scope, operation);
+  }
+  for (const overrides of [
+    { cpu: '4096' }, { memory: '8192' }, { taskRoleArn: 'foreign' }, { executionRoleArn: 'foreign' },
+    { ephemeralStorage: { sizeInGiB: 200 } }, { unknownFutureBehavior: true },
+    { containerOverrides: [{ name: 'foreign' }] }, { containerOverrides: [{ name: 'OneShot' }, { name: 'OneShot' }] },
+    ...['cpu', 'memory', 'memoryReservation', 'resourceRequirements', 'environment', 'environmentFiles', 'command', 'unknownFutureBehavior']
+      .map((key) => ({ containerOverrides: [{ name: 'OneShot', [key]: key === 'command' ? ['node'] : 'unexpected' }] })),
+  ]) {
+    const h = oneShotHarness();
+    const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
+    h.tasks.get(operation.task_arn).overrides = overrides;
+    await assert.rejects(verifyOneShotTask(h.io, h.scope, operation), /verification failed/);
+  }
+});

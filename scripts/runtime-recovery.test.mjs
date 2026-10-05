@@ -121,11 +121,12 @@ test('restore-only workflow binds immutable source main/run/artifact pins and us
   const compatibility = { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } };
   const input = { SOURCE_RUN_ID: '123', SOURCE_RUN_ATTEMPT: '1', SOURCE_SNAPSHOT: '001', ORIGINAL_RUN_SCOPE: record.run_scope };
   const metadata = { id: 123, run_attempt: 1, path: '.github/workflows/runtime-drill.yml', event: 'workflow_dispatch',
-    head_branch: 'main', head_sha: 'a'.repeat(40), repository: { full_name: 'git-malu/AnyWear-E2E' } };
+    head_branch: 'main', head_sha: 'a'.repeat(40), status: 'completed', repository: { full_name: 'git-malu/AnyWear-E2E' } };
   assert.equal(validateRecoveryArtifactBinding(metadata, record, input, compatibility), record);
   for (const mutate of [
     (value) => { value.head_branch = 'foreign'; }, (value) => { value.path = '.github/workflows/beta-qualification.yml'; },
     (value) => { value.head_sha = 'c'.repeat(40); }, (value) => { value.run_attempt = 2; },
+    (value) => { value.status = 'in_progress'; }, (value) => { delete value.status; },
   ]) { const foreign = structuredClone(metadata); mutate(foreign); assert.throws(() => validateRecoveryArtifactBinding(foreign, record, input, compatibility)); }
   const controls = { E2E_STAGE: 'beta', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', E2E_CLIENT_URL: 'https://client.example',
     E2E_SERVICE_URL: 'https://service.example', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: 'a'.repeat(40),
@@ -138,6 +139,7 @@ test('restore-only workflow binds immutable source main/run/artifact pins and us
   assert.match(workflow, /group: anywear-beta-runtime/);
   assert.match(workflow, /environment: beta/);
   assert.match(workflow, /--recover recovery-source\/runtime-drill-recovery.json/);
+  assert.match(workflow, /RUNTIME_RECOVERY_SOURCE_COMPLETED=\$\(jq -r '\.source_completed' recovery-binding.json\)/);
   assert.ok(!workflow.includes('--execute'));
   assert.ok(workflow.indexOf('assertLiveRuntimeSourceReady();') < workflow.indexOf('aws-actions/configure-aws-credentials'));
 });

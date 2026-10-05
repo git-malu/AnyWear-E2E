@@ -4,6 +4,7 @@ import { expectedCommand } from '../runtime-one-shot.mjs';
 import { testerHash } from '../runtime-window-controls.mjs';
 import { TERMINAL_STABILITY_MS } from '../runtime-task-audit.mjs';
 import { auditFixture, cleanupFixture, fencingCiFixture } from './runtime-evidence.mjs';
+import { completeOneShotDefinition, platformOutputs } from './runtime-platform.mjs';
 
 const ECS = 'arn:aws:ecs:ap-east-1:650880818323:';
 const SUBJECT = '123e4567-e89b-12d3-a456-426614174000';
@@ -23,7 +24,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
     RUNTIME_DRILL_SERVICE_SHA: compatibility.service.sha, RUNTIME_DRILL_RUN_SCOPE: '123-1-aaaaaaaaaaaaaaaa',
     RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE: 'scripts/provider-failure-nonpaid.json', E2E_SERVICE_CHECKOUT: 'unused-mocked-checkout',
     GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: 'a'.repeat(40),
-    GITHUB_ACTIONS: String(actions), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
+    GITHUB_ACTIONS: String(actions), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', RUNTIME_RECOVERY_SOURCE_COMPLETED: 'true' };
   const stack = { cluster: 'beta-anywear', apiService: 'beta-anywear-api', workerService: 'beta-anywear-worker',
     bucket: 'mocked-wardrobe', userPoolId: 'ap-east-1_pool', userPoolClientId: 'mocked-client',
     oneShotExecutionRoleArn: 'arn:aws:iam::650880818323:role/beta-oneshot-execution',
@@ -50,6 +51,8 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
   let definitionNumber = 10;
   let email;
   let userExists = false;
+  let userCreatedAt;
+  const userAttributes = () => [{ Name: 'sub', Value: SUBJECT }, { Name: 'email', Value: email }, { Name: 'custom:e2e_bootstrap', Value: 'true' }];
   let replaced = false;
   let dlq = false;
   let streamNumber = 0;
@@ -104,12 +107,12 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
       const name = command.constructor.name;
       calls.push(name);
       if (name === 'AdminCreateUserCommand') {
-        markMutation(name); email = command.input.Username; userExists = true;
-        return { User: { Username: SUBJECT, Attributes: [{ Name: 'sub', Value: SUBJECT }, { Name: 'email', Value: email }] } };
+        markMutation(name); email = command.input.Username; userExists = true; userCreatedAt = new Date();
+        return { User: { Username: SUBJECT, Attributes: userAttributes(), UserCreateDate: userCreatedAt } };
       }
       if (name === 'AdminGetUserCommand') {
         if (!userExists) throw Object.assign(new Error('User not found'), { name: 'UserNotFoundException' });
-        return { Username: SUBJECT, UserAttributes: [{ Name: 'sub', Value: SUBJECT }, { Name: 'email', Value: email }] };
+        return { Username: SUBJECT, UserAttributes: userAttributes(), UserCreateDate: userCreatedAt };
       }
       if (name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'mocked-memory-only-token' } };
       if (name === 'AdminDeleteUserCommand') userExists = false;
@@ -155,9 +158,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
       calls.push(args);
       const flag = (name) => args[args.indexOf(name) + 1];
       if (args[0] === 'sts') return { Account: '650880818323' };
-      if (args[0] === 'cloudformation') return { Stacks: [{ Outputs: Object.entries({ EcsClusterName: stack.cluster,
-        WardrobeBucketName: stack.bucket, UserPoolId: stack.userPoolId, OneShotExecutionRoleArn: stack.oneShotExecutionRoleArn,
-        VerificationTaskRoleArn: stack.verificationTaskRoleArn, LifecycleTaskRoleArn: stack.lifecycleTaskRoleArn })
+      if (args[0] === 'cloudformation') return { Stacks: [{ Outputs: Object.entries(platformOutputs(stack))
         .map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) }] };
       if (args[0] === 'ssm') return { Parameter: structuredClone(policy[flag('--name').split('/').at(-1)]) };
       if (args[0] === 'application-autoscaling') {
@@ -235,6 +236,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
           IMAGE_DIGEST: deployment.service.image_digest, STAGE: 'beta', NODE_ENV: 'production', AWS_REGION: 'ap-east-1',
           S3_BUCKET_NAME: stack.bucket, TASK_TRANSPORT: 'sqs' }).map(([name, value]) => ({ name, value })) }] },
     tags: [{ key: 'anywear-runtime-run-scope', value: scope.runScope }] });
+    completeOneShotDefinition(definitions.get(arn).taskDefinition, stack);
     await onLine(`Task definition: ${arn}`);
     const taskArn = newTask(arn, 'OneShot', 'STOPPED');
     const stream = `beta-anywear-${purpose}/OneShot/${taskArn.split('/').at(-1)}`;

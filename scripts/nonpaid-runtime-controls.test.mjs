@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cloneFixtureDefinition, prepareNonPaidRuntime, restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
+import { cloneFixtureDefinition, normalizeFixtureDefinition, prepareNonPaidRuntime, recoverFixtureRegistrations, restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
 import { testerHash } from './runtime-window-controls.mjs';
 
 const sha = 'b'.repeat(40);
@@ -110,7 +110,7 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
           tags: [{ key: 'anywear-runtime-run-scope', value: runScope }] };
       }
       if (args[1] === 'list-task-definitions') return { taskDefinitionArns: [...definitions.keys()] };
-      if (args[1] === 'list-tasks') return { taskArns: args.includes('api') ? ['api-1', 'api-2'] : ['worker-1'] };
+      if (args[1] === 'list-tasks') return { taskArns: args.includes('--family') ? [] : (args.includes('api') ? ['api-1', 'api-2'] : ['worker-1']) };
       if (args[1] === 'describe-tasks') return { tasks: args.slice(args.indexOf('--tasks') + 1).map((id) => ({
         taskArn: id, taskDefinitionArn: id.startsWith('api') ? apiDefinitionArn : workerDefinition,
         lastStatus: 'RUNNING', containers: [{ name: 'WorkerContainer', imageDigest: digest }] })) };
@@ -132,7 +132,7 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
   const fixture = { source: 'beta-provider-nonpaid-loopback', delay_ms: 45000, failure_status: 500, forwards_requests: false };
   const environment = { RUNTIME_DRILL_EXCLUSIVE_WINDOW: 'beta-exclusive-runtime' };
   const wait = async () => { if (failStability && drift) throw new Error('baseline did not become stable'); };
-  return { io, scope, fixture, environment, wait, calls, records,
+  return { io, scope, fixture, environment, wait, calls, records, definitions,
     drift() { drift = true; }, setBaseline() { workerDefinition = definitionArn; } };
 }
 
@@ -149,6 +149,39 @@ test('non-paid control snapshots baseline before mutation and restores exact rev
   assert.equal(scope.runtimeControl.phase, 'restored');
   assert.ok(calls.some((args) => args[1] === 'deregister-task-definition'));
   assert.equal(calls.filter((args) => args[1] === 'update-service').at(-1).at(-1), definitionArn);
+});
+
+test('fixture recovery compares every behavioral field and rejects unknown, runtimePlatform, volume, privileged and extra environment drift', async () => {
+  for (const mutate of [
+    (value) => { value.runtimePlatform = { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' }; },
+    (value) => { value.volumes = [{ name: 'unexpected', host: { sourcePath: '/host' } }]; },
+    (value) => { value.containerDefinitions[0].privileged = true; },
+    (value) => { value.containerDefinitions[0].environmentFiles = [{ value: 'foreign', type: 's3' }]; },
+    (value) => { value.containerDefinitions[0].environment.push({ name: 'OPENAI_API_KEY', value: 'foreign' }); },
+    (value) => { value.containerDefinitions[0].secrets.push({ name: 'EXTRA', valueFrom: 'foreign' }); },
+    (value) => { value.containerDefinitions[0].unknownFutureBehavior = true; },
+    (value) => { value.unknownFutureBehavior = true; },
+  ]) {
+    const h = controlHarness();
+    await prepareNonPaidRuntime({ scope: h.scope, fixture: h.fixture }, h.io, h.environment, h.wait);
+    mutate([...h.definitions.values()][0]);
+    await assert.rejects(recoverFixtureRegistrations(h.io, h.scope), /reviewed registration intent/);
+    assert.ok(!h.calls.some((args) => args[1] === 'deregister-task-definition'));
+  }
+});
+
+test('AWS response-only metadata and known inert defaults normalize symmetrically while non-defaults remain exact', async () => {
+  const h = controlHarness();
+  await prepareNonPaidRuntime({ scope: h.scope, fixture: h.fixture }, h.io, h.environment, h.wait);
+  const value = [...h.definitions.values()][0];
+  Object.assign(value, { revision: 1, status: 'ACTIVE', registeredAt: '2026-10-05T01:00:00Z', registeredBy: 'aws',
+    requiresAttributes: [], compatibilities: ['EC2', 'FARGATE'], volumes: [], placementConstraints: [], enableFaultInjection: false });
+  for (const container of value.containerDefinitions) Object.assign(container, { privileged: false,
+    mountPoints: [], volumesFrom: [], portMappings: [], systemControls: [] });
+  await recoverFixtureRegistrations(h.io, h.scope);
+  assert.deepEqual(normalizeFixtureDefinition(value), normalizeFixtureDefinition(clone()));
+  Object.assign(value, { status: 'INACTIVE', deregisteredAt: new Date(), deleteRequestedAt: new Date() });
+  await recoverFixtureRegistrations(h.io, h.scope);
 });
 
 test('control requires empty baseline queues before any registration and manager window acknowledgement', async () => {

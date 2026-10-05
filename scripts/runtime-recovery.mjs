@@ -3,11 +3,12 @@ import { cleanupOneShotDefinitions, recoverOneShotRegistrations, verifyOneShotTa
 import { cleanupPayload, collectCleanupEvidence, readOneShotLog, validateCleanupEvidence, validateKnownDLQDeletionEvidence } from './runtime-one-shot-logs.mjs';
 import { pauseRuntimeWindow, reconcilePendingPolicy, restoreRuntimeWindow } from './runtime-window-controls.mjs';
 import { restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
+import { compensateCreationIdentity, validateCreationIntent } from './runtime-identity-creation.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const RECORD_KEYS = ['schema_version', 'record_type', 'stage', 'aws_account_id', 'aws_region', 'run_scope', 'marker',
   'user_pool_id', 'users', 'items', 'resources', 'runtime_control', 'known_dlq_message', 'owned_cleanup_completed',
-  'runtime_window', 'one_shots', 'stack', 'service_url', 'deployment', 'database_cleanup_completed', 'cleanup_evidence', 'cognito_deletion_intent', 'known_dlq_deletion_evidence'];
+  'runtime_window', 'one_shots', 'stack', 'service_url', 'deployment', 'database_cleanup_completed', 'cleanup_evidence', 'cognito_deletion_intent', 'known_dlq_deletion_evidence', 'creation_intent'];
 
 export function parseRuntimeRecovery(json) {
   if (Buffer.byteLength(json) > 262_144) throw new Error('Runtime recovery record exceeds its bounded size');
@@ -16,22 +17,31 @@ export function parseRuntimeRecovery(json) {
     || record.record_type !== 'anywear_beta_runtime_recovery' || record.stage !== 'beta'
     || record.aws_account_id !== '650880818323' || record.aws_region !== 'ap-east-1'
     || !/^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/.test(record.run_scope ?? '')
-    || !/^beta-runtime-[a-z0-9-]+$/.test(record.marker ?? '') || record.users?.length !== 1
+    || !/^beta-runtime-[a-z0-9-]+$/.test(record.marker ?? '') || !Array.isArray(record.users)
     || !/^ap-east-1_[a-zA-Z0-9]+$/.test(record.user_pool_id ?? '')
     || !/^[a-f0-9]{40}$/.test(record.deployment?.service?.source_commit ?? '')
     || !/^sha256:[a-f0-9]{64}$/.test(record.deployment.service.image_digest ?? '')
     || record.stack?.cluster !== 'beta-anywear' || record.stack.userPoolId !== record.user_pool_id
     || new URL(record.service_url).protocol !== 'https:') throw new Error('Runtime recovery record lacks exact Beta/run/deployment binding');
+  const intent = record.creation_intent && validateCreationIntent(record.creation_intent, record.run_scope, record.user_pool_id);
+  const identityOnly = intent && intent.stage !== 'ready';
+  if (record.users.length !== 1 && !(identityOnly && record.users.length === 0
+    && ['requested', 'compensated'].includes(intent.stage))) throw new Error('Runtime recovery requires exact synthetic identity/items');
   const user = record.users[0];
-  if (!UUID.test(user.sub ?? '') || !UUID.test(user.username ?? '')
+  if ((user && (!UUID.test(user.sub ?? '') || !UUID.test(user.username ?? '')
     || !new RegExp(`^e2e-beta-${record.run_scope}-0-[a-f0-9]{8}@anywear\\.local$`).test(user.email ?? '')
+    || (intent && user.email !== intent.email)))
+    || (intent?.stage === 'requested' && user)
     || record.items?.length > 50 || record.resources?.length > 50 || record.one_shots?.length > 100
     || !Array.isArray(record.items) || record.items.some((id) => !UUID.test(id))) throw new Error('Runtime recovery requires exact synthetic identity/items');
   if (!Array.isArray(record.resources) || !Array.isArray(record.one_shots)
+    || (identityOnly && (record.items.length || record.resources.length || record.one_shots.length
+      || record.runtime_control || record.runtime_window || record.known_dlq_message || record.cleanup_evidence
+      || record.known_dlq_deletion_evidence || record.database_cleanup_completed || record.cognito_deletion_intent))
     || (record.runtime_control && record.runtime_control.run_scope !== record.run_scope)
     || (record.runtime_window && (record.runtime_window.run_scope !== record.run_scope
-      || record.runtime_window.synthetic_owner?.sub !== user.sub || record.runtime_window.synthetic_owner.email !== user.email))
-    || (record.cognito_deletion_intent && (record.cognito_deletion_intent.sub !== user.sub
+      || record.runtime_window.synthetic_owner?.sub !== user?.sub || record.runtime_window.synthetic_owner.email !== user?.email))
+    || (record.cognito_deletion_intent && (record.cognito_deletion_intent.sub !== user?.sub
       || record.cognito_deletion_intent.username !== user.username || record.cognito_deletion_intent.email !== user.email))) {
     throw new Error('Runtime recovery control/deletion intent belongs to a foreign run/user');
   }
@@ -68,13 +78,19 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
     || outputs.VerificationTaskRoleArn !== record.stack.verificationTaskRoleArn
     || outputs.LifecycleTaskRoleArn !== record.stack.lifecycleTaskRoleArn) throw new Error('Recovery platform binding changed');
   const user = record.users[0];
-  const scope = { runScope: record.run_scope, marker: record.marker, email: user.email, subject: user.sub,
-    cognitoUsername: user.username, userPoolId: record.user_pool_id, stack: record.stack,
+  const scope = { runScope: record.run_scope, marker: record.marker, email: user?.email ?? record.creation_intent?.email, subject: user?.sub,
+    cognitoUsername: user?.username, userPoolId: record.user_pool_id, stack: record.stack,
     deployment: record.deployment, config: { serviceUrl: record.service_url }, items: record.items, resources: record.resources,
     runtimeControl: record.runtime_control, runtimeWindow: record.runtime_window, oneShots: record.one_shots,
     knownDLQMessageId: record.known_dlq_message, ownedCleanupCompleted: record.owned_cleanup_completed,
     databaseCleanupCompleted: record.database_cleanup_completed, cleanupEvidence: record.cleanup_evidence,
-    cognitoDeletionIntent: record.cognito_deletion_intent };
+    cognitoDeletionIntent: record.cognito_deletion_intent, creationIntent: record.creation_intent,
+    recoverySourceCompleted: environment.RUNTIME_RECOVERY_SOURCE_COMPLETED === 'true' };
+  if (scope.creationIntent && scope.creationIntent.stage !== 'ready') {
+    if (typeof io.saveRecovery !== 'function') throw new Error('Identity-only recovery requires durable recovery persistence');
+    await compensateCreationIdentity(io, scope);
+    return { recovered: true, run_scope: scope.runScope, identity_only: true };
+  }
   if (io.saveRecovery) await io.saveRecovery(scope);
   if (record.known_dlq_deletion_evidence) {
     const captured = record.known_dlq_deletion_evidence;
@@ -84,8 +100,8 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
     const { event } = await readOneShotLog(io, operation.proof, 'beta-tester-dlq-cleanup');
     scope.knownDLQDeletionEvidence = validateKnownDLQDeletionEvidence({ extraction: operation.proof, deletion: event }, scope);
   }
-  await recoverOneShotRegistrations(io, scope);
-  await reconcilePendingPolicy(io, scope);
+  const notStarted = await recoverOneShotRegistrations(io, scope);
+  await reconcilePendingPolicy(io, scope, notStarted);
   await pauseRuntimeWindow(io, scope);
   // Saved completion flags are hints only. Reconstruct proof from exact helper logs after runner loss.
   scope.ownedCleanupCompleted = false;

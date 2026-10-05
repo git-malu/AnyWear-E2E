@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 
-// The complete drill currently needs at most 202 saves. Leave room below 500 artifacts/job.
+// The complete drill currently needs at most 203 saves. Leave room below 500 artifacts/job.
 export const MAX_RECOVERY_SNAPSHOTS = 400;
 
 export function validateRecoverySnapshot(value) {

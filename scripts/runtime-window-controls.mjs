@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { verifyOneShotTask } from './runtime-one-shot.mjs';
+import { payloadHash, recoverOneShotRegistrations, verifyOneShotTask } from './runtime-one-shot.mjs';
 
 const POLICY_KEYS = ['intake_open', 'admission_suspended', 'tester_allowlist'];
 
@@ -63,14 +63,40 @@ export async function guardRuntimeWindow(io, scope, { requireEmpty = false } = {
   return current;
 }
 
-export async function reconcilePendingPolicy(io, scope) {
+export async function reconcilePendingPolicy(io, scope, notStarted) {
   const intent = scope.runtimeWindow?.pending_write;
   if (!intent) return;
+  if (intent.one_shot_index === undefined) {
+    const operation = { run_scope: scope.runScope, purpose: 'lifecycle', action: intent.action,
+      request_payload: intent.request_payload, payload_sha256: typeof intent.request_payload === 'string' ? payloadHash(intent.request_payload) : '',
+      started_at: intent.started_at, completed: false, deregistered: false };
+    scope.oneShots ??= [];
+    scope.oneShots.push(operation);
+    intent.one_shot_index = scope.oneShots.length - 1;
+    notStarted = await recoverOneShotRegistrations(io, scope);
+  }
   const operation = scope.oneShots?.[intent.one_shot_index];
-  if (!operation || operation.purpose !== 'lifecycle' || operation.action !== intent.action) {
+  if (!operation || operation.purpose !== 'lifecycle' || operation.action !== intent.action
+    || (intent.request_payload !== undefined && operation.request_payload !== intent.request_payload)
+    || (intent.action === 'configure-testers' && testerHash(JSON.parse(operation.request_payload)) !== intent.tester_hash)) {
     throw new Error('Pending admission write has no exact owned lifecycle task proof');
   }
-  await verifyOneShotTask(io, scope, operation);
+  if (notStarted?.has(operation)) {
+    const before = intent.before_policy ?? scope.runtimeWindow.expected;
+    const after = await readRuntimePolicy(io);
+    if (intent.run_scope !== scope.runScope || !isDeepStrictEqual(before, scope.runtimeWindow.expected)
+      || !isDeepStrictEqual(after, before)
+      || POLICY_KEYS.some((key) => before[key].version !== intent.before_versions?.[key])) {
+      throw new Error('Unstarted admission write has foreign SSM value/version drift');
+    }
+    await auditRuntimePolicy(io, scope, after);
+    scope.runtimeWindow.write_ledger.push({ ...intent, recovered: true, not_started: true,
+      after_versions: Object.fromEntries(POLICY_KEYS.map((key) => [key, after[key].version])) });
+    delete scope.runtimeWindow.pending_write;
+    if (io.saveRecovery) await io.saveRecovery(scope);
+    return;
+  }
+  await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
   const after = await readRuntimePolicy(io);
   const deltas = intent.action === 'configure-testers' ? { intake_open: 0, tester_allowlist: 1, admission_suspended: 2 }
     : { intake_open: 0, tester_allowlist: 0, admission_suspended: 1 };
@@ -91,6 +117,7 @@ export async function reconcilePendingPolicy(io, scope) {
 async function writePolicy(io, scope, action, emails) {
   const before = await guardRuntimeWindow(io, scope);
   const intent = { run_scope: scope.runScope, action, before_versions: Object.fromEntries(POLICY_KEYS.map((key) => [key, before[key].version])),
+    before_policy: before, request_payload: emails === undefined ? '' : JSON.stringify(emails), started_at: new Date().toISOString(),
     tester_hash: emails ? testerHash(emails) : testerHash(JSON.parse(before.tester_allowlist.value)) };
   scope.runtimeWindow.pending_write = intent;
   if (io.saveRecovery) await io.saveRecovery(scope);

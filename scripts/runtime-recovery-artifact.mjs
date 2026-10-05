@@ -7,6 +7,7 @@ export function validateRecoveryArtifactBinding(metadata, record, environment, c
   validateRecoverySourceInputs(environment);
   if (String(metadata.id) !== environment.SOURCE_RUN_ID
     || String(metadata.run_attempt) !== environment.SOURCE_RUN_ATTEMPT || metadata.event !== 'workflow_dispatch'
+    || metadata.status !== 'completed'
     || metadata.head_branch !== 'main' || metadata.repository?.full_name !== 'git-malu/AnyWear-E2E'
     || !/^[a-f0-9]{40}$/.test(metadata.head_sha ?? '')
     || !['.github/workflows/runtime-drill.yml', '.github/workflows/runtime-recovery.yml'].includes(metadata.path)
@@ -24,6 +25,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const record = parseRuntimeRecovery(await readFile('recovery-source/runtime-drill-recovery.json', 'utf8'));
     const compatibility = JSON.parse(await readFile('compatibility.json', 'utf8'));
     validateRecoveryArtifactBinding(metadata, record, process.env, compatibility);
-    console.log(JSON.stringify({ run_scope: record.run_scope, marker: record.marker, service_sha: record.deployment.service.source_commit }));
+    console.log(JSON.stringify({ run_scope: record.run_scope, marker: record.marker, service_sha: record.deployment.service.source_commit, source_completed: true }));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

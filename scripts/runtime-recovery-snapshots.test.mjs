@@ -23,7 +23,7 @@ test('snapshot input uses one bounded immutable three-digit contract', () => {
 test('artifact binding accepts the new final boundary without weakening protected run metadata', () => {
   const record = { run_scope: '123-1-aaaaaaaaaaaaaaaa', deployment: { service: { source_commit: 'b'.repeat(40) } } };
   const metadata = { id: 123, run_attempt: 1, path: '.github/workflows/runtime-drill.yml', event: 'workflow_dispatch',
-    head_branch: 'main', head_sha: 'a'.repeat(40), repository: { full_name: 'git-malu/AnyWear-E2E' } };
+    head_branch: 'main', head_sha: 'a'.repeat(40), status: 'completed', repository: { full_name: 'git-malu/AnyWear-E2E' } };
   const input = { SOURCE_RUN_ID: '123', SOURCE_RUN_ATTEMPT: '1', SOURCE_SNAPSHOT: '400', ORIGINAL_RUN_SCOPE: record.run_scope };
   const compatibility = { service: { sha: 'b'.repeat(40) } };
   assert.equal(validateRecoveryArtifactBinding(metadata, record, input, compatibility), record);

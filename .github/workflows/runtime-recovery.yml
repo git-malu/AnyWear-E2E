@@ -108,6 +108,7 @@ jobs:
             echo "RUNTIME_DRILL_ID=$(jq -r '.marker' recovery-binding.json)"
             echo "RUNTIME_DRILL_SERVICE_SHA=$(jq -r '.service_sha' recovery-binding.json)"
             echo "RUNTIME_DRILL_CLIENT_SHA=$(jq -r '.client.sha' compatibility.json)"
+            echo "RUNTIME_RECOVERY_SOURCE_COMPLETED=$(jq -r '.source_completed' recovery-binding.json)"
           } >> "$GITHUB_ENV"
       - name: Checkout exact Service restore helper
         uses: actions/checkout@v4

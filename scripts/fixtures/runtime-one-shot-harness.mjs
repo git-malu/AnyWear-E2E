@@ -1,6 +1,7 @@
 import { runOwnedOneShot } from '../runtime-one-shot.mjs';
 import { cleanupFixture, scopeFixture } from './runtime-evidence.mjs';
 import { collectCleanupEvidence } from '../runtime-one-shot-logs.mjs';
+import { completeOneShotDefinition, platformOutputs } from './runtime-platform.mjs';
 
 export function oneShotHarness() {
   const request = { runScope: '123-1-aaaaaaaaaaaaaaaa', user: { sub: '123e4567-e89b-12d3-a456-426614174000',
@@ -22,12 +23,8 @@ export function oneShotHarness() {
       calls.push(args);
       const value = (flag) => args[args.indexOf(flag) + 1];
       if (args[0] === 'sts') return { Account: '650880818323' };
-      if (args[0] === 'cloudformation') return { Stacks: [{ Outputs: [
-        { OutputKey: 'EcsClusterName', OutputValue: scope.stack.cluster }, { OutputKey: 'WardrobeBucketName', OutputValue: scope.stack.bucket },
-        { OutputKey: 'UserPoolId', OutputValue: scope.userPoolId },
-        { OutputKey: 'OneShotExecutionRoleArn', OutputValue: scope.stack.oneShotExecutionRoleArn },
-        { OutputKey: 'VerificationTaskRoleArn', OutputValue: scope.stack.verificationTaskRoleArn },
-        { OutputKey: 'LifecycleTaskRoleArn', OutputValue: scope.stack.lifecycleTaskRoleArn } ] }] };
+      if (args[0] === 'cloudformation') return { Stacks: [{ Outputs: Object.entries(platformOutputs(scope.stack))
+        .map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) }] };
       if (args[1] === 'describe-task-definition') return structuredClone(definitions.get(value('--task-definition')));
       if (args[1] === 'describe-tasks') return { tasks: args.slice(args.indexOf('--tasks') + 1).map((arn) => structuredClone(tasks.get(arn))) };
       if (args[1] === 'list-task-definitions') return { taskDefinitionArns: [...definitions.entries()].filter(([, response]) => response.taskDefinition.status === 'ACTIVE').map(([arn]) => arn) };
@@ -56,6 +53,7 @@ export function oneShotHarness() {
         command, environment: Object.entries({ SERVICE_COMMIT_SHA: owned.deployment.service.source_commit, IMAGE_DIGEST: owned.deployment.service.image_digest,
           STAGE: 'beta', NODE_ENV: 'production', AWS_REGION: 'ap-east-1', S3_BUCKET_NAME: owned.stack.bucket, TASK_TRANSPORT: 'sqs' }).map(([name, value]) => ({ name, value })) }] },
     tags: [{ key: 'anywear-runtime-run-scope', value: owned.runScope }] });
+    completeOneShotDefinition(definitions.get(definitionArn).taskDefinition, owned.stack);
     tasks.set(taskArn, { taskArn, taskDefinitionArn: definitionArn, lastStatus: 'STOPPED',
       containers: [{ name: 'OneShot', exitCode: 0, imageDigest: owned.deployment.service.image_digest }] });
     const lines = [`Task definition: ${definitionArn}`, `Task ARN: ${taskArn}`, 'Task log group: /anywear/beta/one-shot',
