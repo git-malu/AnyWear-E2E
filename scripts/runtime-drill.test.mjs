@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fencingCiFixture, stableAuditFixture } from './fixtures/runtime-evidence.mjs';
 import {
   assertRuntimeDrillEnvironment,
   assertRuntimeDrillExecutionEnvironment,
@@ -21,6 +22,7 @@ const environment = {
   AWS_REGION: 'ap-east-1',
   E2E_CLIENT_URL: 'https://d2rztl7o0y7rf8.cloudfront.net',
   E2E_SERVICE_URL: 'https://dapi.example.cloudfront.net',
+  RUNTIME_DRILL_EXCLUSIVE_WINDOW: 'beta-exclusive-runtime',
 };
 const compatibility = {
   client: { sha: 'a'.repeat(40) },
@@ -28,8 +30,12 @@ const compatibility = {
 };
 
 function validEvidence() {
+  const request = { runScope: '123-1-aaaaaaaaaaaaaaaa',
+    user: { sub: '123e4567-e89b-12d3-a456-426614174000', email: 'e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local' },
+    taskId: '123e4567-e89b-12d3-a456-426614174001', itemId: '123e4567-e89b-12d3-a456-426614174002',
+    idempotencyKey: '123e4567-e89b-12d3-a456-426614174003' };
   return {
-    schema_version: 1,
+    schema_version: 2,
     record_type: 'anywear_beta_runtime_drill',
     drill_id: 'beta-runtime-test-001',
     environment: {
@@ -44,17 +50,22 @@ function validEvidence() {
       service_source_commit: compatibility.service.sha,
       service_image_digest: `sha256:${'c'.repeat(64)}`,
     },
+    fencing_ci: fencingCiFixture(compatibility.service.sha),
+    runtime_control: { restored: true, phase: 'restored', nonpaid_provider_only: true, shared_worker_iam_and_network: true,
+      service_source_commit: compatibility.service.sha, service_image_digest: `sha256:${'c'.repeat(64)}` },
     drills: [
       {
         id: 'accepted-task-restart',
         status: 'passed',
         evidence: {
-          task_id: 'task-1',
+          task_id: request.taskId,
           api_restart: true,
           worker_restart: true,
           rolling_deployment: true,
           idempotency_replay_same_response: true,
-          no_duplicate_terminal_effect: true,
+          terminal_audit: stableAuditFixture(request),
+          execution_token_before: 1, execution_token_after: 1, recovery_kind: 'graceful-drain',
+          credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
           state_versions: [1, 2, 3],
           api_task_arns: ['api-a', 'api-b'],
           worker_task_arns: ['worker-a', 'worker-b'],
@@ -77,13 +88,13 @@ function validEvidence() {
         id: 'retry-visibility-dlq',
         status: 'passed',
         evidence: {
-          task_id: 'task-1',
+          task_id: request.taskId,
           retryable_failures: 2,
           receive_count: 3,
           database_lease_renewed: true,
           sqs_visibility_extended: true,
-          no_duplicate_side_effects: true,
-          credit_settlement_count: 1,
+          terminal_audit: stableAuditFixture(request, { status: 'failed', token: 3 }),
+          execution_token: 3, credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
           dlq_message_id: 'message-1',
           terminal_status: 'failed',
         },
@@ -142,10 +153,11 @@ test('retry execution refuses missing or unapproved provider-failure fixtures', 
     await writeFile(manifestPath, JSON.stringify({
       schema_version: 1,
       kind: 'provider-failure',
-      source: 'beta-provider-timeout',
+      source: 'beta-provider-nonpaid-loopback',
       application_backdoor: false,
       approved: true,
       image_path: 'tests/fixtures/dummy.png',
+      delay_ms: 45000, failure_status: 500, forwards_requests: false, provider_billing_applicability: 'not-applicable',
     }));
     const fixture = await readProviderFailureFixture(manifestPath);
     assert.equal(fixture.application_backdoor, false);
@@ -160,6 +172,8 @@ test('runtime executor refuses adapters without exact cleanup and replica attrib
     'createSyntheticAccount', 'runWardrobeApiFlow', 'replaceAndRestoreEcs',
     'captureReplicaAttribution', 'runProviderFailureFixture', 'collectRetryEvidence',
     'cleanupOwnedResources',
+    'prepareNonPaidRuntime', 'restoreNonPaidRuntime',
+    'pauseRuntimeWindow', 'restoreRuntimeWindow',
   ];
   const adapter = Object.fromEntries(names.map((name) => [name, () => undefined]));
   assert.equal(assertRuntimeDrillExecutorAdapter(adapter), adapter);
@@ -190,6 +204,8 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     'createSyntheticAccount', 'runWardrobeApiFlow', 'replaceAndRestoreEcs',
     'captureReplicaAttribution', 'runProviderFailureFixture', 'collectRetryEvidence',
     'cleanupOwnedResources',
+    'prepareNonPaidRuntime', 'restoreNonPaidRuntime',
+    'pauseRuntimeWindow', 'restoreRuntimeWindow',
   ];
   const adapter = Object.fromEntries(names.map((name) => [name, async () => undefined]));
   adapter.createSyntheticAccount = async () => ({ owned: true });
@@ -198,7 +214,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     cleaned = scope.owned === true && marker === executionEnvironment.RUNTIME_DRILL_ID;
   };
   const preflight = {
-    intake_open: true,
+    intake_open: false,
     stack: { cluster: 'beta', apiService: 'api', workerService: 'worker' },
     deployment: {
       client: { source_commit: compatibility.client.sha },
@@ -208,6 +224,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
   await assert.rejects(executeRuntimeDrill(executionEnvironment, compatibility, adapter, {
     fixtureReader: async () => ({ image_path: 'unused' }),
     preflightCollector: async () => preflight,
+    fencingReader: async () => fencingCiFixture(compatibility.service.sha),
   }), /synthetic adapter failure/);
   assert.equal(cleaned, true);
 });

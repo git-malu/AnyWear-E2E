@@ -1,8 +1,15 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { prepareNonPaidRuntime, restoreNonPaidRuntime, switchNonPaidMode } from './nonpaid-runtime-controls.mjs';
+import { auditRequest, assertStableAudits, extractAuditLog, extractAuditTaskBinding,
+  TERMINAL_STABILITY_MS, validateTaskAudit } from './runtime-task-audit.mjs';
+import { cleanupOneShotDefinitions, runOwnedOneShot } from './runtime-one-shot.mjs';
+import { pauseRuntimeWindow, restoreRuntimeWindow } from './runtime-window-controls.mjs';
+import { recoverRuntimeRecord } from './runtime-recovery.mjs';
+import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
 import {
   AdminConfirmSignUpCommand,
   AdminCreateUserCommand,
@@ -65,34 +72,115 @@ async function responseJson(response, label) {
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function liveAws(args) {
-  const { stdout } = await exec('aws', [...args, '--output', 'json'], { maxBuffer: 20 * 1024 * 1024 });
-  return parseJson(stdout.trim(), `aws ${args.join(' ')}`);
+  try {
+    const { stdout } = await exec('aws', [...args, '--output', 'json'], { maxBuffer: 20 * 1024 * 1024 });
+    return parseJson(stdout.trim(), `aws ${args[0]} ${args[1]}`);
+  } catch (error) {
+    if (args[0] === 's3api' && args[1] === 'head-object' && /Not Found|404/.test(error.stderr ?? '')) {
+      // eslint-disable-next-line preserve-caught-error -- AWS errors may embed sensitive task-definition argv.
+      throw new Error('Not Found');
+    }
+    // Task-definition input can contain baseline environment values; never print argv/stderr.
+    // eslint-disable-next-line preserve-caught-error -- Do not retain unredacted AWS argv/stderr in recovery failures.
+    throw new Error(`AWS operation failed: ${args[0]} ${args[1]}`);
+  }
 }
 
 function liveIo(environment) {
   const cognito = new CognitoIdentityProviderClient({ region: environment.AWS_REGION ?? 'ap-east-1' });
-  return {
-    async aws(args) { return liveAws(args); },
+  let snapshotNumber = 0;
+  const runner = async ({ scope, purpose, action, payload, onLine }) => {
+    assertLiveRuntimeSourceReady();
+    const checkout = required(environment.E2E_SERVICE_CHECKOUT, 'E2E_SERVICE_CHECKOUT');
+    return new Promise((resolve, reject) => {
+      const child = spawn('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', purpose,
+        scope.deployment.service.image_digest, scope.deployment.service.source_commit, action, payload],
+      { cwd: path.resolve(checkout), env: { ...environment, RUNTIME_DRILL_RUN_SCOPE: scope.runScope }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let buffered = '';
+      let lines = Promise.resolve();
+      const timer = setTimeout(() => child.kill(), 600_000);
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+        buffered += chunk.toString();
+        const complete = buffered.split(/\r?\n/);
+        buffered = complete.pop();
+        for (const line of complete) lines = lines.then(() => onLine(line));
+        if (stdout.length > 2 * 1024 * 1024) child.kill();
+      });
+      child.stderr.resume();
+      child.on('error', () => { clearTimeout(timer); reject(new Error(`One-shot ${purpose} could not start`)); });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        lines.then(() => code === 0 ? resolve({ stdout }) : reject(new Error(`One-shot ${purpose} failed; owned recovery metadata retained`)), reject);
+      });
+    });
+  };
+  const io = {
+    async aws(args) {
+      if (['register-task-definition', 'deregister-task-definition', 'update-service', 'stop-task',
+        'receive-message', 'change-message-visibility', 'delete-object'].includes(args[1])) assertLiveRuntimeSourceReady();
+      return liveAws(args);
+    },
     async fetch(url, options) { return fetch(url, options); },
     async sleep(ms) { await delay(ms); },
-    async cognitoSend(command) { return cognito.send(command); },
+    async cognitoSend(command) { assertLiveRuntimeSourceReady(); return cognito.send(command); },
     async saveRecovery(scope) {
-      await writeFile(environment.RUNTIME_DRILL_RECOVERY_PATH ?? 'runtime-drill-recovery.json', `${JSON.stringify({
-        record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
+      const recoveryPath = environment.RUNTIME_DRILL_RECOVERY_PATH ?? 'runtime-drill-recovery.json';
+      await writeFile(recoveryPath, `${JSON.stringify({
+        schema_version: 2, record_type: 'anywear_beta_runtime_recovery', stage: 'beta',
+        aws_account_id: '650880818323', aws_region: 'ap-east-1',
         run_scope: scope.runScope, marker: scope.marker, user_pool_id: scope.userPoolId,
         users: [{ email: scope.email, sub: scope.subject, username: scope.cognitoUsername }],
         items: scope.items ?? [], resources: scope.resources ?? [],
+        runtime_control: scope.runtimeControl, known_dlq_message: scope.knownDLQMessageId,
+        owned_cleanup_completed: scope.ownedCleanupCompleted === true,
+        runtime_window: scope.runtimeWindow, one_shots: scope.oneShots ?? [],
+        stack: scope.stack, service_url: scope.config.serviceUrl, deployment: scope.deployment,
+        database_cleanup_completed: scope.databaseCleanupCompleted === true, cleanup_evidence: scope.cleanupEvidence,
       }, null, 2)}\n`, { mode: 0o600 });
+      if (environment.GITHUB_ACTIONS === 'true') {
+        if (++snapshotNumber > 150) throw new Error('Runtime recovery snapshot budget exhausted');
+        const { DefaultArtifactClient } = await import('@actions/artifact');
+        await new DefaultArtifactClient().uploadArtifact(
+          `beta-runtime-recovery-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${String(snapshotNumber).padStart(3, '0')}`,
+          [path.resolve(recoveryPath)], path.dirname(path.resolve(recoveryPath)), { retentionDays: 90 });
+      }
     },
-    async runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload }) {
-      const { stdout, stderr } = await exec('bash', [
-        '.github/scripts/run-one-shot-task.sh', 'beta', 'tester-cleanup',
-        imageDigest, serviceCommit, '', payload,
-      ], { cwd: path.resolve(checkout), maxBuffer: 20 * 1024 * 1024 });
-      return { stdout, stderr };
+    async runOneShotCleanup({ scope, payload }) {
+      return runOwnedOneShot(io, scope, 'tester-cleanup', '', payload, runner);
+    },
+    async runLifecycle({ scope, action, payload }) {
+      return runOwnedOneShot(io, scope, 'lifecycle', action, payload, runner);
+    },
+    async auditRuntimeWindow(args) {
+      return io.auditOwnedTask(args);
+    },
+    async auditOwnedTask({ scope, request }) {
+      const { stdout } = await runOwnedOneShot(io, scope, 'task-audit', '', JSON.stringify(request), runner);
+      const binding = extractAuditTaskBinding(stdout);
+      const events = [];
+      let token;
+      for (let page = 0; page < 20; page += 1) {
+        const response = await liveAws(['logs', 'get-log-events', '--log-group-name', binding.logGroup,
+          '--log-stream-name', binding.logStream, '--start-from-head', ...(token ? ['--next-token', token] : [])]);
+        events.push(...(response.events ?? []));
+        if (response.nextForwardToken === token || !response.nextForwardToken) {
+          const data = request.mode === 'window-preflight' ? events.flatMap((event) => {
+            try { const parsed = JSON.parse(event.message); return parsed.source === 'durable-runtime-window-audit' ? [parsed] : []; }
+            catch { return []; }
+          }) : [extractAuditLog(events, request)];
+          if (data.length !== 1) throw new Error('Exact one-shot stream did not contain one window audit');
+          return { ...data[0], extraction: { task_arn: binding.taskArn,
+            log_group: binding.logGroup, log_stream: binding.logStream, exit_code: 0 } };
+        }
+        token = response.nextForwardToken;
+      }
+      throw new Error('One-shot audit log pagination was incomplete');
     },
     async close() { cognito.destroy(); },
   };
+  return io;
 }
 
 function ensureTaskArns(value, label) {
@@ -338,6 +426,8 @@ async function runWardrobeApiFlow({ scope, marker }, io, environment) {
     throw new Error(`Accepted wardrobe task reached ${initial.state.taggingStatus} before replacement; restart evidence refused`);
   }
   scope.taskId = await findTaskIdForItem(io, details.itemId);
+  const execution = await exactExecution(io, scope.taskId, details.itemId);
+  scope.initialExecutionToken = execution.parsed.executionToken;
   scope.stateVersions = initial.versions;
   return {
     task_id: scope.taskId,
@@ -345,7 +435,6 @@ async function runWardrobeApiFlow({ scope, marker }, io, environment) {
     worker_restart: false,
     rolling_deployment: false,
     idempotency_replay_same_response: false,
-    no_duplicate_terminal_effect: false,
     state_versions: initial.versions,
     api_task_arns: [],
     worker_task_arns: [],
@@ -361,10 +450,13 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
   if (apiBefore.taskArns.length < 2) throw new Error('Runtime drill requires at least two API replicas before SSE observation');
   const executionLogs = await logsForTask(io, scope.taskId);
   const executionStreams = executionLogs.filter((entry) => entry.parsed?.event === 'task_execution_started'
-    && entry.parsed?.taskType === 'auto-tagging' && entry.parsed?.resourceId === scope.item.itemId);
+    && entry.parsed?.taskType === 'auto-tagging' && entry.parsed?.resourceId === scope.item.itemId
+    && Number.isInteger(entry.parsed.executionToken) && entry.parsed.executionToken > 0);
   const workerToStop = workerBefore.taskArns.find((arn) => executionStreams.some((entry) =>
     entry.logStreamName?.endsWith(`/${arn.split('/').at(-1)}`)));
   if (!workerToStop) throw new Error('Active task is not attributed to a current worker ECS task; mutation refused');
+  const beforeToken = Math.max(...executionStreams.map((entry) => entry.parsed.executionToken));
+  scope.initialExecutionToken = beforeToken;
   const active = await pollItem(io, scope, scope.item.itemId, { timeoutMs: 15_000 });
   if (active.state.taggingStatus !== 'processing') throw new Error('Task is no longer processing; ECS mutation refused');
   const streams = [];
@@ -398,10 +490,14 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
       throw new Error('Idempotency replay did not return the original accepted response');
     }
     const terminal = await pollItem(io, scope, scope.item.itemId, { terminal: true });
-    const stable = await pollItem(io, scope, scope.item.itemId, { terminal: true, timeoutMs: 15_000 });
-    if (stable.state.taggingStatus !== terminal.state.taggingStatus
-      || stable.state.taggingStateVersion !== terminal.state.taggingStateVersion) {
-      throw new Error('Idempotent terminal observation changed state after replay');
+    if (terminal.state.taggingStatus !== 'ready') throw new Error('Non-paid success fixture did not reach ready');
+    const stable = await observeTerminalStability(io, scope, scope.item, scope.taskId, terminal.state);
+    const finalToken = stable.after.task.execution_token;
+    if (finalToken < beforeToken) throw new Error('Final task execution token regressed');
+    const completionLogs = await logsForTask(io, scope.taskId);
+    if (!completionLogs.some((entry) => entry.parsed.event === 'task_execution_started'
+      && entry.parsed.resourceId === scope.item.itemId && entry.parsed.executionToken === finalToken)) {
+      throw new Error('Final execution token has no exact canonical worker claim event');
     }
     reconnected.push(await openStream(io, scope, scope.item.itemId));
     reconnected.push(await openStream(io, scope, scope.item.itemId));
@@ -420,8 +516,12 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
         worker_restart: workerChanged,
         rolling_deployment: apiChanged && workerChanged,
         idempotency_replay_same_response: true,
-        no_duplicate_terminal_effect: false,
         terminal_snapshot_stable: true,
+        execution_token_before: beforeToken,
+        execution_token_after: finalToken,
+        recovery_kind: finalToken === beforeToken ? 'graceful-drain' : 'takeover',
+        terminal_audit: stable,
+        credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
         state_versions: versions,
         api_task_arns: [...new Set([...apiBefore.taskArns, ...apiAfter.taskArns])],
         worker_task_arns: [...new Set([...workerBefore.taskArns, ...workerAfter.taskArns])],
@@ -500,9 +600,10 @@ async function captureReplicaAttribution({ scope, replacement }, io) {
 
 async function runProviderFailureFixture({ scope, fixture, marker }, io) {
   asObject(fixture, 'provider failure fixture');
-  if (fixture.application_backdoor !== false || fixture.approved !== true || fixture.source !== 'beta-provider-invalid-image') {
-    throw new Error('Provider failure fixture is not an approved external invalid-image fixture');
+  if (fixture.application_backdoor !== false || fixture.approved !== true || fixture.source !== 'beta-provider-nonpaid-loopback') {
+    throw new Error('Provider failure fixture is not the approved non-paid loopback fixture');
   }
+  await switchNonPaidMode(scope, 'failure', io, waitServiceStable);
   if (!fixture.image_path.startsWith('tests/fixtures/') || fixture.image_path.includes('..')) throw new Error('Provider failure fixture image path is not checked in');
   await stat(fixture.image_path);
   const details = await uploadItem(io, scope, fixture.image_path, marker);
@@ -530,8 +631,17 @@ async function inspectQueue(io, queueUrl, taskId) {
 }
 
 async function logsForTask(io, taskId) {
-  const result = await io.aws(['logs', 'filter-log-events', '--log-group-name', WORKER_LOG_GROUP, '--filter-pattern', taskId]);
-  return (result.events ?? []).map((event) => {
+  const events = [];
+  let token;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await io.aws(['logs', 'filter-log-events', '--log-group-name', WORKER_LOG_GROUP, '--filter-pattern', taskId,
+      ...(token ? ['--next-token', token] : [])]);
+    events.push(...(result.events ?? []));
+    if (!result.nextToken) break;
+    if (page === 19 || result.nextToken === token) throw new Error('Canonical worker log pagination incomplete');
+    token = result.nextToken;
+  }
+  return events.map((event) => {
     let parsed;
     try { parsed = JSON.parse(event.message ?? ''); } catch { parsed = {}; }
     return { ...event, parsed };
@@ -562,12 +672,29 @@ async function findTaskIdForItem(io, itemId, timeoutMs = 30_000) {
   throw new Error(`Worker CloudWatch logs did not expose an exact task id for item ${itemId}`);
 }
 
+async function exactExecution(io, taskId, itemId) {
+  const entries = (await logsForTask(io, taskId)).filter((entry) => entry.parsed.event === 'task_execution_started'
+    && entry.parsed.resourceId === itemId && Number.isInteger(entry.parsed.executionToken) && entry.parsed.executionToken > 0);
+  if (!entries.length) throw new Error('Canonical worker logs did not expose an exact task/resource/execution token');
+  return entries.sort((a, b) => b.parsed.executionToken - a.parsed.executionToken)[0];
+}
+
+async function observeTerminalStability(io, scope, details, taskId, state) {
+  if (typeof io.auditOwnedTask !== 'function') throw new Error('Runtime evidence requires an authoritative run-owned durable task audit');
+  const request = auditRequest(scope, details, taskId);
+  const before = validateTaskAudit(await io.auditOwnedTask({ scope, request }), request, state.taggingStatus);
+  if (before.resource.state_version !== state.taggingStateVersion) throw new Error('API/audit state versions disagree');
+  await io.sleep(TERMINAL_STABILITY_MS);
+  const after = validateTaskAudit(await io.auditOwnedTask({ scope, request }), request, state.taggingStatus);
+  return assertStableAudits(before, after);
+}
+
 async function collectRetryEvidence({ scope, failure }, io) {
-  const terminal = await pollItem(io, scope, failure.item_id, { terminal: true, timeoutMs: 180_000 });
+  const terminal = await pollItem(io, scope, failure.item_id, { terminal: true, timeoutMs: 600_000 });
   if (terminal.state.taggingStatus !== 'failed') throw new Error('Provider failure fixture did not reach terminal failed state');
   const started = Date.now();
   let visible = false;
-  while (Date.now() - started < 180_000) {
+  while (Date.now() - started < 600_000) {
     const queue = await io.aws(['sqs', 'get-queue-attributes', '--queue-url', scope.stack.queues.autoTaggingDlq,
       '--attribute-names', 'ApproximateNumberOfMessages']);
     if (Number(queue.Attributes?.ApproximateNumberOfMessages) > 0) { visible = true; break; }
@@ -581,24 +708,33 @@ async function collectRetryEvidence({ scope, failure }, io) {
   const receiveCount = Math.max(0, ...receiveCounts);
   const retryableFailures = workerEvents.filter((event) => event.parsed?.event === 'task_processing_failed'
     && event.parsed?.retryable === true).length;
+  const claims = workerEvents.filter((entry) => entry.parsed.event === 'task_execution_started'
+    && entry.parsed.resourceId === failure.item_id && Number.isInteger(entry.parsed.executionToken)
+    && entry.parsed.executionToken > 0 && /^[^\n]+\/[a-f0-9]{32}$/.test(entry.logStreamName ?? '')
+    && Number.isFinite(entry.timestamp));
   const databaseLeaseRenewed = workerEvents.some((event) => event.parsed?.event === 'task_db_lease_renewed'
-    && event.parsed?.databaseLeaseRenewed === true);
+    && event.parsed?.databaseLeaseRenewed === true && event.parsed.resourceId === failure.item_id
+    && claims.some((claim) => claim.parsed.executionToken === event.parsed.executionToken
+      && claim.logStreamName === event.logStreamName && event.timestamp >= claim.timestamp));
   const sqsVisibilityExtended = workerEvents.some((event) => event.parsed?.event === 'task_sqs_visibility_renewed'
-    && event.parsed?.sqsVisibilityExtended === true);
+    && event.parsed?.sqsVisibilityExtended === true && claims.some((claim) => claim.logStreamName === event.logStreamName
+      && event.timestamp >= claim.timestamp));
   const uniqueDlq = [...new Map(dlqMessages.map((message) => [message.MessageId, message])).values()];
   const dlq = uniqueDlq.find((message) => message.body?.task_id === failure.task_id);
   if (uniqueDlq.length > 1) throw new Error('DLQ observation found duplicate matching task messages');
   if (!dlq) throw new Error('Matching task was not observed in the Beta auto-tagging DLQ');
+  scope.knownDLQMessageId = { taskId: failure.task_id, messageId: dlq.MessageId };
+  if (io.saveRecovery) await io.saveRecovery(scope);
   if (!databaseLeaseRenewed || !sqsVisibilityExtended) {
     throw new Error('Worker CloudWatch logs do not prove successful database lease and SQS visibility renewal; runtime evidence refused');
   }
   if (receiveCount < 3 || retryableFailures < 1) throw new Error('Worker/SQS observations do not prove bounded retries');
-  if (typeof io.auditOwnedTask !== 'function') throw new Error('Runtime evidence requires an authoritative run-owned durable settlement audit; logs cannot prove side effects');
-  const audit = await io.auditOwnedTask({ subject: scope.subject, itemId: failure.item_id, taskId: failure.task_id, runScope: scope.runScope });
-  if (audit?.source !== 'durable-task-audit' || audit.taskId !== failure.task_id || audit.subject !== scope.subject
-    || audit.noDuplicateSideEffects !== true || !Number.isInteger(audit.creditSettlementCount)
-    || audit.creditSettlementCount < 0 || audit.creditSettlementCount > 1) {
-    throw new Error('Run-owned durable settlement audit did not establish single terminal side effects');
+  const details = scope.failure ?? { itemId: failure.item_id, idempotencyKey: failure.idempotency_key };
+  const audit = await observeTerminalStability(io, scope, details, failure.task_id, terminal.state);
+  const token = audit.after.task.execution_token;
+  if (!workerEvents.some((entry) => entry.parsed.event === 'task_execution_started'
+    && entry.parsed.resourceId === failure.item_id && entry.parsed.executionToken === token)) {
+    throw new Error('Terminal failure token lacks an exact canonical worker execution event');
   }
   return {
     task_id: failure.task_id,
@@ -606,8 +742,9 @@ async function collectRetryEvidence({ scope, failure }, io) {
     receive_count: receiveCount,
     database_lease_renewed: true,
     sqs_visibility_extended: true,
-    no_duplicate_side_effects: audit.noDuplicateSideEffects,
-    credit_settlement_count: audit.creditSettlementCount,
+    terminal_audit: audit,
+    credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
+    execution_token: token,
     dlq_message_id: dlq.MessageId,
     terminal_status: 'failed',
     item_id: failure.item_id,
@@ -634,7 +771,8 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
     ?? environment.SERVICE_IMAGE_DIGEST, 'Service image digest');
   if (!DIGEST_PATTERN.test(imageDigest)) throw new Error('Cleanup requires an immutable Service image digest');
   const checkout = required(environment.E2E_SERVICE_CHECKOUT, 'E2E_SERVICE_CHECKOUT');
-  const payload = JSON.stringify({ runScope: scope.runScope, users: [{ sub: scope.subject, email: scope.email }] });
+  const payload = JSON.stringify({ runScope: scope.runScope, users: [{ sub: scope.subject, email: scope.email }],
+    ...(scope.knownDLQMessageId ? { knownDLQMessageId: scope.knownDLQMessageId } : {}) });
   const errors = [];
   const capturedUser = await io.cognitoSend(new AdminGetUserCommand({ UserPoolId: scope.userPoolId,
     Username: scope.cognitoUsername ?? scope.subject }));
@@ -663,7 +801,9 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
   }
   if (errors.length > 0) throw new AggregateError(errors, 'Wardrobe API item cleanup failed; database cleanup was withheld');
   try {
-    await io.runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload });
+    await io.runOneShotCleanup({ checkout, imageDigest, serviceCommit, payload, scope });
+    scope.databaseCleanupCompleted = true;
+    if (io.saveRecovery) await io.saveRecovery(scope);
   } catch (error) {
     throw new Error('Pinned Service tester-cleanup failed; Cognito and S3 cleanup were withheld', { cause: error });
   }
@@ -683,11 +823,22 @@ async function cleanupOwnedResources({ scope, stack }, io, environment) {
     if (!/UserNotFoundException/.test(error?.name ?? error?.message ?? '')) errors.push(error);
   }
   if (errors.length) throw new AggregateError(errors, 'Owned runtime resources did not fully clean up');
+  scope.ownedCleanupCompleted = true;
+  if (io.saveRecovery) await io.saveRecovery(scope);
 }
 
-export function createRuntimeDrillAdapter(io = liveIo(process.env), environment = process.env) {
+export function createRuntimeDrillAdapter(io, environment = process.env) {
+  io ??= liveIo(environment);
   return {
     createSyntheticAccount: (args) => createSyntheticAccount(args, io, environment),
+    prepareNonPaidRuntime: (args) => prepareNonPaidRuntime(args, io, environment, waitServiceStable),
+    restoreNonPaidRuntime: (args) => restoreNonPaidRuntime(args, io, waitServiceStable),
+    pauseRuntimeWindow: ({ scope }) => pauseRuntimeWindow(io, scope),
+    restoreRuntimeWindow: async ({ scope }) => {
+      await restoreRuntimeWindow(io, scope);
+      await cleanupOneShotDefinitions(io, scope);
+    },
+    recoverOwnedRuntime: (record) => recoverRuntimeRecord(record, io, environment, waitServiceStable),
     runWardrobeApiFlow: (args) => runWardrobeApiFlow(args, io, environment),
     replaceAndRestoreEcs: (args) => replaceAndRestoreEcs(args, io),
     captureReplicaAttribution: (args) => captureReplicaAttribution(args, io),

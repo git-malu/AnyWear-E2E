@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRuntimeDrillAdapter } from './beta-runtime-adapter.mjs';
+import { auditFixture } from './fixtures/runtime-evidence.mjs';
 
 const environment = {
   AWS_REGION: 'ap-east-1',
@@ -40,7 +41,8 @@ test('runtime adapter exposes every protected hook without making calls at const
   assert.deepEqual(Object.keys(adapter).sort(), [
     'captureReplicaAttribution', 'cleanupOwnedResources', 'collectRetryEvidence',
     'createSyntheticAccount', 'replaceAndRestoreEcs', 'runProviderFailureFixture',
-    'runWardrobeApiFlow',
+    'runWardrobeApiFlow', 'prepareNonPaidRuntime', 'restoreNonPaidRuntime',
+    'pauseRuntimeWindow', 'restoreRuntimeWindow', 'recoverOwnedRuntime',
   ].sort());
   assert.deepEqual(calls, []);
 });
@@ -111,11 +113,14 @@ test('worker replacement passes the Beta cluster/service to stability waits and 
   const newWorker = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'d'.repeat(32)}`;
   const waits = [];
   let replaced = false;
+  let audits = 0;
   const io = {
+    async auditOwnedTask({ request }) { return auditFixture(request, { after: audits++ > 0 }); },
+    async sleep(ms) { assert.equal(ms, 440_000); },
     async aws(args) {
       if (args[0] === 'logs') return { events: [{
         logStreamName: `worker/WorkerContainer/${'c'.repeat(32)}`,
-        message: JSON.stringify({ taskId: 'task', event: 'task_execution_started', taskType: 'auto-tagging', resourceId: 'item' }),
+        message: JSON.stringify({ taskId: 'task', event: 'task_execution_started', taskType: 'auto-tagging', resourceId: 'item', executionToken: 1 }),
       }] };
       if (args[1] === 'describe-services') return { services: [{ desiredCount: 1 }] };
       if (args[1] === 'list-tasks') {
@@ -142,7 +147,8 @@ test('worker replacement passes the Beta cluster/service to stability waits and 
   });
   assert.ok(waits.some(([cluster, service]) => cluster === 'beta-anywear' && service === 'worker'));
   assert.equal(result.restart_evidence.worker_restart, true);
-  assert.equal(result.restart_evidence.no_duplicate_terminal_effect, false);
+  assert.equal(result.restart_evidence.recovery_kind, 'graceful-drain');
+  assert.ok(!('no_duplicate_terminal_effect' in result.restart_evidence));
   assert.equal(result.restart_evidence.terminal_snapshot_stable, true);
   assert.deepEqual(result.terminal_observers, [{ status: 'ready', version: 3 }, { status: 'ready', version: 3 }]);
 });
@@ -204,7 +210,8 @@ test('cleanup accepts already absent and unaccepted version-zero uploading items
     }, environment).cleanupOwnedResources({ scope: cleanupScope(), stack: { bucket: 'bucket' } });
     assert.ok(calls.includes('service'));
     assert.equal(calls[0], 'recovery');
-    assert.equal(calls.at(-1), 'AdminDeleteUserCommand');
+    assert.ok(calls.includes('AdminDeleteUserCommand'));
+    assert.equal(calls.at(-1), 'recovery');
   }
 });
 
@@ -274,7 +281,7 @@ function replacementHarness({ failSecondStream = false, failRestoration = false,
       calls.push(args[1]);
       if (args[0] === 'logs') return { events: [{ logStreamName: `worker/WorkerContainer/${'c'.repeat(32)}`,
         message: JSON.stringify({ taskId: foreignTask ? 'other-task' : 'task', event: 'task_execution_started',
-          taskType: 'auto-tagging', resourceId: 'item', note: 'task' }) }] };
+          taskType: 'auto-tagging', resourceId: 'item', executionToken: 1, note: 'task' }) }] };
       if (args[1] === 'describe-services') return { services: [{ desiredCount: 1 }] };
       if (args[1] === 'list-tasks') return { taskArns: args.includes('api') ? [apiArn, `${apiArn}e`] : [workerArn] };
       if (args[1] === 'update-service') throw new Error('replacement failed');
@@ -332,9 +339,10 @@ function retryHarness({ workerReceives = 3, retryable = true, audit = true } = {
   const failure = { item_id: 'item', task_id: taskId };
   const calls = [];
   const events = [
+    { event: 'task_execution_started', resourceId: 'item', executionToken: 3 },
     { event: 'task_sqs_message_received', receiveCount: workerReceives },
     { event: 'task_processing_failed', retryable },
-    { event: 'task_db_lease_renewed', databaseLeaseRenewed: true },
+    { event: 'task_db_lease_renewed', databaseLeaseRenewed: true, resourceId: 'item', executionToken: 3 },
     { event: 'task_sqs_visibility_renewed', sqsVisibilityExtended: true },
     { event: 'untrusted-side-effect-claim', noDuplicateSideEffects: true, creditSettlementCount: 0 },
   ];
@@ -343,6 +351,7 @@ function retryHarness({ workerReceives = 3, retryable = true, audit = true } = {
     async aws(args) {
       calls.push(args);
       if (args[0] === 'logs') return { events: events.map((entry) => ({
+        timestamp: 1791158400000, logStreamName: `worker/WorkerContainer/${'c'.repeat(32)}`,
         message: JSON.stringify({ taskId, taskType: 'auto-tagging', ...entry }),
       })) };
       if (args[1] === 'get-queue-attributes') return { Attributes: { ApproximateNumberOfMessages: '1' } };
@@ -351,8 +360,10 @@ function retryHarness({ workerReceives = 3, retryable = true, audit = true } = {
       return {};
     },
   };
-  if (audit) io.auditOwnedTask = async () => ({ source: 'durable-task-audit', taskId, subject,
-    noDuplicateSideEffects: true, creditSettlementCount: 0 });
+  let audits = 0;
+  io.sleep = async () => {};
+  if (audit) io.auditOwnedTask = async ({ request }) => auditFixture(request,
+    { status: 'failed', token: 3, version: 4, after: audits++ > 0 });
   return { adapter: createRuntimeDrillAdapter(io, environment), args: { scope, failure }, calls };
 }
 
@@ -366,5 +377,5 @@ test('retry evidence refuses non-retryable canonical failures and log-only settl
   const nonRetryable = retryHarness({ retryable: false });
   await assert.rejects(nonRetryable.adapter.collectRetryEvidence(nonRetryable.args), /bounded retries/);
   const noAudit = retryHarness({ audit: false });
-  await assert.rejects(noAudit.adapter.collectRetryEvidence(noAudit.args), /authoritative run-owned durable settlement audit/);
+  await assert.rejects(noAudit.adapter.collectRetryEvidence(noAudit.args), /authoritative run-owned durable task audit/);
 });
