@@ -1,0 +1,107 @@
+name: Beta Runtime Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type beta-runtime-drill to authorize controlled Beta mutations
+        required: true
+        type: string
+      provider_failure_fixture:
+        description: Approved provider-failure-*.json manifest supplied by the protected Beta operator
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: anywear-beta-runtime
+  cancel-in-progress: false
+
+jobs:
+  runtime-drill:
+    name: Protected Beta runtime drill
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: beta
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      E2E_EXTERNAL_SERVERS: true
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      RUNTIME_DRILL_CONCURRENCY: anywear-beta-runtime
+      RUNTIME_DRILL_CONFIRM: ${{ inputs.confirmation }}
+      RUNTIME_DRILL_ID: beta-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+      RUNTIME_DRILL_E2E_SHA: ${{ github.sha }}
+      RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE: ${{ inputs.provider_failure_fixture }}
+      RUNTIME_DRILL_ADAPTER_MODULE: ${{ vars.RUNTIME_DRILL_ADAPTER_MODULE }}
+      RUNTIME_DRILL_EVIDENCE_PATH: runtime-drill-evidence.json
+      RUNTIME_PREFLIGHT_OUTPUT_PATH: runtime-preflight.json
+
+    steps:
+      - name: Checkout reviewed E2E main revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check reviewed compatibility and controls
+        run: pnpm check
+
+      - name: Bind runtime drill to the checked-in compatibility pins
+        shell: bash
+        run: |
+          {
+            echo "RUNTIME_DRILL_CLIENT_SHA=$(jq -r '.client.sha' compatibility.json)"
+            echo "RUNTIME_DRILL_SERVICE_SHA=$(jq -r '.service.sha' compatibility.json)"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure protected Beta AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Generate read-only drill plan
+        run: pnpm runtime:plan
+
+      - name: Collect read-only Beta preflight
+        run: pnpm runtime:preflight
+
+      - name: Execute reviewed runtime adapter
+        run: pnpm exec node scripts/runtime-drill.mjs --execute
+
+      - name: Verify runtime evidence
+        run: pnpm runtime:verify -- runtime-drill-evidence.json
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-runtime-drill-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            runtime-drill-plan.json
+            runtime-preflight.json
+            runtime-drill-evidence.json
+          retention-days: 90
+          if-no-files-found: ignore
