@@ -76,6 +76,7 @@ jobs:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          permission-actions: read
 
       - name: Load pinned Service revision
         id: compatibility
