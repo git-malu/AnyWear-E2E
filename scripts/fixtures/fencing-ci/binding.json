@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "repository": "git-malu/AnyWear-Service",
-  "service_source_commit": "cd92f19617e581ed9c0e8056490fa5516c935bbe",
-  "checked_out_commit": "cd92f19617e581ed9c0e8056490fa5516c935bbe",
-  "run_id": "37460060972",
-  "run_attempt": "1",
+  "service_source_commit": "00ee73fccb950a46a8159c29ccc1b655df9605de",
+  "checked_out_commit": "00ee73fccb950a46a8159c29ccc1b655df9605de",
+  "run_id": "37509796058",
+  "run_attempt": "2",
   "event_name": "push",
   "ref": "refs/heads/main",
   "database_integration_enabled": true
