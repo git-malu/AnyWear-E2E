@@ -277,7 +277,7 @@ test('AWS response-only metadata and known inert defaults normalize symmetricall
   Object.assign(value, { revision: 1, status: 'ACTIVE', registeredAt: '2026-10-05T01:00:00Z', registeredBy: 'aws',
     requiresAttributes: [], compatibilities: ['EC2', 'FARGATE'], volumes: [], placementConstraints: [], enableFaultInjection: false });
   for (const container of value.containerDefinitions) Object.assign(container, { privileged: false,
-    mountPoints: [], volumesFrom: [], portMappings: [], systemControls: [] });
+    mountPoints: [], volumesFrom: [], portMappings: [], systemControls: [], dockerSecurityOptions: [], dockerLabels: {} });
   await recoverFixtureRegistrations(h.io, h.scope);
   assert.deepEqual(normalizeFixtureDefinition(value), normalizeFixtureDefinition(clone()));
   Object.assign(value, { status: 'INACTIVE', deregisteredAt: new Date(), deleteRequestedAt: new Date() });
