@@ -19,9 +19,9 @@ import {
   AdminCreateUserCommand,
   AdminDeleteUserCommand,
   AdminGetUserCommand,
+  AdminInitiateAuthCommand,
   AdminSetUserPasswordCommand,
   CognitoIdentityProviderClient,
-  InitiateAuthCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 
 const exec = promisify(execFile);
@@ -379,8 +379,9 @@ async function createSyntheticAccount({ config, marker, stack, deployment }, io,
     if (attributes.email !== email || attributes.sub !== capturedSubject || user.Username !== capturedUsername) {
       throw new Error('Cognito synthetic identity changed after creation');
     }
-    const auth = await io.cognitoSend(new InitiateAuthCommand({
-      ClientId: clientId, AuthFlow: 'USER_PASSWORD_AUTH', AuthParameters: { USERNAME: capturedUsername, PASSWORD: password },
+    const auth = await io.cognitoSend(new AdminInitiateAuthCommand({
+      UserPoolId: userPoolId, ClientId: clientId, AuthFlow: 'ADMIN_USER_PASSWORD_AUTH',
+      AuthParameters: { USERNAME: capturedUsername, PASSWORD: password },
     }));
     const accessToken = auth.AuthenticationResult?.AccessToken;
     required(accessToken, 'Cognito access token');

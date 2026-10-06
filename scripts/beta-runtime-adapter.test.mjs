@@ -70,7 +70,11 @@ test('synthetic account creation is bound to the current run scope and returned 
       if (command.constructor.name === 'AdminGetUserCommand') {
         return identity(createdEmail);
       }
-      if (command.constructor.name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
+      if (command.constructor.name === 'AdminInitiateAuthCommand') {
+        assert.equal(command.input.UserPoolId, 'pool');
+        assert.equal(command.input.AuthFlow, 'ADMIN_USER_PASSWORD_AUTH');
+        return { AuthenticationResult: { AccessToken: 'token' } };
+      }
       return {};
     },
   }, environment);
@@ -83,7 +87,7 @@ test('synthetic account creation is bound to the current run scope and returned 
   assert.equal(scope.accessToken, 'token');
   assert.deepEqual(commands, [
     'AdminGetUserCommand', 'AdminCreateUserCommand', 'AdminGetUserCommand', 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand',
-    'AdminGetUserCommand', 'InitiateAuthCommand',
+    'AdminGetUserCommand', 'AdminInitiateAuthCommand',
   ]);
 });
 
@@ -99,7 +103,7 @@ test('synthetic account setup compensates a Cognito user when authentication set
         return { User: { Username: subject, Attributes: identity(this.email).UserAttributes } };
       }
       if (command.constructor.name === 'AdminGetUserCommand') { if (!this.email) throw userNotFound(); return identity(this.email); }
-      if (command.constructor.name === 'InitiateAuthCommand') throw new Error('auth unavailable');
+      if (command.constructor.name === 'AdminInitiateAuthCommand') throw new Error('auth unavailable');
       if (command.constructor.name === 'AdminDeleteUserCommand') this.email = undefined;
       return {};
     },
@@ -113,7 +117,7 @@ test('synthetic account setup compensates a Cognito user when authentication set
 
 test('synthetic setup snapshots always include pinned deployment and use unique memory-only default passwords', async () => {
   const passwords = [];
-  for (const failure of [undefined, 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand', 'AdminGetUserCommand', 'InitiateAuthCommand']) {
+  for (const failure of [undefined, 'AdminSetUserPasswordCommand', 'AdminConfirmSignUpCommand', 'AdminGetUserCommand', 'AdminInitiateAuthCommand']) {
     const snapshots = [];
     let address;
     let failed = false;
@@ -126,7 +130,7 @@ test('synthetic setup snapshots always include pinned deployment and use unique 
         if (name === 'AdminSetUserPasswordCommand') passwords.push(command.input.Password);
         if (name === failure && !failed) { failed = true; throw new Error('setup boundary failure'); }
         if (name === 'AdminGetUserCommand') return identity(address);
-        if (name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
+        if (name === 'AdminInitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'token' } };
         if (name === 'AdminDeleteUserCommand') address = undefined;
         return {};
       },
