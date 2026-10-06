@@ -60,7 +60,7 @@ test('DB backlog, DB/SSM mismatch, foreign write, and ambiguous non-nominal SDK 
   assert.equal(ambiguous.scope.runtimeWindow.write_ledger.length, 0);
 });
 
-test('draft source checkpoint cannot execute or recover live mutations', () => {
-  assert.equal(LIVE_RUNTIME_SOURCE_READY, false);
-  assert.throws(assertLiveRuntimeSourceReady, /cloud mutations are disabled/);
+test('independently reviewed source checkpoint permits protected execution', () => {
+  assert.equal(LIVE_RUNTIME_SOURCE_READY, true);
+  assert.doesNotThrow(assertLiveRuntimeSourceReady);
 });

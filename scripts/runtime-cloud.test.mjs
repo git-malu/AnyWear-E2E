@@ -48,7 +48,7 @@ for (const suspended of [false, true]) {
     assert.ok(h.uploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
     assert.equal(final.one_shots.length, suspended ? 32 : 31);
     assert.equal(h.uploads.at(-1).name, `beta-runtime-recovery-123-1-${h.writes.length}`);
-    assert.equal(LIVE_RUNTIME_SOURCE_READY, false);
+    assert.equal(LIVE_RUNTIME_SOURCE_READY, true);
     let cumulative = 0;
     context.diagnostic(JSON.stringify({ saves: h.writes.length, helpers: final.one_shots.length,
       bytes: Buffer.byteLength(h.writes.at(-1).json), maxBytes: verifySnapshots(h),
