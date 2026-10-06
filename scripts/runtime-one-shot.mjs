@@ -128,7 +128,11 @@ export async function verifyOneShotTask(io, scope, operation, { requireSuccess =
   const overrides = task?.overrides;
   const inertOverrides = overrides === undefined || isDeepStrictEqual(overrides, {})
     || isDeepStrictEqual(overrides, { containerOverrides: [] })
-    || isDeepStrictEqual(overrides, { containerOverrides: [{ name: 'OneShot' }] });
+    || isDeepStrictEqual(overrides, { containerOverrides: [{ name: 'OneShot' }] })
+    // ECS may include an empty default field in the read-back shape.
+    || isDeepStrictEqual(overrides, { inferenceAcceleratorOverrides: [] })
+    || isDeepStrictEqual(overrides, { containerOverrides: [], inferenceAcceleratorOverrides: [] })
+    || isDeepStrictEqual(overrides, { containerOverrides: [{ name: 'OneShot' }], inferenceAcceleratorOverrides: [] });
   if (described.failures?.length || described.tasks?.length !== 1 || task.taskArn !== operation.task_arn
     || task.taskDefinitionArn !== operation.task_definition_arn || task.lastStatus !== 'STOPPED'
     || task.containers?.length !== 1 || task.containers[0].name !== 'OneShot'
