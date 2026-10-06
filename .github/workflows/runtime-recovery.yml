@@ -80,13 +80,13 @@ jobs:
           permission-actions: read
       - name: Retain exact source workflow metadata
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: gh api "repos/git-malu/AnyWear-E2E/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT" > recovery-source-run.json
       - name: Download exact immutable recovery snapshot
         uses: actions/download-artifact@v4
         with:
           repository: git-malu/AnyWear-E2E
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.token.outputs.token }}
           run-id: ${{ inputs.source_run_id }}
           name: beta-runtime-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.source_snapshot }}
           path: recovery-source
@@ -128,6 +128,8 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
           aws-region: ${{ vars.AWS_REGION }}
       - name: Restore captured resources and original private policy only
+        env:
+          RUNTIME_RECOVERY_SKIP_SNAPSHOT_UPLOAD: 'true'
         run: pnpm exec node scripts/runtime-drill.mjs --recover recovery-source/runtime-drill-recovery.json
       - name: Retain recovery outcome
         if: always()

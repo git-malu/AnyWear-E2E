@@ -147,7 +147,7 @@ export function createOwnedRuntimeIo(transport, runner, environment) {
         cognito_deletion_intent: scope.cognitoDeletionIntent,
         known_dlq_deletion_evidence: scope.knownDLQDeletionEvidence,
       }, null, 2)}\n`, { mode: 0o600 });
-      if (environment.GITHUB_ACTIONS === 'true') {
+      if (environment.GITHUB_ACTIONS === 'true' && environment.RUNTIME_RECOVERY_SKIP_SNAPSHOT_UPLOAD !== 'true') {
         const snapshot = validateRecoverySnapshot(String(++snapshotNumber).padStart(3, '0'));
         await transport.uploadRecoveryArtifact(
           `beta-runtime-recovery-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${snapshot}`,

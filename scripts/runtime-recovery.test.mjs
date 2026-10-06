@@ -224,7 +224,7 @@ test('restore-only workflow binds immutable source main/run/artifact pins and us
   const workflow = await readFile(new URL('../.github/workflows/runtime-recovery.yml', import.meta.url), 'utf8');
   assert.match(workflow, /group: anywear-beta-runtime/);
   assert.match(workflow, /environment: beta/);
-  assert.match(workflow, /--recover recovery-source\/runtime-drill-recovery.json/);
+  assert.match(workflow, /name: Restore captured resources and original private policy only\r?\n\s+env:\r?\n\s+RUNTIME_RECOVERY_SKIP_SNAPSHOT_UPLOAD: 'true'\r?\n\s+run: pnpm exec node scripts\/runtime-drill\.mjs --recover recovery-source\/runtime-drill-recovery\.json/);
   assert.match(workflow, /RUNTIME_RECOVERY_SOURCE_COMPLETED=\$\(jq -r '\.source_completed' recovery-binding.json\)/);
   assert.ok(!workflow.includes('--execute'));
   assert.ok(workflow.indexOf('assertLiveRuntimeSourceReady();') < workflow.indexOf('aws-actions/configure-aws-credentials'));
