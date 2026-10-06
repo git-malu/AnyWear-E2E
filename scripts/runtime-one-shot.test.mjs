@@ -137,7 +137,9 @@ test('all one-shot behavioral fields and environment values are exact, including
 });
 
 test('actual tasks accept only absent or inert name-only override readback, never resource or command overrides', async () => {
-  for (const overrides of [undefined, {}, { containerOverrides: [] }, { containerOverrides: [{ name: 'OneShot' }] }]) {
+  for (const overrides of [undefined, {}, { containerOverrides: [] }, { containerOverrides: [{ name: 'OneShot' }] },
+    { inferenceAcceleratorOverrides: [] }, { containerOverrides: [], inferenceAcceleratorOverrides: [] },
+    { containerOverrides: [{ name: 'OneShot' }], inferenceAcceleratorOverrides: [] }]) {
     const h = oneShotHarness();
     const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
     h.tasks.get(operation.task_arn).overrides = overrides;
