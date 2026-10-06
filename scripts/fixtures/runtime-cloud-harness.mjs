@@ -114,7 +114,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
         if (!userExists) throw Object.assign(new Error('User not found'), { name: 'UserNotFoundException' });
         return { Username: SUBJECT, UserAttributes: userAttributes(), UserCreateDate: userCreatedAt };
       }
-      if (name === 'InitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'mocked-memory-only-token' } };
+      if (name === 'AdminInitiateAuthCommand') return { AuthenticationResult: { AccessToken: 'mocked-memory-only-token' } };
       if (name === 'AdminDeleteUserCommand') userExists = false;
       markMutation(name);
       return {};
