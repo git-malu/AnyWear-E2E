@@ -272,7 +272,8 @@ export async function recoverFixtureRegistrations(io, scope) {
     if (!new RegExp(`^arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-${scope.runScope}:[1-9][0-9]*$`).test(arn)) throw new Error('Captured fixture definition is outside owned family');
     const response = await io.aws(['ecs', 'describe-task-definition', '--task-definition', arn, '--include', 'TAGS']);
     const definition = response.taskDefinition;
-    if (Object.fromEntries((response.tags ?? []).map(({ key, value }) => [key, value]))['anywear-runtime-run-scope'] !== scope.runScope) {
+    const tags = Array.isArray(response.tags) ? response.tags : await listTaskDefinitionTags(io, arn);
+    if (Object.fromEntries(tags.map(({ key, value }) => [key, value]))['anywear-runtime-run-scope'] !== scope.runScope) {
       throw new Error('Fixture family contains a foreign definition; recovery refused');
     }
     const matches = control.registration_intents.filter((intent) => {
@@ -289,6 +290,12 @@ export async function recoverFixtureRegistrations(io, scope) {
     if (!intent.registered && !control.fixture_task_definitions.length) intent.proven_no_active_definition = true;
   }
   if (io.saveRecovery) await io.saveRecovery(scope);
+}
+
+async function listTaskDefinitionTags(io, taskDefinitionArn) {
+  const response = await io.aws(['ecs', 'list-tags-for-resource', '--resource-arn', taskDefinitionArn]);
+  if (!Array.isArray(response.tags)) throw new Error('Fixture definition tag lookup is incomplete');
+  return response.tags;
 }
 
 async function listFixtureTasks(io, scope) {

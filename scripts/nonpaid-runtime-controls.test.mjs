@@ -61,7 +61,7 @@ test('clone refuses unknown provider settings, incorrect pin/key, and non-shared
   }
 });
 
-function controlHarness({ dirtyQueue = false, foreignDrift = false, failStability = false, initiallyOpen = false, failDeregister = false } = {}) {
+function controlHarness({ dirtyQueue = false, foreignDrift = false, failStability = false, initiallyOpen = false, failDeregister = false, describeTagsUnavailable = false } = {}) {
   const calls = [];
   const records = [];
   const definitions = new Map();
@@ -107,8 +107,9 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
       if (args[1] === 'describe-task-definition') {
         const arn = args[args.indexOf('--task-definition') + 1];
         return { taskDefinition: definitions.get(arn) ?? definition,
-          tags: [{ key: 'anywear-runtime-run-scope', value: runScope }] };
+          ...(describeTagsUnavailable ? {} : { tags: [{ key: 'anywear-runtime-run-scope', value: runScope }] }) };
       }
+      if (args[1] === 'list-tags-for-resource') return { tags: [{ key: 'anywear-runtime-run-scope', value: runScope }] };
       if (args[1] === 'list-task-definitions') return { taskDefinitionArns: [...definitions.keys()] };
       if (args[1] === 'list-tasks') return { taskArns: args.includes('--family') ? [] : (args.includes('api') ? ['api-1', 'api-2'] : ['worker-1']) };
       if (args[1] === 'describe-tasks') return { tasks: args.slice(args.indexOf('--tasks') + 1).map((id) => ({
@@ -182,6 +183,13 @@ test('AWS response-only metadata and known inert defaults normalize symmetricall
   assert.deepEqual(normalizeFixtureDefinition(value), normalizeFixtureDefinition(clone()));
   Object.assign(value, { status: 'INACTIVE', deregisteredAt: new Date(), deleteRequestedAt: new Date() });
   await recoverFixtureRegistrations(h.io, h.scope);
+});
+
+test('fixture recovery falls back to ECS list-tags-for-resource when describe-task-definition omits tags', async () => {
+  const h = controlHarness({ describeTagsUnavailable: true });
+  await prepareNonPaidRuntime({ scope: h.scope, fixture: h.fixture }, h.io, h.environment, h.wait);
+  await recoverFixtureRegistrations(h.io, h.scope);
+  assert.ok(h.calls.some((args) => args[1] === 'list-tags-for-resource'));
 });
 
 test('control requires empty baseline queues before any registration and manager window acknowledgement', async () => {
