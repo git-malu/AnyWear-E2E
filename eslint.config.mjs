@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['node_modules/**', 'playwright-report/**', 'test-results/**', 'blob-report/**'],
+    ignores: ['node_modules/**', 'playwright-report/**', 'test-results/**', 'blob-report/**', 'AnyWear-Service/**'],
   },
   {
     files: ['**/*.mjs'],
