@@ -128,6 +128,8 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
           aws-region: ${{ vars.AWS_REGION }}
       - name: Restore captured resources and original private policy only
+        env:
+          RUNTIME_RECOVERY_SKIP_SNAPSHOT_UPLOAD: 'true'
         run: pnpm exec node scripts/runtime-drill.mjs --recover recovery-source/runtime-drill-recovery.json
       - name: Retain recovery outcome
         if: always()
