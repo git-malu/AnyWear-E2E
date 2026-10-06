@@ -173,8 +173,10 @@ database. The generated plan describes the operator-approved mutations and requi
 unique `RUNTIME_DRILL_CONFIRM=beta-runtime-drill` marker before any future executor is
 allowed to perform them.
 
-The non-paid executor and restore-only recovery workflow are source checkpoints, locked
-by `LIVE_RUNTIME_SOURCE_READY=false`. Neither has collected Beta runtime evidence. A
+The non-paid executor and restore-only recovery workflow passed independent source
+review and are enabled by `LIVE_RUNTIME_SOURCE_READY=true`; neither has collected Beta
+runtime evidence. Protected execution still requires all workflow confirmation, exact
+compatibility, fencing-evidence, account, and exclusive-window gates. A
 window owner must suspend dynamic scale-in, scale-out, and scheduled scaling for both
 services before execution; the executor captures and checks these settings, but never
 changes them. It closes private admission before worker replacement and admits only the
