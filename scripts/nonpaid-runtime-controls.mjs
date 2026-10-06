@@ -19,7 +19,7 @@ const TASK_DEFINITION_DEFAULTS = new Map([['volumes', []], ['placementConstraint
   ['inferenceAccelerators', []], ['enableFaultInjection', false]]);
 const CONTAINER_DEFAULTS = new Map([['essential', true], ['privileged', false], ['readonlyRootFilesystem', false],
   ['mountPoints', []], ['portMappings', []], ['systemControls', []], ['ulimits', []], ['resourceRequirements', []],
-  ['dependsOn', []], ['environmentFiles', []], ['volumesFrom', []], ['links', []], ['cpu', 0], ['environment', []], ['secrets', []]]);
+  ['dependsOn', []], ['environmentFiles', []], ['volumesFrom', []], ['links', []], ['credentialSpecs', []], ['cpu', 0], ['environment', []], ['secrets', []]]);
 CONTAINER_DEFAULTS.set('dockerSecurityOptions', []);
 CONTAINER_DEFAULTS.set('dockerLabels', {});
 
