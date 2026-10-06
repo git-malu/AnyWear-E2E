@@ -90,7 +90,7 @@ jobs:
           repository: git-malu/AnyWear-Service
           ref: ${{ steps.compatibility.outputs.service_sha }}
           path: AnyWear-Service
-          submodules: recursive
+          submodules: false
           token: ${{ steps.generate-token.outputs.token }}
           persist-credentials: false
 
