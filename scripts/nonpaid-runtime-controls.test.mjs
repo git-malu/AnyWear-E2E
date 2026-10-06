@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cloneFixtureDefinition, normalizeFixtureDefinition, prepareNonPaidRuntime, recoverFixtureRegistrations, restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
+import { captureAutoscaling, cloneFixtureDefinition, guardAutoscaling, normalizeFixtureDefinition, prepareNonPaidRuntime, recoverFixtureRegistrations, restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
 import { testerHash } from './runtime-window-controls.mjs';
 
 const sha = 'b'.repeat(40);
@@ -25,6 +25,105 @@ const definition = {
 function clone(mode = 'success', source = definition) {
   return cloneFixtureDefinition(source, { runScope, imageDigest: digest, serviceCommit: sha, mode });
 }
+
+const autoscalingStack = { cluster: 'beta-anywear', apiService: 'beta-anywear-api', workerService: 'beta-anywear-worker' };
+const autoscalingRole = 'arn:aws:iam::650880818323:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService';
+
+function autoscalingHarness({ mutate, pagination } = {}) {
+  const resources = new Map();
+  for (const [service, minCapacity] of [[autoscalingStack.apiService, 2], [autoscalingStack.workerService, 1]]) {
+    const resource = `service/${autoscalingStack.cluster}/${service}`;
+    resources.set(resource, {
+      target: { ServiceNamespace: 'ecs', ResourceId: resource, ScalableDimension: 'ecs:service:DesiredCount',
+        MinCapacity: minCapacity, MaxCapacity: 4, RoleARN: autoscalingRole,
+        SuspendedState: { DynamicScalingInSuspended: true, DynamicScalingOutSuspended: true, ScheduledScalingSuspended: true },
+        ScalableTargetARN: `arn:aws:application-autoscaling:ap-east-1:650880818323:scalable-target/${service}` },
+      policies: service === autoscalingStack.workerService ? [
+        { PolicyARN: `arn:policy:${service}:upper`, PolicyName: 'upper', ServiceNamespace: 'ecs', ResourceId: resource,
+          ScalableDimension: 'ecs:service:DesiredCount', PolicyType: 'StepScaling',
+          StepScalingPolicyConfiguration: { AdjustmentType: 'ChangeInCapacity', Cooldown: 60,
+            StepAdjustments: [{ MetricIntervalLowerBound: 9, ScalingAdjustment: 2 },
+              { MetricIntervalLowerBound: 0, MetricIntervalUpperBound: 9, ScalingAdjustment: 1 }] },
+          Alarms: [{ AlarmName: 'upper-alarm', AlarmARN: 'arn:alarm:upper' }], CreationTime: '2026-10-07T04:35:30.817+08:00' },
+        { PolicyARN: `arn:policy:${service}:lower`, PolicyName: 'lower', ServiceNamespace: 'ecs', ResourceId: resource,
+          ScalableDimension: 'ecs:service:DesiredCount', PolicyType: 'StepScaling',
+          StepScalingPolicyConfiguration: { AdjustmentType: 'ChangeInCapacity', Cooldown: 60,
+            StepAdjustments: [{ MetricIntervalUpperBound: 0, ScalingAdjustment: -1 }] },
+          Alarms: [{ AlarmName: 'lower-alarm', AlarmARN: 'arn:alarm:lower' }], CreationTime: '2026-10-07T04:35:30.834+08:00' },
+      ] : [{ PolicyARN: `arn:policy:${service}:target`, PolicyName: 'target', ServiceNamespace: 'ecs', ResourceId: resource,
+        ScalableDimension: 'ecs:service:DesiredCount', PolicyType: 'TargetTrackingScaling',
+        TargetTrackingScalingPolicyConfiguration: { TargetValue: 60, PredefinedMetricSpecification: { PredefinedMetricType: 'ECSServiceAverageCPUUtilization' },
+          ScaleOutCooldown: 60, ScaleInCooldown: 300 },
+        Alarms: [{ AlarmName: 'target-high', AlarmARN: 'arn:alarm:target-high' }, { AlarmName: 'target-low', AlarmARN: 'arn:alarm:target-low' }],
+        CreationTime: '2026-10-07T04:35:43.151+08:00' }],
+      schedules: [{ ScheduledActionARN: `arn:scheduled:${service}:late`, ScheduledActionName: 'late',
+        ServiceNamespace: 'ecs', ResourceId: resource, ScalableDimension: 'ecs:service:DesiredCount',
+        Schedule: 'cron(0 3 * * ? *)' }, { ScheduledActionARN: `arn:scheduled:${service}:early`, ScheduledActionName: 'early',
+        ServiceNamespace: 'ecs', ResourceId: resource, ScalableDimension: 'ecs:service:DesiredCount',
+        Schedule: 'cron(0 1 * * ? *)' }],
+    });
+  }
+  if (mutate) mutate(resources);
+  const io = { async aws(args) {
+    const resourceFlag = args.includes('--resource-ids') ? '--resource-ids' : '--resource-id';
+    const resource = args[args.indexOf(resourceFlag) + 1];
+    const entry = resources.get(resource);
+    if (!entry) throw new Error(`Unknown autoscaling resource ${resource}`);
+    if (args[1] === 'describe-scalable-targets') return { ScalableTargets: [entry.target], ...(pagination?.targets ? { NextToken: 'next-target' } : {}) };
+    if (args[1] === 'describe-scaling-policies') return { ScalingPolicies: entry.policies, ...(pagination?.policies ? { NextToken: 'next-policy' } : {}) };
+    if (args[1] === 'describe-scheduled-actions') return { ScheduledActions: entry.schedules, ...(pagination?.schedules ? { NextToken: 'next-schedule' } : {}) };
+    throw new Error(`Unexpected autoscaling operation ${args[1]}`);
+  } };
+  return { io, stack: autoscalingStack, resources };
+}
+
+test('autoscaling guard accepts equivalent AWS collection reordering only', async () => {
+  const baseline = autoscalingHarness();
+  const expected = await captureAutoscaling(baseline.io, baseline.stack);
+  const live = autoscalingHarness({ mutate: (resources) => {
+    for (const entry of resources.values()) {
+      entry.policies.reverse();
+      entry.schedules.reverse();
+      for (const policy of entry.policies) {
+        policy.Alarms.reverse();
+        policy.StepScalingPolicyConfiguration?.StepAdjustments.reverse();
+      }
+    }
+  } });
+  await guardAutoscaling(live.io, { stack: live.stack, runtimeControl: { autoscaling: expected } });
+});
+
+test('autoscaling guard rejects target, policy, schedule, alarm, and step semantic drift', async () => {
+  const mutations = [
+    ['target min capacity', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').target.MinCapacity = 2; }],
+    ['target max capacity', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').target.MaxCapacity = 5; }],
+    ['target role', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').target.RoleARN = 'arn:foreign:role'; }],
+    ['target suspension', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').target.SuspendedState.DynamicScalingInSuspended = false; }],
+    ['policy value', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').policies[0].StepScalingPolicyConfiguration.Cooldown = 61; }],
+    ['schedule value', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').schedules[0].Schedule = 'cron(0 4 * * ? *)'; }],
+    ['alarm value', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').policies[0].Alarms[0].AlarmName = 'foreign-alarm'; }],
+    ['step value', (resources) => { resources.get('service/beta-anywear/beta-anywear-worker').policies[0].StepScalingPolicyConfiguration.StepAdjustments[0].ScalingAdjustment = 3; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const baseline = autoscalingHarness();
+    const expected = await captureAutoscaling(baseline.io, baseline.stack);
+    const live = autoscalingHarness({ mutate });
+    await assert.rejects(guardAutoscaling(live.io, { stack: live.stack, runtimeControl: { autoscaling: expected } }), /Foreign autoscaling configuration drift|Protected window owner/, label);
+  }
+});
+
+test('autoscaling capture rejects incomplete pagination and response collections', async () => {
+  for (const pagination of [{ targets: true }, { policies: true }, { schedules: true }]) {
+    const harness = autoscalingHarness({ pagination });
+    await assert.rejects(captureAutoscaling(harness.io, harness.stack), /pagination was incomplete/);
+  }
+  const missingPolicies = autoscalingHarness();
+  const worker = missingPolicies.resources.get('service/beta-anywear/beta-anywear-worker');
+  const original = worker.policies;
+  worker.policies = undefined;
+  await assert.rejects(captureAutoscaling(missingPolicies.io, missingPolicies.stack), /response collections were incomplete/);
+  worker.policies = original;
+});
 
 test('clone preserves immutable worker roles/image/config and replaces the real provider key with a sentinel', () => {
   const result = clone();

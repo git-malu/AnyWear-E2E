@@ -21,6 +21,60 @@ const CONTAINER_DEFAULTS = new Map([['essential', true], ['privileged', false], 
   ['mountPoints', []], ['portMappings', []], ['systemControls', []], ['ulimits', []], ['resourceRequirements', []],
   ['dependsOn', []], ['environmentFiles', []], ['volumesFrom', []], ['links', []], ['cpu', 0], ['environment', []], ['secrets', []]]);
 
+function assertCompleteAutoscalingPage(result, label) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)
+    || (result.NextToken !== undefined && result.NextToken !== null && result.NextToken !== '')
+    || (result.nextToken !== undefined && result.nextToken !== null && result.nextToken !== '')) {
+    throw new Error(`Autoscaling ${label} pagination was incomplete`);
+  }
+}
+
+function compareStableKey(left, right) {
+  const a = JSON.stringify(left);
+  const b = JSON.stringify(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sortKnownCollection(values, key) {
+  return [...values].sort((left, right) => compareStableKey(key(left), key(right)));
+}
+
+function canonicalizeScalingPolicy(policy) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new Error('Autoscaling policy response was invalid');
+  }
+  const canonical = structuredClone(policy);
+  if (!Array.isArray(canonical.Alarms)) throw new Error('Autoscaling policy alarms response was incomplete');
+  canonical.Alarms = sortKnownCollection(canonical.Alarms,
+    (alarm) => [alarm?.AlarmARN ?? null, alarm?.AlarmName ?? null]);
+  if (canonical.PolicyType === 'StepScaling') {
+    const configuration = canonical.StepScalingPolicyConfiguration;
+    if (!configuration || !Array.isArray(configuration.StepAdjustments)) {
+      throw new Error('Autoscaling step adjustments response was incomplete');
+    }
+    configuration.StepAdjustments = sortKnownCollection(configuration.StepAdjustments,
+      (step) => [step?.MetricIntervalLowerBound ?? null, step?.MetricIntervalUpperBound ?? null,
+        step?.ScalingAdjustment ?? null]);
+  }
+  return canonical;
+}
+
+function canonicalizeAutoscalingSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)
+    || typeof snapshot.resource_id !== 'string' || !snapshot.target
+    || !Array.isArray(snapshot.policies) || !Array.isArray(snapshot.schedules)) {
+    throw new Error('Autoscaling snapshot was incomplete');
+  }
+  return {
+    resource_id: snapshot.resource_id,
+    target: structuredClone(snapshot.target),
+    policies: sortKnownCollection(snapshot.policies,
+      (policy) => [policy?.PolicyARN ?? null, policy?.PolicyName ?? null]).map(canonicalizeScalingPolicy),
+    schedules: sortKnownCollection(snapshot.schedules,
+      (schedule) => [schedule?.ScheduledActionARN ?? null, schedule?.ScheduledActionName ?? null]),
+  };
+}
+
 function hash(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function pick(value, keys) { return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]])); }
 function withoutAwsDefaults(value, defaults) {
@@ -170,6 +224,7 @@ export async function captureAutoscaling(io, stack) {
     const base = ['--service-namespace', 'ecs', '--resource-id', resource, '--scalable-dimension', 'ecs:service:DesiredCount'];
     const targetResult = await io.aws(['application-autoscaling', 'describe-scalable-targets',
       '--service-namespace', 'ecs', '--resource-ids', resource, '--scalable-dimension', 'ecs:service:DesiredCount']);
+    assertCompleteAutoscalingPage(targetResult, 'scalable targets');
     const target = targetResult.ScalableTargets?.[0];
     if (targetResult.NextToken || targetResult.ScalableTargets?.length !== 1 || target.ResourceId !== resource
       || !['DynamicScalingInSuspended', 'DynamicScalingOutSuspended', 'ScheduledScalingSuspended'].every((key) => target.SuspendedState?.[key] === true)) {
@@ -177,8 +232,13 @@ export async function captureAutoscaling(io, stack) {
     }
     const policies = await io.aws(['application-autoscaling', 'describe-scaling-policies', ...base]);
     const schedules = await io.aws(['application-autoscaling', 'describe-scheduled-actions', ...base]);
-    if (policies.NextToken || schedules.NextToken) throw new Error('Autoscaling baseline pagination was incomplete');
-    snapshots.push({ resource_id: resource, target, policies: policies.ScalingPolicies ?? [], schedules: schedules.ScheduledActions ?? [] });
+    assertCompleteAutoscalingPage(policies, 'scaling policies');
+    assertCompleteAutoscalingPage(schedules, 'scheduled actions');
+    if (!Array.isArray(policies.ScalingPolicies) || !Array.isArray(schedules.ScheduledActions)) {
+      throw new Error('Autoscaling response collections were incomplete');
+    }
+    snapshots.push(canonicalizeAutoscalingSnapshot({ resource_id: resource, target,
+      policies: policies.ScalingPolicies, schedules: schedules.ScheduledActions }));
   }
   return snapshots;
 }
