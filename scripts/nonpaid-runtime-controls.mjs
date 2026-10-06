@@ -20,6 +20,8 @@ const TASK_DEFINITION_DEFAULTS = new Map([['volumes', []], ['placementConstraint
 const CONTAINER_DEFAULTS = new Map([['essential', true], ['privileged', false], ['readonlyRootFilesystem', false],
   ['mountPoints', []], ['portMappings', []], ['systemControls', []], ['ulimits', []], ['resourceRequirements', []],
   ['dependsOn', []], ['environmentFiles', []], ['volumesFrom', []], ['links', []], ['cpu', 0], ['environment', []], ['secrets', []]]);
+CONTAINER_DEFAULTS.set('dockerSecurityOptions', []);
+CONTAINER_DEFAULTS.set('dockerLabels', {});
 
 function hash(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function pick(value, keys) { return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]])); }
@@ -33,7 +35,7 @@ export function normalizeFixtureDefinition(definition) {
   if (!Array.isArray(definition.containerDefinitions) || definition.containerDefinitions.length !== 2) throw new Error('Fixture task definition must contain exactly worker and sidecar containers');
   const normalized = withoutAwsDefaults({ ...pick(definition, DEFINITION_FIELDS), family: definition.family }, TASK_DEFINITION_DEFAULTS);
   normalized.containerDefinitions = definition.containerDefinitions.map((container) => {
-    const allowed = ['name', 'image', 'repositoryCredentials', 'cpu', 'memory', 'memoryReservation', 'links', 'portMappings', 'essential', 'entryPoint', 'command', 'environment', 'environmentFiles', 'mountPoints', 'volumesFrom', 'linuxParameters', 'secrets', 'dependsOn', 'startTimeout', 'stopTimeout', 'hostname', 'user', 'workingDirectory', 'disableNetworking', 'privileged', 'readonlyRootFilesystem', 'dnsServers', 'dnsSearchDomains', 'extraHosts', 'pseudoTerminal', 'systemControls', 'resourceRequirements', 'firelensConfiguration', 'credentialSpecs', 'ulimits', 'healthCheck', 'logConfiguration'];
+    const allowed = ['name', 'image', 'repositoryCredentials', 'cpu', 'memory', 'memoryReservation', 'links', 'portMappings', 'essential', 'entryPoint', 'command', 'environment', 'environmentFiles', 'mountPoints', 'volumesFrom', 'linuxParameters', 'secrets', 'dependsOn', 'startTimeout', 'stopTimeout', 'hostname', 'user', 'workingDirectory', 'disableNetworking', 'privileged', 'readonlyRootFilesystem', 'dnsServers', 'dnsSearchDomains', 'extraHosts', 'pseudoTerminal', 'systemControls', 'resourceRequirements', 'firelensConfiguration', 'credentialSpecs', 'ulimits', 'healthCheck', 'logConfiguration', 'dockerSecurityOptions', 'dockerLabels'];
     const unknownContainer = Object.keys(container).filter((key) => !allowed.includes(key));
     if (unknownContainer.length) throw new Error(`Fixture container has unexpected fields: ${unknownContainer.join(',')}`);
     return withoutAwsDefaults(structuredClone(container), CONTAINER_DEFAULTS);
