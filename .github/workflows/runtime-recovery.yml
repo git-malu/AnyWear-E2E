@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: anywear-beta-runtime
@@ -43,6 +44,7 @@ jobs:
     environment: beta
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -78,13 +80,13 @@ jobs:
           permission-actions: read
       - name: Retain exact source workflow metadata
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: gh api "repos/git-malu/AnyWear-E2E/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT" > recovery-source-run.json
       - name: Download exact immutable recovery snapshot
         uses: actions/download-artifact@v4
         with:
           repository: git-malu/AnyWear-E2E
-          github-token: ${{ steps.token.outputs.token }}
+          github-token: ${{ github.token }}
           run-id: ${{ inputs.source_run_id }}
           name: beta-runtime-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.source_snapshot }}
           path: recovery-source
