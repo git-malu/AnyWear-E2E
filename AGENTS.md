@@ -64,7 +64,6 @@ Dependent execution waits for verified release conditions; ready independent iss
 
 ## Code Exploration & Verification
 
-- Do not use GitNexus tools, CLI commands, indexes, or skills for this project.
 - Use `rg`, direct source inspection, language tooling, and repository documentation to understand code and trace execution flows.
 - Before editing shared behavior, inspect callers, imports, API contracts, and relevant tests across the affected repositories. An empty text search does not prove a symbol is unused; consider dynamic dispatch and cross-language calls.
 - When renaming or removing symbols, check definitions and references with language-aware tooling where available, review the diff, and verify affected behavior.
