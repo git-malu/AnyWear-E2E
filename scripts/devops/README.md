@@ -6,7 +6,10 @@ records and Kanban state. Follow the
 [kanban-workflow skill](../../.agents/skills/kanban-workflow/SKILL.md) for intake,
 scheduling, delivery gates, and closure.
 
-These scripts provide a manager intake prompt and a read-only status view.
+These compatibility entry points provide a manager intake prompt and a read-only status view.
+The intake implementation belongs to the skill's
+[scripts/issue_creation.py](../../.agents/skills/kanban-workflow/scripts/issue_creation.py);
+`scripts/devops/issue_creation.py` only delegates to it and preserves existing imports.
 Creating a prompt does not create an issue or start execution. Give the prompt
 to a `kanban_manager` session, which checks the existing board, decides priority,
 dependencies and scope, writes the GitHub records, and verifies their Backlog
@@ -25,7 +28,15 @@ python scripts/devops/devops.py status
 The `create` command accepts `feature`, `bug`, `refactor`, or `chore`. Use
 `--body-file` for multiline proposals; the file must be UTF-8. Proposal values
 are encoded as JSON data in the prompt and are never interpolated into a shell
-command. `issue_creation.py create` accepts the same arguments directly.
+command. Both the skill's script and the legacy `scripts/devops/issue_creation.py`
+accept the same arguments directly:
+
+```bash
+python .agents/skills/kanban-workflow/scripts/issue_creation.py create --title "Consolidate settings" --type refactor --body-file proposal.md
+```
+
+The generated prompt references the skill's intake rules and GitHub operations
+rather than embedding a second copy of the workflow.
 
 The `status` command requires an authenticated GitHub CLI with `read:project`
 or `project` scope. It reads `gh project item-list` for Project #4 and prints

@@ -30,7 +30,7 @@ Assign one active issue worker per issue and one owner per writable repository d
 - Use established labels for Feature, Bug, Refactor, and Chore classification. Size, estimates, and dates are optional. Do not create redundant custom state fields.
 - Comments record meaningful decisions, transition reasons, failures, blockers, handoffs, recovery, and closure evidence. Native timeline events supply automatic history. Correct evidence with a new comment; avoid routine unchanged progress or duplicating automatic events.
 - PRs, Actions runs, and deployment records are linked evidence. A repository delegation does not itself require a sub-issue.
-- Legacy Markdown issues and Kanban diagrams are historical/supporting documents, not live stage records. GitHub access failures do not authorize a parallel local tracker.
+- Retired Markdown issues and Kanban diagrams remain in Git history. Meta's `records/kanban-migration/migration-map.json` preserves their canonical GitHub identities and source provenance; `records/` holds supplementary designs/evidence, not another issue tracker. Do not recreate `AnyWear-Meta/issues`. GitHub access failures do not authorize a parallel local tracker.
 
 ## Issue Intake
 
@@ -42,6 +42,8 @@ The manager handles creation and triage against the existing board and issues:
 4. Check for one bounded, verifiable outcome. Split independently deliverable outcomes or work with different execution times/priorities. Keep repository slices under one issue when they share one acceptance boundary. Time span is a review signal; uncertain work can begin as a bounded investigation issue.
 5. Distinguish dependency, parent/child grouping, and shared-resource conflict. Record resource or integration coordination even when no blocking relationship is needed.
 6. Record goal, scope, acceptance, labels, affected repositories, priority rationale, dependency conditions, split/grouping decision, and resource constraints. Add new issues to Project #4 with `Status=Backlog`; read back membership, fields, and relationships. Return issue URLs and coordination decisions. Creation does not start execution unless requested, and remote-only intake needs no worktree.
+
+For a CLI-generated manager request, use [scripts/issue_creation.py](scripts/issue_creation.py) with `create --title <title> --type <type>`, optionally `--body`, `--body-file`, and `--scope`. It assembles proposal data and references this intake contract; it does not create an issue or start execution.
 
 ## Stages and Gates
 

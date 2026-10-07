@@ -28,7 +28,7 @@ AnyWear-Manager (top-level)
 
 You receive a task from AnyWear-Manager containing:
 - The issue description and requirements
-- Reference to the approved Implementation Plan in `AnyWear-Meta/issues/`
+- Reference to the approved supporting Implementation Plan in `AnyWear-Meta/records/issue-<number>-<slug>/`
 - The feature branch name (already set up)
 - Confirmation that API sync is complete (if applicable)
 

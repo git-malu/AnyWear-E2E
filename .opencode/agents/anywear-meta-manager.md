@@ -131,7 +131,7 @@ Provide a structured summary:
 ### Status: DONE
 
 ### Artifacts
-- Plan: AnyWear-Meta/issues/{category}/{issue}/plan.md
+- Plan: AnyWear-Meta/records/issue-<number>-<slug>/plan.md
 - API changes: [none / list of changed files]
 - Commits: [list]
 

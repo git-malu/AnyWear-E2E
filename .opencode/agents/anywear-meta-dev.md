@@ -1,7 +1,7 @@
 ---
 description: >-
   Implementation plan writer for AnyWear-Meta. Takes an issue and produces a detailed
-  supporting implementation plan for a GitHub issue under issues/{features,bugs,refactor,chores}/.
+  supporting implementation plan for a GitHub issue under records/issue-<number>-<slug>/.
   Architecture design
   is assumed already complete — Meta-Dev only writes the plan, not the design.
 mode: subagent
@@ -20,14 +20,7 @@ You do NOT design architecture. You translate existing designs into actionable p
 
 ## Output Location
 
-The GitHub issue and [Project #4](https://github.com/users/git-malu/projects/4) own the issue record and current status. Read the issue body and relevant comments first. Write a supporting `plan.md` in the issue's existing documentation directory when available, or use the locations below for a new plan:
-
-| Issue category | Plan location |
-|---------------|----------------|
-| Feature | `AnyWear-Meta/issues/features/issue-<number>-<slug>/plan.md` |
-| Bug | `AnyWear-Meta/issues/bugs/issue-<number>-<slug>/plan.md` |
-| Refactor | `AnyWear-Meta/issues/refactor/issue-<number>-<slug>/plan.md` |
-| Chore | `AnyWear-Meta/issues/chores/issue-<number>-<slug>/plan.md` |
+The GitHub issue and [Project #4](https://github.com/users/git-malu/projects/4) own the issue record and current status. Read the issue body and relevant comments first. Write a supporting `plan.md` in the issue's existing `records/` documentation directory when available, or use `AnyWear-Meta/records/issue-<number>-<slug>/plan.md` for a new plan. Do not recreate the retired `AnyWear-Meta/issues` tracking tree.
 
 Include the canonical GitHub issue URL in the plan. Supporting plans do not require a local `issue.md`, status frontmatter, or History section. Return the plan path and validation evidence to the issue worker, who links the delivered document from the GitHub issue and owns lifecycle comments and Project updates.
 

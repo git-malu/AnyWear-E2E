@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,11 +27,30 @@ class IntakeTests(unittest.TestCase):
         run.assert_not_called()
         prompt, request = output.getvalue().split("Request JSON:\n", 1)
         self.assertIn("kanban_manager", prompt)
-        self.assertIn("Status Backlog", prompt)
-        self.assertIn("Priority", prompt)
-        self.assertIn("dependencies", prompt)
-        self.assertIn("split", prompt)
+        self.assertIn("Issue Intake", prompt)
+        self.assertIn("Role Prompts", prompt)
+        self.assertIn((issue_creation.SKILL_SCRIPT.parent.parent / "SKILL.md").as_posix(), prompt)
         self.assertEqual(json.loads(request)["description"], description)
+
+    def test_entry_points_match_outside_the_repository(self):
+        scripts = [Path(devops.__file__), Path(issue_creation.__file__), issue_creation.SKILL_SCRIPT]
+        outputs = []
+        with tempfile.TemporaryDirectory() as directory:
+            for script in scripts:
+                with self.subTest(script=script):
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(script), "create", "--title", "Proposal",
+                         "--type", "chore", "--body", 'Quotes " and commands $(shell)',
+                         "--scope", "AnyWear-Meta"],
+                        cwd=directory, capture_output=True, encoding="utf-8", check=True,
+                    )
+                    outputs.append(result.stdout)
+                    self.assertEqual(result.stderr, "")
+                    request = json.loads(result.stdout.split("Request JSON:\n", 1)[1])
+                    self.assertEqual(request["type"], "chore")
+                    self.assertEqual(request["scope"], "AnyWear-Meta")
+            self.assertEqual(len(set(outputs)), 1)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_all_four_types_are_supported(self):
         for issue_type in issue_creation.ISSUE_TYPES:
