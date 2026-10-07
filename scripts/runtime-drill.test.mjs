@@ -218,7 +218,12 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
   ];
   const adapter = Object.fromEntries(names.map((name) => [name, async () => undefined]));
   adapter.createSyntheticAccount = async () => ({ owned: true });
-  adapter.runWardrobeApiFlow = async () => { throw new Error('synthetic adapter failure'); };
+  const operationFailure = new Error('sensitive adapter detail');
+  const restorationFailure = new Error('sensitive restoration detail');
+  const policyFailure = new Error('sensitive policy detail');
+  adapter.runWardrobeApiFlow = async () => { throw operationFailure; };
+  adapter.restoreNonPaidRuntime = async () => { throw restorationFailure; };
+  adapter.restoreRuntimeWindow = async () => { throw policyFailure; };
   adapter.cleanupOwnedResources = async ({ scope, marker }) => {
     cleaned = scope.owned === true && marker === executionEnvironment.RUNTIME_DRILL_ID;
   };
@@ -230,12 +235,53 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
       service: { source_commit: compatibility.service.sha, image_digest: `sha256:${'c'.repeat(64)}` },
     },
   };
-  await assert.rejects(executeRuntimeDrill(executionEnvironment, compatibility, adapter, {
+  const options = {
     fixtureReader: async () => ({ image_path: 'unused' }),
     preflightCollector: async () => preflight,
     fencingReader: async () => fencingCiFixture(compatibility.service.sha),
-  }), /synthetic adapter failure/);
+  };
+  const execute = () => executeRuntimeDrill(executionEnvironment, compatibility, adapter, options);
+  await assert.rejects(execute(), (error) => {
+    assert.equal(error.message,
+      'Runtime execution failed in: accepted wardrobe API flow; non-paid runtime restoration; admission-window restoration. Inspect available recovery artifacts before retrying.');
+    assert.doesNotMatch(error.message, /sensitive/);
+    assert.ok(error.cause instanceof AggregateError);
+    assert.deepEqual(error.cause.errors, [operationFailure, restorationFailure, policyFailure]);
+    return true;
+  });
   assert.equal(cleaned, true);
+
+  adapter.restoreNonPaidRuntime = async () => undefined;
+  adapter.restoreRuntimeWindow = async () => undefined;
+  for (const [hook, phase] of [
+    ['pauseRuntimeWindow', 'admission-window pause; run-owned resource cleanup'],
+    ['cleanupOwnedResources', 'run-owned resource cleanup'],
+  ]) {
+    const original = adapter[hook];
+    const failure = new Error('sensitive cleanup detail');
+    adapter[hook] = async () => { throw failure; };
+    await assert.rejects(execute(), (error) => {
+      assert.equal(error.message,
+        `Runtime execution failed in: accepted wardrobe API flow; ${phase}. Inspect available recovery artifacts before retrying.`);
+      assert.doesNotMatch(error.message, /sensitive/);
+      assert.equal(error.cause.errors[0], operationFailure);
+      assert.equal(error.cause.errors[1], failure);
+      return true;
+    });
+    adapter[hook] = original;
+  }
+
+  cleaned = false;
+  const creationFailure = new Error('sensitive identity detail');
+  adapter.createSyntheticAccount = async () => { throw creationFailure; };
+  await assert.rejects(execute(), (error) => {
+    assert.equal(error.message,
+      'Runtime execution failed in: synthetic account creation. Inspect available recovery artifacts before retrying.');
+    assert.equal(error.cause, creationFailure);
+    assert.doesNotMatch(error.message, /sensitive|artifact retained/);
+    return true;
+  });
+  assert.equal(cleaned, false);
 });
 
 test('runtime plan names bounded drills and cleanup controls', () => {
