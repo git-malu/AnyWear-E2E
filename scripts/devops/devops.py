@@ -1,134 +1,104 @@
 #!/usr/bin/env python3
-"""
-devops.py — AnyWear DevOps Pipeline CLI
-
-Thin entry point for the dispatcher-driven 3-stage development pipeline.
-There are no cron jobs, no polling scripts, no dual drivers — the kanban
-dispatcher owns the state machine. This script just creates the chain and
-shows status.
-
-Usage:
-    python scripts/devops/devops.py create --title "Dark mode" --type feature
-    python scripts/devops/devops.py status
-"""
+"""Compatibility CLI for GitHub Kanban intake and read-only Project status."""
 
 import argparse
+import collections
+import json
 import subprocess
 import sys
-import os
-import json
+from pathlib import Path
 
-SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-ANYWEAR_ROOT = os.path.abspath(os.path.join(SCRIPTS_DIR, "../.."))
+from issue_creation import PROJECT_URL, action_create, add_create_arguments
 
-OPENSOLVE_PROFILE = "opencode"
-QA_PROFILE = "anywear-qa"
-
-
-def run_hermes(args, timeout=30):
-    cmd = ["hermes"] + args
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-
-def count_cards(status=None, assignee=None):
-    """Count kanban cards matching criteria."""
-    cmd = ["kanban", "list", "--json"]
-    if status:
-        cmd += ["--status", status]
-    if assignee:
-        cmd += ["--assignee", assignee]
-    result = run_hermes(cmd, timeout=15)
-    if result.returncode != 0:
-        return 0
-    try:
-        return len(json.loads(result.stdout))
-    except json.JSONDecodeError:
-        return 0
+ANYWEAR_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ITEM_LIMIT = 1000
+PROJECT_CONTENT_TYPES = {"Issue", "PullRequest", "DraftIssue"}
 
 
 def cmd_create(args):
-    """Trigger issue creation (delegates to issue_creation.py)."""
-    script = os.path.join(SCRIPTS_DIR, "issue_creation.py")
-    cmd = [
-        sys.executable, script, "create",
-        "--title", args.title,
-        "--type", args.type or "feature",
-    ]
-    if args.body:
-        cmd += ["--body", args.body]
-    subprocess.run(cmd, cwd=ANYWEAR_ROOT)
+    return action_create(args)
 
 
 def cmd_status(args):
-    """Show pipeline status."""
-    print("\n" + "=" * 60)
-    print("  AnyWear DevOps Pipeline Status")
-    print("=" * 60)
+    """Read GitHub's Project data and preserve failures instead of reporting zero."""
+    command = [
+        "gh", "project", "item-list", "4", "--owner", "git-malu",
+        "--format", "json", "--limit", str(PROJECT_ITEM_LIMIT),
+    ]
+    try:
+        result = subprocess.run(
+            command, cwd=ANYWEAR_ROOT, capture_output=True,
+            text=True, encoding="utf-8", timeout=60,
+        )
+    except FileNotFoundError:
+        print("GitHub CLI (gh) is required for Project status.", file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired:
+        print("GitHub Project status request timed out after 60 seconds.", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"Cannot run GitHub CLI: {error}", file=sys.stderr)
+        return 1
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        print(f"GitHub Project status failed (exit {result.returncode}): {detail}", file=sys.stderr)
+        return result.returncode
 
-    # Check profiles
-    print("\n  Profiles:")
-    for profile in [OPENSOLVE_PROFILE, QA_PROFILE]:
-        result = run_hermes(["profile", "list"], timeout=10)
-        found = profile in result.stdout
-        mark = "✓" if found else "✗ (not found)"
-        print(f"    {profile}: {mark}")
+    try:
+        data = json.loads(result.stdout)
+        items = data["items"]
+        total = data["totalCount"]
+        if not isinstance(items, list) or not isinstance(total, int) or total < 0:
+            raise ValueError("expected an items list and non-negative totalCount")
+        for item in items:
+            if not isinstance(item, dict) or (
+                "status" in item and not isinstance(item["status"], (str, type(None)))
+            ):
+                raise ValueError("expected Project item objects with text Status values")
+            content = item.get("content")
+            if not isinstance(content, dict) or content.get("type") not in PROJECT_CONTENT_TYPES:
+                raise ValueError("expected content.type Issue, PullRequest, or DraftIssue")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        print(f"Invalid GitHub Project response: {error}", file=sys.stderr)
+        return 1
+    if total != len(items):
+        print(
+            f"Incomplete GitHub Project response: received {len(items)} of {total} items. "
+            "Use 'gh project item-list 4 --owner git-malu --format json --limit <total>' "
+            "to inspect the full board before coordinating work.",
+            file=sys.stderr,
+        )
+        return 1
 
-    # Check kanban board
-    print("\n  Kanban Board (board: anywear-dev):")
-    for status_name, label in [
-        ("todo", "  Gated (waiting on parent)"),
-        ("ready", "  Ready (dispatcher will claim)"),
-        ("running", "▶ In Progress"),
-        ("blocked", "⏸ Blocked (needs human)"),
-        ("done",   "✓ Done"),
-    ]:
-        count = count_cards(status=status_name)
-        print(f"    {label}: {count}")
-
-    # Show pipeline cards specifically
-    print("\n  Pipeline cards by assignee:")
-    for profile, label in [(OPENSOLVE_PROFILE, "opencode (solving)"), (QA_PROFILE, "anywear-qa (verification)")]:
-        total = count_cards(assignee=profile)
-        ready = count_cards(status="ready", assignee=profile)
-        running = count_cards(status="running", assignee=profile)
-        done = count_cards(status="done", assignee=profile)
-        print(f"    {label}: {total} total ({ready} ready, {running} running, {done} done)")
-
-    # Check gateway
-    print("\n  Gateway (dispatcher host):")
-    gw = run_hermes(["gateway", "status"], timeout=10)
-    if gw.returncode == 0:
-        print(f"    {gw.stdout.strip().split(chr(10))[0] if gw.stdout else 'unknown'}")
-    else:
-        print("    NOT RUNNING — start with: hermes gateway start")
-
-    print()
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="AnyWear DevOps Pipeline CLI"
+    content_counts = collections.Counter(item["content"]["type"] for item in items)
+    counts = collections.Counter(
+        item.get("status") or "Unset" for item in items
+        if item["content"]["type"] == "Issue"
     )
-    subp = parser.add_subparsers(dest="command")
+    print(f"AnyWear Kanban: {PROJECT_URL}")
+    print(f"Project items: {total}")
+    print(f"Kanban issues: {content_counts['Issue']}")
+    for status, count in sorted(counts.items()):
+        print(f"  {status}: {count}")
+    print(f"PR evidence items: {content_counts['PullRequest']}")
+    print(f"Draft items (not yet issues): {content_counts['DraftIssue']}")
+    return 0
 
-    create_parser = subp.add_parser("create", help="Create a new issue (Stage 1)")
-    create_parser.add_argument("--title", required=True, help="Issue title")
-    create_parser.add_argument("--type", default="feature",
-                               choices=["feature", "bug"], help="Issue type")
-    create_parser.add_argument("--body", help="Initial description")
 
-    subp.add_parser("status", help="Show pipeline and kanban board status")
-
-    args = parser.parse_args()
-
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command")
+    create = commands.add_parser("create", help="Print a kanban_manager intake prompt")
+    add_create_arguments(create)
+    commands.add_parser("status", help="Read issue stages and evidence counts from GitHub Project #4")
+    args = parser.parse_args(argv)
     if args.command == "create":
-        cmd_create(args)
-    elif args.command == "status":
-        cmd_status(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+        return cmd_create(args)
+    if args.command == "status":
+        return cmd_status(args)
+    parser.print_help()
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

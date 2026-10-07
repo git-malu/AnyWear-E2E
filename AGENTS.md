@@ -41,9 +41,11 @@ graph TD
 
 ## Workflow
 
-Use the [kanban-workflow skill](.agents/skills/kanban-workflow/SKILL.md) to handle issues on the [AnyWear Kanban board](AnyWear-Meta/issues/kanban.md).
+Use the [kanban-workflow skill](.agents/skills/kanban-workflow/SKILL.md) to create, coordinate, and execute [AnyWear GitHub Issues](https://github.com/git-malu/AnyWear/issues) on [GitHub Project #4](https://github.com/users/git-malu/projects/4). GitHub issue bodies/comments, Project Status/Priority, and native relationships own the operational record; Meta holds linked architecture, design, and historical documents.
 
-When a task names the `kanban_manager` role, coordinate the Kanban board and assign one `issue_worker` per issue. When a task names the `issue_worker` role, own that issue's complete lifecycle and delegate repository slices to `submodule_worker` agents. When a task names the `submodule_worker` role, stay within the assigned issue, repository, worktree, and scope and return evidence to the issue worker. Project-scoped custom agent files live under `.codex/agents/` and are automatically discovered by Codex.
+When a task names the `kanban_manager` role, handle intake (duplicates, relative priority, dependencies, scope/splitting, and resource coordination), schedule ready work, and assign one active `issue_worker` per issue. When a task names the `issue_worker` role, own that issue's complete lifecycle, project-local worktree, applicable gates, evidence, and verified GitHub closure; delegate repository slices to `submodule_worker` agents. When a task names the `submodule_worker` role, stay within the assigned issue, repository, absolute worktree path, and scope and return evidence to the issue worker. Apply the control loop at each scope. Project-scoped custom agent files live under `.codex/agents/` and are automatically discovered by Codex.
+
+Dependent execution waits for verified release conditions; ready independent issues can run concurrently with dedicated worktrees and coordinated shared resources. Agent-created issue worktrees default to the owning primary checkout's `.worktrees/issue-<number>-<slug>`; do not recursively create them under issue worktrees. PR merge alone does not complete an issue: preserve acceptance and cleanup evidence remotely, then verify Project Completed and native closed-as-completed state. New issue intake defaults to Backlog and does not start implementation unless requested.
 
 ## Subagent policy
 
