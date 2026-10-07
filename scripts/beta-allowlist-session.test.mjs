@@ -1,9 +1,36 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BetaAllowlistSession, buildBetaRecoveryManifest, restoreBetaSession } from '../tests/support/beta-allowlist-session.ts';
+
+const budgetEnvironment = [
+  'E2E_ACCOUNT_BUDGET_PATH', 'E2E_ACCOUNT_RUN_SCOPE', 'E2E_WORKERS',
+  'E2E_MAX_ACTIVE_ACCOUNTS', 'E2E_MAX_NEW_ACCOUNTS_PER_RUN', 'E2E_MAX_QUARANTINED_ACCOUNTS',
+];
+const originalEnvironment = new Map(budgetEnvironment.map((name) => [name, process.env[name]]));
+let budgetDirectory;
+
+beforeEach(async () => {
+  budgetDirectory = await mkdtemp(path.join(os.tmpdir(), 'anywear-allowlist-budget-'));
+  process.env.E2E_ACCOUNT_BUDGET_PATH = path.join(budgetDirectory, 'account-budget.json');
+  process.env.E2E_ACCOUNT_RUN_SCOPE = `test-${budgetDirectory.slice(-8)}`;
+  process.env.E2E_WORKERS = '1';
+  process.env.E2E_MAX_ACTIVE_ACCOUNTS = '1';
+  process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN = '2';
+  process.env.E2E_MAX_QUARANTINED_ACCOUNTS = '1';
+});
+
+afterEach(async () => {
+  for (const name of budgetEnvironment) {
+    const value = originalEnvironment.get(name);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  if (budgetDirectory) await rm(budgetDirectory, { recursive: true, force: true });
+  budgetDirectory = undefined;
+});
 
 function fixture({ suspended = true, failCleanup = false, failRestore = false, failIdentity = false } = {}) {
   const state = {

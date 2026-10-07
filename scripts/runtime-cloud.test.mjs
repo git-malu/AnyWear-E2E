@@ -57,7 +57,11 @@ for (const suspended of [false, true]) {
 
   test(`snapshot 150 interruption restores from last immutable artifact in a fresh run (suspended=${suspended})`, async (context) => {
     const h = runtimeCloudHarness({ suspended, originalUploadLimit: 150 });
-    await assert.rejects(h.execute(), /Mocked original snapshot upload exhausted/);
+    await assert.rejects(h.execute(), (error) => {
+      assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
+      assert.match(error.cause.message, /Mocked original snapshot upload exhausted/);
+      return true;
+    });
     assert.equal(h.uploads.length, 150);
     const record = parseRuntimeRecovery(h.uploads.at(-1).json);
     const recovery = h.makeAdapter({ ...h.environment, GITHUB_RUN_ID: '124' });
@@ -80,7 +84,11 @@ for (const suspended of [false, true]) {
 
   test(`durable artifact response loss still recovers exact helper proof in a fresh run (suspended=${suspended})`, async (context) => {
     const h = runtimeCloudHarness({ suspended, originalUploadResponseLossAt: 151 });
-    await assert.rejects(h.execute(), /durable snapshot upload response lost/);
+    await assert.rejects(h.execute(), (error) => {
+      assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
+      assert.match(error.cause.message, /durable snapshot upload response lost/);
+      return true;
+    });
     assert.equal(h.uploads.at(-1).name, 'beta-runtime-recovery-123-1-151');
     const record = parseRuntimeRecovery(h.uploads.at(-1).json);
     const before = h.uploads.length;
@@ -122,7 +130,11 @@ test('an awaited recovery upload failure prevents starting the next owned helper
 for (const boundary of ['retained-after-delete', 'post-delete-lookup-error', 'initially-absent-then-reappeared']) {
   test(`production recovery keeps Beta suspended without baseline restore on ${boundary}`, async () => {
     const h = runtimeCloudHarness({ originalUploadLimit: 150 });
-    await assert.rejects(h.execute(), /Mocked original snapshot upload exhausted/);
+    await assert.rejects(h.execute(), (error) => {
+      assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
+      assert.match(error.cause.message, /Mocked original snapshot upload exhausted/);
+      return true;
+    });
     const record = parseRuntimeRecovery(h.uploads.at(-1).json);
     const recovery = h.makeAdapter({ ...h.environment, GITHUB_RUN_ID: '126' });
     let lookups = 0;

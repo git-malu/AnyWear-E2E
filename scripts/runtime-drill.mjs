@@ -646,21 +646,29 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
   let scope;
   let result;
   let operationError;
+  let operationPhase = 'synthetic account creation';
   try {
     scope = await adapter.createSyntheticAccount({ config, marker: config.drillId, stack: preflight.stack, deployment: preflight.deployment });
     scope.deployment = preflight.deployment;
+    operationPhase = 'non-paid worker runtime setup';
     await adapter.prepareNonPaidRuntime({ scope, fixture: providerFixture });
+    operationPhase = 'accepted wardrobe API flow';
     const restart = await adapter.runWardrobeApiFlow({ scope, marker: config.drillId });
+    operationPhase = 'ECS replacement and restoration';
     const replacement = await adapter.replaceAndRestoreEcs({ stack: preflight.stack, scope, marker: config.drillId });
+    operationPhase = 'multi-replica SSE attribution';
     const replica = await adapter.captureReplicaAttribution({ scope, marker: config.drillId, replacement });
     if (!replica.distinct_replica_logs || !Array.isArray(replica.stream_task_arns)
       || new Set(replica.stream_task_arns).size < 2) {
       throw new Error('Runtime executor refused SSE evidence without two distinct request-attributed ECS replicas');
     }
+    operationPhase = 'runtime evidence verification';
     const restartEvidence = replacement.restart_evidence ?? restart;
     verifyRestartDrillEvidence(restartEvidence);
     verifyReplicaDrillEvidence(replica);
+    operationPhase = 'provider failure fixture';
     const failure = await adapter.runProviderFailureFixture({ scope, marker: config.drillId, fixture: providerFixture });
+    operationPhase = 'retry visibility and DLQ evidence';
     const retry = await adapter.collectRetryEvidence({ scope, marker: config.drillId, failure });
     verifyRetryDrillEvidence(retry);
     result = {
@@ -703,9 +711,19 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
     try { await adapter.restoreRuntimeWindow({ scope }); }
     catch (error) { policyRestorationError = error; }
   }
-  const errors = [operationError, pauseError, cleanupError, restorationError, policyRestorationError].filter(Boolean);
-  if (errors.length > 1) throw new AggregateError(errors, 'Runtime drill/cleanup/restoration failed; recovery artifact retained');
-  if (errors.length) throw errors[0];
+  const failures = [
+    operationError && operationPhase,
+    pauseError && 'admission-window pause',
+    cleanupError && 'run-owned resource cleanup',
+    restorationError && 'non-paid runtime restoration',
+    policyRestorationError && 'admission-window restoration',
+  ].filter(Boolean);
+  if (failures.length) {
+    const errors = [operationError, pauseError, cleanupError, restorationError, policyRestorationError].filter(Boolean);
+    const cause = errors.length === 1 ? errors[0] : new AggregateError(errors);
+    // Preserve internal causes for tests without printing provider responses or CLI argv.
+    throw new Error(`Runtime execution failed in: ${failures.join('; ')}. Inspect available recovery artifacts before retrying.`, { cause });
+  }
   result.runtime_control = scope.runtimeControl;
   result.window_control = { run_scope: scope.runScope, synthetic_owner: { sub: scope.subject, email: scope.email },
     restored: scope.runtimeWindow?.restored === true, phase: scope.runtimeWindow?.phase, write_ledger: scope.runtimeWindow?.write_ledger,
