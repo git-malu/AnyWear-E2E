@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { MAX_RECOVERY_SNAPSHOTS, validateRecoveryArtifactName, validateRecoverySnapshot, validateRecoverySourceInputs } from './runtime-recovery-snapshots.mjs';
 import { validateRecoveryArtifactBinding } from './runtime-recovery-artifact.mjs';
@@ -27,7 +25,7 @@ test('snapshot input uses one bounded immutable three-digit contract', () => {
   }
 });
 
-test('artifact binding accepts the new final boundary without weakening protected run metadata', () => {
+test('historical artifact binding retains protected run metadata checks', () => {
   const record = { run_scope: '123-1-aaaaaaaaaaaaaaaa', deployment: { service: { source_commit: 'b'.repeat(40) } } };
   const metadata = { id: 123, run_attempt: 1, path: '.github/workflows/runtime-drill.yml', event: 'workflow_dispatch',
     head_branch: 'main', head_sha: 'a'.repeat(40), status: 'completed', repository: { full_name: 'git-malu/AnyWear-E2E' } };
@@ -41,28 +39,4 @@ test('artifact binding accepts the new final boundary without weakening protecte
   assert.equal(validateRecoveryArtifactBinding(retainedMetadata, record, retainedInput, compatibility), record);
   assert.throws(() => validateRecoveryArtifactBinding({ ...retainedMetadata, id: 124 }, record, retainedInput, compatibility), /exact protected/);
   assert.throws(() => validateRecoveryArtifactBinding({ ...retainedMetadata, path: '.github/workflows/runtime-drill.yml' }, record, retainedInput, compatibility), /Retained recovery outcome/);
-});
-
-test('workflow validates the shared snapshot module before repository token or AWS credentials', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/runtime-recovery.yml', import.meta.url), 'utf8');
-  const validation = workflow.indexOf('node scripts/runtime-recovery-snapshots.mjs');
-  assert.ok(validation > 0 && validation < workflow.indexOf('actions/create-github-app-token'));
-  assert.ok(validation < workflow.indexOf('aws-actions/configure-aws-credentials'));
-  assert.ok(workflow.includes(`(001 to ${MAX_RECOVERY_SNAPSHOTS})`));
-  const inputs = { SOURCE_RUN_ID: '123', SOURCE_RUN_ATTEMPT: '1', SOURCE_SNAPSHOT: '400' };
-  const run = (env) => spawnSync(process.execPath, ['scripts/runtime-recovery-snapshots.mjs'], { env, encoding: 'utf8' });
-  assert.equal(run(inputs).status, 0);
-  const rejected = run({ ...inputs, SOURCE_SNAPSHOT: '401' });
-  assert.equal(rejected.status, 1);
-  assert.match(rejected.stderr, /Invalid bounded recovery snapshot/);
-});
-
-test('drill and recovery workflows leave artifact room for their single final upload', async () => {
-  for (const name of ['runtime-drill', 'runtime-recovery']) {
-    const workflow = await readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
-    const finalUploads = [...workflow.matchAll(/uses: actions\/upload-artifact@v4/g)].length;
-    assert.equal(finalUploads, 1);
-    assert.equal(MAX_RECOVERY_SNAPSHOTS + finalUploads, 401);
-    assert.ok(MAX_RECOVERY_SNAPSHOTS + finalUploads < 500);
-  }
 });

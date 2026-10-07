@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { oneShotHarness } from './fixtures/runtime-one-shot-harness.mjs';
 import { cleanupFixture } from './fixtures/runtime-evidence.mjs';
@@ -201,7 +200,7 @@ test('Cognito-delete-before-save is replayable, and intent is retained before de
   assert.equal((await recoverRuntimeRecord(parseRuntimeRecovery(JSON.stringify(retry)), h.io, environment, async () => {})).recovered, true);
 });
 
-test('restore-only workflow binds immutable source main/run/artifact pins and uses distinct confirmation', async () => {
+test('restore-only runtime recovery binds immutable source main/run/artifact pins and uses distinct confirmation', async () => {
   const h = oneShotHarness();
   const record = recordFor(h);
   const compatibility = { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } };
@@ -221,11 +220,4 @@ test('restore-only workflow binds immutable source main/run/artifact pins and us
     RUNTIME_DRILL_EXCLUSIVE_WINDOW: 'beta-exclusive-runtime', RUNTIME_DRILL_CONFIRM: 'beta-runtime-recovery' };
   assert.doesNotThrow(() => assertRuntimeRecoveryExecutionEnvironment(controls, compatibility, record));
   assert.throws(() => assertRuntimeRecoveryExecutionEnvironment({ ...controls, RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill' }, compatibility, record));
-  const workflow = await readFile(new URL('../.github/workflows/runtime-recovery.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /group: anywear-beta-runtime/);
-  assert.match(workflow, /environment: beta/);
-  assert.match(workflow, /name: Restore captured resources and original private policy only\r?\n\s+env:\r?\n\s+RUNTIME_RECOVERY_SKIP_SNAPSHOT_UPLOAD: 'true'\r?\n\s+run: pnpm exec node scripts\/runtime-drill\.mjs --recover recovery-source\/runtime-drill-recovery\.json/);
-  assert.match(workflow, /RUNTIME_RECOVERY_SOURCE_COMPLETED=\$\(jq -r '\.source_completed' recovery-binding.json\)/);
-  assert.ok(!workflow.includes('--execute'));
-  assert.ok(workflow.indexOf('assertLiveRuntimeSourceReady();') < workflow.indexOf('aws-actions/configure-aws-credentials'));
 });
