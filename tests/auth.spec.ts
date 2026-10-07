@@ -10,7 +10,7 @@ import {
 
 test.describe('Authentication Flow @smoke @full-stack', () => {
   test.skip(process.env.E2E_PUBLIC_REGISTRATION_OPEN !== 'true',
-    'Public registration is qualified by the controlled Beta allowlist suite when intake is closed');
+    'Public registration is normally closed in Beta; enable it explicitly to run this scenario');
   let account: TestAccount | undefined;
 
   test.beforeEach(async () => {

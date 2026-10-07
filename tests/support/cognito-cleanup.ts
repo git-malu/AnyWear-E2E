@@ -6,7 +6,7 @@ export interface CognitoCleanupIo {
 }
 
 export async function verifyCapturedCognitoIdentity(identity: CapturedIdentity, io: CognitoCleanupIo): Promise<string | undefined> {
-  if (!(/^(?:e2e-beta-allowlist-[1-9][0-9]*-[1-9][0-9]*-[a-f0-9]{16}-[a-z][a-z0-9]{0,23}|e2e-beta-worker-[0-7]-chromium)@anywear\.local$/.test(identity.email))
+  if (!(/^e2e-beta-worker-[0-7]-chromium@anywear\.local$/.test(identity.email))
     || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(identity.sub)) {
     throw new Error('Cognito cleanup requires a captured synthetic email and subject');
   }
