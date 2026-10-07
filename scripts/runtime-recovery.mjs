@@ -96,12 +96,14 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
     const captured = record.known_dlq_deletion_evidence;
     const operation = scope.oneShots.find((entry) => entry.task_arn === captured.extraction?.task_arn && entry.purpose === 'tester-cleanup');
     if (!operation) throw new Error('Saved DLQ deletion has no captured exact helper operation');
-    await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
+    await verifyOneShotTask(io, scope, operation,
+      { requireSuccess: false, allowRetainedProofForMissingTask: true });
     const { event } = await readOneShotLog(io, operation.proof, 'beta-tester-dlq-cleanup');
     scope.knownDLQDeletionEvidence = validateKnownDLQDeletionEvidence({ extraction: operation.proof, deletion: event }, scope);
   }
   const notStarted = await recoverOneShotRegistrations(io, scope);
-  await reconcilePendingPolicy(io, scope, notStarted);
+  await reconcilePendingPolicy(io, scope, notStarted,
+    { allowRetainedProofForMissingTask: true });
   await pauseRuntimeWindow(io, scope);
   // Saved completion flags are hints only. Reconstruct proof from exact helper logs after runner loss.
   scope.ownedCleanupCompleted = false;
@@ -120,7 +122,8 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
   for (const operation of scope.oneShots ?? []) {
     if (operation.purpose !== 'tester-cleanup' || !operation.task_arn
       || ![payload, cleanupPayload(scope, { original: true })].includes(operation.request_payload)) continue;
-    await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
+    await verifyOneShotTask(io, scope, operation,
+      { requireSuccess: false, allowRetainedProofForMissingTask: true });
     const original = operation.request_payload === cleanupPayload(scope, { original: true });
     try {
       scope.cleanupEvidence = await collectCleanupEvidence(io, original ? { ...scope, knownDLQDeletionEvidence: undefined } : scope,
@@ -162,6 +165,6 @@ export async function recoverRuntimeRecord(record, io, environment, waitStable) 
   if (io.saveRecovery) await io.saveRecovery(scope);
   await restoreNonPaidRuntime({ scope }, io, waitStable);
   await restoreRuntimeWindow(io, scope);
-  await cleanupOneShotDefinitions(io, scope);
+  await cleanupOneShotDefinitions(io, scope, { allowRetainedProofForMissingTask: true });
   return { recovered: true, run_scope: scope.runScope };
 }

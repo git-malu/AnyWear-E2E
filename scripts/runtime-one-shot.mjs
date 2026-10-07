@@ -117,13 +117,37 @@ async function validateDefinition(io, scope, operation, response) {
   return definition;
 }
 
-export async function verifyOneShotTask(io, scope, operation, { requireSuccess = true } = {}) {
+function validateRetainedTaskProof(scope, operation, { requireSuccess }) {
+  if (!scope.recoverySourceCompleted || !operation.proof
+    || !Number.isInteger(operation.exit_code) || typeof operation.completed !== 'boolean'
+    || operation.completed !== (operation.exit_code === 0)
+    || operation.proof.task_arn !== operation.task_arn
+    || operation.proof.task_definition_arn !== operation.task_definition_arn
+    || operation.proof.exit_code !== operation.exit_code) {
+    throw new Error('Retained one-shot proof is incomplete or inconsistent');
+  }
+  validateOneShotProof(operation.proof, scope, operation.purpose, operation.request_payload, operation.action,
+    { requireSuccess: false });
+  if (requireSuccess && operation.exit_code !== 0) throw new Error('Exact one-shot task image/revision/exit verification failed');
+}
+
+function isMissingTaskResponse(response, taskArn) {
+  return response?.tasks?.length === 0 && Array.isArray(response.failures) && response.failures.length === 1
+    && response.failures[0]?.arn === taskArn && response.failures[0]?.reason === 'MISSING';
+}
+
+export async function verifyOneShotTask(io, scope, operation,
+  { requireSuccess = true, allowRetainedProofForMissingTask = false } = {}) {
   if (!DEFINITION_ARN.test(operation.task_definition_arn ?? '') || !TASK_ARN.test(operation.task_arn ?? '')) {
     throw new Error('One-shot operation lacks exact Beta task/definition ownership metadata');
   }
   const definitionResult = await io.aws(['ecs', 'describe-task-definition', '--task-definition', operation.task_definition_arn, '--include', 'TAGS']);
   const definition = await validateDefinition(io, scope, operation, definitionResult);
   const described = await io.aws(['ecs', 'describe-tasks', '--cluster', scope.stack.cluster, '--tasks', operation.task_arn]);
+  if (allowRetainedProofForMissingTask && isMissingTaskResponse(described, operation.task_arn)) {
+    validateRetainedTaskProof(scope, operation, { requireSuccess });
+    return { task: undefined, definition, retainedProof: true };
+  }
   const task = described.tasks?.[0];
   const overrides = task?.overrides;
   const inertOverrides = overrides === undefined || isDeepStrictEqual(overrides, {})
@@ -246,12 +270,13 @@ export async function runOwnedOneShot(io, scope, purpose, action, payload, runne
   return { ...result, operation };
 }
 
-export async function cleanupOneShotDefinitions(io, scope) {
+export async function cleanupOneShotDefinitions(io, scope, { allowRetainedProofForMissingTask = false } = {}) {
   await recoverOneShotRegistrations(io, scope);
   for (const operation of scope.oneShots ?? []) {
     if (operation.deregistered) continue;
     if (!operation.task_definition_arn) throw new Error('One-shot registration response missing; tagged orphan recovery is required');
-    await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
+    await verifyOneShotTask(io, scope, operation,
+      { requireSuccess: false, allowRetainedProofForMissingTask });
     await deregisterOwnedDefinition(io, scope, operation);
     if (io.saveRecovery) await io.saveRecovery(scope);
   }

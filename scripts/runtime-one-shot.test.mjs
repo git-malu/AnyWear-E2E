@@ -158,3 +158,56 @@ test('actual tasks accept only absent or inert name-only override readback, neve
     await assert.rejects(verifyOneShotTask(h.io, h.scope, operation), /verification failed/);
   }
 });
+
+test('protected recovery may retain an exact terminal proof when ECS expires the stopped task', async () => {
+  const h = oneShotHarness();
+  const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
+  h.scope.recoverySourceCompleted = true;
+  const aws = h.io.aws;
+  h.io.aws = async (args) => args[1] === 'describe-tasks'
+    ? { tasks: [], failures: [{ arn: operation.task_arn, reason: 'MISSING' }] }
+    : aws(args);
+
+  await assert.rejects(verifyOneShotTask(h.io, h.scope, operation), /verification failed/);
+  const result = await verifyOneShotTask(h.io, h.scope, operation,
+    { requireSuccess: false, allowRetainedProofForMissingTask: true });
+  assert.equal(result.retainedProof, true);
+  assert.equal(result.task, undefined);
+});
+
+test('retained proof fallback stays fail-closed for source, proof, response, and success mismatches', async () => {
+  for (const mutate of [
+    (h) => { h.scope.recoverySourceCompleted = false; },
+    (h) => { h.operation.proof.exit_code = 1; },
+    (h) => { h.operation.completed = false; },
+    (h) => { h.operation.proof.task_arn = `${h.operation.task_arn.slice(0, -1)}f`; },
+    (h) => { h.missing = { tasks: [], failures: [{ arn: h.operation.task_arn, reason: 'ACCESS_DENIED' }] }; },
+    (h) => { h.missing = { tasks: [], failures: [] }; },
+  ]) {
+    const h = oneShotHarness();
+    const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
+    h.scope.recoverySourceCompleted = true;
+    h.operation = operation;
+    h.missing = { tasks: [], failures: [{ arn: operation.task_arn, reason: 'MISSING' }] };
+    mutate(h);
+    const aws = h.io.aws;
+    h.io.aws = async (args) => args[1] === 'describe-tasks' ? h.missing : aws(args);
+    await assert.rejects(verifyOneShotTask(h.io, h.scope, operation,
+      { requireSuccess: false, allowRetainedProofForMissingTask: true }));
+  }
+
+  const h = oneShotHarness();
+  const { operation } = await runOwnedOneShot(h.io, h.scope, 'task-audit', '', JSON.stringify(h.request), h.runner);
+  h.scope.recoverySourceCompleted = true;
+  operation.exit_code = 1;
+  operation.completed = false;
+  operation.proof.exit_code = 1;
+  const aws = h.io.aws;
+  h.io.aws = async (args) => args[1] === 'describe-tasks'
+    ? { tasks: [], failures: [{ arn: operation.task_arn, reason: 'MISSING' }] }
+    : aws(args);
+  await verifyOneShotTask(h.io, h.scope, operation,
+    { requireSuccess: false, allowRetainedProofForMissingTask: true });
+  await assert.rejects(verifyOneShotTask(h.io, h.scope, operation,
+    { requireSuccess: true, allowRetainedProofForMissingTask: true }), /verification failed/);
+});

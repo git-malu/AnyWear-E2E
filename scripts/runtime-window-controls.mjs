@@ -63,7 +63,8 @@ export async function guardRuntimeWindow(io, scope, { requireEmpty = false } = {
   return current;
 }
 
-export async function reconcilePendingPolicy(io, scope, notStarted) {
+export async function reconcilePendingPolicy(io, scope, notStarted,
+  { allowRetainedProofForMissingTask = false } = {}) {
   const intent = scope.runtimeWindow?.pending_write;
   if (!intent) return;
   if (intent.one_shot_index === undefined) {
@@ -96,7 +97,8 @@ export async function reconcilePendingPolicy(io, scope, notStarted) {
     if (io.saveRecovery) await io.saveRecovery(scope);
     return;
   }
-  await verifyOneShotTask(io, scope, operation, { requireSuccess: false });
+  await verifyOneShotTask(io, scope, operation,
+    { requireSuccess: false, allowRetainedProofForMissingTask });
   const after = await readRuntimePolicy(io);
   const deltas = intent.action === 'configure-testers' ? { intake_open: 0, tester_allowlist: 1, admission_suspended: 2 }
     : { intake_open: 0, tester_allowlist: 0, admission_suspended: 1 };
