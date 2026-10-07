@@ -152,3 +152,10 @@ playwright/.cache/
 runtime-drill-plan.json
 runtime-preflight.json
 runtime-drill-evidence.json
+
+# Immutable qualification inputs and authenticated observations
+.infra-source/
+.qualification-inputs/
+deployment-evidence*.json
+qualification-record.json
+recovery/

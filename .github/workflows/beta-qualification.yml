@@ -2,6 +2,11 @@ name: Beta Qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      writer_window_token:
+        description: Manager-recorded frozen Beta E2E writer window token
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,6 +32,15 @@ jobs:
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
+      ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
+      E2E_WRITER_WINDOW_TOKEN: ${{ inputs.writer_window_token }}
+      E2E_EXPECTED_WRITER_WINDOW_TOKEN: ${{ vars.E2E_WRITER_WINDOW_TOKEN }}
+      E2E_WRITER_SHA: ${{ vars.E2E_WRITER_SHA }}
+      E2E_WRITER_RUN_ID: ${{ vars.E2E_WRITER_RUN_ID }}
+      E2E_WRITER_RUN_ATTEMPT: ${{ vars.E2E_WRITER_RUN_ATTEMPT }}
+      E2E_WRITER_EXPIRES_AT: ${{ vars.E2E_WRITER_EXPIRES_AT }}
+      E2E_WRITER_RECORD_URL: ${{ vars.E2E_WRITER_RECORD_URL }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       E2E_WORKERS: 2
       E2E_MAX_ACTIVE_ACCOUNTS: 2
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
@@ -55,16 +69,51 @@ jobs:
       - name: Check E2E source and reviewed compatibility set
         run: pnpm check
 
-      - name: Verify deployed revisions
+      - name: Require Infra compatibility and allocated writer window
+        id: compatibility
+        run: |
+          node scripts/check-compatibility.mjs --require-infra
+          node scripts/writer-window.mjs
+          echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate immutable evidence read token
+        id: evidence-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            AnyWear-Infra
+            AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+
+      - name: Checkout exact reviewed Infra observation tools
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Infra
+          ref: ${{ steps.compatibility.outputs.infra_sha }}
+          path: .infra-source
+          token: ${{ steps.evidence-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify trusted deployment and immutable Service inputs
         env:
-          QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
-        run: pnpm qualification:collect
+          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+        run: node scripts/trusted-deployment-inputs.mjs
 
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
           aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Observe authenticated deployed tuple before suite
+        env:
+          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+          QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
+        run: pnpm qualification:collect
 
       - name: Generate Service cleanup token
         id: service-cleanup-token
@@ -92,13 +141,17 @@ jobs:
 
       - name: Run complete deployed Beta suite
         id: beta-suite
-        run: pnpm test
+        run: |
+          node scripts/writer-window.mjs
+          pnpm test
 
       - name: Clean up exact Beta worker identities
         if: ${{ always() && steps.beta-suite.outcome != 'skipped' && steps.service-cleanup-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.service-cleanup-token.outputs.token }}
-        run: pnpm accounts:cleanup-workers
+        run: |
+          node scripts/writer-window.mjs
+          pnpm accounts:cleanup-workers
 
       - name: Preserve Beta suite failure
         if: ${{ always() && steps.beta-suite.outcome == 'failure' }}
@@ -106,6 +159,7 @@ jobs:
 
       - name: Confirm deployed identities remained stable
         env:
+          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
           QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
@@ -121,10 +175,13 @@ jobs:
         with:
           name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            .qualification-inputs/deployment-record.json
+            .qualification-inputs/service-artifacts.json
             deployment-evidence-before.json
             deployment-evidence.json
             qualification-record.json
           retention-days: 90
+          include-hidden-files: true
           if-no-files-found: error
 
       - name: Upload Playwright diagnostics
@@ -132,7 +189,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: beta-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-results/account-budget.json
+          path: |
+            test-results/account-budget.json
+            test-results/service-cleanup-run.json
           if-no-files-found: ignore
 
       - name: Upload failed-test screenshots
