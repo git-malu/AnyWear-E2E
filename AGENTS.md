@@ -35,7 +35,7 @@ shell root.
 
 ## Test Design
 
-- Tag stable critical paths with `@smoke` and all local system tests with
+- Tag stable critical paths with `@smoke` and all cross-repository scenarios with
   `@full-stack`.
 - Generate unique users and records per test so parallel execution is safe.
 - Clean up every cloud resource created by a test in teardown, even after a
@@ -48,6 +48,14 @@ shell root.
 - Treat `compatibility.json` as the system-test compatibility contract. Use only
   full Client and Service commit SHAs that exist on their remotes; never use a
   mutable branch or tag.
+- For release qualification, record the full intended Client, Service, and E2E
+  SHAs and verify that the target environment serves those Client and Service
+  revisions through Client `build-metadata.json` and Service `/health`. Recheck
+  both identities and the Service image digest after the suite; a mismatch or
+  deployment change cannot qualify the release. Preserve the observed runtime
+  revisions, image digest, environment endpoints, and qualification run/artifact
+  links together with the intended SHAs in the release evidence. Checking out
+  pinned source alone does not prove the deployed system ran it.
 - The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
   execution for beta and later stages; it must not target dev. The Beta Qualification
   workflow owns the complete deployed suite and release evidence. The AnyWear shell
