@@ -1,10 +1,10 @@
 # GitHub Operations
 
-Use this reference for intake, remote transitions, relationship updates, Project configuration, and resumable evidence. The main skill defines ownership and gates.
+Use this reference for GitHub intake, mutations, release coordination, recovery, and evidence. The main skill owns roles, gates, dependencies, worktree allocation, and closure criteria.
 
 ## Discovery and Intake
 
-The issue home is `git-malu/AnyWear`; the operational Project is user `git-malu`, number `4`. Discover IDs and options from the live Project instead of hardcoding them. Issue mutations need repository access; Project reads need `read:project`, and writes need `project` for classic CLI tokens. Check effective access, not only the token's displayed scopes.
+The repository is `git-malu/AnyWear`; the operational Project is user `git-malu`, number `4`. Discover live IDs and options. Issue mutations need repository access; Project reads need `read:project`, and writes need `project` for classic CLI tokens. Check effective access, paginate where limits hide work, and include closed issues in duplicate checks.
 
 ```powershell
 gh auth status
@@ -18,74 +18,55 @@ gh api --paginate repos/git-malu/AnyWear/issues/47/dependencies/blocking
 gh api --paginate repos/git-malu/AnyWear/issues/47/sub_issues
 ```
 
-Verify coverage against returned totals; use pagination if a limit excludes relevant work. Include closed issues in duplicate/supersession checks, but distinguish historical outcomes from active work.
-
-Prepare exact multiline bodies/comments in a temporary file using normal file-edit tools, then pass `--body-file`. Do not embed long text in shell quoting. A useful issue body is:
+Prepare multiline bodies/comments in a temporary file and pass `--body-file`. A useful body contains:
 
 ```markdown
-## Goal
-<one bounded, verifiable result>
-
-## Scope
-<affected repositories, boundaries, technical constraints>
-
+## Goal and Scope
+<bounded result, affected repositories, constraints>
 ## Acceptance Criteria
 - [ ] <observable outcome>
-
 ## Coordination
-<priority rationale, split/grouping decision, resource/integration constraints>
-<dependency issue URL, affected work, release condition, expected evidence>
-<future revisions may be pending; pin an available exact revision at verified handoff>
-
+<priority rationale, splits, dependencies and artifact/lifecycle release condition>
 ## Validation and Delivery
-<applicable checks/environments and justified Not Applicable gates>
-<stable links to larger Meta design documents>
+<checks, justified N/A gates, deployment triggers/compatibility/recovery, Meta links>
 ```
 
 ```powershell
-gh issue create --repo git-malu/AnyWear --title 'Refactor: <bounded result>' --label refactor --label kanban --body-file '<body-file>'
+gh issue create --repo git-malu/AnyWear --title 'Refactor: <result>' --label refactor --label kanban --body-file '<body-file>'
 gh project item-add 4 --owner git-malu --url '<issue-url>' --format json
 gh project item-edit --id '<item-id>' --project-id '<project-id>' --field-id '<status-field-id>' --single-select-option-id '<Backlog-option-id>'
 gh project item-edit --id '<item-id>' --project-id '<project-id>' --field-id '<priority-field-id>' --single-select-option-id '<priority-option-id>'
 ```
 
-Do not create another issue after an uncertain response: search for the new title/body and creation comment first. If issue creation succeeds but adding fields or relationships fails, complete the existing issue's intake and report the unfinished step.
+After uncertain creation, search title/body before retrying. If fields or relationships failed after creation, finish intake on the existing issue and report the incomplete step.
 
-For dependencies, obtain the prerequisite's numeric REST issue ID (different from its number and GraphQL node ID). To record that issue 48 is blocked by issue 47:
+Native dependency endpoints require the prerequisite's numeric REST ID, not its number or GraphQL node ID:
 
 ```powershell
 gh api repos/git-malu/AnyWear/issues/47 --jq .id
-gh api --method POST repos/git-malu/AnyWear/issues/48/dependencies/blocked_by -F 'issue_id=<numeric-issue-id-of-47>'
-gh api --method DELETE 'repos/git-malu/AnyWear/issues/48/dependencies/blocked_by/<numeric-issue-id-of-47>'
+gh api --method POST repos/git-malu/AnyWear/issues/48/dependencies/blocked_by -F 'issue_id=<numeric-id-of-47>'
+gh api --method DELETE 'repos/git-malu/AnyWear/issues/48/dependencies/blocked_by/<numeric-id-of-47>'
 ```
 
-Use DELETE only after the recorded release condition is verified; read back both sides. To add a child, use `POST repos/git-malu/AnyWear/issues/<parent-number>/sub_issues` with `-F 'sub_issue_id=<numeric-child-issue-id>'`. Check existing native relationships before mutation. If the deployment/account lacks native relation support, record the precise access/API blocker and request coordination rather than silently treating prose as a successful native update.
+Read both sides before/after relationship changes. Add a child with `POST repos/git-malu/AnyWear/issues/<parent-number>/sub_issues` and `-F 'sub_issue_id=<numeric-child-id>'`. Remove an artifact blocker after producer revision availability/checks; consumer acceptance follows separately. Remove a lifecycle blocker after the prerequisite's verified Completed/closed-as-completed pair. Preserve recorded conditions: an absent native blocker does not establish input release. Unsupported native relations require an explicit access/API blocker and coordination.
 
 ## Remote Read-Back and Partial Updates
 
-Project membership and fields belong to the **Project item**, not the Project object. A GraphQL read-back can use:
+Fields belong to the Project item. Read the issue's item, not just Project metadata:
 
 ```graphql
 query {
   repository(owner: "git-malu", name: "AnyWear") {
     issue(number: 47) {
-      url
-      state
-      stateReason
+      url state stateReason
       projectItems(first: 100, includeArchived: true) {
         pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          isArchived
-          project { id number url }
+        nodes { id isArchived project { id number url }
           fieldValues(first: 100) {
             pageInfo { hasNextPage endCursor }
-            nodes {
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                name
-                field { ... on ProjectV2SingleSelectField { id name } }
-              }
-            }
+            nodes { ... on ProjectV2ItemFieldSingleSelectValue {
+              name field { ... on ProjectV2SingleSelectField { id name } }
+            } }
           }
         }
       }
@@ -94,77 +75,77 @@ query {
 }
 ```
 
-Select Project #4's item, then verify Status/Priority, `isArchived`, and the expected open/closed state. Include archived items when recovering cancellation or reopening; an archived card is not missing membership. Do not accidentally update another Project's item. For additional pages, follow GraphQL cursors. Use `gh api repos/git-malu/AnyWear/issues/<number> --jq '{state,state_reason}'` to verify native closure reason.
+Select Project #4's item; verify Status, Priority, archive state, and issue state. Follow cursors for additional pages. Native closure reason is also available with `gh api repos/git-malu/AnyWear/issues/<number> --jq '{state,state_reason}'`. Archived membership is not missing membership.
 
-A transition is a recoverable operation:
+For each transition: read current scope, evidence, authorized claim/transfer, relations, and state; append an identifiable operation comment; mutate intended records; read back and correct mismatches before advancing. After interruption, reuse that comment and retry only missing steps. Do not duplicate evidence, worktrees, or workers.
 
-1. Read body, latest comments, stage/state, relationships, owner/worktree record, and relevant evidence. For a new owner, claim the issue with an identifiable agent/session and read back the latest claims; an existing active owner must be reconciled before work starts. A shared GitHub assignee alone does not distinguish multiple agent owners.
-2. Record an identifiable evidence comment describing the gate result and intended transition, for example `Operation: issue-47-testing-to-deployment-<revision>`. Keep this key when recovering an interrupted operation.
-3. Update the intended Project field/relationship/state. Read it back. Correct mismatches before executing work in the next stage; append a correction if the earlier comment's intended result did not occur.
-4. After a timeout or interruption, find the existing operation comment and compare remote records with the intended result. Retry only missing steps. Do not repost evidence, allocate another worktree, or start a second worker by default.
+Final acceptance/cleanup evidence precedes close mutations. If Status changed but closing failed, restore Pending Closure where possible and retry. If close succeeded with wrong Status, repair only that field. Success is `Status=Completed`, `state=CLOSED`, `stateReason=COMPLETED` verified together.
 
-Closing requires the final acceptance/cleanup comment to exist before `Completed` and close mutations. If Status changed but closing failed, restore Pending Closure where possible and retry after inspecting native state. If closing succeeded but Status is wrong, repair that field without redoing delivery/cleanup. Never claim success until the verified pair is `Status=Completed`, `state=CLOSED`, `stateReason=COMPLETED`.
+## Ownership and Unresponsive Workers
+
+The initial claim records owner/session, UTC time, `Transfer: 0`, assigning manager/human, scope, Git/platform worktree origin/path, repository branches/Git writers, and resource/deployment writers. Reconcile existing manager/allocation records and competing claims before mutation; comments are assignment evidence, not atomic locks. Resuming owners read the current claim and stop if superseded. Later records link unchanged facts.
+
+1. Inventory owner/children, processes, worktrees, Git state, Actions/deployments, and resources. Record a stop request with an acknowledgment deadline; expiry triggers investigation, not takeover.
+2. Ask reachable workers to stop mutations and report jobs/resources. Verify cessation using acknowledgments plus runtime evidence; acknowledgment alone does not stop external jobs.
+3. For an unresponsive worker, inspect session/process termination, Git locks, jobs, and resource use. Record stopped, finished, running, and unknown scopes. Timeout, quiet comments, or an absent lock do not prove cessation; never remove locks or terminate unrelated processes to manufacture it.
+4. After every conflicting writer is verified stopped, the manager (or assigning human) records the next numbered transfer, retained work/resources, evidence, and resume stage. The incoming owner reads it back and revalidates revisions, Git state, dependencies, and resources.
+5. Preserve unknown/running scopes and dirty/unpushed work; prohibit conflicting writes/cleanup and escalate. The active manager may record protective suspension and set Escalation with the prior resume stage, then read back. This is not execution transfer or proof jobs stopped. A returning worker checks suspension before resuming. Without a manager, the assigning human coordinates intervention. GitHub failure leaves the scene preserved and remote transfer unverified.
+
+## Release Coordination
+
+Inspect actual pipeline triggers during Analysis. Record environment/deployment writer, intended and current versions, rollout order, intermediate compatibility, and recovery. A deploying merge needs applicable checks and authorization before merge; PR checks alone do not prove compatibility with the running peer.
+
+Prefer additive Service -> published API -> Client rollout -> actual pair qualification -> later retirement. Keep supported old consumers functional, including installed clients after web rollout. Removal needs migration evidence or a versioned boundary; incompatible transitions need explicitly authorized interruption and recovery conditions.
+
+For Beta and later stages, record intended full Client/Service SHAs, AnyWear-E2E revision/compatibility inputs, run links, and observed deployed versions from runtime provenance or deployment metadata. Verify identities match; otherwise the gate remains unfinished. Requalify changed inputs. Mocked browser checks/local smoke do not substitute for this evidence.
 
 ## Evidence Comments
 
-Use concise records suited to the actual transition; these examples show the needed information, not mandatory boilerplate.
+Record only changed facts and decision evidence; reference earlier records for unchanged facts. These three examples are adaptable, not mandatory forms:
 
 ```text
-Operation: issue-47-analysis-to-development-<revision>
-Owner: <agent/session>; Worktree: <absolute path>; Branches: <repository -> branch>
-Gate: scope/design and dependency readiness verified; intended Analysis -> Development.
-Acceptance: <body criteria>; Validation: <checks>; Deployment/runtime E2E: N/A, process-only.
-Resources: <allocated or coordinated>; Evidence: <document/commit links>.
+Operation: <unique key>; Owner/claim/transfer: <reference>; Intended: <from -> to>.
+Gate/result: <condition>; Evidence: <PRs/revisions/checks/deployments>; N/A: <rationale>.
+For final closure: acceptance, release obligations, repository/resource reconciliation,
+cleanup inventory/origin/method/result <links>; intended Completed/closed-as-completed.
 ```
 
 ```text
-Handoff: A -> B; release condition: <narrow deliverable, or A Completed>.
-Revision: <producer commit/API/document version>; Availability: <remote link>.
-Verification: <check result>; Consumer incorporated: <consumer revision/check>.
-Native blocking relation: <retained until completion, or released after this condition>.
+Producer release A -> B: <condition>; immutable revision/availability/checks: <links>.
+Blocker: <artifact released/read back, or lifecycle Completed pair verified>.
+Consumer acceptance on B: <pending, or pinned revision and behavior/check results>.
+When deploying: <environment/writer/order/compatibility/recovery>; intended Client/Service/E2E
+revisions, observed versions and qualification: <links>.
 ```
 
 ```text
-Handoff invalidated: <revision> because <concrete failing condition>.
-Affected: <issue URLs, work/tests>; owners/manager notified; suspension requested.
-Blocking relation: <manager reconciliation>; Consumer acknowledgment: <pending or evidence>.
-In-flight deployments: <owner-verified state/results and required remediation>.
-Suspension confirmed only for: <acknowledged scopes>; replacement/revalidation: <conditions>.
+Claim/recovery: <owner/session, UTC, assigning authority, transfer, scope/worktree/resources or prior link>.
+Reason: <stop/blocker/cancellation/reopening/invalidation>; related issue/evidence: <links>.
+Cessation: <session/process/lock/job/resource observations; stopped/finished/running/unknown>.
+Decision: <authorized transfer or protective suspension>; retained work/resources: <paths>.
+Resume: <stage, required human action/revalidation>; new owner/transfer: <if authorized>.
 ```
 
-```text
-Escalation from Testing: <blocker>; required human action: <decision/access>.
-Owner: <agent/session>; Worktree/branches/PRs: <paths and links>.
-Children: <stopped/acknowledged>; Resources: <retained/released>.
-Remaining gates: <checks>; resume at Testing after <condition and revalidation>.
+Post comments and verify the returned record. Use these mutation commands after the required evidence:
+
+```powershell
+gh issue comment <number> --repo git-malu/AnyWear --body-file '<comment-file>'
+gh issue close <number> --repo git-malu/AnyWear --reason completed
+gh issue close <number> --repo git-malu/AnyWear --reason 'not planned'
+gh issue close <number> --repo git-malu/AnyWear --duplicate-of '<canonical-url>'
+gh issue reopen <number> --repo git-malu/AnyWear
+gh project item-edit --id '<item-id>' --project-id '<project-id>' --field-id '<status-field-id>' --clear
+gh project item-archive 4 --owner git-malu --id '<item-id>'
+gh project item-archive 4 --owner git-malu --id '<item-id>' --undo
 ```
 
-```text
-Reopened: <failed criterion or new evidence>; intended stage: Testing.
-Existing delivery: <revisions/PRs>; workspace: <reuse/new after prior cleanup>.
-Affected handoffs: <invalidated inputs or still-valid pinned revisions>.
-Required repair/reverification: <scope>; owner/manager coordination: <decision>.
-```
+Cancellation/duplicate: record reason/replacement, verify child cessation, preserve or explicitly dispose of changes, and reconcile dependencies/resources/worktrees. Close as not planned or native duplicate, clear Status, and archive. Verify close reason, cleared Status, links, and `isArchived=true`.
 
-```text
-Acceptance verified: <criteria, PRs/revisions, check/deployment links, N/A rationale>.
-Downstream handoffs: <conditions and revisions>; repository/base reconciliation: <results>.
-Cleanup: <absolute worktree removed and metadata pruned; resources released>.
-Final intent: Pending Closure -> Completed; close as completed; verify remote pair.
-```
-
-```text
-Cancelled/duplicate: <reason>; canonical or replacement issue: <URL>.
-Children stopped; outstanding changes preserved/disposed by <recorded decision>.
-Dependencies/resources/worktree reconciled: <evidence>; cancel as not planned or use native duplicate closure.
-Clear lifecycle Status and archive Project item; this does not assert successful delivery.
-```
-
-Use `gh issue comment <number> --repo git-malu/AnyWear --body-file '<comment-file>'` and verify the returned comment. For cancellation, `gh issue close <number> --repo git-malu/AnyWear --reason 'not planned'`; for duplication, use `--duplicate-of '<canonical-issue-url>'`; for delivery, use `--reason completed`. Reopen with `gh issue reopen`. Clear cancellation/duplicate Status with `gh project item-edit --id '<item-id>' --project-id '<project-id>' --field-id '<status-field-id>' --clear` and archive with `gh project item-archive 4 --owner git-malu --id '<item-id>'`. Preserve history and membership; unarchive with `--undo` when restoring an archived operational issue. Read back archived-inclusive membership and `isArchived=true` after cancellation or `isArchived=false` with open state/intended stage after reopening. After a timeout, inspect these results before repeating archive/unarchive or adding membership.
+Reopening: comment failed criterion/new evidence, reopen, unarchive the retained item (add only if absent), and restore the earliest affected stage. Verify open state, stage, `isArchived=false`; revalidate affected handoffs and reuse a retained workspace or allocate after prior cleanup. Reopening alone does not invalidate pinned inputs. Inspect outcomes before retrying any timed-out mutation.
 
 ## Worktree Cleanup Inventory
 
-Before removing an issue worktree, list its initialized submodules and run these inventories in the root and each initialized/nested repository:
+Inspect the root and every initialized/nested repository:
 
 ```powershell
 git -C '<issue-root>' submodule status --recursive
@@ -173,63 +154,47 @@ git -C '<repository-path>' ls-files --others --exclude-standard
 git -C '<repository-path>' ls-files --others --ignored --exclude-standard
 ```
 
-The two `ls-files` commands distinguish untracked non-ignored files from ignored files. Root inventory does not substitute for checking submodules. Classify artifacts as needed or disposable; preserve needed files outside the entire tree being removed, then verify the preserved files are readable and match the originals (compare content or hashes as appropriate). Record the inventory decisions and preservation locations in cleanup evidence before removal. A clean status or merged PR does not establish that ignored reports, local configuration, or other artifacts can be discarded. Keep the main skill's dirty/unpushed-work, ownership, and minimum-force safeguards.
+Classify artifacts as needed/disposable. Preserve needed files outside the removable tree and verify content/hashes before removal; record decisions and locations. Clean status/merged PR does not prove ignored reports/configuration are disposable.
 
-## Project Configuration and Legacy Migration
+Remove agent-created Git worktrees with `git worktree remove <absolute-path>` from the owning base checkout, then prune stale metadata; never delete the directory directly. Initialized submodules may require force even when clean: first check every repository for dirty/unpushed work, ownership, and remote/artifact preservation, then use minimum necessary force. Never force past locks or data loss. Platform-managed worktrees use the platform lifecycle; unavailable cleanup remains unfinished. Verify and record cleanup from a surviving checkout.
 
-- Inspect the live field options, views, and built-in/custom workflows. Keep exact Status options from the main skill and reuse Priority/native fields. Preserve existing IDs where possible when editing options; re-read all affected cards afterward.
-- Use an issue-only primary board (`is:issue`), grouped by Status and ordered by Priority; keep PR evidence/review cards in a separate view. Verify native assignees, labels, parent/sub-issue progress, and dependency information can be inspected without duplicating fields.
-- Audit automations for item closed, PR linked/merged, auto-close, and auto-archive. Disable or adjust triggers that can prematurely close lifecycle issues or set Completed. Configuration UI may be required when CLI/public API cannot expose the setting; absence from an API response is not evidence that an automation is disabled.
-- Inspect existing Ready/Design/Review/Done records against their actual evidence. Readiness is a scheduling condition; review is a PR gate. Do not mechanically promote Done to Completed when cleanup/acceptance cannot be verified.
-- Distinguish retained historical owner completion from a new verified closure. Record its provenance and missing historical evidence; never assert that current gates were retroactively verified or rerun.
-- Reconcile each actionable legacy record to one canonical GitHub issue and Project item, preserving goal, scope, acceptance, priority, native parent/dependency relations, historical evidence, and stable source references. Reuse matching GitHub issues; supporting designs/checklists stay in Meta as linked documents. Keep a migration mapping for auditability, not as a second live tracker.
-- After verifying migration coverage, remove the retired local tracking tree and replace operational links with GitHub URLs. Preserve useful supplementary designs/evidence under Meta `records/`, accepted contracts under `architecture/`, and original tracking history through immutable Git revisions and the migration map. Publish an annotated migration tag on the delivered commit. Verify coverage, duplicates, link resolution, and stage/open-state consistency; do not recreate `AnyWear-Meta/issues` as a fallback tracker.
+## Project Configuration
+
+Inspect fields, views, and automations. Preserve existing IDs; use the skill's exact Status options and native fields, re-reading affected cards. Keep an issue-only primary board grouped by Status/ordered by Priority, with PR evidence in a separate view. Disable or adjust item-close, PR-link/merge, auto-close, and archive triggers that can complete issues prematurely. Use configuration UI when API/CLI visibility is insufficient; absence from an API response proves nothing about a trigger.
+
+Historical migration provenance and canonical identities live in [Meta's records](../../../../AnyWear-Meta/records/README.md) and [migration map](../../../../AnyWear-Meta/records/kanban-migration/migration-map.json). Retained historical completion must not be described as newly verified acceptance/cleanup.
+
+## Workflow Simulation Checks
+
+Dry-run these fixtures without creating issues, deploying, terminating processes, or removing worktrees. Unknown scopes require preservation and escalation.
+
+| Fixture | Required result |
+| --- | --- |
+| Intake timeout finds issue without Project membership | Reuse it; finish Backlog/Priority/relations and read back; return URL without implementation/worktree. |
+| Service auto-deploys Beta; Client is manual; producer artifact ready | Check old-consumer compatibility before merge; release artifact blocker; consumer pins/validates afterward. Lifecycle variant waits for Completed pair. Qualify actual runtime pair. |
+| Owner/child disappears with ignored report/unpushed API commit | Verified stopped scopes permit numbered transfer; unknown/running scopes prohibit writes/cleanup and allow protective Escalation. Preserve work; cleanup later uses recorded origin. |
+| Acceptance/cleanup passed; field/close times out | Read back: Completed+CLOSED+COMPLETED is done; Completed+OPEN restores Pending Closure then retries; CLOSED+COMPLETED with wrong Status repairs Status only. Reuse evidence; lifecycle release follows verified pair. |
+
+Verify referenced links/anchors and role authority remain consistent. Fixtures validate the contract, not runtime releases.
 
 ## Role Prompts
 
-The optional [intake helper](../scripts/issue_creation.py) assembles a request for the manager using this reference and the skill's Issue Intake section. From the root checkout:
+The optional [intake helper](../scripts/issue_creation.py) assembles manager requests:
 
 ```powershell
-python .agents/skills/kanban-workflow/scripts/issue_creation.py create --title 'Refactor: <bounded result>' --type refactor --body-file proposal.md
+python .agents/skills/kanban-workflow/scripts/issue_creation.py create --title 'Refactor: <result>' --type refactor --body-file proposal.md
 ```
 
-Intake:
-
 ```text
-Use the kanban_manager role.
-Create or triage an AnyWear issue for: <request>.
-Inspect existing issues and Project #4 for duplicates, scope, relative priority,
-dependencies, split suitability, and shared-resource conflicts. Use native fields
-and relationships. Add new issues in Backlog, verify remote records, and return
-issue URLs and coordination decisions. Begin execution only when requested.
-```
+Use kanban_manager. Triage <request> against Project #4: duplicates, priority, dependencies,
+splits/resources. Add new issues in Backlog, verify records, return URLs/decisions. Start only
+when requested. For board execution, assign one issue_worker per ready issue and reconcile handoffs.
 
-Board coordination:
+Use issue_worker. Issue: <URL>. Own current stage through closure/escalation; verify claim,
+worktree/gates; delegate slices, integrate evidence, record cleanup/closure. Return state,
+PRs/revisions/checks, delivery/cleanup, and blockers.
 
-```text
-Use the kanban_manager role.
-Coordinate Project #4 intake, readiness and verified handoffs, concurrent ready
-issues, worker assignments, shared resources, and board reconciliation.
-Delegate one issue_worker per issue with explicit ownership and stopping conditions.
-```
-
-Issue execution:
-
-```text
-Use the issue_worker role. Issue: <GitHub issue URL>.
-Own its current stage through closure or escalation. Verify readiness and ownership,
-allocate/reuse its project-local worktree, delegate repository slices, integrate
-evidence, satisfy applicable gates, and record cleanup before final remote closure.
-Return stage/state, PRs, checks, delivery/cleanup evidence, and outstanding blockers.
-```
-
-Repository slice:
-
-```text
-Use the submodule_worker role. Issue: <GitHub issue URL>.
-Repository: <name>. Worktree: <absolute repository path>.
-Scope: <owned files/outcome>. Evidence: <commits/PRs/checks/handoff revisions>.
-Stop at: <verified deliverable or blocker>. You are not alone: preserve other owners'
-changes. Return evidence to the issue worker; do not change lifecycle records or
-remove shared worktrees.
+Use submodule_worker. Issue: <URL>; repository/worktree: <absolute path>; scope: <outcome>;
+stop at: <deliverable/blocker>. Preserve other owners' changes. Return commits/PRs/checks/
+handoff revision; do not mutate lifecycle records or remove shared worktrees.
 ```
