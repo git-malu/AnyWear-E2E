@@ -183,9 +183,15 @@ The two `ls-files` commands distinguish untracked non-ignored files from ignored
 - Inspect existing Ready/Design/Review/Done records against their actual evidence. Readiness is a scheduling condition; review is a PR gate. Do not mechanically promote Done to Completed when cleanup/acceptance cannot be verified.
 - Distinguish retained historical owner completion from a new verified closure. Record its provenance and missing historical evidence; never assert that current gates were retroactively verified or rerun.
 - Reconcile each actionable legacy record to one canonical GitHub issue and Project item, preserving goal, scope, acceptance, priority, native parent/dependency relations, historical evidence, and stable source references. Reuse matching GitHub issues; supporting designs/checklists stay in Meta as linked documents. Keep a migration mapping for auditability, not as a second live tracker.
-- Mark legacy tracking files as historical and replace operational links with GitHub URLs. Preserve useful architecture/design/history. Verify coverage, duplicates, link resolution, and stage/open-state consistency after migration.
+- After verifying migration coverage, remove the retired local tracking tree and replace operational links with GitHub URLs. Preserve useful supplementary designs/evidence under Meta `records/`, accepted contracts under `architecture/`, and original tracking history through immutable Git revisions and the migration map. Publish an annotated migration tag on the delivered commit. Verify coverage, duplicates, link resolution, and stage/open-state consistency; do not recreate `AnyWear-Meta/issues` as a fallback tracker.
 
 ## Role Prompts
+
+The optional [intake helper](../scripts/issue_creation.py) assembles a request for the manager using this reference and the skill's Issue Intake section. From the root checkout:
+
+```powershell
+python .agents/skills/kanban-workflow/scripts/issue_creation.py create --title 'Refactor: <bounded result>' --type refactor --body-file proposal.md
+```
 
 Intake:
 
