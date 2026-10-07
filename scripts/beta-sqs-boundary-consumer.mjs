@@ -1,4 +1,5 @@
 import { createPublicKey, KeyObject, sign } from 'node:crypto';
+import { requireImmutableBoundaryTrustPin } from './beta-sqs-boundary-trust.mjs';
 import {
   assertBetaBoundaryChain, assertBoundaryFields, assertFreshBoundaryAttestation,
   boundaryDocumentHash, boundaryIntentHash, boundarySigningBytes, boundaryTimestamp,
@@ -6,11 +7,8 @@ import {
   verifyBetaBoundarySignature,
 } from './beta-sqs-boundary-protocol.mjs';
 
-// No reviewed public key has been delivered. Environment or fixture injection cannot replace source trust.
-const IMMUTABLE_SOURCE_TRUST_ROOT = null;
-
 export function createBetaSqsBoundaryConsumer() {
-  if (!IMMUTABLE_SOURCE_TRUST_ROOT) throw new Error('Immutable source trust root is missing; live boundary signer cannot be constructed');
+  requireImmutableBoundaryTrustPin();
   throw new Error('Authenticated worker proof and durable boundary adapter are not implemented');
 }
 
