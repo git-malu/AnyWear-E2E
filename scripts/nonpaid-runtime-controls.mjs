@@ -82,6 +82,11 @@ function pick(value, keys) { return Object.fromEntries(keys.filter((key) => valu
 function withoutAwsDefaults(value, defaults) {
   return Object.fromEntries(Object.entries(value ?? {}).filter(([key, child]) => !defaults.has(key) || !isDeepStrictEqual(child, defaults.get(key))));
 }
+function normalizeNamedEntries(entries) {
+  return [...(entries ?? [])].map((entry, index) => ({ entry, index }))
+    .sort((left, right) => left.entry.name.localeCompare(right.entry.name) || left.index - right.index)
+    .map(({ entry }) => entry);
+}
 export function normalizeFixtureDefinition(definition) {
   if (!definition || typeof definition !== 'object' || Array.isArray(definition)) throw new Error('Fixture task definition is not an object');
   const unknown = Object.keys(definition).filter((key) => !DEFINITION_FIELDS.includes(key) && key !== 'family' && !TASK_DEFINITION_METADATA_FIELDS.has(key));
@@ -92,7 +97,10 @@ export function normalizeFixtureDefinition(definition) {
     const allowed = ['name', 'image', 'repositoryCredentials', 'cpu', 'memory', 'memoryReservation', 'links', 'portMappings', 'essential', 'entryPoint', 'command', 'environment', 'environmentFiles', 'mountPoints', 'volumesFrom', 'linuxParameters', 'secrets', 'dependsOn', 'startTimeout', 'stopTimeout', 'hostname', 'user', 'workingDirectory', 'disableNetworking', 'privileged', 'readonlyRootFilesystem', 'dnsServers', 'dnsSearchDomains', 'extraHosts', 'pseudoTerminal', 'systemControls', 'resourceRequirements', 'firelensConfiguration', 'credentialSpecs', 'ulimits', 'healthCheck', 'logConfiguration', 'dockerSecurityOptions', 'dockerLabels'];
     const unknownContainer = Object.keys(container).filter((key) => !allowed.includes(key));
     if (unknownContainer.length) throw new Error(`Fixture container has unexpected fields: ${unknownContainer.join(',')}`);
-    return withoutAwsDefaults(structuredClone(container), CONTAINER_DEFAULTS);
+    const normalizedContainer = withoutAwsDefaults(structuredClone(container), CONTAINER_DEFAULTS);
+    normalizedContainer.environment = normalizeNamedEntries(normalizedContainer.environment);
+    normalizedContainer.secrets = normalizeNamedEntries(normalizedContainer.secrets);
+    return normalizedContainer;
   });
   return normalized;
 }

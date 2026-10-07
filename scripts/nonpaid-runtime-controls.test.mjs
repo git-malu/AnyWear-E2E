@@ -291,6 +291,19 @@ test('fixture recovery falls back to ECS list-tags-for-resource when describe-ta
   assert.ok(h.calls.some((args) => args[1] === 'list-tags-for-resource'));
 });
 
+test('fixture recovery normalizes ECS environment and secret ordering without changing duplicate order', () => {
+  const value = clone();
+  value.containerDefinitions[0].environment = [
+    { name: 'ZED', value: 'last' }, { name: 'DOUBAO_VLM_BASE_URL', value: 'http://127.0.0.1:18765/v1' },
+    { name: 'DOUBAO_VLM_BASE_URL', value: 'http://127.0.0.1:18765/v1-duplicate' }, { name: 'ALPHA', value: 'first' }];
+  value.containerDefinitions[0].secrets = [{ name: 'ZED_SECRET', valueFrom: 'z' }, { name: 'ALPHA_SECRET', valueFrom: 'a' }];
+  const normalized = normalizeFixtureDefinition(value).containerDefinitions[0];
+  assert.deepEqual(normalized.environment.map(({ name, value }) => [name, value]), [
+    ['ALPHA', 'first'], ['DOUBAO_VLM_BASE_URL', 'http://127.0.0.1:18765/v1'],
+    ['DOUBAO_VLM_BASE_URL', 'http://127.0.0.1:18765/v1-duplicate'], ['ZED', 'last']]);
+  assert.deepEqual(normalized.secrets.map(({ name }) => name), ['ALPHA_SECRET', 'ZED_SECRET']);
+});
+
 test('control requires empty baseline queues before any registration and manager window acknowledgement', async () => {
   const dirty = controlHarness({ dirtyQueue: true });
   await assert.rejects(prepareNonPaidRuntime({ scope: dirty.scope, fixture: dirty.fixture }, dirty.io, dirty.environment, dirty.wait), /empty/);
