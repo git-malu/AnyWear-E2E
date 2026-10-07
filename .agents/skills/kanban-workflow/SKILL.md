@@ -5,7 +5,7 @@ description: Create, coordinate, or execute AnyWear GitHub Kanban issues across 
 
 # Kanban Workflow
 
-This is the operating contract for `git-malu/AnyWear` Issues and Project #4. The Issue body owns scope, acceptance, affected repositories, and gate applicability; Project Status/Priority owns stage and relative priority. Use native relationships/labels and comments with linked PRs, Actions, and deployment evidence. Meta stores architecture and supporting records, not a second issue tracker. Read the relevant [GitHub operations](references/github-operations.md) section for CLI mutations, recovery, cleanup, release evidence, or delegation.
+This is the operating contract for `git-malu/AnyWear` Issues and Project #4. The Issue body owns scope, acceptance, affected repositories, and gate applicability; Project Status/Priority owns stage and relative priority. Use native relationships/labels and comments with linked PRs, Actions, and deployment evidence. Meta holds architecture and ADRs; working designs and evidence belong in Issue bodies/comments and linked artifacts. Read the relevant [GitHub operations](references/github-operations.md) section for CLI mutations, recovery, cleanup, release evidence, or delegation.
 
 ## Ownership
 

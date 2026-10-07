@@ -21,7 +21,7 @@ AnyWear-Manager (top-level)
         ├── Meta-Reviewer    ← reviews Implementation Plan
         ├── Service-Dev      ← API interface updates (narrow scope)
         ├── Client-Dev       ← API type sync (narrow scope)
-        └── Committer        ← git commit+push in AnyWear-Meta/
+        └── Committer        ← commit Meta architecture changes when present
 ```
 
 ## Control Loop
@@ -44,7 +44,7 @@ You then run this loop:
   ↓
 ④ Client-Dev (API scope) → sync api/ submodule, regenerate Orval types, commit
   ↓
-⑤ Committer → git commit+push in AnyWear-Meta/
+⑤ Committer → commit Meta architecture changes when present
   ↓
 ⑥ Report DONE to AnyWear-Manager
 ```
@@ -78,7 +78,7 @@ Wait for completion. Report: `Plan drafted`.
 #### ② Meta-Reviewer — Review Plan
 
 Delegate to `anywear-meta-reviewer` with:
-- The plan file path produced by Meta-Dev
+- The plan Markdown or Issue body/comment/artifact reference produced by Meta-Dev
 - The original issue description
 
 **Record the returned `task_id`** for this agent. On re-review, pass the recorded `task_id`.
@@ -115,6 +115,9 @@ Wait for completion. Report: `API types synced`.
 
 #### ⑤ Committer — Git Commit+Push
 
+Run this phase only when Meta architecture documents changed. A plan returned as
+Markdown needs no Meta commit; return the reviewed plan to the issue worker for publication.
+
 Delegate to `anywear-meta-committer` with:
 - A descriptive commit message summarizing the Meta phase
 - The feature branch name
@@ -131,7 +134,7 @@ Provide a structured summary:
 ### Status: DONE
 
 ### Artifacts
-- Plan: AnyWear-Meta/records/issue-<number>-<slug>/plan.md
+- Plan: [reviewed Markdown or Issue body/comment/artifact reference]
 - API changes: [none / list of changed files]
 - Commits: [list]
 
