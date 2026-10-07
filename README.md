@@ -45,8 +45,9 @@ Do not commit `.env` or Playwright authentication state.
 The deployed qualification profile sets two workers, two active-account slots, four new
 accounts per run, and two quarantine slots. Wardrobe tests use one exclusive synthetic
 Cognito account per Playwright parallel slot, provisioned through the protected AWS admin
-path and deleted during worker teardown. Public registration is qualified separately by the
-controlled Beta allowlist suite; ordinary qualification does not require a real mailbox.
+path and deleted during worker teardown. Public registration remains governed by the
+Service-owned tester policy; ordinary qualification does not mutate admission policy or
+require a real tester mailbox.
 The qualification and integration workflows share a non-cancelling Beta account-pool
 concurrency group, and each run uploads its account-budget manifest for recovery.
 
@@ -102,45 +103,15 @@ S3 evidence storage will be reconsidered only if long-term audit or rollback req
 
 ## Runtime Reliability Evidence
 
-### Private Tester Acceptance
+### Tester Admission Verification (Historical)
 
-The Service repository's protected `Beta Allowlist Acceptance` workflow owns the
-`anywear-beta-runtime` lock and runs `playwright.allowlist.config.ts` against the
-exact deployed compatibility set. This controlled scenario is excluded from the
-ordinary qualification suite because it temporarily edits the private tester list
-and admission suspension. It never opens public intake and restores the original
-policy in test teardown and an unconditional workflow cleanup step.
-
-The scenario uses unique `e2e-beta-allowlist-...@anywear.local` identities. It proves
-that registration remains unconfirmed, an invalid confirmation code cannot sign
-in, a verified tester can sign in through the real Client and finish an auto-tag
-task, and revoked or suspended testers cannot create auto-tag or VTO tasks while
-existing profiles, results, and credits remain readable. Cognito admin commands
-explicitly verify and confirm only these synthetic accounts; this is not evidence
-of mailbox delivery. The cleanup helper rejects active work before removing owned
-database records, and the scenario then deletes only captured exact S3 keys and
-synthetic Cognito users. Failed cleanup leaves a retryable runner-local snapshot;
-that snapshot contains the original tester list and must never be uploaded.
-The controlled configuration uses text reporters and disables browser recordings;
-HTML step metadata can contain entered passwords or temporary S3 grants. Uploaded
-`beta-allowlist-acceptance.json` and `beta-allowlist-recovery.json` contain only
-assertion outcomes, revisions, and exact synthetic resource identifiers. The
-recovery manifest excludes passwords, bearer tokens, signed URLs, and the original
-tester list. A failed run's retained resources must be inspected until its task is
-terminal, then cleaned through the pinned Beta cleanup helper before deleting the
-manifest's exact S3 keys and Cognito identities.
-The protected Service recovery workflow invokes
-`node tests/support/beta-allowlist-recovery.ts --recover-manifest` with the exact
-manifest in `BETA_ALLOWLIST_RECOVERY_JSON`. Its revision and digest must match the
-currently ready Beta Service and pinned operator checkout; after a runtime repair,
-update only those deployment fields to the newly verified revision. The recovery
-entry point verifies the deployed Cognito pool, bucket, ownership paths, paused
-admission, and unchanged policy before and after cleanup. It never configures or
-opens admission.
-
-This workflow produces focused allowlist acceptance evidence. It does not issue
-the complete Beta qualification record or satisfy expanded resilience cases deferred
-to [AnyWear issue #58](https://github.com/git-malu/AnyWear/issues/58).
+The one-time deployed synthetic allowlist acceptance and recovery workflows were
+retired after the feature's acceptance completed. Their historical evidence, including
+the owner's real email-code and normal-login confirmation, is recorded in
+[AnyWear issue #59](https://github.com/git-malu/AnyWear/issues/59). The ordinary
+Beta Qualification workflow does not mutate tester policy or claim to verify a real
+tester mailbox. Future changes to admission behavior should define only the focused
+tests needed for that change; the retired deployed harness is not a standing release gate.
 
 The wardrobe scenario verifies repeated `Idempotency-Key` confirmation before and after
 completion, recovery after a browser reload, consistent terminal state in two browser

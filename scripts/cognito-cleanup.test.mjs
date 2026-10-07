@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { deleteCapturedCognitoIdentity, verifyCapturedCognitoIdentity } from '../tests/support/cognito-cleanup.ts';
 
 const identity = {
-  email: 'e2e-beta-allowlist-36970278486-1-b8e457e661b346ad-primary@anywear.local',
+  email: 'e2e-beta-worker-0-chromium@anywear.local',
   sub: '7442ec8e-5051-709b-e2ec-f1b3118f45a0',
 };
 
@@ -31,8 +31,10 @@ test('changed Cognito subject or email refuses deletion', async () => {
   }
 });
 
-test('missing captured subject, malformed subject, or nonsynthetic email cannot initiate Cognito cleanup', async () => {
-  for (const value of [{ email: identity.email }, { ...identity, sub: 'malformed' }, { ...identity, email: 'actual-tester@example.com' }]) {
+test('missing captured subject, malformed subject, or retired/non-worker email cannot initiate Cognito cleanup', async () => {
+  for (const value of [{ email: identity.email }, { ...identity, sub: 'malformed' },
+    { ...identity, email: 'e2e-beta-allowlist-1-1-abcdef0123456789-primary@anywear.local' },
+    { ...identity, email: 'actual-tester@example.com' }]) {
     const boundary = fixture();
     await assert.rejects(deleteCapturedCognitoIdentity(value, boundary), /captured synthetic email and subject/);
     assert.deepEqual(boundary.calls, []);
