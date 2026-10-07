@@ -28,7 +28,7 @@ Prepare multiline bodies/comments in a temporary file and pass `--body-file`. A 
 ## Coordination
 <priority rationale, splits, dependencies and artifact/lifecycle release condition>
 ## Validation and Delivery
-<checks, justified N/A gates, deployment triggers/compatibility/recovery, Meta links>
+<checks, justified N/A gates, deployment triggers/compatibility/recovery, architecture references>
 ```
 
 ```powershell
@@ -162,7 +162,7 @@ Remove agent-created Git worktrees with `git worktree remove <absolute-path>` fr
 
 Inspect fields, views, and automations. Preserve existing IDs; use the skill's exact Status options and native fields, re-reading affected cards. Keep an issue-only primary board grouped by Status/ordered by Priority, with PR evidence in a separate view. Disable or adjust item-close, PR-link/merge, auto-close, and archive triggers that can complete issues prematurely. Use configuration UI when API/CLI visibility is insufficient; absence from an API response proves nothing about a trigger.
 
-Historical migration provenance and canonical identities live in [Meta's records](../../../../AnyWear-Meta/records/README.md) and [migration map](../../../../AnyWear-Meta/records/kanban-migration/migration-map.json). Retained historical completion must not be described as newly verified acceptance/cleanup.
+Historical migration provenance and canonical identities remain in [the immutable migration map](https://github.com/git-malu/AnyWear-Meta/blob/0ff69d4043ec8ec99610249605e2da20d3adb83a/records/kanban-migration/migration-map.json). Historical completion must not be described as newly verified acceptance/cleanup.
 
 ## Workflow Simulation Checks
 

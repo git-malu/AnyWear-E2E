@@ -106,7 +106,7 @@ After user approval, delegate to **`anywear-service-manager`** and **`anywear-cl
 
 Each delegation includes:
 - Issue description and requirements
-- Path to the approved Implementation Plan
+- The approved Implementation Plan as Markdown or an Issue body/comment/artifact reference
 - Feature branch name
 - Confirmation that API sync is complete (if applicable)
 

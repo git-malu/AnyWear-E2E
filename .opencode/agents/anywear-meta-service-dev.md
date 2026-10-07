@@ -28,7 +28,7 @@ You are dispatched by **Meta-Manager** (not Service-Manager) during the Meta pha
 
 ## Workflow
 
-1. **Read the Implementation Plan** (the supporting `plan.md` linked from the GitHub issue, normally in `AnyWear-Meta/records/issue-<number>-<slug>/`) — focus on the "API Changes" section.
+1. **Read the Implementation Plan** supplied as Markdown or an Issue body/comment/artifact reference — focus on the "API Changes" section.
 2. **Update Zod schemas** in `AnyWear-Service/src/routes/`:
    - Add/modify request/response schemas as specified in the plan
    - Ensure schemas are complete with validation rules
