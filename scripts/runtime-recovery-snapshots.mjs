@@ -10,10 +10,19 @@ export function validateRecoverySnapshot(value) {
   return value;
 }
 
+export function validateRecoveryArtifactName(value) {
+  if (value === undefined || value === '') return '';
+  if (!/^beta-runtime-recovery-outcome-[1-9][0-9]*-[1-9][0-9]*$/.test(value)) {
+    throw new Error('Invalid retained recovery outcome artifact');
+  }
+  return value;
+}
+
 export function validateRecoverySourceInputs(environment) {
   if (!/^[1-9][0-9]{0,19}$/.test(environment.SOURCE_RUN_ID ?? '')
     || !/^[1-9][0-9]{0,5}$/.test(environment.SOURCE_RUN_ATTEMPT ?? '')) throw new Error('Invalid source run');
   validateRecoverySnapshot(environment.SOURCE_SNAPSHOT);
+  validateRecoveryArtifactName(environment.SOURCE_ARTIFACT_NAME);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

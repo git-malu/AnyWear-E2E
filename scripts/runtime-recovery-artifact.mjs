@@ -1,10 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseRuntimeRecovery } from './runtime-recovery.mjs';
-import { validateRecoverySourceInputs } from './runtime-recovery-snapshots.mjs';
+import { validateRecoveryArtifactName, validateRecoverySourceInputs } from './runtime-recovery-snapshots.mjs';
 
 export function validateRecoveryArtifactBinding(metadata, record, environment, compatibility) {
   validateRecoverySourceInputs(environment);
+  const artifactName = validateRecoveryArtifactName(environment.SOURCE_ARTIFACT_NAME);
+  const retainedOutcome = artifactName && /^beta-runtime-recovery-outcome-([1-9][0-9]*)-([1-9][0-9]*)$/.exec(artifactName);
   if (String(metadata.id) !== environment.SOURCE_RUN_ID
     || String(metadata.run_attempt) !== environment.SOURCE_RUN_ATTEMPT || metadata.event !== 'workflow_dispatch'
     || metadata.status !== 'completed'
@@ -13,6 +15,11 @@ export function validateRecoveryArtifactBinding(metadata, record, environment, c
     || !['.github/workflows/runtime-drill.yml', '.github/workflows/runtime-recovery.yml'].includes(metadata.path)
     || record.run_scope !== environment.ORIGINAL_RUN_SCOPE || record.deployment.service.source_commit !== compatibility.service.sha) {
     throw new Error('Recovery artifact is not bound to exact protected main workflow/run/pins');
+  }
+  if (retainedOutcome && (String(metadata.id) !== retainedOutcome[1]
+    || String(metadata.run_attempt) !== retainedOutcome[2]
+    || metadata.path !== '.github/workflows/runtime-recovery.yml')) {
+    throw new Error('Retained recovery outcome is not bound to its exact recovery workflow/run');
   }
   if (metadata.path.endsWith('/runtime-drill.yml')
     && record.run_scope !== `${metadata.id}-${metadata.run_attempt}-${metadata.head_sha.slice(0, 16)}`) throw new Error('Original drill artifact scope does not match its immutable workflow revision');

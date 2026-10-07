@@ -23,6 +23,11 @@ on:
         description: Exact immutable three-digit recovery snapshot number (001 to 400)
         required: true
         type: string
+      source_artifact_name:
+        description: Optional retained recovery outcome artifact to resume exact cleanup after a prior recovery interruption
+        required: false
+        default: ''
+        type: string
       original_run_scope:
         description: Exact original run scope recorded in the selected recovery snapshot
         required: true
@@ -51,6 +56,7 @@ jobs:
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
       SOURCE_SNAPSHOT: ${{ inputs.source_snapshot }}
+      SOURCE_ARTIFACT_NAME: ${{ inputs.source_artifact_name }}
       ORIGINAL_RUN_SCOPE: ${{ inputs.original_run_scope }}
       E2E_STAGE: beta
       E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
@@ -88,7 +94,7 @@ jobs:
           repository: git-malu/AnyWear-E2E
           github-token: ${{ github.token }}
           run-id: ${{ inputs.source_run_id }}
-          name: beta-runtime-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}-${{ inputs.source_snapshot }}
+          name: ${{ inputs.source_artifact_name || format('beta-runtime-recovery-{0}-{1}-{2}', inputs.source_run_id, inputs.source_run_attempt, inputs.source_snapshot) }}
           path: recovery-source
       - uses: pnpm/action-setup@v6
         with:
