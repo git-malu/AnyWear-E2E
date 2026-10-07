@@ -4,6 +4,7 @@ import { parseRuntimeRecovery } from './runtime-recovery.mjs';
 import { validateRecoveryArtifactName, validateRecoverySourceInputs } from './runtime-recovery-snapshots.mjs';
 
 export function validateRecoveryArtifactBinding(metadata, record, environment, compatibility) {
+  // Keep validating retained artifacts from the retired manual workflows without recreating their dispatch paths.
   validateRecoverySourceInputs(environment);
   const artifactName = validateRecoveryArtifactName(environment.SOURCE_ARTIFACT_NAME);
   const retainedOutcome = artifactName && /^beta-runtime-recovery-outcome-([1-9][0-9]*)-([1-9][0-9]*)$/.exec(artifactName);

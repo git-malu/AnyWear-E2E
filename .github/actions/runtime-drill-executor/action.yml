@@ -1,5 +1,0 @@
-name: Execute Beta runtime drill
-description: Run the protected Beta runtime drill with GitHub artifact runtime access
-runs:
-  using: node24
-  main: index.mjs

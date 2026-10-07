@@ -139,25 +139,23 @@ admission, and unchanged policy before and after cleanup. It never configures or
 opens admission.
 
 This workflow produces focused allowlist acceptance evidence. It does not issue
-the complete Beta qualification record or satisfy the runtime fault drills below.
+the complete Beta qualification record or satisfy expanded resilience cases deferred
+to [AnyWear issue #58](https://github.com/git-malu/AnyWear/issues/58).
 
 The wardrobe scenario verifies repeated `Idempotency-Key` confirmation before and after
 completion, recovery after a browser reload, consistent terminal state in two browser
 pages, and a monotonic state version. It requires a successful `ready` state, so a
 provider failure cannot pass merely because the processing indicator disappears.
 
-Live Beta qualification still needs controlled drills for accepted tasks across API and
-worker restarts or rolling deployments; SSE status delivery across identified distinct
-API replicas; lease renewal and visibility expiry; provider retries and dead-letter
-delivery; and exact current-state replay. Auto-tagging credit settlement is not applicable. Two browser
-pages do not prove that requests reached different replicas. Record ECS task identities,
-queue/DLQ observations and task state versions with those drills.
+Expanded Beta and Production reliability drills are deferred to
+[AnyWear issue #58](https://github.com/git-malu/AnyWear/issues/58); they are not current
+personal closed-Beta acceptance gates and have not been passed. The manual runtime-drill
+and dedicated runtime-recovery workflows were retired under
+[issue #79](https://github.com/git-malu/AnyWear/issues/79). Historical Actions runs and
+artifacts remain available as evidence of their actual outcomes.
 
-The E2E repository now provides a bounded, read-only preflight and an evidence verifier for
-these drills. Preflight can run while Beta intake is closed; it reports the gate state and
-does not open registration or accept tasks. Task-bearing drills require an approved Beta
-private-only test window with `intake_open=false`. These tools are deliberately separate from `pnpm test` and
-never run in Dev:
+The repository retains read-only planning, preflight, and evidence-verification helpers.
+They are separate from `pnpm test` and do not start or restore runtime drills:
 
 ```bash
 pnpm runtime:plan                 # writes runtime-drill-plan.json; no AWS calls
@@ -166,64 +164,11 @@ pnpm runtime:verify -- evidence.json
 ```
 
 Set `E2E_STAGE=beta`, `AWS_ACCOUNT_ID=650880818323`, `AWS_REGION=ap-east-1`, and both
-HTTPS endpoint variables before either AWS-backed command. Preflight fails closed when the
-deployed Client/Service identities do not match `compatibility.json`. It does not restart
-tasks, publish SQS messages, consume queue messages, change desired counts, or touch the
-database. The generated plan describes the operator-approved mutations and requires the
-unique `RUNTIME_DRILL_CONFIRM=beta-runtime-drill` marker before any future executor is
-allowed to perform them.
-
-The non-paid executor and restore-only recovery workflow passed independent source
-review and are enabled by `LIVE_RUNTIME_SOURCE_READY=true`; neither has collected Beta
-runtime evidence. Protected execution still requires all workflow confirmation, exact
-compatibility, fencing-evidence, account, and exclusive-window gates. A
-window owner must suspend dynamic scale-in, scale-out, and scheduled scaling for both
-services before execution; the executor captures and checks these settings, but never
-changes them. It closes private admission before worker replacement and admits only the
-single run-owned synthetic tester after selecting the loopback fixture. Workers retain
-their original IAM roles and network access; this is not IAM or network isolation.
-
-Schema 2 evidence requires a passed accepted-task restart/rolling drill, raw two-replica
-request attribution and matching terminal observers, and a retry/visibility/DLQ observation
-with successful lease/visibility renewal and canonical worker receive counts. Two pinned
-read-only DB audits must retain identical terminal snapshots for 440000ms. This finite
-window proves neither historical uniqueness nor late stale-worker rejection or missed
-heartbeats. Same-token StopTask completion is graceful drain; only a greater token is
-takeover. Actual passing DB-enabled Service main CI at the deployed SHA supplies the
-separate post-provider fencing assertions. Auto-tagging credit is explicitly N/A. A
-rollback observation is optional in the record until a prior Beta WorkloadStack digest is
-available. Provider-failure injection and database task-row inspection remain operational
-requirements; the fixture sidecar uses only loopback, a dummy provider key, and no paid
-provider forwarding. Exact run/user ownership, helper commands and task definitions,
-baseline private-policy restoration, and committed cleanup logs are mandatory.
-
-`Beta Runtime Recovery` selects one immutable recovery snapshot by source run, attempt,
-snapshot number, and original run scope. It shares the protected Beta environment and
-`anywear-beta-runtime` concurrency lock. It only reconciles and restores captured state;
-it does not start a drill. Recovery rechecks actual helper tasks and their exact logs,
-never trusting saved completion booleans. An irreversible known-DLQ deletion without a
-committed DB cleanup record is not success. Only its exact original helper deletion
-marker authorizes omitting that known message on a DB-cleanup retry; a separate committed
-cleanup record is still required. Missing or foreign evidence fails closed. Recovery
-snapshots contain baseline policy values and must remain restricted artifacts; they
-exclude passwords, bearer tokens, and signed URLs. Runner-loss snapshots are uploaded
-before subsequent mutations, not only by the final `always()` step.
-
-Every durable save uploads an immutable three-digit snapshot (`001` through `400`).
-At the shared hard bound, snapshots plus the final outcome use 401 artifacts, leaving
-99 slots under GitHub's 500-artifact per-job limit. Cloud-mocked production orchestration
-measures 198 saves / 31 helpers for an initially unpaused baseline and 203 / 32 for a
-paused baseline. Replaying the snapshot-150 interruption in a fresh recovery run needs
-86 or 109 uploads respectively, with its own counter; snapshot-151 response loss needs
-86 or 108. Recovery persists exact Cognito deletion intent and requires a fresh UUID
-absence readback before saving owned cleanup completion or restoring the window.
-All snapshots remain parseable under the 262144-byte and 100-helper record
-limits; observed maximum size is 94817 bytes.
-These are source regression measurements, not Beta or timing evidence. At an assumed
-5 seconds per artifact, 203 sequential uploads add about 16.9 minutes, in addition to
-the 14.7-minute terminal stability waits and cloud operations. The 60-minute workflow
-deadline still needs live qualification; a larger snapshot allowance does not guarantee
-that deadline. Exhaustion or upload failure fails closed before subsequent mutation.
+HTTPS endpoint variables before the AWS-backed preflight. It checks deployed Client and
+Service identities against `compatibility.json` and performs read-only observations.
+Any future expanded-release work must first select the smallest required risk-based scope
+in issue #58; the historical fault-injection design is not an instruction to rerun its
+full matrix or rebuild a separate control platform.
 
 The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
 browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes
