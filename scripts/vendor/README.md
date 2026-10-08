@@ -8,10 +8,10 @@ dependency layout.
 The accepted target contract is [ADR 0021 at Meta
 a8eba148cfef4c124c46010276e66e4c8c41e420](https://github.com/git-malu/AnyWear-Meta/blob/a8eba148cfef4c124c46010276e66e4c8c41e420/architecture/ADR/0021-shared-infrastructure-repository.md).
 These files are copied from the coordinated #54 Infra source at immutable
-revision [`88679b61630bc2344258cafb0d35b4d0b02e3a0d`](https://github.com/git-malu/AnyWear-Infra/commit/88679b61630bc2344258cafb0d35b4d0b02e3a0d),
+revision [`1616783bf604c6c837f32452f039019fc5dd65f5`](https://github.com/git-malu/AnyWear-Infra/commit/1616783bf604c6c837f32452f039019fc5dd65f5),
 published in [Infra PR #1](https://github.com/git-malu/AnyWear-Infra/pull/1).
 All six committed files are byte-identical to the prior reviewed Infra revision
-`0c514d52f68726cda140200b2ecb2a4c504c635e` and to the E2E Git blobs. Hashes below
+`88679b61630bc2344258cafb0d35b4d0b02e3a0d` and to the E2E Git blobs. Hashes below
 identify committed producer bytes; checkout line-ending conversion is not a new
 contract revision.
 The byte hashes identify this exact source snapshot; they do not release the
@@ -32,6 +32,9 @@ The two Service helpers are byte-identical to
 immutable Service source
 [`8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce`](https://github.com/git-malu/AnyWear-Service/commit/8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce),
 delivered for source review in [Service PR #50](https://github.com/git-malu/AnyWear-Service/pull/50).
+The final Service source `75c65b22a434129ea84749caa8c9e20bb6119843`
+changes only publisher workflow permissions and offline CLI probes; both helper
+Git blobs and the builder implementation remain identical to that original source.
 Native release verification compares the successful GitHub CLI JSON against the
 complete signed Service owner/repository/release/tag/commit/asset set. The
 publication receipt retains the exact original successful publisher artifact
@@ -41,11 +44,25 @@ Runtime observation separately checks out and executes the exact full Infra SHA
 selected in compatibility v2. A vendored validator never substitutes for that
 authenticated, compatibility-pinned observer or the completed trusted producer.
 
+## Released source inputs
+
+The coordinated #54 source inputs accepted for later consumption are:
+
+| Repository | Immutable source revision |
+| --- | --- |
+| Client | `04d931ddd81545731b314d310a26df08cbc89473` |
+| Service | `75c65b22a434129ea84749caa8c9e20bb6119843` |
+| Infra | `1616783bf604c6c837f32452f039019fc5dd65f5` |
+
+These revisions describe source delivery. Compatibility v1 retains its existing
+Client and Service runtime pins; a deployed v2 tuple requires separate producer
+publication, deployment evidence, and qualification acceptance.
+
 ## Offline source acceptance
 
 The actual locked Service builder output from source
 `8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce` is consumed again with clean Infra
-source `88679b61630bc2344258cafb0d35b4d0b02e3a0d`. The complete manifest has
+source `1616783bf604c6c837f32452f039019fc5dd65f5`. The complete manifest has
 raw SHA-256 `beed1d70d328193de6a616e3b492e22ed64bee4cd2dcc049218d5d515b0be878`.
 The acceptance command is
 `node scripts/verify-artifact-builder-fixture.mjs <actual-builder-output> <Infra-checkout>`;
@@ -56,7 +73,10 @@ missing-asset cases are rejected. The real schema version is 16, with 18 SQL
 migration hashes and a minimum migration count of 18. Hypothetical next-version
 prefix checks pass in both directions, and a conflicting SQL hash is rejected.
 The final `offline-contract-result.json` has raw SHA-256
-`d3b8b9c2fe21d1244e668c18a1a1af8e784a0c8359cee5a1fb7b30c4465f6223`.
+`2e45b0e661ce9239ff50318754e0ab0465919213d0b1111951ed81e3cc5ec409`.
+The original builder output and the new report are retained outside the removable
+workspace. The manifest still identifies its actual `8dfb61b` builder source;
+this revalidation does not relabel it as an artifact produced at `75c65b2`.
 Its deployment-contract checkout hash is
 `107c0691b8d7f918c386351b984b741f5f164cdb0b4d6f7d932f18fb38a1ff19`
 because that Infra working copy uses CRLF; the committed LF hash is the
