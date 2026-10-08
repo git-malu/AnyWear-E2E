@@ -39,7 +39,6 @@ validateAccountBudget(workers);
 
 export default defineConfig({
   testDir: './tests',
-  testIgnore: '**/controlled/**',
   globalSetup: './tests/support/deployed-environment.ts',
   outputDir: 'test-results',
   fullyParallel: true,
