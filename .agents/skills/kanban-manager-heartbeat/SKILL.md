@@ -1,0 +1,50 @@
+---
+name: kanban-manager-heartbeat
+description: Resume already-authorized AnyWear Project #4 work as the existing Kanban manager on scheduled wakeups or manual continuation, and stop idle AWS Beta resources through the approved lifecycle workflow. Intake alone does not authorize issue execution.
+---
+
+# Kanban Manager Heartbeat
+
+Continue coordination in the existing authorized manager session for `git-malu/AnyWear` and [Project #4](https://github.com/users/git-malu/projects/4). A wakeup resumes issue work within that session's authorization; it does not start a second manager or grant new issue execution, deployment, trust, credential, or Production authority. The idle Beta shutdown below has standing user authorization to reduce costs. If invoked outside the recorded manager session, establish an authorized handoff before scheduling work.
+
+Read the current primary checkout's `AGENTS.md`, [kanban-workflow](../kanban-workflow/SKILL.md), and the relevant [GitHub operations](../kanban-workflow/references/github-operations.md) sections. Those sources own roles, lifecycle gates, dependencies, release coordination, ownership recovery, and closure. Use the primary checkout specified by the caller when running from a temporary worktree. Keep schedule, target session, and app notification settings in the automation configuration; keep live issue state in GitHub.
+
+## Observe Each Wakeup
+
+1. Check the session's latest user instructions, pauses, cancellations, and release freezes. Verify the effective `gh` account is `git-malu` and the repository and Project identities match before remote operations. If access, ownership, or required source files cannot be verified, preserve the scene and report the concrete blocker.
+2. Read the live Project items with pagination, including Status, Priority, archive state, native issue state, and repository. For relevant issues, read scope, acceptance, current owner/session/Transfer, workspace, native dependencies, comment-defined artifact or lifecycle release conditions, and latest PR, Actions, deployment, and acceptance evidence. Inspect active writers, delegated work, and in-flight jobs before deciding what remains to be done.
+3. Select only already-authorized, unarchived, open issues in `Analysis`, `Development`, `Testing`, `Deployment`, or `Pending Closure`. Exclude `Backlog`, `Completed`, PR cards, and items without a valid lifecycle Status from automatic execution. Intake is not execution authorization. Recover documented partial lifecycle mutations under the workflow before treating an inconsistent item as complete. For `Escalation`, first inspect the specific blocker without mutation; resume only when its recorded recovery conditions are actually met and the user has not paused the work.
+
+## Continue Coordination
+
+Order ready work by Priority and dependency readiness. Reuse the recorded issue owner, Transfer, and issue-owned workspace. Check the owner's latest progress before dispatching work; retain running jobs and existing assignments. Apply the workflow's verified-cessation rules for recovery or transfer, and coordinate repository, main-branch integration, and deployment writer windows. The manager coordinates decisions and evidence; issue owners implement and clean their workspaces.
+
+For each ready scope, identify and perform the next action within existing authorization. A worker awaiting manager review or a writer window needs a manager decision. Receive and independently verify handoffs, resolve failures within scope, advance gates only after their evidence passes, and continue other ready issues while one waits. Dispatch, running jobs, and status reports are intermediate steps; continue until the requested work is verified complete, explicitly paused or cancelled, or concrete external blockers leave no authorized next action.
+
+When dependencies are unreleased, continue only independent, authorized preparation. Preserve the recorded artifact/lifecycle conditions, branch protection, every applicable issue-specific gate, and user freezes. Consult the workflow and current issue records for source, publication, native release, receipt, runtime, rollback, E2E, and cleanup checks rather than treating this skill as a shortcut around them.
+
+After a new result or uncertain operation, compare intended and observed remote state, retry only missing steps, and read back meaningful mutations. Preserve evidence and resources when a result cannot be confirmed. Issue owners complete acceptance, remote evidence, reconciliation, and cleanup under the workflow; the manager independently verifies the final Project Status and native completion state before reporting completion.
+
+## Stop Beta When the Board Is Idle
+
+After coordinating work, use a fresh, fully paginated Project #4 read to decide whether Beta can be stopped. Idle means there are **zero Issue items outside `Backlog` and `Completed`**, not merely zero ready or authorized issues. Count all unarchived Issue items and inspect archived items for unresolved active work; correctly cancelled/superseded items that are closed as not planned/duplicate, have cleared Status, and are archived do not count as active. `Escalation`, paused work, blocked dependencies, `Pending Closure`, and closed issues still carrying an active Status all prevent shutdown. Missing or unknown Status on an unarchived issue, incomplete reads, inconsistent Completed/native completion pairs, or unresolved archived active issues require reconciliation before declaring the board idle. PR and draft cards do not establish that issue work is complete.
+
+When the board is verified idle, stop Beta through the existing [Beta Environment: Start / Stop](https://github.com/git-malu/AnyWear-Service/blob/main/.github/workflows/beta-lifecycle.yml) workflow. Coordinate the Beta deployment writer window and verify no workers, queued/running deployments, lifecycle runs, or Beta E2E/acceptance jobs still use the environment. Respect explicit user holds and freezes. Re-read the board and conflicting jobs immediately before dispatch; defer shutdown if new active work or a resource user appears. Do not cancel jobs or bypass branch, environment, or lifecycle gates to manufacture idleness.
+
+Inspect the current workflow on `main`, its stop implementation, and live repository/Beta environment variables before use. Verify the target AWS account and region against the recorded Beta environment. If Beta is already verifiably stopped, do nothing. When shutdown is needed, the workflow currently requires repository variable `ENABLE_BETA_DEPLOY=true` for **both** start and stop; `false` causes the stop job to be skipped. If that gate blocks shutdown, report the concrete blocker without silently changing the variable. If using AWS CLI for read-back, verify the explicit profile/region and `aws sts get-caller-identity` against Beta first.
+
+Dispatch only the Beta stop action:
+
+```powershell
+gh workflow run beta-lifecycle.yml --repo git-malu/AnyWear-Service --ref main -f action=stop
+```
+
+Identify and retain the dispatched run URL/ID from live Actions evidence, await its terminal result, and verify the **stop job actually executed** and its current resource shutdown evidence. The phased stop currently verifies both existing Beta stacks have `BetaActive=false`, ECS service desired/running/pending counts are zero, tasks have physically stopped, and stacks have reached terminal success. Check the matching run's lifecycle manifest/evidence, rather than treating an old stop run as current state. A successful dispatch, skipped job, or green run alone does not prove Beta stopped. On uncertain dispatch or timeout, inspect matching queued/running/completed lifecycle runs and resource state before retrying; reuse an existing stop operation. Report failures or partial shutdown accurately, and do not claim all AWS costs are eliminated: the workflow retains durable resources and its normal stop does not verify Aurora capacity has reached zero.
+
+The heartbeat remains active after shutdown and continues observing the board. When later authorized work needs Beta, coordinate its existing start/deployment path under `kanban-workflow` before runtime qualification; an idle shutdown does not authorize new deployments or infrastructure changes. The lifecycle start preserves the intake suspension left by stop, so verify and restore intake only when the new issue's authorized runtime work requires it.
+
+## Reporting and Recurrence
+
+Do not repeat comments, workflow dispatches, state changes, or user-facing status updates when there is no actionable new information. Report verified delivery completion, newly verified Beta shutdown, a genuine failure, or a blocker requiring user action concisely, with the necessary evidence links and next action. Stay quiet when the board remains idle and Beta is already stopped.
+
+Leave the long-term heartbeat schedule active when no issue is currently ready, including after idle Beta shutdown, so later authorized work entering an active stage can be continued. Stop or hand off the heartbeat only when the user requests stopping it or changing the manager session. Pausing one issue preserves that pause without cancelling unrelated authorized work.
