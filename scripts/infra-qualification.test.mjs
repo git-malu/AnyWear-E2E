@@ -188,11 +188,13 @@ test('surviving Service data endpoint binds its operator source independently of
   assert.throws(() => assertServiceCleanupRunSource({ ...run, head_branch: 'other' }, 'c'.repeat(40)));
 });
 
-test('deployment selection requires the exact manifest-bound publication receipt identity', () => {
-  for (const receipt of [undefined, { file: 'publications/unreviewed.json', sha256: 'a'.repeat(64) },
-    { file: `publications/${'a'.repeat(64)}.json`, sha256: 'invalid' }]) {
+test('deployment v2 requires committed selection path/hash and rejects historical receipt runtime records', () => {
+  for (const patch of [{ file: undefined }, { file: '/tmp/reconstructed.json' }, { file: 'selections/../unreviewed.json' },
+    { sha256: 'invalid' }, { publication_acceptance: { file: 'publications/old.json', sha256: 'a'.repeat(64) } }]) {
     const f = qualificationFixture();
-    f.deployment.selection.publication_acceptance = receipt;
+    Object.assign(f.deployment.selection, patch);
     assert.throws(() => qualify(f));
   }
+  const historical = qualificationFixture(); historical.deployment.schema_version = 1;
+  assert.throws(() => qualify(historical), /historical v1|Unsupported Infra/);
 });

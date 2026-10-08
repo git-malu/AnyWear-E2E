@@ -87,12 +87,12 @@ The eight routine core files retain account-budget, Cognito cleanup, qualificati
 record, wardrobe cleanup and worker cleanup contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
 `trusted-deployment-inputs.test.mjs` contracts. The latter protect pinned source,
-native publication/receipt, deployment identity and writer-window validation; their
+committed selection, direct native release verification, deployment identity and writer-window validation; their
 offline assertions remain required by `check` without claiming actual publication or
 qualification.
 
 The tool workflow watches the registered tests, their implementation and fixture
-dependencies, shared evidence/source contracts, vendored publication validators and
+dependencies, shared evidence/source contracts, vendored direct-release validators and
 compatibility/lockfile inputs. It has only `contents: read` and no deployment
 environment or credential steps. SQS prototypes are excluded from both routine core
 and tool workflows and retain their [source-only handoff](scripts/beta-sqs-boundary-handoff.md).
@@ -247,13 +247,20 @@ retirement**; the rehearsal record cannot substitute.
 The evidence reader accepts only the protected Infra `runtime.yml` and Service
 `service-artifacts.yml` completed-success main run/attempt. It rejects missing,
 expired, tampered or duplicate-key records, unknown formats, unsealed releases,
-asset/source mismatches and unverified release attestations. Publication proof
-also requires the selector's exact receipt hash and full release/asset/producer
-bindings from a tracked `publications/<manifest-sha256>.json` in the clean pinned
-Infra source. E2E executes that Infra revision's consumer with an explicit trusted
-source root and SHA; its vendored directory cannot supply receipt trust. The
-consumer checks native release verification JSON and every signed asset, rather
-than accepting CLI exit status alone. Private retrieval
+asset/source mismatches and unverified release attestations. Selection, deployment
+and operation runtime records use Infra schema v2; historical receipt-bearing v1
+records are rejected without relabeling historical evidence. E2E loads the actual
+regular tracked canonical `selections/*.json` file in the clean reviewed Infra
+checkout, bound to the recorded raw SHA-256 and explicit `compatibility.infra.sha`.
+The pinned consumer receives that relative path/hash and the trusted root/SHA;
+its complete release/components must match the deployment record. A reconstructed
+external JSON file cannot supply selection authority, and the vendored directory
+cannot replace the runtime Infra checkout. Direct verification checks the
+completed-success publisher identity before and after the native release and all
+five asset verifications, API asset size/digest, and unchanged complete signed
+statement. It needs no candidate, receipt, approval record or Actions publication
+ZIP. See the exact staged source and raw hashes in [vendor provenance](scripts/vendor/README.md).
+Private retrieval
 uses separate GitHub App readers: Infra-only Contents/Actions read through
 `GH_TOKEN`, and Service-only Contents/Actions/Attestations read through
 `SERVICE_ARTIFACT_READ_TOKEN`. App token creation uses v3 so the declared

@@ -37,8 +37,7 @@ export async function verifyArtifactBuilderFixture(artifactDirectory, infraDirec
   Object.values(components.lambdas).forEach((component, index) => { component.asset_id = 20 + index; });
   components.runtime_policy.asset_id = 22; components.schema.asset_id = 23;
   const release = { ...deployment.selection.release, manifest_sha256: byteHash(manifestBytes) };
-  const publication_acceptance = { ...deployment.selection.publication_acceptance, file: `publications/${byteHash(manifestBytes)}.json` };
-  const selector = { schema_version: 1, record_type: 'anywear_infra_selection', release, publication_acceptance, ...components };
+  const selector = { schema_version: 2, record_type: 'anywear_infra_selection', release, ...components };
   assertSelectionManifest(selector, manifest);
 
   await mkdir(outputDirectory, { recursive: true });
@@ -61,7 +60,7 @@ export async function verifyArtifactBuilderFixture(artifactDirectory, infraDirec
   compatibility.service.sha = source; compatibility.infra.sha = infraSha;
   compatibility.service_artifacts.manifest_sha256 = byteHash(manifestBytes);
   deployment.infra.sha = infraSha;
-  deployment.selection = { sha256: payloadDigest(selector), release, publication_acceptance, components };
+  deployment.selection = { file: 'selections/offline-fixture.json', sha256: payloadDigest(selector), release, components };
   for (const stack of deployment.stacks) stack.source_sha = stack.source_repository === compatibility.infra.repository ? infraSha : source;
   deployment.observed.service_sha = source;
   deployment.observed.image_digest = components.image.digest;
@@ -115,7 +114,7 @@ export async function verifyArtifactBuilderFixture(artifactDirectory, infraDirec
     result: 'passed', service_sha: source, infra_head: infraSha,
     infra_worktree_clean: execFileSync('git', ['-C', infraDirectory, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).trim() === '',
     infra_contract_sha256: Object.fromEntries(await Promise.all(['json-contract.mjs', 'deployment-contract.mjs', 'artifact-consumer.mjs',
-      'publication-acceptance.mjs', 'vendor/service-artifact-contract.mjs', 'vendor/service-release-attestation.mjs']
+      'vendor/service-artifact-contract.mjs', 'vendor/service-release-attestation.mjs']
       .map(async file => [file, byteHash(await readFile(resolve(infraDirectory, 'scripts', file)))]))),
     manifest_sha256: byteHash(manifestBytes), asset_sha256: Object.fromEntries(Object.entries(assets).map(([name, bytes]) => [name, byteHash(bytes)])),
     minimum_migration_count: schema.minimum_migration_count, migration_count: migrations.length,

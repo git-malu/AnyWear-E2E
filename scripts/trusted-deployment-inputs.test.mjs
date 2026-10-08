@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { byteHash, payloadDigest, parseStrictJson } from './evidence-contract.mjs';
+import { byteHash, payloadDigest, parseStrictJson, canonicalJson } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 import { loadTrustedInputs, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
 import { assertNativeReleaseAttestation, RELEASE_PREDICATE_TYPE } from './vendor/vendor/service-release-attestation.mjs';
-import { createPublicationCandidate, validatePublicationAcceptance } from './vendor/publication-acceptance.mjs';
+import { verifySelection, validateSelection } from './vendor/artifact-consumer.mjs';
 
 function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact, alterRelease, corruptRecord = false } = {}) {
   const f = qualificationFixture();
@@ -53,9 +54,8 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   f.compatibility.service_artifacts.manifest_sha256 = byteHash(manifestBytes);
   f.deployment.selection.release.manifest_sha256 = byteHash(manifestBytes);
-  f.deployment.selection.publication_acceptance.file = `publications/${byteHash(manifestBytes)}.json`;
-  f.deployment.selection.sha256 = payloadDigest({ schema_version: 1, record_type: 'anywear_infra_selection',
-    release: f.deployment.selection.release, publication_acceptance: f.deployment.selection.publication_acceptance, ...f.deployment.selection.components });
+  f.deployment.selection.sha256 = payloadDigest({ schema_version: 2, record_type: 'anywear_infra_selection',
+    release: f.deployment.selection.release, ...f.deployment.selection.components });
   const recordBytes = Buffer.from(`${JSON.stringify(f.deployment, null, 2)}\n`);
   f.compatibility.deployment.record_sha256 = byteHash(recordBytes);
   const repository = { full_name: 'git-malu/AnyWear-Infra' };
@@ -81,8 +81,8 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
     [`repos/git-malu/AnyWear-Service/git/ref/tags/${release.tag_name}`, { object: { type: 'commit', sha: manifest.producer.workflow_sha } }],
   ]);
   const attestations = []; const requests = [];
-  const selector = { schema_version: 1, record_type: 'anywear_infra_selection',
-    release: f.deployment.selection.release, publication_acceptance: f.deployment.selection.publication_acceptance, ...f.deployment.selection.components };
+  const selector = { schema_version: 2, record_type: 'anywear_infra_selection',
+    release: f.deployment.selection.release, ...f.deployment.selection.components };
   return { compatibility: f.compatibility, manifest, manifestBytes, selector, release, publisher, attestations, requests,
     io: {
       environment: { GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
@@ -95,10 +95,12 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
         return JSON.stringify(responses.get(path));
       },
       extractRecord: async () => corruptRecord ? Buffer.from('{}') : recordBytes,
-      verifySelectedPublication: async (compatibility, selector) => {
-        assert.equal(selector.release.manifest_sha256, compatibility.service_artifacts.manifest_sha256);
+      verifySelectedInputs: async (compatibility, selection) => {
+        assert.equal(selection.file, f.deployment.selection.file);
+        assert.equal(selection.sha256, payloadDigest(selector));
+        assert.equal(selection.release.manifest_sha256, compatibility.service_artifacts.manifest_sha256);
         attestations.push({ digest: byteHash(manifestBytes) });
-        return { manifest };
+        return { selector, manifest };
       },
     },
   };
@@ -193,94 +195,76 @@ test('attested manifest cannot disagree with selected Lambda, policy, schema or 
     await withDirectory((directory) => assert.rejects(loadTrustedInputs(h.compatibility, directory, h.io)));
     assert.equal(h.attestations.length, 0);
   }
-  const h = inputHarness(); h.io.verifySelectedPublication = async () => { throw new Error('Invalid release attestation'); };
+  const h = inputHarness(); h.io.verifySelectedInputs = async () => { throw new Error('Invalid release attestation'); };
   await withDirectory((directory) => assert.rejects(loadTrustedInputs(h.compatibility, directory, h.io), /attestation/));
 });
 
-// These fixtures inject post-gh policy results and publisher/publication records.
-// They do not prove native signatures, receipt trust or deployed qualification.
+// These fixtures inject post-gh policy results and public API records.
+// They do not prove native signatures or deployed qualification.
 function nativeResult(statement) {
   return { verificationResult: { statement, signature: { certificate: { subjectAlternativeName: 'https://dotcom.releases.github.com' } } },
     attestation: { bundle: { dsseEnvelope: { payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
       payloadType: 'application/vnd.in-toto+json', signatures: [{ sig: 'synthetic-policy-only' }] } } } };
 }
 
-function publicationArchive(bytes) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-  }
-  crc = (crc ^ 0xffffffff) >>> 0;
-  const name = Buffer.from('service-artifact-publication.json');
-  const local = Buffer.alloc(30); const central = Buffer.alloc(46); const end = Buffer.alloc(22);
-  local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6);
-  local.writeUInt32LE(crc, 14); local.writeUInt32LE(bytes.length, 18); local.writeUInt32LE(bytes.length, 22); local.writeUInt16LE(name.length, 26);
-  central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x0800, 8);
-  central.writeUInt32LE(crc, 16); central.writeUInt32LE(bytes.length, 20); central.writeUInt32LE(bytes.length, 24); central.writeUInt16LE(name.length, 28);
-  end.writeUInt32LE(0x06054b50); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + name.length, 12); end.writeUInt32LE(local.length + name.length + bytes.length, 16);
-  return Buffer.concat([local, name, bytes, central, name, end]);
-}
-
-function publicationHarness(version) {
-  const h = inputHarness(); const { selector, manifest } = h;
-  const selected = [...Object.values(selector.lambdas), selector.runtime_policy, selector.schema];
-  const assets = [{ id: selector.release.manifest_asset_id, name: 'service-artifacts.json', size: h.manifestBytes.length, sha256: selector.release.manifest_sha256 },
+function nativeHarness(version) {
+  const h = inputHarness(); const selected = [...Object.values(h.selector.lambdas), h.selector.runtime_policy, h.selector.schema];
+  const assets = [{ id: 11, name: 'service-artifacts.json', size: h.manifestBytes.length, sha256: h.selector.release.manifest_sha256 },
     ...selected.map((component, index) => ({ id: component.asset_id, name: component.file, sha256: component.sha256, size: index + 1 }))];
-  const release = { ...h.release, assets: assets.map((asset) => ({ ...asset, state: 'uploaded', digest: `sha256:${asset.sha256}` })) };
-  const expected = { releaseId: release.id, tag: release.tag_name, target: manifest.producer.workflow_sha,
+  const release = { ...h.release, target_commitish: h.manifest.producer.workflow_sha,
+    assets: assets.map((asset) => ({ ...asset, state: 'uploaded', digest: 'sha256:' + asset.sha256 })) };
+  const expected = { releaseId: release.id, tag: release.tag_name, target: h.manifest.producer.workflow_sha,
     assetHashes: Object.fromEntries(assets.map((asset) => [asset.name, asset.sha256])) };
-  const purl = `pkg:github/git-malu/AnyWear-Service@${expected.tag}`;
+  const purl = 'pkg:github/git-malu/AnyWear-Service@' + expected.tag;
   const identity = { ownerId: '11473072', repositoryId: '1158460323', repository: 'git-malu/AnyWear-Service', purl, tag: expected.tag };
   const statement = { _type: 'https://in-toto.io/Statement/v1',
     predicateType: version === 'v0.1' ? RELEASE_PREDICATE_TYPE : 'https://in-toto.io/attestation/release/v0.2',
     predicate: version === 'v0.1' ? { ...identity, releaseId: String(release.id) }
       : { ...identity, databaseId: String(release.id), packageId: identity.repositoryId },
     subject: [{ uri: purl, digest: { sha1: expected.target } }, ...assets.map((asset) => ({ name: asset.name, digest: { sha256: asset.sha256 } }))] };
+  const repository = { full_name: identity.repository, id: 1158460323, owner: { id: 11473072, login: 'git-malu' } };
+  const publisher = { ...h.publisher, repository, head_repository: repository };
+  const requests = []; let nativeCalls = 0;
   const nativeVerification = nativeResult(statement);
-  const publicationRecord = { schema_version: 1, record_type: 'anywear_service_artifact_publication', repository: identity.repository,
-    release_id: release.id, manifest_asset_id: selector.release.manifest_asset_id, manifest_sha256: selector.release.manifest_sha256,
-    tag: expected.tag, target: expected.target, producer: manifest.producer,
-    assets: Object.fromEntries(assets.map(({ id, name, size, sha256 }) => [name, { id, size, sha256 }])),
-    release_attestation: nativeVerification, native_release_statement_sha256: payloadDigest(statement) };
-  const recordBytes = Buffer.from(`${JSON.stringify(publicationRecord, null, 2)}\n`); const archiveBytes = publicationArchive(recordBytes);
-  const repository = { full_name: identity.repository, id: 1158460323, owner: { id: 11473072 } };
-  const producerRun = { ...h.publisher, repository, head_repository: repository,
-    run_started_at: '2026-10-08T00:00:00Z', updated_at: '2026-10-08T00:10:00Z' };
-  const artifacts = [{ id: 80, name: 'service-artifact-publication-50-1', expired: false,
-    created_at: '2026-10-08T00:05:00Z', expires_at: '2099-01-01T00:00:00Z',
-    workflow_run: { id: 50, head_sha: expected.target }, size_in_bytes: archiveBytes.length, digest: `sha256:${byteHash(archiveBytes)}` }];
-  const input = { selector, manifest, release, producerRun, artifacts, archiveBytes, nativeVerification,
-    managerAcceptanceUrl: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-6058066406', verifiedAt: '2026-10-08T01:00:00Z' };
-  return { h, expected, statement, nativeVerification, publicationRecord, recordBytes, input,
-    candidate: createPublicationCandidate(input), receiptInputs: { selector, manifest, release, publicationRecord, nativeVerification } };
+  const io = {
+    api: async endpoint => {
+      requests.push(endpoint);
+      if (endpoint.includes('/releases/')) return release;
+      if (endpoint.includes('/git/ref/tags/')) return { object: { type: 'commit', sha: expected.target } };
+      if (endpoint.includes('/actions/runs/')) return publisher;
+      throw new Error('Unexpected direct consumer endpoint: ' + endpoint);
+    },
+    asset: async () => h.manifestBytes,
+    attestation: async () => { nativeCalls++; return nativeVerification; },
+  };
+  return { h, expected, statement, nativeVerification, release, publisher, requests, io, nativeCalls: () => nativeCalls };
+}
+
+async function withCommittedSelector(selector, action) {
+  await withDirectory(async directory => {
+    const git = args => execFileSync('git', ['-C', directory, ...args], { encoding: 'utf8' }).trim();
+    git(['init', '--quiet']); git(['config', 'user.email', 'fixture@anywear.local']); git(['config', 'user.name', 'Offline fixture']);
+    git(['config', 'core.autocrlf', 'false']); git(['remote', 'add', 'origin', 'https://github.com/git-malu/AnyWear-Infra.git']);
+    await mkdir(join(directory, 'selections')); await writeFile(join(directory, 'selections/test.json'), canonicalJson(selector));
+    git(['add', 'selections']); git(['commit', '--quiet', '-m', 'Offline committed selection']);
+    const output = await mkdtemp(join(tmpdir(), 'anywear-direct-output-'));
+    try { await action({ trustedInfraRoot: directory, expectedInfraSha: git(['rev-parse', 'HEAD']),
+      selectionFile: 'selections/test.json', selectionSha256: payloadDigest(selector) }, output); }
+    finally { await rm(output, { recursive: true, force: true }); }
+  });
 }
 
 for (const version of ['v0.1', 'v0.2']) {
-  test(`synthetic ${version} public consumer preserves the complete native statement and original publication bytes`, async () => {
-    const current = publicationHarness(version); const payload = current.nativeVerification.attestation.bundle.dsseEnvelope.payload;
+  test(`synthetic ${version} parser preserves complete signed statement bytes`, () => {
+    const current = nativeHarness(version); const payload = current.nativeVerification.attestation.bundle.dsseEnvelope.payload;
     assert.strictEqual(assertNativeReleaseAttestation(current.nativeVerification, current.expected), current.statement);
     assert.equal(current.statement.subject.length, 6);
     assert.deepEqual(parseStrictJson(Buffer.from(payload, 'base64')), current.statement);
-    assert.equal(current.candidate.publication.record_base64, current.recordBytes.toString('base64'));
-    assert.strictEqual(validatePublicationAcceptance(current.candidate, current.receiptInputs), current.candidate);
-    let publicationChecks = 0;
-    current.h.io.verifySelectedPublication = async () => {
-      publicationChecks++;
-      validatePublicationAcceptance(current.candidate, current.receiptInputs);
-      return { manifest: current.h.manifest };
-    };
-    await withDirectory(async (directory) => {
-      const result = await loadTrustedInputs(current.h.compatibility, directory, current.h.io);
-      assert.deepEqual(result.manifest, current.h.manifest);
-    });
-    assert.equal(publicationChecks, 1);
     assert.equal(current.nativeVerification.attestation.bundle.dsseEnvelope.payload, payload);
   });
 
   test(`synthetic ${version} public parser rejects foreign, mixed, numeric and unknown identities`, () => {
-    const current = publicationHarness(version); const idField = version === 'v0.1' ? 'releaseId' : 'databaseId';
+    const current = nativeHarness(version); const idField = version === 'v0.1' ? 'releaseId' : 'databaseId';
     for (const mutate of [
       (s) => { s._type = 'https://in-toto.io/Statement/v0'; },
       (s) => { s.predicateType = 'https://in-toto.io/attestation/release/v0.3'; },
@@ -305,7 +289,7 @@ for (const version of ['v0.1', 'v0.2']) {
   });
 
   test(`synthetic ${version} public parser rejects SAN, DSSE and full-subject binding failures`, () => {
-    const current = publicationHarness(version);
+    const current = nativeHarness(version);
     for (const mutate of [
       (n) => { n.verificationResult.signature.certificate.subjectAlternativeName = 'https://github.com'; },
       (n) => { n.attestation.bundle.dsseEnvelope.payloadType = 'application/json'; },
@@ -331,38 +315,50 @@ for (const version of ['v0.1', 'v0.2']) {
     }
   });
 
-  test(`synthetic ${version} public candidate and receipt reject another individually valid statement`, () => {
-    const current = publicationHarness(version); const reordered = structuredClone(current.statement);
-    reordered.subject.reverse();
-    const otherVersion = publicationHarness(version === 'v0.1' ? 'v0.2' : 'v0.1').nativeVerification;
-    for (const nativeVerification of [nativeResult(reordered), otherVersion]) {
-      assertNativeReleaseAttestation(nativeVerification, current.expected);
-      assert.throws(() => createPublicationCandidate({ ...current.input, nativeVerification }), /First-hand native release statement differs/);
-      assert.throws(() => validatePublicationAcceptance(current.candidate, { ...current.receiptInputs, nativeVerification }), /First-hand native release statement differs/);
+  test(`synthetic ${version} direct consumer rejects another individually valid native statement`, async () => {
+    const current = nativeHarness(version); const reordered = structuredClone(current.statement); reordered.subject.reverse();
+    const otherVersion = nativeHarness(version === 'v0.1' ? 'v0.2' : 'v0.1').nativeVerification;
+    for (const different of [nativeResult(reordered), otherVersion]) {
+      assertNativeReleaseAttestation(different, current.expected);
+      let calls = 0;
+      await withCommittedSelector(current.h.selector, (binding, directory) => assert.rejects(verifySelection(binding, directory,
+        { ...current.io, attestation: async () => ++calls === 1 ? current.nativeVerification : different }), /different native statement/));
+      assert.equal(calls, 2);
     }
   });
 }
 
-test('policy-valid synthetic v0.2 cannot qualify a completed-failure publisher or missing publication artifact', async () => {
-  for (const failure of ['publisher', 'artifact']) {
-    const current = publicationHarness('v0.2');
-    assertNativeReleaseAttestation(current.nativeVerification, current.expected);
-    if (failure === 'publisher') {
-      current.input.producerRun.conclusion = 'failure'; current.h.publisher.conclusion = 'failure';
-    } else current.input.artifacts = [];
-    assert.throws(() => createPublicationCandidate(current.input), failure === 'publisher' ? /completed-success producer/ : /Exactly one publication artifact/);
-    let publicationChecks = 0;
-    current.h.io.verifySelectedPublication = async () => {
-      publicationChecks++;
-      createPublicationCandidate(current.input);
-      assert.fail('Unqualified synthetic publication must never be accepted');
-    };
-    await withDirectory(async (directory) => {
-      await assert.rejects(loadTrustedInputs(current.h.compatibility, directory, current.h.io), failure === 'publisher' ? /completed-success binding mismatch/ : /Exactly one publication artifact/);
+test('direct consumer fails closed on missing/foreign/failed producer and partial or changed release metadata', async () => {
+  for (const mutate of [
+    current => { current.publisher.conclusion = 'failure'; },
+    current => { delete current.publisher.head_repository; },
+    current => { current.publisher.repository.owner.login = 'foreign'; },
+    current => { current.release.assets.pop(); },
+    current => { current.release.assets[0].digest = 'sha256:' + '0'.repeat(64); },
+    current => { current.release.assets[0].size++; },
+    current => { current.release.target_commitish = 'a'.repeat(40); },
+  ]) {
+    const current = nativeHarness('v0.2'); mutate(current);
+    await withCommittedSelector(current.h.selector, (binding, directory) => assert.rejects(verifySelection(binding, directory, current.io)));
+    assert.equal(current.nativeCalls(), 0);
+    assert.ok(current.requests.every(endpoint => !endpoint.includes('/actions/artifacts')));
+  }
+});
+
+test('trusted input acceptance rejects missing or changed committed selection results without verified output', async () => {
+  for (const mutate of [
+    selector => { selector.release.id++; }, selector => { selector.schema_version = 1; },
+    selector => { selector.runtime_policy.content_sha256 = 'b'.repeat(64); }, selector => { selector.publication_acceptance = {}; },
+  ]) {
+    const h = inputHarness(); const selector = structuredClone(h.selector); mutate(selector);
+    h.io.verifySelectedInputs = async () => ({ selector, manifest: h.manifest });
+    await withDirectory(async directory => {
+      await assert.rejects(loadTrustedInputs(h.compatibility, directory, h.io));
       await assert.rejects(readFile(join(directory, 'verified-inputs.json')), { code: 'ENOENT' });
     });
-    assert.equal(publicationChecks, failure === 'publisher' ? 0 : 1);
   }
+  const historical = inputHarness().selector; historical.schema_version = 1;
+  assert.throws(() => validateSelection(historical), /historical v1/);
 });
 
 test('genuine failed release 406660922 remains parser-only evidence with unchanged original v0.2 statement/envelope', async () => {
@@ -387,6 +383,6 @@ test('genuine failed release 406660922 remains parser-only evidence with unchang
   assert.equal(payloadDigest(native.verificationResult.statement), '88c900b54c66a042490f91ec9a1443bb441f34102e6512b9b9b26040f46baa63');
   assert.equal(native.attestation.bundle.dsseEnvelope.payload, payload);
   assert.ok((await readFile(file)).equals(raw));
-  // No candidate, accepted receipt, successful publisher or runtime tuple is
+  // No successful publisher or runtime tuple is
   // fabricated from this authentic but unselectable failed-publication fixture.
 });

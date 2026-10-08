@@ -17,14 +17,10 @@ export async function pinnedInfraObserver(compatibility, record, environment = p
   const output = resolve(inputsDirectory, 'aws-observation.json');
   execFileSync(process.execPath, [resolve(directory, 'scripts/observe-deployment.mjs'),
     '--expected', resolve(inputsDirectory, 'deployment-record.json'), '--output', output,
+    '--selection', record.selection.file, '--selection-sha256', record.selection.sha256,
     '--trusted-infra-root', directory, '--infra-sha', compatibility.infra.sha,
   ], {
-    env: { ...serviceEnvironment,
-      OBSERVATION_WRITER_WINDOW: environment.E2E_EXPECTED_WRITER_WINDOW_TOKEN,
-      OBSERVATION_WINDOW_SHA: environment.E2E_WRITER_SHA,
-      OBSERVATION_WINDOW_EXPIRES_AT: environment.E2E_WRITER_EXPIRES_AT,
-      OBSERVATION_WINDOW_RECORD_URL: environment.E2E_WRITER_RECORD_URL,
-    },
+    env: serviceEnvironment,
     timeout: 15 * 60_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'],
   });
   const snapshot = parseStrictJson(await readFile(output));
