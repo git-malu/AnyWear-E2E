@@ -17,13 +17,17 @@ This is the operating contract for `git-malu/AnyWear` Issues and Project #4. The
 
 Use one active scheduling manager and one issue worker per issue. The assigning manager or human records an identifiable owner/session claim and numbered transfers. Each physical repository has one Git writer at a time; each shared environment has one deployment writer. Workers stay within their assigned issue, repository, absolute path, and scope. The manager does not implement issues or remove worktrees. A submodule worker does not change lifecycle state, close issues, alter unrelated repositories, or remove shared worktrees.
 
+For requested execution or continuation, the manager keeps coordinating until the requested work is verified complete, the user explicitly pauses or cancels it, or a concrete external blocker leaves no authorized next action. Dispatch, running jobs, and handoffs are intermediate steps: receive and verify results, advance ready gates, and continue other ready work while a scope waits. A worker awaiting a manager-owned review or writer window needs a manager decision, not renewed user permission to start. Make that decision within existing authorization and preserve release gates and any approval required for actions outside that scope.
+
 The manager may put an unresponsive issue into protective `Escalation` and preserve its prior resumption stage. This does not transfer execution ownership or authorize cleanup. Transfer or cleanup requires verified cessation of conflicting sessions, processes, Git writers, jobs, and resources. Follow [ownership and recovery](references/github-operations.md#ownership-and-unresponsive-workers); timeout alone is not evidence of cessation.
 
 ## Issue Intake
 
 The manager checks duplicates and overlap, chooses an existing `Priority` option with a short rationale, identifies dependencies and shared-resource conflicts, and keeps one bounded, verifiable outcome per issue. Split outcomes with different acceptance boundaries or schedules; keep repository slices together when they share one boundary.
 
-Record the goal, scope, acceptance criteria, affected repositories, labels, priority rationale, dependency conditions, applicable gates, and resource constraints in the Issue. Add new work to Project #4 as `Backlog`, read back membership/fields/relationships, and stop. Intake does not allocate a worktree or start implementation unless execution is requested. For the helper that assembles an intake prompt, use [scripts/issue_creation.py](scripts/issue_creation.py); it never creates the Issue itself.
+Record the goal, scope, acceptance criteria, affected repositories, labels, priority rationale, dependency conditions, applicable gates, and resource constraints in the Issue. Add new work to Project #4 as `Backlog`, read back membership/fields/relationships, and finish the intake at that stage. Intake does not allocate a worktree or start implementation unless execution is requested. For the helper that assembles an intake prompt, use [scripts/issue_creation.py](scripts/issue_creation.py); it never creates the Issue itself.
+
+When a new issue arrives during active execution, finish intake-only requests at `Backlog` and resume the existing work. If execution is also requested, add the issue to active scheduling with its dependencies and resources. Do not pause, cancel, or replace existing execution unless the user asks.
 
 ## Stages and Gates
 
