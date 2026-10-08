@@ -7,13 +7,13 @@ dependency layout.
 
 The accepted target contract is [ADR 0021 at Meta
 a8eba148cfef4c124c46010276e66e4c8c41e420](https://github.com/git-malu/AnyWear-Meta/blob/a8eba148cfef4c124c46010276e66e4c8c41e420/architecture/ADR/0021-shared-infrastructure-repository.md).
-These files are copied from the coordinated #54 Infra source at immutable
-revision [`1616783bf604c6c837f32452f039019fc5dd65f5`](https://github.com/git-malu/AnyWear-Infra/commit/1616783bf604c6c837f32452f039019fc5dd65f5),
-published in [Infra PR #1](https://github.com/git-malu/AnyWear-Infra/pull/1).
-All six committed files are byte-identical to the prior reviewed Infra revision
-`88679b61630bc2344258cafb0d35b4d0b02e3a0d` and to the E2E Git blobs. Hashes below
-identify committed producer bytes; checkout line-ending conversion is not a new
-contract revision.
+These files are copied from the reviewed #54 Infra source at immutable
+revision [`72db6d00201ffbefcd37b8e4f77b4a2d105414b2`](https://github.com/git-malu/AnyWear-Infra/commit/72db6d00201ffbefcd37b8e4f77b4a2d105414b2),
+published in [Infra PR #3](https://github.com/git-malu/AnyWear-Infra/pull/3).
+All six committed files match that exact producer revision. The five unchanged
+contract files retain the original source bytes from Infra `1616783bf604c6c837f32452f039019fc5dd65f5`;
+only the native parser is refreshed. Hashes below identify committed producer
+bytes; checkout line-ending conversion is not a new contract revision.
 The byte hashes identify this exact source snapshot; they do not release the
 runtime activation gate. The manager must still review the resulting deployment
 tuple and writer window before any runtime execution.
@@ -25,20 +25,34 @@ tuple and writer window before any runtime execution.
 | `artifact-consumer.mjs` | `scripts/artifact-consumer.mjs` | `6aa2391cfa54d3e77a98385fbbd321b4c4d452814adc07a8c3727d11c49c6b7d` |
 | `publication-acceptance.mjs` | `scripts/publication-acceptance.mjs` | `e531a7b61679ef593ef28dc0d6a2926ea3cb8c52f4f88ff3f5f0fd9ccfd737dc` |
 | `vendor/service-artifact-contract.mjs` | `scripts/vendor/service-artifact-contract.mjs` | `57fbd454b90fae6de856d05bb612a8c9b5b8d9e130e0521093fee0bf7e9422de` |
-| `vendor/service-release-attestation.mjs` | `scripts/vendor/service-release-attestation.mjs` | `cd8235e75ace18eb40728e61bea99d2bc149ba1d44963683df9729035b30e02f` |
+| `vendor/service-release-attestation.mjs` | `scripts/vendor/service-release-attestation.mjs` | `c02c1691ad12203b6d2bd55bbaf58b25feead3ad2bd76ed8240c3c7369d38c65` |
 
 The two Service helpers are byte-identical to
 `.github/scripts/{service-artifact-contract,service-release-attestation}.mjs` at
 immutable Service source
-[`8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce`](https://github.com/git-malu/AnyWear-Service/commit/8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce),
-delivered for source review in [Service PR #50](https://github.com/git-malu/AnyWear-Service/pull/50).
-The final Service source `75c65b22a434129ea84749caa8c9e20bb6119843`
-changes only publisher workflow permissions and offline CLI probes; both helper
-Git blobs and the builder implementation remain identical to that original source.
+[`6a0551b3ea83937d3ac350ee78608784bc2d9dc6`](https://github.com/git-malu/AnyWear-Service/commit/6a0551b3ea83937d3ac350ee78608784bc2d9dc6),
+delivered in [Service PR #53](https://github.com/git-malu/AnyWear-Service/pull/53).
+The original helpers came from `8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce`;
+source `75c65b22a434129ea84749caa8c9e20bb6119843` retained those historical
+helper bytes while changing publisher workflow permissions and offline CLI probes.
+The current native parser adds strict v0.2 support while preserving exact v0.1.
 Native release verification compares the successful GitHub CLI JSON against the
 complete signed Service owner/repository/release/tag/commit/asset set. The
 publication receipt retains the exact original successful publisher artifact
 record and review URL; it does not depend on that artifact remaining available.
+
+The genuine fixture [`../fixtures/github-native-release-verification-v0.2.json`](../fixtures/github-native-release-verification-v0.2.json)
+is copied byte-for-byte from Infra `72db6d00201ffbefcd37b8e4f77b4a2d105414b2` path
+`test/fixtures/github-native-release-verification-v0.2.json`, which in turn copies
+Service `6a0551b3ea83937d3ac350ee78608784bc2d9dc6` path
+`.github/fixtures/github-native-release-verification-v0.2.json`. Its 5,681 raw bytes
+have SHA-256 `cf0bf9a5550ec9b475cb9b1fea68b793a39a2e640431deb69f075254d23ab0e2`.
+[Producer fixture provenance](https://github.com/git-malu/AnyWear-Infra/blob/72db6d00201ffbefcd37b8e4f77b4a2d105414b2/test/fixtures/native-release-source.md)
+records original CLI stdout/version, signed payload and complete subjects. This
+fixture came from failed publisher `37757528038/1`, release `406660922` with no
+publication artifact. That release remains UNSELECTABLE; parser acceptance or
+synthetic policy tests do not qualify its cryptography, publication or deployment.
+The original v0.1 fixture remains preserved in the producer's fixture set.
 
 Runtime observation separately checks out and executes the exact full Infra SHA
 selected in compatibility v2. A vendored validator never substitutes for that
@@ -51,8 +65,8 @@ The coordinated #54 source inputs accepted for later consumption are:
 | Repository | Immutable source revision |
 | --- | --- |
 | Client | `04d931ddd81545731b314d310a26df08cbc89473` |
-| Service | `75c65b22a434129ea84749caa8c9e20bb6119843` |
-| Infra | `1616783bf604c6c837f32452f039019fc5dd65f5` |
+| Service | `6a0551b3ea83937d3ac350ee78608784bc2d9dc6` |
+| Infra | `72db6d00201ffbefcd37b8e4f77b4a2d105414b2` |
 
 These revisions describe source delivery. Compatibility v1 retains its existing
 Client and Service runtime pins; a deployed v2 tuple requires separate producer
