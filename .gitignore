@@ -158,4 +158,5 @@ runtime-drill-evidence.json
 .qualification-inputs/
 deployment-evidence*.json
 qualification-record.json
+github-cli-version.txt
 recovery/

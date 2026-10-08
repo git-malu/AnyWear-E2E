@@ -196,7 +196,10 @@ A reviewed v2 compatibility file has these additional identities:
 The placeholders above are rejected by validation. To migrate, supply all exact
 values explicitly to `node scripts/migrate-compatibility.mjs --reviewed-input
 <reviewed-v2.json>`. First prepare `.infra-source` as a clean checkout of the
-candidate's exact Infra SHA from its expected origin. The script checks remote commit availability, retrieves the
+candidate's exact Infra SHA from its expected origin. Supply the Infra reader as
+`GH_TOKEN`, the Service reader as `SERVICE_ARTIFACT_READ_TOKEN`, and a Client-only
+Contents read token as `CLIENT_CONTENTS_READ_TOKEN` for remote commit checks.
+The script checks remote commit availability, retrieves the
 pinned trusted deployment artifact and sealed Service manifest, then writes the
 candidate for review. It does not infer SHAs, dispatch workflows, or run a suite.
 The final #54 tuple must pin the deployment record produced **after old IAM/trust
@@ -212,8 +215,17 @@ Infra source. E2E executes that Infra revision's consumer with an explicit trust
 source root and SHA; its vendored directory cannot supply receipt trust. The
 consumer checks native release verification JSON and every signed asset, rather
 than accepting CLI exit status alone. Private retrieval
-uses a GitHub App with Contents/Actions read access to Infra and Service; it does
-not use a PAT. `gh release verify` and `verify-asset` must be available. The Ubuntu
+uses separate GitHub App readers: Infra-only Contents/Actions read through
+`GH_TOKEN`, and Service-only Contents/Actions/Attestations read through
+`SERVICE_ARTIFACT_READ_TOKEN`. App token creation uses v3 so the declared
+permissions are applied. Integration source checkouts use a separate Contents
+read token limited to Client, Service, and Service-API; cleanup tokens retain only
+Service Actions write. Native release verification and the pinned Infra observer
+receive the Service reader through an explicit subprocess environment, with no
+fallback to the Infra token or local authentication. It does not use a PAT.
+`gh release verify` and `verify-asset` must be available. Source Quality and both
+qualification workflows check these commands offline; qualification evidence
+preserves the actual runner `github-cli-version.txt`. The Ubuntu
 runner uses Python's ZIP reader to read exactly `deployment-record.json`, without
 extracting any archive paths.
 

@@ -76,18 +76,34 @@ jobs:
           node scripts/writer-window.mjs
           echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Generate immutable evidence read token
+      - name: Check native release verification CLI
+        run: |
+          gh --version | tee github-cli-version.txt
+          gh release verify --help > /dev/null
+          gh release verify-asset --help > /dev/null
+
+      - name: Generate Infra evidence read token
         id: evidence-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: |
-            AnyWear-Infra
-            AnyWear-Service
+          repositories: AnyWear-Infra
           permission-contents: read
           permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
 
       - name: Checkout exact reviewed Infra observation tools
         uses: actions/checkout@v4
@@ -101,6 +117,7 @@ jobs:
       - name: Verify trusted deployment and immutable Service inputs
         env:
           GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
         run: node scripts/trusted-deployment-inputs.mjs
 
       - name: Configure Beta AWS credentials
@@ -111,13 +128,13 @@ jobs:
 
       - name: Observe authenticated deployed tuple before suite
         env:
-          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
       - name: Generate Service cleanup token
         id: service-cleanup-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -159,7 +176,7 @@ jobs:
 
       - name: Confirm deployed identities remained stable
         env:
-          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
@@ -180,6 +197,7 @@ jobs:
             deployment-evidence-before.json
             deployment-evidence.json
             qualification-record.json
+            github-cli-version.txt
           retention-days: 90
           include-hidden-files: true
           if-no-files-found: error

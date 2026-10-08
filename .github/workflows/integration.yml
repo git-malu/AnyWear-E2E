@@ -53,9 +53,16 @@ jobs:
           path: AnyWear-E2E
           persist-credentials: false
 
-      - name: Generate repository token
+      - name: Check native release verification CLI
+        working-directory: AnyWear-E2E
+        run: |
+          gh --version | tee github-cli-version.txt
+          gh release verify --help > /dev/null
+          gh release verify-asset --help > /dev/null
+
+      - name: Generate source checkout token
         id: generate-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -64,9 +71,30 @@ jobs:
             AnyWear-Client
             AnyWear-Service
             AnyWear-Service-API
-            AnyWear-Infra
+          permission-contents: read
+
+      - name: Generate Infra evidence read token
+        id: infra-evidence-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
           permission-contents: read
           permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
 
       - name: Load pinned compatibility set
         id: compatibility
@@ -119,7 +147,7 @@ jobs:
           repository: git-malu/AnyWear-Infra
           ref: ${{ steps.compatibility.outputs.infra_sha }}
           path: AnyWear-E2E/.infra-source
-          token: ${{ steps.generate-token.outputs.token }}
+          token: ${{ steps.infra-evidence-token.outputs.token }}
           persist-credentials: false
 
       - name: Setup pnpm
@@ -145,7 +173,8 @@ jobs:
       - name: Verify trusted deployment and immutable Service inputs
         working-directory: AnyWear-E2E
         env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          GH_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
         run: node scripts/trusted-deployment-inputs.mjs
 
       - name: Verify OIDC identity
@@ -172,13 +201,13 @@ jobs:
       - name: Observe authenticated deployed tuple before smoke
         working-directory: AnyWear-E2E
         env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
       - name: Generate Service cleanup token
         id: service-cleanup-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -224,7 +253,7 @@ jobs:
       - name: Confirm authenticated deployed tuple remained stable
         working-directory: AnyWear-E2E
         env:
-          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
@@ -235,6 +264,7 @@ jobs:
           name: tested-revisions
           path: |
             tested-revisions.txt
+            AnyWear-E2E/github-cli-version.txt
             AnyWear-E2E/deployment-evidence.json
 
       - name: Upload Playwright diagnostics

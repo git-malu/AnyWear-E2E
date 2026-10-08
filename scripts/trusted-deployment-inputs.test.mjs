@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { byteHash, payloadDigest } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
-import { loadTrustedInputs } from './trusted-deployment-inputs.mjs';
+import { loadTrustedInputs, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
 
 function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact, alterRelease, corruptRecord = false } = {}) {
   const f = qualificationFixture();
@@ -78,10 +78,13 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
     ['repos/git-malu/AnyWear-Service/actions/runs/50/attempts/1', publisher],
     [`repos/git-malu/AnyWear-Service/git/ref/tags/${release.tag_name}`, { object: { type: 'commit', sha: manifest.producer.workflow_sha } }],
   ]);
-  const attestations = [];
-  return { compatibility: f.compatibility, attestations,
+  const attestations = []; const requests = [];
+  return { compatibility: f.compatibility, attestations, requests,
     io: {
-      api: async (path, binary) => {
+      environment: { GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
+        GITHUB_TOKEN: 'unrelated-write-fixture', CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture' },
+      api: async (path, binary, environment) => {
+        requests.push({ path, environment });
         if (binary && path.endsWith('/zip')) return Buffer.from('archive-fixture');
         if (binary && path.endsWith('/assets/11')) return manifestBytes;
         if (!responses.has(path)) throw new Error(`Unexpected fixture API request: ${path}`);
@@ -112,6 +115,38 @@ test('retrieves exact trusted attempt/artifact/manifest and requires attestation
     assert.equal(harness.attestations[0].digest, harness.compatibility.service_artifacts.manifest_sha256);
     assert.ok((await readFile(join(directory, 'verified-inputs.json'))).length > 0);
   });
+});
+
+test('mixed trusted inputs route each API to its own reader without forwarding other credentials', async () => {
+  const h = inputHarness();
+  await withDirectory((directory) => loadTrustedInputs(h.compatibility, directory, h.io));
+  assert.ok(h.requests.some(request => request.path.includes('/AnyWear-Infra/')));
+  assert.ok(h.requests.some(request => request.path.includes('/AnyWear-Service/')));
+  for (const { path, environment } of h.requests) {
+    assert.equal(environment.GH_TOKEN, path.includes('/AnyWear-Infra/') ? 'infra-read-fixture' : 'service-read-fixture');
+    for (const key of ['GITHUB_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN', 'CLIENT_CONTENTS_READ_TOKEN']) {
+      assert.equal(environment[key], undefined);
+    }
+  }
+  assert.equal(h.io.environment.GH_TOKEN, 'infra-read-fixture');
+  assert.equal(h.io.environment.GITHUB_TOKEN, 'unrelated-write-fixture');
+});
+
+test('missing explicit readers fail before API requests and cannot fall back to ambient authentication', async () => {
+  for (const key of ['GH_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN']) {
+    const h = inputHarness(); delete h.io.environment[key];
+    await withDirectory((directory) => assert.rejects(loadTrustedInputs(h.compatibility, directory, h.io), new RegExp(key)));
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.attestations.length, 0);
+  }
+  const environment = { GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
+    CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture', GITHUB_TOKEN: 'unrelated-write-fixture' };
+  assert.equal(repositoryReadEnvironment('git-malu/AnyWear-Client', environment).GH_TOKEN, 'client-read-fixture');
+  assert.equal(repositoryReadEnvironment('git-malu/AnyWear-Service', environment).GH_TOKEN, 'service-read-fixture');
+  assert.equal(repositoryReadEnvironment('git-malu/AnyWear-Infra', environment).GH_TOKEN, 'infra-read-fixture');
+  assert.throws(() => repositoryReadEnvironment('git-malu/AnyWear-E2E', environment), /Unexpected repository/);
+  delete environment.CLIENT_CONTENTS_READ_TOKEN;
+  assert.throws(() => repositoryReadEnvironment('git-malu/AnyWear-Client', environment), /CLIENT_CONTENTS_READ_TOKEN/);
 });
 
 test('baseline import retains independent component sources and original failure outcomes', async () => {
