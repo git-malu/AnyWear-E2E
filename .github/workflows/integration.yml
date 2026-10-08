@@ -57,8 +57,8 @@ jobs:
         working-directory: AnyWear-E2E
         run: |
           gh --version | tee github-cli-version.txt
-          gh release verify --help > /dev/null
-          gh release verify-asset --help > /dev/null
+          gh release verify --help --format json > /dev/null
+          gh release verify-asset --help --format json > /dev/null
 
       - name: Generate source checkout token
         id: generate-token
