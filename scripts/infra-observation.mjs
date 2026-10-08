@@ -4,13 +4,13 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertEqual, parseStrictJson, repositories, validateCompatibility } from './evidence-contract.mjs';
 import { assertDeploymentBinding, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
-import { assertE2EWriterWindow } from './writer-window.mjs';
+import { assertE2EExecution } from './execution-guard.mjs';
 import { reviewedInfraSource } from './infra-source.mjs';
 
 export async function pinnedInfraObserver(compatibility, record, environment = process.env) {
   validateCompatibility(compatibility);
   assertDeploymentBinding(record, compatibility);
-  assertE2EWriterWindow(environment);
+  assertE2EExecution(environment);
   const serviceEnvironment = repositoryReadEnvironment(repositories.service, environment);
   const directory = reviewedInfraSource(compatibility, environment);
   const inputsDirectory = resolve(environment.QUALIFICATION_INPUTS_DIR ?? '.qualification-inputs');

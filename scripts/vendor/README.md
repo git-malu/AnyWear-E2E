@@ -4,7 +4,7 @@ These files are exact copies of public Infra/Service interfaces. E2E consumes pu
 
 ## Direct selection source
 
-The staged source integration consumes immutable [Infra `97dadd12cc571f1a0e0c33b25ba9fd769e24e126`](https://github.com/git-malu/AnyWear-Infra/commit/97dadd12cc571f1a0e0c33b25ba9fd769e24e126) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
+The staged source integration consumes immutable [Infra `5815bfb39010d356bde44c070c53d9aceccb9504`](https://github.com/git-malu/AnyWear-Infra/commit/5815bfb39010d356bde44c070c53d9aceccb9504) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
 
 All five contract files match the exact Infra source bytes:
 

@@ -158,18 +158,21 @@ if (process.argv.includes('--expected')) {
   await withInfraFixture(async ({ directory, compatibility }) => {
     const output = await mkdtemp(join(tmpdir(), 'anywear-pinned-observation-'));
     const record = qualificationFixture().deployment; record.infra.sha = compatibility.infra.sha;
-    const sha = 'd'.repeat(40);
+    const sha = execFileSync('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const environment = { ...readerEnvironment(directory), QUALIFICATION_INPUTS_DIR: output,
       GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
+      GITHUB_REPOSITORY_ID: '1317091305', GITHUB_REPOSITORY_OWNER: 'git-malu', GITHUB_REPOSITORY_OWNER_ID: '11473072',
       GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
-      E2E_STAGE: 'beta', ENABLE_INFRA_E2E: 'true', GITHUB_SHA: sha, E2E_WRITER_SHA: sha,
-      GITHUB_RUN_ID: '123', E2E_WRITER_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', E2E_WRITER_RUN_ATTEMPT: '1',
-      E2E_WRITER_WINDOW_TOKEN: 'test-window', E2E_EXPECTED_WRITER_WINDOW_TOKEN: 'test-window',
-      E2E_WRITER_EXPIRES_AT: '2099-01-01T00:00:00Z',
-      E2E_WRITER_RECORD_URL: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-1',
+      E2E_STAGE: 'beta', ENABLE_INFRA_E2E: 'true', GITHUB_SHA: sha, GITHUB_WORKFLOW_SHA: sha,
+      GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', E2E_AWS_ACCOUNT: '650880818323',
+      E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/fixture-123',
       AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40) };
     try {
       await writeFile(join(output, 'deployment-record.json'), JSON.stringify(record));
+      for (const principal of [undefined, 'arn:aws:sts::650880818323:assumed-role/beta-infra-role/fixture-123']) {
+        await assert.rejects(pinnedInfraObserver(compatibility, record, { ...environment, E2E_AWS_PRINCIPAL_ARN: principal }), /dedicated E2E principal/);
+        await assert.rejects(readFile(join(output, 'aws-observation.json')), { code: 'ENOENT' });
+      }
       const snapshot = await pinnedInfraObserver(compatibility, record, environment);
       assert.equal(snapshot.schema.verification.source_sha, compatibility.infra.sha);
       assert.deepEqual(JSON.parse(await readFile(join(output, 'aws-observation.json'))), snapshot);

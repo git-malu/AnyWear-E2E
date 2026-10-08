@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { byteHash, canonicalJson, parseStrictJson, payloadDigest, validateCompatibility } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
-import { assertE2EWriterWindow } from './writer-window.mjs';
+import { assertE2EExecution } from './execution-guard.mjs';
 import { assertDeploymentBinding, assertSealedRelease, assertTrustedArtifact, assertTrustedRun } from './trusted-deployment-inputs.mjs';
 import { buildQualificationRecord, collectDeploymentEvidence, verifyQualificationForPromotion, verifyQualificationRecord } from './qualification-record.mjs';
 import { assertRecoveryArtifact, prepareAccountRecovery } from './account-recovery-inputs.mjs';
@@ -134,16 +134,35 @@ test('duplicate HTTP metadata is rejected before qualification', async () => {
   await assert.rejects(collectDeploymentEvidence({ clientUrl: f.evidence.before.client.url, serviceUrl: f.evidence.before.service.url }, f.compatibility, fetcher), /Duplicate JSON key/);
 });
 
-test('writer guard binds exact protected dispatch revision/run/attempt/token and expiry', () => {
-  const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
-    E2E_STAGE: 'beta', ENABLE_INFRA_E2E: 'true', GITHUB_SHA: 'a'.repeat(40), E2E_WRITER_SHA: 'a'.repeat(40),
-    GITHUB_RUN_ID: '123', E2E_WRITER_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', E2E_WRITER_RUN_ATTEMPT: '1',
-    E2E_WRITER_WINDOW_TOKEN: 'reviewed-window', E2E_EXPECTED_WRITER_WINDOW_TOKEN: 'reviewed-window', E2E_WRITER_EXPIRES_AT: '2099-01-01T00:00:00Z',
-    E2E_WRITER_RECORD_URL: 'https://github.com/git-malu/AnyWear/issues/54#issuecomment-1', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
-    E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40) };
-  assert.equal(assertE2EWriterWindow(env), true);
-  for (const patch of [{ ENABLE_INFRA_E2E: 'false' }, { E2E_WRITER_RUN_ID: '124' }, { E2E_WRITER_RUN_ATTEMPT: '2' },
-    { E2E_WRITER_SHA: 'b'.repeat(40) }, { E2E_EXPECTED_WRITER_WINDOW_TOKEN: 'other-window' }, { E2E_WRITER_EXPIRES_AT: '2000-01-01T00:00:00Z' }, { GITHUB_REF: 'refs/heads/topic' }]) assert.throws(() => assertE2EWriterWindow({ ...env, ...patch }));
+test('execution guard binds protected dispatch/source and the captured dedicated principal', () => {
+  const sourceSha = 'a'.repeat(40);
+  const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_REPOSITORY_ID: '1317091305',
+    GITHUB_REPOSITORY_OWNER: 'git-malu', GITHUB_REPOSITORY_OWNER_ID: '11473072',
+    GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
+    GITHUB_WORKFLOW_SHA: sourceSha, GITHUB_SHA: sourceSha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
+    E2E_STAGE: 'beta', ENABLE_INFRA_E2E: 'true', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
+    E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40), E2E_AWS_ACCOUNT: '650880818323',
+    E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/qualification-123' };
+  assert.equal(assertE2EExecution(env, { sourceSha }), true);
+  for (const name of ['integration', 'account-recovery']) {
+    assert.equal(assertE2EExecution({ ...env, GITHUB_WORKFLOW_REF: `git-malu/AnyWear-E2E/.github/workflows/${name}.yml@refs/heads/main` }, { sourceSha }), true);
+  }
+  for (const patch of [{ ENABLE_INFRA_E2E: 'false' }, { GITHUB_REPOSITORY: 'other/E2E' }, { GITHUB_REPOSITORY_ID: '1' },
+    { GITHUB_REPOSITORY_OWNER: 'other' }, { GITHUB_REPOSITORY_OWNER_ID: '1' }, { GITHUB_REF: 'refs/heads/topic' },
+    { GITHUB_EVENT_NAME: 'pull_request' }, { E2E_STAGE: 'dev' }, { GITHUB_WORKFLOW_SHA: 'b'.repeat(40) },
+    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/runtime-drill.yml@refs/heads/main' },
+    { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '9007199254740992' }, { GITHUB_RUN_ATTEMPT: '0' },
+    { AWS_ACCOUNT_ID: '1' }, { AWS_REGION: 'us-east-1' }, { E2E_CLEANUP_SERVICE_SHA: 'main' },
+    { E2E_AWS_ACCOUNT: undefined }, { E2E_AWS_ACCOUNT: '1' }, { E2E_AWS_PRINCIPAL_ARN: undefined },
+    { E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-infra-role/123' },
+    { E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::111111111111:assumed-role/beta-e2e-qualification-role/123' }]) {
+    assert.throws(() => assertE2EExecution({ ...env, ...patch }, { sourceSha }));
+  }
+  assert.throws(() => assertE2EExecution(env, { sourceSha: 'c'.repeat(40) }), /checkout/);
+  const beforeCredentials = { ...env, E2E_AWS_ACCOUNT: undefined, E2E_AWS_PRINCIPAL_ARN: undefined };
+  assert.equal(assertE2EExecution(beforeCredentials, { sourceSha, sourceOnly: true }), true);
+  assert.throws(() => assertE2EExecution(beforeCredentials, { sourceSha }), /dedicated E2E principal/);
 });
 
 test('recovery binds the original completed owner and preserves unknown identities', () => {

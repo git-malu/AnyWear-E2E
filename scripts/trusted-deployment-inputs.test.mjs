@@ -207,10 +207,31 @@ function nativeResult(statement) {
       payloadType: 'application/vnd.in-toto+json', signatures: [{ sig: 'synthetic-policy-only' }] } } } };
 }
 
-function nativeHarness(version) {
-  const h = inputHarness(); const selected = [...Object.values(h.selector.lambdas), h.selector.runtime_policy, h.selector.schema];
+function nativeHarness(version, { completeAssets = false } = {}) {
+  const h = inputHarness(); const assetBytes = {};
+  if (completeAssets) {
+    const entry = { queueVisibilitySeconds: 30, receiveVisibilitySeconds: 20, dbLeaseMs: 30_000, sqsHeartbeatMs: 10_000,
+      retryDelayBaseMs: 100, retryDelayMaxMs: 1_000, outboxRetryDelayMs: 100, outboxMaxAttempts: 3, maxAttempts: 3, maxReceives: 9, terminalRedriveSeconds: 10 };
+    const policy = { vto: entry, 'auto-tagging': entry };
+    const schema = { schema_version: 1, record_type: 'anywear_service_schema', current_version: 16, minimum_version: 16, minimum_migration_count: 1,
+      journal: { version: '7', dialect: 'postgresql', entries: [{ idx: 0, version: '7', when: 1_000, tag: '0000_initial', breakpoints: true }] },
+      migrations: [{ id: '0000_initial', idx: 0, created_at: 1_000, sha256: byteHash('offline SQL') }] };
+    for (const [name, component] of Object.entries(h.manifest.components.lambdas)) {
+      const bytes = Buffer.from(`offline ${name} ZIP bytes`); assetBytes[component.file] = bytes;
+      component.sha256 = byteHash(bytes); component.code_sha256 = Buffer.from(component.sha256, 'hex').toString('base64');
+    }
+    assetBytes[h.manifest.components.runtime_policy.file] = Buffer.from(canonicalJson(policy));
+    Object.assign(h.manifest.components.runtime_policy, { sha256: byteHash(assetBytes[h.manifest.components.runtime_policy.file]), content_sha256: payloadDigest(policy) });
+    assetBytes[h.manifest.components.schema.file] = Buffer.from(canonicalJson(schema));
+    Object.assign(h.manifest.components.schema, { sha256: byteHash(assetBytes[h.manifest.components.schema.file]), journal_sha256: payloadDigest(schema.journal) });
+    for (const [name, component] of Object.entries(h.manifest.components.lambdas)) Object.assign(h.selector.lambdas[name], component);
+    Object.assign(h.selector.runtime_policy, h.manifest.components.runtime_policy); Object.assign(h.selector.schema, h.manifest.components.schema);
+    h.manifestBytes = Buffer.from(`${JSON.stringify(h.manifest, null, 2)}\n`);
+    h.selector.release.manifest_sha256 = byteHash(h.manifestBytes);
+  }
+  const selected = [...Object.values(h.selector.lambdas), h.selector.runtime_policy, h.selector.schema];
   const assets = [{ id: 11, name: 'service-artifacts.json', size: h.manifestBytes.length, sha256: h.selector.release.manifest_sha256 },
-    ...selected.map((component, index) => ({ id: component.asset_id, name: component.file, sha256: component.sha256, size: index + 1 }))];
+    ...selected.map((component, index) => ({ id: component.asset_id, name: component.file, sha256: component.sha256, size: completeAssets ? assetBytes[component.file].length : index + 1 }))];
   const release = { ...h.release, target_commitish: h.manifest.producer.workflow_sha,
     assets: assets.map((asset) => ({ ...asset, state: 'uploaded', digest: 'sha256:' + asset.sha256 })) };
   const expected = { releaseId: release.id, tag: release.tag_name, target: h.manifest.producer.workflow_sha,
@@ -234,7 +255,10 @@ function nativeHarness(version) {
       if (endpoint.includes('/actions/runs/')) return publisher;
       throw new Error('Unexpected direct consumer endpoint: ' + endpoint);
     },
-    asset: async () => h.manifestBytes,
+    asset: async (repository, id) => {
+      assert.equal(repository, 'git-malu/AnyWear-Service');
+      return id === 11 ? h.manifestBytes : assetBytes[assets.find(asset => asset.id === id)?.name] ?? h.manifestBytes;
+    },
     attestation: async () => { nativeCalls++; return nativeVerification; },
   };
   return { h, expected, statement, nativeVerification, release, publisher, requests, io, nativeCalls: () => nativeCalls };
@@ -326,7 +350,49 @@ for (const version of ['v0.1', 'v0.2']) {
       assert.equal(calls, 2);
     }
   });
+
+  test(`synthetic ${version} complete direct consumer verifies all six native results and rechecks producer/release/source`, async () => {
+    const current = nativeHarness(version, { completeAssets: true });
+    const payload = current.nativeVerification.attestation.bundle.dsseEnvelope.payload;
+    await withCommittedSelector(current.h.selector, async (binding, directory) => {
+      const result = await verifySelection(binding, directory, current.io);
+      assert.deepEqual(result.selector, current.h.selector); assert.deepEqual(result.manifest, current.h.manifest);
+      assert.equal(current.nativeCalls(), 6);
+      assert.equal(current.requests.filter(endpoint => endpoint.includes('/actions/runs/')).length, 2);
+      assert.equal(current.requests.filter(endpoint => endpoint.includes('/releases/')).length, 2);
+      assert.equal(current.nativeVerification.attestation.bundle.dsseEnvelope.payload, payload);
+      assert.ok((await readFile(join(directory, 'selection.json'))).equals(Buffer.from(canonicalJson(current.h.selector))));
+      assert.ok((await readFile(join(directory, 'service-artifacts.json'))).equals(current.h.manifestBytes));
+      assert.ok(current.requests.every(endpoint => !endpoint.includes('/actions/artifacts')));
+    });
+  });
 }
+
+test('complete direct consumer withholds verified selection when publisher/release/source changes after native verification', async () => {
+  for (const change of ['publisher', 'release', 'source']) {
+    const current = nativeHarness('v0.2', { completeAssets: true });
+    await withCommittedSelector(current.h.selector, async (binding, directory) => {
+      let calls = 0;
+      const io = { ...current.io,
+        api: async endpoint => {
+          const result = await current.io.api(endpoint);
+          if (calls === 6 && change === 'publisher' && endpoint.includes('/actions/runs/')) return { ...result, conclusion: 'failure' };
+          if (calls === 6 && change === 'release' && endpoint.includes('/releases/')) return { ...result, target_commitish: 'f'.repeat(40) };
+          return result;
+        },
+        attestation: async () => {
+          calls++;
+          if (calls === 6 && change === 'source') await writeFile(join(binding.trustedInfraRoot, binding.selectionFile), '{}');
+          return current.nativeVerification;
+        },
+      };
+      await assert.rejects(verifySelection(binding, directory, io), change === 'publisher' ? /publisher run/ : change === 'release' ? /identity changed/ : /clean/);
+      assert.equal(calls, 6);
+      await assert.rejects(readFile(join(directory, 'selection.json')), { code: 'ENOENT' });
+      await assert.rejects(readFile(join(directory, 'verified-inputs.json')), { code: 'ENOENT' });
+    });
+  }
+});
 
 test('direct consumer fails closed on missing/foreign/failed producer and partial or changed release metadata', async () => {
   for (const mutate of [

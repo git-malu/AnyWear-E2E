@@ -28,7 +28,7 @@ on:
       - scripts/nonpaid-*.mjs
       - scripts/runtime-*.mjs
       - scripts/sse-replica-attribution.mjs
-      - scripts/writer-window.mjs
+      - scripts/execution-guard.mjs
       - scripts/evidence-contract.mjs
       - scripts/infra-source.mjs
       - scripts/qualification-record.mjs
@@ -64,7 +64,7 @@ on:
       - scripts/nonpaid-*.mjs
       - scripts/runtime-*.mjs
       - scripts/sse-replica-attribution.mjs
-      - scripts/writer-window.mjs
+      - scripts/execution-guard.mjs
       - scripts/evidence-contract.mjs
       - scripts/infra-source.mjs
       - scripts/qualification-record.mjs

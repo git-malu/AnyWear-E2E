@@ -10,14 +10,14 @@ import {
 import { markAccountDeleted } from '../tests/support/account-budget.ts';
 import { assertServiceCleanupRunSource, findServiceCleanupRunId, serviceCleanupDispatchArgs } from '../tests/support/service-cleanup-dispatch.ts';
 import { cleanupWorkerAccounts } from '../tests/support/worker-cleanup.ts';
-import { assertE2EWriterWindow } from './writer-window.mjs';
+import { assertE2EExecution } from './execution-guard.mjs';
 import { byteHash, parseStrictJson, requireCommit } from './evidence-contract.mjs';
 
 const exec = promisify(execFile);
 const manifestPath = process.env.E2E_ACCOUNT_BUDGET_PATH ?? 'test-results/account-budget.json';
 
 async function runServiceCleanup(inputs) {
-  assertE2EWriterWindow();
+  assertE2EExecution();
   const operatorSha = requireCommit(process.env.E2E_CLEANUP_SERVICE_SHA, 'Reviewed Service data-cleanup operator source');
   const dispatchedAt = new Date().toISOString();
   try {
@@ -63,12 +63,11 @@ async function runServiceCleanup(inputs) {
     schema_version: 1, record_type: 'anywear_e2e_service_cleanup',
     e2e: { repository: process.env.GITHUB_REPOSITORY, sha: process.env.GITHUB_SHA,
       run_id: Number(process.env.GITHUB_RUN_ID), run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT) },
-    writer_record_url: process.env.E2E_WRITER_RECORD_URL,
     operator_sha: operatorSha, dispatched_at: dispatchedAt, verified_at: new Date().toISOString(),
     cleanup_request_sha256: byteHash(Buffer.from(inputs.cleanup_json)),
     cleanup_request: parseStrictJson(inputs.cleanup_json), service_run: completed,
   }, null, 2)}\n`, { mode: 0o600 });
-  assertE2EWriterWindow();
+  assertE2EExecution();
 }
 
 async function cognitoIo() {
@@ -81,7 +80,7 @@ async function cognitoIo() {
       return { Username: user.Username, UserAttributes: user.UserAttributes };
     },
     async deleteUser(username) {
-      assertE2EWriterWindow();
+      assertE2EExecution();
       await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
     },
     destroy() { client.destroy(); },
@@ -89,7 +88,7 @@ async function cognitoIo() {
 }
 
 try {
-  assertE2EWriterWindow();
+  assertE2EExecution();
   let manifest;
   try { manifest = parseStrictJson(await readFile(manifestPath)); }
   catch (error) {
