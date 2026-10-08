@@ -16,9 +16,11 @@ AnyWear is an AI-powered virtual try-on and wardrobe management platform designe
 
 - **Client**: Cross-platform application (Desktop and Mobile) built with Tauri v2, React 19, TypeScript, Vite, and Tailwind CSS v4.
 - **Service (Backend)**: A modular monolith deployed on AWS ECS Fargate using a "One Task" unified architecture. Built with Node.js, Hono, Drizzle ORM, and LangGraph.js.
-- **Meta Contract**: The `AnyWear-Meta` submodule serves as the single source of truth for OpenAPI specifications and Shared TypeScript interfaces to seamlessly bridge the client and service repositories.
-- **System Tests**: The `AnyWear-E2E` submodule owns Playwright flows that cross the real Client and Service boundary. Its versioned `compatibility.json` pins the exact Client and Service commits executed by CI; this shell repository is only a local workspace.
-- **Cloud Infrastructure**: Embraces AWS managed services including Cognito (with WAF protection for passwordless OTP), Aurora Serverless (PostgreSQL + pgvector), S3, and EventBridge Scheduler.
+- **Architecture and API Contracts**: `AnyWear-Meta` owns product and architecture documentation. Service generates the shared `api` contract; Client consumes a published API revision in Service → API → Client order.
+- **System Tests**: `AnyWear-E2E` owns Playwright flows that cross the real Client and Service boundary. Its versioned `compatibility.json` defines the exact CI inputs; source delivery and actual deployment qualification have separate acceptance gates.
+- **Cloud Infrastructure**: `AnyWear-Infra` contains the shared AWS CDK source and reviewed operation runbooks for Cognito, Aurora Serverless, S3 and other shared resources. It is the accepted migration target under [ADR 0021](AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md); Service remains the deployed infrastructure authority until the verified #54 cutover.
+
+This shell contains five submodules: Client, Service, Meta, E2E and Infra. Their fixed commit pins reproduce a local workspace; the shell owns no application build, deployment pipeline or cross-repository credentials. Service owns immutable application/Lambda artifacts, migrations and verification commands; Infra consumes verified releases and reviewed publication receipts, while Client publishes independently. Infra source registration does not establish artifact publication, native consumer acceptance, deployment or system qualification.
 
 ## Local Development
 
@@ -53,18 +55,11 @@ pnpm dev                           # → http://localhost:3000, Swagger UI at /d
 pnpm test                          # vitest run
 ```
 
-#### Infrastructure Deployment (AWS CDK)
+#### Infrastructure Source and Operations
 
-To deploy the cloud infrastructure to AWS:
+Run bounded source checks in the Infra repository using [its required checks](AnyWear-Infra/AGENTS.md#required-source-checks) and [package scripts](AnyWear-Infra/package.json). These checks do not deploy resources. Keep changes to Service's currently deployed CDK source within a separately assigned Service scope until cutover.
 
-```bash
-cd AnyWear-Service/infra
-npm install
-npx cdk bootstrap     # Only required once per AWS account/region
-npx cdk deploy
-```
-
-This provisions Cognito, S3, Aurora Serverless, ECS Fargate, and other AWS resources defined as code.
+For cloud operations, follow the [Beta runbook](AnyWear-Infra/docs/runbooks/beta-infrastructure.md) and [cutover/recovery runbook](AnyWear-Infra/docs/runbooks/cutover-and-recovery.md) with the manager's exact source/input and environment writer allocation. Verify the AWS account, profile and region first. Only the Kanban manager controls Beta on/off, and a start or reactivation requires the user's explicit consent under the [lifecycle rules](.agents/skills/kanban-workflow/SKILL.md#beta-lifecycle-authority). Do not infer runtime authority from a local submodule pin.
 
 ### 3. Start the Frontend
 
@@ -106,4 +101,4 @@ Both Client and Service share the `api` submodule as the source of truth for Ope
 
 - **After API changes in Service**: run `pnpm dev` to regenerate `api/anywear_openapi.yaml`.
 - **In Client**: run `pnpm orval` to regenerate typed API hooks from the updated spec.
-- **Pull latest submodule**: `git submodule update --remote` in either repo.
+- **Publish and consume in order**: commit/publish the generated contract in the `api` repository, record its full revision in Service, then have the assigned Client writer pin that released revision and regenerate its client. Commit each repository's changes inside that repository; do not use a floating branch as a release input.

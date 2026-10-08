@@ -10,3 +10,6 @@
 [submodule "AnyWear-E2E"]
 	path = AnyWear-E2E
 	url = https://github.com/git-malu/AnyWear-E2E.git
+[submodule "AnyWear-Infra"]
+	path = AnyWear-Infra
+	url = https://github.com/git-malu/AnyWear-Infra.git
