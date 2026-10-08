@@ -8,7 +8,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { Page, WorkerInfo } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { assertE2EWriterWindow } from '../../scripts/writer-window.mjs';
+import { assertE2EExecution } from '../../scripts/execution-guard.mjs';
 import {
   markAccountCleanupPending,
   markAccountDeleted,
@@ -124,7 +124,7 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
   const userPoolId = requireEnvironment('USER_POOL_ID');
   const client = cognitoClient();
   try {
-    assertE2EWriterWindow();
+    assertE2EExecution();
     await client.send(new AdminCreateUserCommand({
       UserPoolId: userPoolId,
       Username: account.email,
@@ -136,7 +136,7 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
       ],
     }));
     await getAccountSubject(client, userPoolId, account);
-    assertE2EWriterWindow();
+    assertE2EExecution();
     await client.send(new AdminSetUserPasswordCommand({
       UserPoolId: userPoolId,
       Username: account.email,
@@ -148,7 +148,7 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
       Username: account.email,
     }));
     if (user.UserStatus !== 'CONFIRMED') {
-      assertE2EWriterWindow();
+      assertE2EExecution();
       await client.send(new AdminConfirmSignUpCommand({ UserPoolId: userPoolId, Username: account.email }));
     }
     await markAccountInUse(account.email);
@@ -161,11 +161,11 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
 }
 
 export async function registerAndLogin(page: Page, account: TestAccount): Promise<void> {
-  assertE2EWriterWindow();
+  assertE2EExecution();
   await page.goto('/register');
   await page.locator('input[type="email"]').fill(account.email);
   await page.locator('input[type="password"]').fill(account.password);
-  assertE2EWriterWindow();
+  assertE2EExecution();
   await page.getByRole('button', { name: 'Sign up' }).click();
   await page.waitForURL('/login');
   const userPoolId = requireEnvironment('USER_POOL_ID');
@@ -196,7 +196,7 @@ export async function deleteTestAccount(account: TestAccount): Promise<void> {
   try {
     await markAccountCleanupPending(account.email);
     await getAccountSubject(client, userPoolId, account);
-    assertE2EWriterWindow();
+    assertE2EExecution();
     await client.send(new AdminDeleteUserCommand({
       UserPoolId: userPoolId,
       Username: account.email,

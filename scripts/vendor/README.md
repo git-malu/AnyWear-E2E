@@ -1,76 +1,34 @@
 # Public evidence contract sources
 
-These files are exact copies of public Infra/Service artifact interfaces. E2E
-uses them to validate release selection and deployment evidence without importing
-Service application implementation. Relative imports preserve the producer's
-dependency layout.
+These files are exact copies of public Infra/Service interfaces. E2E consumes public contracts without importing Service application implementation. Relative imports preserve the producer dependency layout. The source record is this README.
 
-The accepted target contract is [ADR 0021 at Meta
-a8eba148cfef4c124c46010276e66e4c8c41e420](https://github.com/git-malu/AnyWear-Meta/blob/a8eba148cfef4c124c46010276e66e4c8c41e420/architecture/ADR/0021-shared-infrastructure-repository.md).
-These files are copied from the reviewed #54 Infra source at immutable
-revision [`72db6d00201ffbefcd37b8e4f77b4a2d105414b2`](https://github.com/git-malu/AnyWear-Infra/commit/72db6d00201ffbefcd37b8e4f77b4a2d105414b2),
-published in [Infra PR #3](https://github.com/git-malu/AnyWear-Infra/pull/3).
-All six committed files match that exact producer revision. The five unchanged
-contract files retain the original source bytes from Infra `1616783bf604c6c837f32452f039019fc5dd65f5`;
-only the native parser is refreshed. Hashes below identify committed producer
-bytes; checkout line-ending conversion is not a new contract revision.
-The byte hashes identify this exact source snapshot; they do not release the
-runtime activation gate. The manager must still review the resulting deployment
-tuple and writer window before any runtime execution.
+## Direct selection source
 
-| E2E file | Producer path in Infra | SHA-256 of copied bytes |
+The staged source integration consumes immutable [Infra `5815bfb39010d356bde44c070c53d9aceccb9504`](https://github.com/git-malu/AnyWear-Infra/commit/5815bfb39010d356bde44c070c53d9aceccb9504) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
+
+All five contract files match the exact Infra source bytes:
+
+| E2E file | Producer path in Infra | Raw SHA-256 |
 | --- | --- | --- |
-| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `87d0530cb4cc63608f96113b5c20af073e67af74c044f1ffa1c9f83d1fb434bd` |
+| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `933d04088f1b65a58718657299028610ab1cc28e208ca8544e49ba7f46301df8` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
-| `artifact-consumer.mjs` | `scripts/artifact-consumer.mjs` | `6aa2391cfa54d3e77a98385fbbd321b4c4d452814adc07a8c3727d11c49c6b7d` |
-| `publication-acceptance.mjs` | `scripts/publication-acceptance.mjs` | `e531a7b61679ef593ef28dc0d6a2926ea3cb8c52f4f88ff3f5f0fd9ccfd737dc` |
+| `artifact-consumer.mjs` | `scripts/artifact-consumer.mjs` | `83f4ba2be6325a96178687f24443460c6509c000556d6804acf294620fc0b499` |
 | `vendor/service-artifact-contract.mjs` | `scripts/vendor/service-artifact-contract.mjs` | `57fbd454b90fae6de856d05bb612a8c9b5b8d9e130e0521093fee0bf7e9422de` |
 | `vendor/service-release-attestation.mjs` | `scripts/vendor/service-release-attestation.mjs` | `c02c1691ad12203b6d2bd55bbaf58b25feead3ad2bd76ed8240c3c7369d38c65` |
 
-The two Service helpers are byte-identical to
-`.github/scripts/{service-artifact-contract,service-release-attestation}.mjs` at
-immutable Service source
-[`6a0551b3ea83937d3ac350ee78608784bc2d9dc6`](https://github.com/git-malu/AnyWear-Service/commit/6a0551b3ea83937d3ac350ee78608784bc2d9dc6),
-delivered in [Service PR #53](https://github.com/git-malu/AnyWear-Service/pull/53).
-The original helpers came from `8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce`;
-source `75c65b22a434129ea84749caa8c9e20bb6119843` retained those historical
-helper bytes while changing publisher workflow permissions and offline CLI probes.
-The current native parser adds strict v0.2 support while preserving exact v0.1.
-Native release verification compares the successful GitHub CLI JSON against the
-complete signed Service owner/repository/release/tag/commit/asset set. The
-publication receipt retains the exact original successful publisher artifact
-record and review URL; it does not depend on that artifact remaining available.
+Both Service helpers remain byte-identical to authoritative [Service `6a0551b3ea83937d3ac350ee78608784bc2d9dc6`](https://github.com/git-malu/AnyWear-Service/commit/6a0551b3ea83937d3ac350ee78608784bc2d9dc6), paths `.github/scripts/{service-artifact-contract,service-release-attestation}.mjs`. The native parser retains both strict v0.1 and v0.2 predicates, the original signed statement and complete owner/repository/release/tag/target/asset bindings. Receipt-only `publication-acceptance.mjs` is retired from the executable consumer closure. Historical records below retain their original meaning.
 
-The genuine fixture [`../fixtures/github-native-release-verification-v0.2.json`](../fixtures/github-native-release-verification-v0.2.json)
-is copied byte-for-byte from Infra `72db6d00201ffbefcd37b8e4f77b4a2d105414b2` path
-`test/fixtures/github-native-release-verification-v0.2.json`, which in turn copies
-Service `6a0551b3ea83937d3ac350ee78608784bc2d9dc6` path
-`.github/fixtures/github-native-release-verification-v0.2.json`. Its 5,681 raw bytes
-have SHA-256 `cf0bf9a5550ec9b475cb9b1fea68b793a39a2e640431deb69f075254d23ab0e2`.
-[Producer fixture provenance](https://github.com/git-malu/AnyWear-Infra/blob/72db6d00201ffbefcd37b8e4f77b4a2d105414b2/test/fixtures/native-release-source.md)
-records original CLI stdout/version, signed payload and complete subjects. This
-fixture came from failed publisher `37757528038/1`, release `406660922` with no
-publication artifact. That release remains UNSELECTABLE; parser acceptance or
-synthetic policy tests do not qualify its cryptography, publication or deployment.
-The original v0.1 fixture remains preserved in the producer's fixture set.
+The genuine [v0.2 fixture](../fixtures/github-native-release-verification-v0.2.json) remains unchanged, copied from Infra path `test/fixtures/github-native-release-verification-v0.2.json`, which retains Service's exact 5,681 bytes with raw SHA-256 `cf0bf9a5550ec9b475cb9b1fea68b793a39a2e640431deb69f075254d23ab0e2`. Failed publisher `37757528038/1`, release `406660922` remains UNSELECTABLE. The fixture and synthetic policy tests prove no successful cryptographic verification or deployment. Legacy v0.1 producer fixtures are preserved.
 
-Runtime observation separately checks out and executes the exact full Infra SHA
-selected in compatibility v2. A vendored validator never substitutes for that
-authenticated, compatibility-pinned observer or the completed trusted producer.
+## Runtime trust boundary
 
-## Released source inputs
+Selector, deployment and operation runtime records use Infra schema v2. Historical receipt-bearing v1 records are rejected as runtime inputs, never converted into a new accepted record. The actual selection must be a regular tracked canonical `selections/*.json` blob, bound to its raw SHA-256 and the explicit full `compatibility.infra.sha`. The reviewed origin, root, commit, clean tracked/untracked state, replacement refs and hidden index flags are checked by the pinned loader before and after verification.
 
-The coordinated #54 source inputs accepted for later consumption are:
+E2E executes the separately checked-out, compatibility-pinned Infra consumer with `--selection <repository-relative file> --selection-sha256 <raw hash> --trusted-infra-root <absolute checkout> --infra-sha <full compatibility pin> --output-dir <external output>`. It loads the committed selector and compares its complete release/components against the deployment record. A temporary reconstructed JSON object is a comparison value only. The vendored validator is not the runtime trust source.
 
-| Repository | Immutable source revision |
-| --- | --- |
-| Client | `04d931ddd81545731b314d310a26df08cbc89473` |
-| Service | `6a0551b3ea83937d3ac350ee78608784bc2d9dc6` |
-| Infra | `72db6d00201ffbefcd37b8e4f77b4a2d105414b2` |
+Direct verification retains the completed-success publisher/main/workflow/run/attempt/head-owner identities, immutable release/tag/source/manifest, API asset IDs/names/sizes/digests, native release verification and all five asset verifications, original native statement equality and full component/schema hashes. Service reads use only the Service App reader. Runtime no longer depends on the Actions publication ZIP, candidate, receipt or Issue approval record. The observer uses the same actual committed selection file/hash, with its expected deployment record as a comparison value.
 
-These revisions describe source delivery. Compatibility v1 retains its existing
-Client and Service runtime pins; a deployed v2 tuple requires separate producer
-publication, deployment evidence, and qualification acceptance.
+Compatibility v1 and its existing Client/Service pins remain unchanged in this source delivery. The later deployed v2 tuple and observed system qualification require separate acceptance. #87 retains 8 core / 16 tool / 2 deferred SQS files and its existing workflow/package taxonomy.
 
 ## Offline source acceptance
 

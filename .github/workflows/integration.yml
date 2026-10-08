@@ -2,11 +2,6 @@ name: E2E Integration
 
 on:
   workflow_dispatch:
-    inputs:
-      writer_window_token:
-        description: Manager-recorded frozen Beta E2E writer window token
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -20,6 +15,7 @@ jobs:
     name: Reviewed revisions on deployed Beta
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: beta
     permissions:
       contents: read
@@ -33,13 +29,6 @@ jobs:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
-      E2E_WRITER_WINDOW_TOKEN: ${{ inputs.writer_window_token }}
-      E2E_EXPECTED_WRITER_WINDOW_TOKEN: ${{ vars.E2E_WRITER_WINDOW_TOKEN }}
-      E2E_WRITER_SHA: ${{ vars.E2E_WRITER_SHA }}
-      E2E_WRITER_RUN_ID: ${{ vars.E2E_WRITER_RUN_ID }}
-      E2E_WRITER_RUN_ATTEMPT: ${{ vars.E2E_WRITER_RUN_ATTEMPT }}
-      E2E_WRITER_EXPIRES_AT: ${{ vars.E2E_WRITER_EXPIRES_AT }}
-      E2E_WRITER_RECORD_URL: ${{ vars.E2E_WRITER_RECORD_URL }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       E2E_WORKERS: 2
       E2E_MAX_ACTIVE_ACCOUNTS: 2
@@ -101,7 +90,7 @@ jobs:
         shell: bash
         run: |
           node AnyWear-E2E/scripts/check-compatibility.mjs --require-infra
-          node AnyWear-E2E/scripts/writer-window.mjs
+          node AnyWear-E2E/scripts/execution-guard.mjs --source-only
           {
             echo "client_repository=$(jq -r '.client.repository' AnyWear-E2E/compatibility.json)"
             echo "client_sha=$(jq -r '.client.sha' AnyWear-E2E/compatibility.json)"
@@ -198,6 +187,18 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Verify dedicated E2E principal
+        working-directory: AnyWear-E2E
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
+
       - name: Observe authenticated deployed tuple before smoke
         working-directory: AnyWear-E2E
         env:
@@ -234,7 +235,7 @@ jobs:
         id: beta-suite
         working-directory: AnyWear-E2E
         run: |
-          node scripts/writer-window.mjs
+          node scripts/execution-guard.mjs
           pnpm test:smoke
 
       - name: Clean up exact Beta worker identities
@@ -243,7 +244,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.service-cleanup-token.outputs.token }}
         run: |
-          node scripts/writer-window.mjs
+          node scripts/execution-guard.mjs
           pnpm accounts:cleanup-workers
 
       - name: Preserve Beta smoke failure

@@ -11,10 +11,6 @@ on:
         description: Attempt number for the failed E2E workflow run
         required: true
         type: string
-      writer_window_token:
-        description: Manager-recorded frozen Beta E2E recovery writer window token
-        required: true
-        type: string
 
 permissions:
   actions: read
@@ -29,6 +25,7 @@ jobs:
     name: Recover exact E2E identities and owned resources
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: beta
     permissions:
       actions: read
@@ -42,13 +39,6 @@ jobs:
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-run.json
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
-      E2E_WRITER_WINDOW_TOKEN: ${{ inputs.writer_window_token }}
-      E2E_EXPECTED_WRITER_WINDOW_TOKEN: ${{ vars.E2E_WRITER_WINDOW_TOKEN }}
-      E2E_WRITER_SHA: ${{ vars.E2E_WRITER_SHA }}
-      E2E_WRITER_RUN_ID: ${{ vars.E2E_WRITER_RUN_ID }}
-      E2E_WRITER_RUN_ATTEMPT: ${{ vars.E2E_WRITER_RUN_ATTEMPT }}
-      E2E_WRITER_EXPIRES_AT: ${{ vars.E2E_WRITER_EXPIRES_AT }}
-      E2E_WRITER_RECORD_URL: ${{ vars.E2E_WRITER_RECORD_URL }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
 
     steps:
@@ -71,10 +61,10 @@ jobs:
       - name: Install E2E dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Require reviewed compatibility and recovery writer window
+      - name: Require reviewed compatibility and protected recovery execution
         run: |
           node scripts/check-compatibility.mjs --require-infra
-          node scripts/writer-window.mjs
+          node scripts/execution-guard.mjs --source-only
 
       - name: Generate Service cleanup token
         id: service-cleanup-token
@@ -91,6 +81,17 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
           aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify dedicated E2E principal
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
 
       - name: Verify exact original E2E owner/artifact and prepare captured workers
         id: recovery-scope
@@ -115,7 +116,7 @@ jobs:
           E2E_MAX_NEW_ACCOUNTS_PER_RUN: ${{ steps.recovery-scope.outputs.max_new }}
           E2E_MAX_QUARANTINED_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_quarantined }}
         run: |
-          node scripts/writer-window.mjs
+          node scripts/execution-guard.mjs
           pnpm accounts:cleanup-workers
 
       - name: Reject remaining unknown or unrecovered accounts

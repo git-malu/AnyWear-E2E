@@ -44,7 +44,7 @@ export function assertTrustedArtifact(artifact, compatibility, run, now = Date.n
 
 export function assertDeploymentBinding(record, compatibility) {
   validateCompatibility(compatibility);
-  if (record.schema_version !== 1 || record.record_type !== 'anywear_infra_deployment') throw new Error('Unsupported Infra deployment record');
+  if (record.schema_version !== 2 || record.record_type !== 'anywear_infra_deployment') throw new Error('Unsupported Infra deployment record; historical v1 is not a direct-verification input');
   const expected = compatibility.deployment;
   if (expected.workflow_path !== DEPLOYMENT_WORKFLOW) throw new Error('Deployment workflow is not the reviewed protected Infra producer');
   for (const [key, value] of Object.entries({
@@ -119,25 +119,35 @@ export function extractDeploymentRecord(archivePath) {
   ].join('\n'), archivePath], { timeout: 15_000, maxBuffer: 1048576, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-export async function verifyPinnedPublication(compatibility, selector, directory, environment = process.env) {
-  const serviceEnvironment = repositoryReadEnvironment(repositories.service, environment);
-  const trustedInfraRoot = reviewedInfraSource(compatibility, environment);
-  // Receipt trust comes only from the exact clean, compatibility-pinned Infra
-  // checkout; the vendored consumer's local directory never supplies that trust.
-  // The native verifier and every private asset request run with the Service-only
-  // reader in a subprocess; the Infra token is never installed in process.env.
-  await mkdir(directory, { recursive: true });
-  const selectionPath = resolve(directory, 'service-selection.json');
-  const assetsDirectory = resolve(directory, 'service-assets');
-  await writeFile(selectionPath, `${JSON.stringify(selector, null, 2)}\n`);
-  execFileSync(process.execPath, [resolve(trustedInfraRoot, 'scripts/artifact-consumer.mjs'),
-    '--selection', selectionPath, '--output-dir', assetsDirectory,
-    '--trusted-infra-root', trustedInfraRoot, '--infra-sha', compatibility.infra.sha,
-  ], { env: serviceEnvironment, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-  return { manifest: parseStrictJson(await readFile(resolve(assetsDirectory, 'service-artifacts.json'))) };
+function assertCommittedSelection(selector, selection) {
+  assertEqual(selector, { schema_version: 2, record_type: 'anywear_infra_selection',
+    release: selection.release, ...selection.components }, 'Committed Infra selection and deployment');
 }
 
-export async function loadTrustedInputs(compatibility, directory, { api = ghApi, verifySelectedPublication = verifyPinnedPublication, extractRecord = extractDeploymentRecord, environment = process.env } = {}) {
+export async function verifyPinnedSelection(compatibility, selection, directory, environment = process.env) {
+  const serviceEnvironment = repositoryReadEnvironment(repositories.service, environment);
+  const trustedInfraRoot = reviewedInfraSource(compatibility, environment);
+  const binding = { trustedInfraRoot, expectedInfraSha: compatibility.infra.sha,
+    selectionFile: selection.file, selectionSha256: selection.sha256 };
+  // The actual regular tracked selection in the reviewed Infra commit supplies
+  // authority. Deployment components are comparison values, never a replacement
+  // selector written to an external directory. Native/asset requests receive
+  // only the Service reader in the exact pinned Infra subprocess.
+  const consumer = await import(pathToFileURL(resolve(trustedInfraRoot, 'scripts/artifact-consumer.mjs')).href);
+  const selector = await consumer.loadCommittedSelection(binding);
+  assertCommittedSelection(selector, selection);
+  await mkdir(directory, { recursive: true });
+  const assetsDirectory = resolve(directory, 'service-assets');
+  execFileSync(process.execPath, [resolve(trustedInfraRoot, 'scripts/artifact-consumer.mjs'),
+    '--selection', binding.selectionFile, '--selection-sha256', binding.selectionSha256, '--output-dir', assetsDirectory,
+    '--trusted-infra-root', trustedInfraRoot, '--infra-sha', compatibility.infra.sha,
+  ], { env: serviceEnvironment, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  reviewedInfraSource(compatibility, environment);
+  assertCommittedSelection(await consumer.loadCommittedSelection(binding), selection);
+  return { selector, manifest: parseStrictJson(await readFile(resolve(assetsDirectory, 'service-artifacts.json'))) };
+}
+
+export async function loadTrustedInputs(compatibility, directory, { api = ghApi, verifySelectedInputs = verifyPinnedSelection, extractRecord = extractDeploymentRecord, environment = process.env } = {}) {
   validateCompatibility(compatibility);
   if (compatibility.deployment.workflow_path !== DEPLOYMENT_WORKFLOW) throw new Error('Unreviewed deployment workflow');
   const infraEnvironment = repositoryReadEnvironment(repositories.infra, environment);
@@ -164,10 +174,10 @@ export async function loadTrustedInputs(compatibility, directory, { api = ghApi,
   if (byteHash(manifestBytes) !== service.manifest_sha256) throw new Error('Service manifest exact-byte checksum mismatch');
   const manifest = parseStrictJson(manifestBytes);
   assertSealedRelease(release, asset, manifest, compatibility);
-  const selector = { schema_version: 1, record_type: 'anywear_infra_selection',
-    release: record.selection.release, publication_acceptance: record.selection.publication_acceptance, ...record.selection.components,
-  };
-  assertSelectionManifest(selector, manifest);
+  // This reconstructed object checks component agreement only; the pinned Infra
+  // loader below must independently load the committed selection bytes/hash.
+  assertSelectionManifest({ schema_version: 2, record_type: 'anywear_infra_selection',
+    release: record.selection.release, ...record.selection.components }, manifest);
   const manifestPath = resolve(directory, asset.name);
   await writeFile(manifestPath, manifestBytes);
   const producer = manifest.producer;
@@ -182,8 +192,10 @@ export async function loadTrustedInputs(compatibility, directory, { api = ghApi,
     ? parseStrictJson(await api(`repos/${repositories.service}/git/tags/${tag.object.sha}`, false, serviceEnvironment)).object
     : tag.object;
   if (taggedCommit.type !== 'commit' || taggedCommit.sha !== producer.workflow_sha) throw new Error('Immutable Service tag source mismatch');
-  const selected = await verifySelectedPublication(compatibility, selector, directory, environment);
-  assertEqual(selected.manifest, manifest, 'Pinned Infra publication consumer manifest');
+  const selected = await verifySelectedInputs(compatibility, record.selection, directory, environment);
+  assertCommittedSelection(selected.selector, record.selection);
+  assertSelectionManifest(selected.selector, selected.manifest);
+  assertEqual(selected.manifest, manifest, 'Pinned Infra direct consumer manifest');
   await writeFile(resolve(directory, 'verified-inputs.json'), `${JSON.stringify({ compatibility, deployment: record, manifest }, null, 2)}\n`);
   return { compatibility, deployment: record, manifest };
 }

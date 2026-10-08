@@ -87,12 +87,12 @@ The eight routine core files retain account-budget, Cognito cleanup, qualificati
 record, wardrobe cleanup and worker cleanup contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
 `trusted-deployment-inputs.test.mjs` contracts. The latter protect pinned source,
-native publication/receipt, deployment identity and writer-window validation; their
+committed selection, direct native release verification, deployment identity and execution validation; their
 offline assertions remain required by `check` without claiming actual publication or
 qualification.
 
 The tool workflow watches the registered tests, their implementation and fixture
-dependencies, shared evidence/source contracts, vendored publication validators and
+dependencies, shared evidence/source contracts, vendored direct-release validators and
 compatibility/lockfile inputs. It has only `contents: read` and no deployment
 environment or credential steps. SQS prototypes are excluded from both routine core
 and tool workflows and retain their [source-only handoff](scripts/beta-sqs-boundary-handoff.md).
@@ -123,7 +123,7 @@ in the Client and Service unit and integration suites.
 
 The non-skipped `worker-smoke.spec.ts` signs in with the existing leased
 `workerAccount` fixture and opens Dashboard and Wardrobe. Provisioning, budget,
-writer-window, quarantine and Service/Cognito cleanup controls remain shared with
+protected execution, quarantine and Service/Cognito cleanup controls remain shared with
 the full suite. `auth.spec.ts` is optional public-registration acceptance tagged only
 `@full-stack`; it skips unless `E2E_PUBLIC_REGISTRATION_OPEN=true` and cannot appear
 as a passing smoke gate. No workflow opens public registration for this scenario.
@@ -247,13 +247,20 @@ retirement**; the rehearsal record cannot substitute.
 The evidence reader accepts only the protected Infra `runtime.yml` and Service
 `service-artifacts.yml` completed-success main run/attempt. It rejects missing,
 expired, tampered or duplicate-key records, unknown formats, unsealed releases,
-asset/source mismatches and unverified release attestations. Publication proof
-also requires the selector's exact receipt hash and full release/asset/producer
-bindings from a tracked `publications/<manifest-sha256>.json` in the clean pinned
-Infra source. E2E executes that Infra revision's consumer with an explicit trusted
-source root and SHA; its vendored directory cannot supply receipt trust. The
-consumer checks native release verification JSON and every signed asset, rather
-than accepting CLI exit status alone. Private retrieval
+asset/source mismatches and unverified release attestations. Selection, deployment
+and operation runtime records use Infra schema v2; historical receipt-bearing v1
+records are rejected without relabeling historical evidence. E2E loads the actual
+regular tracked canonical `selections/*.json` file in the clean reviewed Infra
+checkout, bound to the recorded raw SHA-256 and explicit `compatibility.infra.sha`.
+The pinned consumer receives that relative path/hash and the trusted root/SHA;
+its complete release/components must match the deployment record. A reconstructed
+external JSON file cannot supply selection authority, and the vendored directory
+cannot replace the runtime Infra checkout. Direct verification checks the
+completed-success publisher identity before and after the native release and all
+five asset verifications, API asset size/digest, and unchanged complete signed
+statement. It needs no candidate, receipt, approval record or Actions publication
+ZIP. See the exact staged source and raw hashes in [vendor provenance](scripts/vendor/README.md).
+Private retrieval
 uses separate GitHub App readers: Infra-only Contents/Actions read through
 `GH_TOKEN`, and Service-only Contents/Actions/Attestations read through
 `SERVICE_ARTIFACT_READ_TOKEN`. App token creation uses v3 so the declared
@@ -285,7 +292,7 @@ A release consumer must call `verifyQualificationForPromotion` with authenticate
 completed-success E2E run/attempt, unexpired exact artifact metadata and the pinned
 record bytes/hash. A checksum alone does not establish trusted publication.
 
-## Frozen E2E writer windows
+## Ordinary E2E execution
 
 For the offline cross-repository builder gate, first run the locked Service
 `artifacts:build` command from its clean exact source checkout with explicit mock
@@ -303,32 +310,32 @@ the limits of this offline result.
 The manager records and verifies cessation of Infra/Client/legacy writers before
 allocating an E2E qualification or recovery window. Repository-local concurrency
 does not serialize those other repositories. Keep `ENABLE_INFRA_E2E` unset or
-`false` during preparation. For one reviewed protected Beta dispatch, configure:
+`false` during preparation. For an authorized protected Beta dispatch, configure:
 
 | Variable | Required value |
 | --- | --- |
 | `ENABLE_INFRA_E2E` | `true` only after role/access/cutover gates pass |
-| `E2E_WRITER_WINDOW_TOKEN` | Exact nonsecret manager allocation token; matching workflow input |
-| `E2E_WRITER_SHA` | Full reviewed E2E source SHA |
-| `E2E_WRITER_RUN_ID`, `E2E_WRITER_RUN_ATTEMPT` | Exact allocated run/attempt |
-| `E2E_WRITER_EXPIRES_AT` | UTC timestamp bounding the complete suite and nested cleanup |
-| `E2E_WRITER_RECORD_URL` | Manager's allocation comment URL on AnyWear issue #54 |
 | `E2E_CLEANUP_SERVICE_SHA` | Full reviewed Service app-data operator SHA; independent of image producer SHA |
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | `650880818323`, `ap-east-1` |
 | `APP_ID`, `APP_PRIVATE_KEY` | Installed read/cleanup App configuration; private key remains a secret |
 
-Allocate the run identity while it awaits the protected Beta environment approval
-and read back the effective environment variables before releasing it. The guard
-requires protected main `workflow_dispatch`, exact run/attempt/source/token and an
-unexpired window. It is checked before observations, suite and mutation boundaries,
-including Cognito deletion after a nested Service cleanup wait. An expired window
-retains the cleanup manifest for a separately allocated recovery run. The manager
+The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
+allowed workflow path and matching workflow/checkout commit establish source identity.
+`execution-guard.mjs --source-only` checks that identity before credentials. After
+assuming the dedicated `beta-e2e-qualification-role`, each workflow captures fresh
+STS account/principal values and checks the exact account, role and region. Those
+values are supplied by the workflow, not dispatch inputs. The default guard requires
+that captured principal before observations, suite and mutation boundaries, including
+Cognito deletion after a nested Service cleanup wait. Missing or mismatched identity
+retains the cleanup manifest for protected recovery. Qualification has a 90-minute
+job bound; integration and account recovery have 60-minute bounds. All three share
+the `beta-e2e-account-pool` concurrency group with cancellation disabled. The manager
 must verify all local/Actions/CFN/ECS/nested Service jobs have ceased before handing
 the environment to another writer; timeout alone never releases it.
 
 Service `beta-testers.yml` remains the bounded application-data cleanup entrypoint.
-Both normal and recovery cleanup dispatch that endpoint within the allocated data
-window, verify its exact reviewed operator source/run/attempt and require completed
+Both normal and recovery cleanup dispatch that protected endpoint, verify its exact
+reviewed operator source/run/attempt and require completed
 success before deleting Cognito identities. Recovery validates the completed
 original E2E owner and captured worker subjects; unknown or unrecovered identities
 and quarantined leases remain in its manifest and fail recovery. The account

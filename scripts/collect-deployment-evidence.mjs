@@ -3,10 +3,10 @@ import { resolve } from 'node:path';
 import { assertStableDeploymentEvidence, collectDeploymentEvidence, validateInfraEvidence } from './qualification-record.mjs';
 import { byteHash, parseStrictJson, validateCompatibility } from './evidence-contract.mjs';
 import { pinnedInfraObserver } from './infra-observation.mjs';
-import { assertE2EWriterWindow } from './writer-window.mjs';
+import { assertE2EExecution } from './execution-guard.mjs';
 
 const compatibility = validateCompatibility(parseStrictJson(await readFile(new URL('../compatibility.json', import.meta.url))));
-assertE2EWriterWindow();
+assertE2EExecution();
 const inputsDirectory = resolve(process.env.QUALIFICATION_INPUTS_DIR ?? '.qualification-inputs');
 const deploymentBytes = await readFile(resolve(inputsDirectory, 'deployment-record.json'));
 if (byteHash(deploymentBytes) !== compatibility.deployment.record_sha256) throw new Error('Trusted deployment record bytes changed');

@@ -16,8 +16,7 @@ export function qualificationFixture({ forwardSchema = false, imageAhead = false
     schema: { asset_id: 23, service_sha: sha('b'), file: 'service-schema.json', sha256: hash('a'), journal_sha256: hash('f'), current_version: imageAhead ? 17 : 16, minimum_version: 16 },
   };
   const release = { repository: 'git-malu/AnyWear-Service', id: 10, manifest_asset_id: 11, manifest_sha256: hash('a') };
-  const publication_acceptance = { file: `publications/${release.manifest_sha256}.json`, sha256: hash('a') };
-  const selector = { schema_version: 1, record_type: 'anywear_infra_selection', release, publication_acceptance, ...components };
+  const selector = { schema_version: 2, record_type: 'anywear_infra_selection', release, ...components };
   const selected = Array.from({ length: imageAhead ? 18 : 17 }, (_, index) => ({ id: index.toString(16).padStart(64, '0'), created_at: 1000 + index }));
   const applied = structuredClone(selected.slice(0, 17));
   if (forwardSchema) applied.push(selected[17] ?? { id: '17'.padStart(64, '0'), created_at: 1017 });
@@ -29,9 +28,9 @@ export function qualificationFixture({ forwardSchema = false, imageAhead = false
     task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:1',
   };
   const deployment = {
-    schema_version: 1, record_type: 'anywear_infra_deployment',
+    schema_version: 2, record_type: 'anywear_infra_deployment',
     infra: { repository: 'git-malu/AnyWear-Infra', sha: sha('e'), workflow_path: '.github/workflows/runtime.yml', workflow_ref: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main', run_id: 30, run_attempt: 2 },
-    selection: { sha256: payloadDigest(selector), release, publication_acceptance, components },
+    selection: { file: 'selections/beta-baseline.json', sha256: payloadDigest(selector), release, components },
     stacks: ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearBillingStack-beta'].map((stack_name) => ({
       stack_name, region: stack_name.includes('Billing') ? 'us-east-1' : 'ap-east-1',
       source_repository: stack_name.includes('Foundation') || stack_name.includes('Billing') ? 'git-malu/AnyWear-Service' : 'git-malu/AnyWear-Infra',
