@@ -245,6 +245,9 @@ public contracts and the v2 qualification consistency builder. The result under
 `.qualification-inputs/builder-fixture/` labels all run IDs and deployment data as
 offline mocks; it cannot establish publication, authenticated observation or a
 passing deployed suite. Repeat on the final producer/consumer source revisions.
+The [public-contract provenance and source acceptance](scripts/vendor/README.md)
+records the exact Service builder and Infra revisions, asset integrity cases and
+the limits of this offline result.
 
 The manager records and verifies cessation of Infra/Client/legacy writers before
 allocating an E2E qualification or recovery window. Repository-local concurrency
