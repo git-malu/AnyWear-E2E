@@ -50,6 +50,12 @@ gh api --method DELETE 'repos/git-malu/AnyWear/issues/48/dependencies/blocked_by
 
 Read both sides before/after relationship changes. Add a child with `POST repos/git-malu/AnyWear/issues/<parent-number>/sub_issues` and `-F 'sub_issue_id=<numeric-child-id>'`. Remove an artifact blocker after producer revision availability/checks; consumer acceptance follows separately. Remove a lifecycle blocker after the prerequisite's verified Completed/closed-as-completed pair. Preserve recorded conditions: an absent native blocker does not establish input release. Unsupported native relations require an explicit access/API blocker and coordination.
 
+## PR Associations
+
+The issue worker links each published delivery PR through the AnyWear Issue's **Development** sidebar: select the PR's repository, select the PR, and apply. This supports PRs from affected repositories. Use `gh` for supported operations; use the GitHub UI when native linking is not exposed by the CLI/API. Read back the Development association after linking; an ordinary URL or `Refs` mention alone is not a native association. Keep PR/check/deployment links in evidence comments as well.
+
+The repository auto-close setting documented in the main skill allows these associations without closing the Issue on merge. Preserve manual closure after all applicable gates and cleanup. See GitHub's [PR linking instructions](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue) and [auto-close setting](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/managing-auto-closing-issues).
+
 ## Remote Read-Back and Partial Updates
 
 Fields belong to the Project item. Read the issue's item, not just Project metadata:
@@ -77,7 +83,7 @@ query {
 
 Select Project #4's item; verify Status, Priority, archive state, and issue state. Follow cursors for additional pages. Native closure reason is also available with `gh api repos/git-malu/AnyWear/issues/<number> --jq '{state,state_reason}'`. Archived membership is not missing membership.
 
-For each transition: read current scope, evidence, authorized claim/transfer, relations, and state; append an identifiable operation comment; mutate intended records; read back and correct mismatches before advancing. After interruption, reuse that comment and retry only missing steps. Do not duplicate evidence, worktrees, or workers.
+For each transition: read current scope, evidence, authorized claim/transfer, relations, and state; append an identifiable operation comment using the [comment templates](comment-templates.md); mutate intended records; read back and correct mismatches before advancing. Append the observed result and read-back time to the same operation comment while preserving the original intent and decision evidence. After interruption, reuse that comment and retry only missing steps. Do not duplicate evidence, worktrees, or workers.
 
 Final acceptance/cleanup evidence precedes close mutations. If Status changed but closing failed, restore Pending Closure where possible and retry. If close succeeded with wrong Status, repair only that field. Success is `Status=Completed`, `state=CLOSED`, `stateReason=COMPLETED` verified together.
 
@@ -101,30 +107,9 @@ For Beta and later stages, record intended full Client/Service SHAs, AnyWear-E2E
 
 ## Evidence Comments
 
-Record only changed facts and decision evidence; reference earlier records for unchanged facts. These three examples are adaptable, not mandatory forms:
+Use the [human-readable comment templates](comment-templates.md) for progress/stage records, delivery/dependency handoffs, escalation/recovery, and closure. Write these records consistently in English. Lead with the outcome and what the reader needs to do; use headings, short paragraphs, lists, and comparison tables. Record only changed facts and decision evidence; link earlier records for unchanged facts. Give links descriptive labels, such as `Service PR #51` or `Acceptance and cleanup evidence`, instead of bare numeric comment IDs.
 
-```text
-Operation: <unique key>; Owner/claim/transfer: <reference>; Intended: <from -> to>.
-Gate/result: <condition>; Evidence: <PRs/revisions/checks/deployments>; N/A: <rationale>.
-For final closure: acceptance, release obligations, repository/resource reconciliation,
-cleanup inventory/origin/method/result <links>; intended Completed/closed-as-completed.
-```
-
-```text
-Producer release A -> B: <condition>; immutable revision/availability/checks: <links>.
-Blocker: <artifact released/read back, or lifecycle Completed pair verified>.
-Consumer acceptance on B: <pending, or pinned revision and behavior/check results>.
-When deploying: <environment/writer/order/compatibility/recovery>; intended Client/Service/E2E
-revisions, observed versions and qualification: <links>.
-```
-
-```text
-Claim/recovery: <owner/session, UTC, assigning authority, transfer, scope/worktree/resources or prior link>.
-Reason: <stop/blocker/cancellation/reopening/invalidation>; related issue/evidence: <links>.
-Cessation: <session/process/lock/job/resource observations; stopped/finished/running/unknown>.
-Decision: <authorized transfer or protective suspension>; retained work/resources: <paths>.
-Resume: <stage, required human action/revalidation>; new owner/transfer: <if authorized>.
-```
+Keep operation keys, full revisions, session/transfer identifiers, worktree inventories, hashes, and raw logs in a collapsed traceability section or linked evidence. Keep blockers, authorization scope/deadlines, missing gates, and required human actions visible. The templates change presentation, not the evidence required by ownership, release, recovery, and closure gates. A planned state transition is not a verified result; add the actual read-back before calling it complete.
 
 Post comments and verify the returned record. Use these mutation commands after the required evidence:
 
@@ -160,7 +145,7 @@ Remove agent-created Git worktrees with `git worktree remove <absolute-path>` fr
 
 ## Project Configuration
 
-Inspect fields, views, and automations. Preserve existing IDs; use the skill's exact Status options and native fields, re-reading affected cards. Keep an issue-only primary board grouped by Status/ordered by Priority, with PR evidence in a separate view. Disable or adjust item-close, PR-link/merge, auto-close, and archive triggers that can complete issues prematurely. Use configuration UI when API/CLI visibility is insufficient; absence from an API response proves nothing about a trigger.
+Inspect fields, views, and automations. Preserve existing IDs; use the skill's exact Status options and native fields, re-reading affected cards. Keep an issue-only primary board grouped by Status/ordered by Priority, with PR evidence in a separate view. Keep repository auto-closing disabled; disable or adjust Project item-close, PR-link/merge, and archive automations that can complete issues prematurely. Native Development associations are allowed and do not replace lifecycle gates. Use configuration UI when API/CLI visibility is insufficient; absence from an API response proves nothing about a trigger.
 
 Historical migration provenance and canonical identities remain in [the immutable migration map](https://github.com/git-malu/AnyWear-Meta/blob/0ff69d4043ec8ec99610249605e2da20d3adb83a/records/kanban-migration/migration-map.json). Historical completion must not be described as newly verified acceptance/cleanup.
 
@@ -172,12 +157,16 @@ Dry-run these fixtures without creating issues, deploying, terminating processes
 | --- | --- |
 | Intake timeout finds issue without Project membership | Reuse it; finish Backlog/Priority/relations and read back; return URL without implementation/worktree. |
 | Service auto-deploys Beta; Client is manual; producer artifact ready | Check old-consumer compatibility before merge; release artifact blocker; consumer pins/validates afterward. Lifecycle variant waits for Completed pair. Qualify actual runtime pair. |
+| Delivery PR is linked in Development and merged; acceptance/cleanup is pending | Record delivery evidence; keep the Issue open at its applicable stage. Native association/merge does not authorize Completed or closure. |
+| Dense closure history must be presented to a human; close read-back is still pending | Use the closure template with a clear readiness conclusion, visible pending read-back, descriptive evidence links, and preserved exact revisions/operation/ownership details. Do not label the Issue completed or omit material limitations. |
 | Owner/child disappears with ignored report/unpushed API commit | Verified stopped scopes permit numbered transfer; unknown/running scopes prohibit writes/cleanup and allow protective Escalation. Preserve work; cleanup later uses recorded origin. |
 | Acceptance/cleanup passed; field/close times out | Read back: Completed+CLOSED+COMPLETED is done; Completed+OPEN restores Pending Closure then retries; CLOSED+COMPLETED with wrong Status repairs Status only. Reuse evidence; lifecycle release follows verified pair. |
 
 Verify referenced links/anchors and role authority remain consistent. Fixtures validate the contract, not runtime releases.
 
 ## Role Prompts
+
+All roles use the [comment templates](comment-templates.md) for issue comments and handoff reports; ownership and stopping conditions remain role-specific.
 
 The optional [intake helper](../scripts/issue_creation.py) assembles manager requests:
 
@@ -191,7 +180,8 @@ splits/resources. Add new issues in Backlog, verify records, return URLs/decisio
 when requested. For board execution, assign one issue_worker per ready issue and reconcile handoffs.
 
 Use issue_worker. Issue: <URL>. Own current stage through closure/escalation; verify claim,
-worktree/gates; delegate slices, integrate evidence, record cleanup/closure. Return state,
+worktree/gates; delegate slices, link delivery PRs in Development, integrate evidence,
+record cleanup/closure. Return state,
 PRs/revisions/checks, delivery/cleanup, and blockers.
 
 Use submodule_worker. Issue: <URL>; repository/worktree: <absolute path>; scope: <outcome>;

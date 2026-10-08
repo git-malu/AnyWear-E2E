@@ -7,6 +7,8 @@ description: Create, coordinate, or execute AnyWear GitHub Kanban issues across 
 
 This is the operating contract for `git-malu/AnyWear` Issues and Project #4. The Issue body owns scope, acceptance, affected repositories, and gate applicability; Project Status/Priority owns stage and relative priority. Use native relationships/labels and comments with linked PRs, Actions, and deployment evidence. Meta holds architecture and ADRs; working designs and evidence belong in Issue bodies/comments and linked artifacts. Read the relevant [GitHub operations](references/github-operations.md) section for CLI mutations, recovery, cleanup, release evidence, or delegation.
 
+Issue history is primarily for people. Write new comments and handoff reports in English using the [comment templates](references/comment-templates.md): lead with a descriptive title and conclusion, then state, changes, evidence links, and next steps. Keep titles, prose, table labels, and descriptive link labels consistently in English; preserve exact evidence in linked records or a collapsed traceability section, and distinguish intended actions from observed results. Post meaningful changes rather than repeated unchanged-status logs.
+
 ## Ownership
 
 | Role | Owns | Must return |
@@ -41,13 +43,15 @@ The normal path is:
 | --- | --- |
 | Backlog | Scope, acceptance, owner, dependencies, resources, and workspace shape are ready |
 | Analysis | Design/diagnosis, API contracts, repository order, rollout compatibility, automatic deployment triggers, risks, and applicable gates are recorded |
-| Development | Required changes are published in linked repository PRs; API order is Service -> published API revision -> Client |
+| Development | Required changes are published in repository PRs natively linked in the Issue's Development section; API order is Service -> published API revision -> Client |
 | Testing | Required checks and review pass on intended revisions |
 | Deployment | The target environment runs the intended revisions and applicable qualification passes |
 | Pending Closure | Acceptance, evidence, producer release obligations, repository/resource reconciliation, and cleanup pass |
 | Completed | Final evidence exists and Project Status plus native issue state read back as `Completed`, `CLOSED`, `COMPLETED` |
 
-Determine gate applicability in Analysis. Process-only work may mark runtime Deployment and system E2E `Not Applicable`, with document/link/schema/migration/workflow validation. Client browser checks mock Service/cloud boundaries; local smoke is optional and non-gating. Real cross-repository system E2E belongs to AnyWear-E2E in Beta and later stages. A merged PR is delivery evidence, not Issue completion. Do not use closing keywords or associations that bypass the lifecycle.
+Determine gate applicability in Analysis. Process-only work may mark runtime Deployment and system E2E `Not Applicable`, with document/link/schema/migration/workflow validation. Client browser checks mock Service/cloud boundaries; local smoke is optional and non-gating. Real cross-repository system E2E belongs to AnyWear-E2E in Beta and later stages. A merged PR is delivery evidence, not Issue completion.
+
+The owner has disabled `Auto-close issues with merged linked pull requests` in `git-malu/AnyWear`. Use the Issue's Development section to natively associate delivery PRs, including PRs from affected repositories; with this setting disabled, merging a linked PR does not close the Issue. Keep check/deployment/acceptance evidence in comments, avoid closing keywords, and close only after the lifecycle gates and cleanup pass. Follow [PR associations](references/github-operations.md#pr-associations) for linking and read-back.
 
 Run required checks, obey branch protection and existing session authorization, and repeat affected checks when revisions change. Record evidence before advancing; resolve failures in the current scope.
 
@@ -76,7 +80,7 @@ Before closure, merge required delivery PRs, verify acceptance and producer rele
 
 Agent-created Git worktrees use Git lifecycle operations; platform-managed worktrees use their platform lifecycle. Record actual cleanup from a surviving checkout. Only then append final evidence, set `Completed`, close as completed, and read back both. Dirty/unpushed work must be preserved; unavailable cleanup leaves closure unfinished. A closed unmerged PR is not delivered evidence.
 
-The manager reconciles membership, owners, priority, active blockers, stage/open-state consistency, evidence links, and automation behavior. The primary view contains Issues; PRs are evidence or belong in a separate review view.
+The manager reconciles membership, owners, priority, active blockers, stage/open-state consistency, native PR associations, evidence links, and automation behavior. The primary view contains Issues; PRs are evidence or belong in a separate review view.
 
 ## Recovery, Reopening, and Cancellation
 
