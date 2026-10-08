@@ -6,6 +6,7 @@ on:
     paths:
       - package.json
       - pnpm-lock.yaml
+      - compatibility.json
       - .github/workflows/tool-regressions.yml
       - scripts/beta-runtime-adapter.test.mjs
       - scripts/nonpaid-provider-fixture.test.mjs
@@ -27,6 +28,12 @@ on:
       - scripts/nonpaid-*.mjs
       - scripts/runtime-*.mjs
       - scripts/sse-replica-attribution.mjs
+      - scripts/writer-window.mjs
+      - scripts/evidence-contract.mjs
+      - scripts/infra-source.mjs
+      - scripts/qualification-record.mjs
+      - scripts/trusted-deployment-inputs.mjs
+      - scripts/vendor/**
       - scripts/fixtures/runtime-*.mjs
       - scripts/fixtures/runtime-checkpoint-helper.sh
       - scripts/provider-failure-nonpaid.json
@@ -35,6 +42,7 @@ on:
     paths:
       - package.json
       - pnpm-lock.yaml
+      - compatibility.json
       - .github/workflows/tool-regressions.yml
       - scripts/beta-runtime-adapter.test.mjs
       - scripts/nonpaid-provider-fixture.test.mjs
@@ -56,6 +64,12 @@ on:
       - scripts/nonpaid-*.mjs
       - scripts/runtime-*.mjs
       - scripts/sse-replica-attribution.mjs
+      - scripts/writer-window.mjs
+      - scripts/evidence-contract.mjs
+      - scripts/infra-source.mjs
+      - scripts/qualification-record.mjs
+      - scripts/trusted-deployment-inputs.mjs
+      - scripts/vendor/**
       - scripts/fixtures/runtime-*.mjs
       - scripts/fixtures/runtime-checkpoint-helper.sh
       - scripts/provider-failure-nonpaid.json

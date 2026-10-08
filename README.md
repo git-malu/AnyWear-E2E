@@ -55,7 +55,10 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 ## Commands
 
 ```bash
-pnpm check             # source checks, script tests, and Playwright test discovery; no browser execution
+pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
+pnpm test:core         # eight current offline identity/cleanup/qualification/artifact contracts
+pnpm test:tool-regressions # sixteen retained offline operational-support test files
+pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
 pnpm test:smoke        # on-demand deployed Beta diagnostic
 pnpm test:full-stack   # deployed Beta scenarios marked @full-stack
@@ -67,10 +70,39 @@ Playwright verifies the configured deployed stage endpoints. Browser execution f
 closed unless the stage is Beta or Production, external servers are selected, and both URLs use
 HTTPS. Test discovery and source checks do not connect to the deployed environment.
 
+The explicit file lists in [package.json](package.json) are the suite registry. A new
+test file needs an ownership/classification decision before it enters an executed
+suite; a filename wildcard cannot select a routine or release gate.
+
+| Command | Owner and trigger | Actual effects and evidence |
+| --- | --- | --- |
+| `check` / `test:core` | E2E maintainers; PR/main Quality and source preparation in Integration/Qualification | Offline fixtures, temporary files/Git repositories, lint, typecheck and discovery; no credentials, cloud calls or deployed result |
+| `test:tool-regressions` | E2E operational-tool maintainers; affected-path PR/main workflow or explicit manual dispatch | Mock AWS/Cognito/fetch, temporary files, a loopback HTTP fixture and bounded Bash checkpoint helper; no AWS/App credentials or live drill proof |
+| `test:deferred-sqs` | Repository maintainer under [#58](https://github.com/git-malu/AnyWear/issues/58); manual future-protocol review only | Two offline ARM/ACK/FIRE prototype files; no live transport, trusted AWS identity or receipt proof, and no #54 acceptance claim |
+| `test:smoke` | E2E maintainers; allocated on-demand Beta+ Integration | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
+| `test` / `test:full-stack` | E2E maintainers; allocated Beta+ qualification | Deployed business flows, identity creation and cleanup, external VLM/provider work; only the complete qualification workflow and its evidence can qualify a release |
+| `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
+
+The eight routine core files retain account-budget, Cognito cleanup, qualification
+record, wardrobe cleanup and worker cleanup contracts plus the current
+`infra-source.test.mjs`, `infra-qualification.test.mjs` and
+`trusted-deployment-inputs.test.mjs` contracts. The latter protect pinned source,
+native publication/receipt, deployment identity and writer-window validation; their
+offline assertions remain required by `check` without claiming actual publication or
+qualification.
+
+The tool workflow watches the registered tests, their implementation and fixture
+dependencies, shared evidence/source contracts, vendored publication validators and
+compatibility/lockfile inputs. It has only `contents: read` and no deployment
+environment or credential steps. SQS prototypes are excluded from both routine core
+and tool workflows and retain their [source-only handoff](scripts/beta-sqs-boundary-handoff.md).
+The accepted [testing principles](https://github.com/git-malu/AnyWear-Meta/blob/3277d2d98cc6e66a5d9ca3e9d2661e07e7463a2d/architecture/system-component-architecture/technical-architecture/devops/test/test_governance.md)
+define classification, cost, evidence and retirement policy.
+
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, script tests, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit eight core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -88,6 +120,13 @@ Test classification is explicit: `@smoke` marks the small, stable critical path 
 on-demand Beta diagnostic; `@full-stack` marks cross-repository scenarios. Beta
 Qualification runs every discovered test, regardless of tag. Dev verification remains
 in the Client and Service unit and integration suites.
+
+The non-skipped `worker-smoke.spec.ts` signs in with the existing leased
+`workerAccount` fixture and opens Dashboard and Wardrobe. Provisioning, budget,
+writer-window, quarantine and Service/Cognito cleanup controls remain shared with
+the full suite. `auth.spec.ts` is optional public-registration acceptance tagged only
+`@full-stack`; it skips unless `E2E_PUBLIC_REGISTRATION_OPEN=true` and cannot appear
+as a passing smoke gate. No workflow opens public registration for this scenario.
 
 The manual `Beta Qualification` workflow is the production-readiness gate for an
 already-deployed Beta environment. It reads the reviewed full SHAs from
