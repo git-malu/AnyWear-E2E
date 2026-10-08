@@ -105,6 +105,22 @@ Prefer additive Service -> published API -> Client rollout -> actual pair qualif
 
 For Beta and later stages, record intended full Client/Service SHAs, AnyWear-E2E revision/compatibility inputs, run links, and observed deployed versions from runtime provenance or deployment metadata. Verify identities match; otherwise the gate remains unfinished. Requalify changed inputs. Mocked browser checks/local smoke do not substitute for this evidence.
 
+## Beta Lifecycle Operations
+
+Apply the main skill's [Beta lifecycle authority](../SKILL.md#beta-lifecycle-authority). Only the active manager changes Beta controls; workers report availability needs and preserve the current switch state. Inspect current `main` workflow definitions, automatic deploy triggers, recovery paths, live gate/environment variables, and recorded user start approval before taking the environment writer window.
+
+```powershell
+gh api repos/git-malu/AnyWear-Service/actions/variables/ENABLE_BETA_DEPLOY --jq '{name,value}'
+gh api repos/git-malu/AnyWear-Service/environments/beta/variables
+gh api 'repos/git-malu/AnyWear-Service/contents/.github/workflows/beta-lifecycle.yml?ref=main' -H 'Accept: application/vnd.github.raw+json'
+```
+
+The manual dispatcher is `beta-lifecycle.yml` in `git-malu/AnyWear-Service` on `main`, with `action=stop` or `action=start`. Both actions currently require `ENABLE_BETA_DEPLOY=true`. Setting this variable to `true` opens activation paths and needs explicit user start consent; a disabled gate is not proof of stopped AWS resources and must not be flipped by a worker to unblock tests or shutdown. The current stop pipeline calls `beta-lifecycle-stop.yml`, which can invoke `beta-lifecycle-recovery.yml` after partial failure and restore network/workload, with no verified stop-only mode. Inspect this complete dispatch graph: autonomous stop permission does not implicitly authorize that reactivation. Defer this pipeline without consent explicitly covering recovery activation or a verified stop-only implementation.
+
+For an authorized shutdown, the manager verifies no conflicting worker, deployment, E2E, cleanup, or external resource user remains, rechecks board/resource state before dispatch, and retains the writer window through actual stop read-back and disabling later automatic activation. Where the heartbeat is used, follow its [idle shutdown conditions](../../kanban-manager-heartbeat/SKILL.md#stop-beta-when-the-board-is-idle). Record the run ID/URL, gate changes, target AWS account/region, observed resource state, and any start/recovery approval source. A lost dispatch response requires inspecting existing runs before retry; a green/skipped job alone is not stop evidence. On partial failure, preserve evidence and get the required approval before any recovery that would reactivate Beta.
+
+After verified shutdown, the manager can disable the gate to prevent unattended redeployment; read back the value. Do not disable it before a stop that requires the gate. Before later activation, obtain or verify explicit user consent covering that start/window, have the manager enable the gate and dispatch start, then verify actual readiness before releasing authorized deployment/E2E work. A worker's assigned issue or writer window does not permit lifecycle control. Use `aws` only with a verified Beta account/profile/region; this procedure grants no Production authority.
+
 ## Evidence Comments
 
 Use the [human-readable comment templates](comment-templates.md) for progress/stage records, delivery/dependency handoffs, escalation/recovery, and closure. Write these records consistently in English. Lead with the outcome and what the reader needs to do; use headings, short paragraphs, lists, and comparison tables. Record only changed facts and decision evidence; link earlier records for unchanged facts. Give links descriptive labels, such as `Service PR #51` or `Acceptance and cleanup evidence`, instead of bare numeric comment IDs.
@@ -161,6 +177,12 @@ Dry-run these fixtures without creating issues, deploying, terminating processes
 | Dense closure history must be presented to a human; close read-back is still pending | Use the closure template with a clear readiness conclusion, visible pending read-back, descriptive evidence links, and preserved exact revisions/operation/ownership details. Do not label the Issue completed or omit material limitations. |
 | Owner/child disappears with ignored report/unpushed API commit | Verified stopped scopes permit numbered transfer; unknown/running scopes prohibit writes/cleanup and allow protective Escalation. Preserve work; cleanup later uses recorded origin. |
 | Acceptance/cleanup passed; field/close times out | Read back: Completed+CLOSED+COMPLETED is done; Completed+OPEN restores Pending Closure then retries; CLOSED+COMPLETED with wrong Status repairs Status only. Reuse evidence; lifecycle release follows verified pair. |
+| Idle Beta has no conflicting users; selected stop path cannot reactivate Beta | Manager may stop without renewed user approval, verify actual stop, and disable automatic activation paths. Workers leave controls unchanged. |
+| Beta is stopped; an authorized issue needs E2E but no explicit start consent exists | Continue independent preparation; request user start consent through the manager. Do not enable the gate, dispatch start, or use a deploying merge/recovery to activate Beta. |
+| A worker holds a Beta writer window or the manager is unavailable | Worker may inspect/report state but cannot change ENABLE_BETA_DEPLOY or invoke start/stop. Preserve the environment and request the manager decision. |
+| Stop dispatch is gated off or its partial-failure recovery can restore Beta | Manager inspects the full graph and reports the concrete blocker; no worker gate flip or implicit recovery-start approval. Use a verified stop-only path or explicit user consent covering activation before a pipeline that may reactivate Beta. |
+| Recorded user consent explicitly covers the intended Beta start/window | Manager verifies the consent's scope, enables/starts Beta, reads back readiness, and releases authorized work. Workers do not mutate lifecycle controls. |
+| Platform is active but Workload is stopped, or Beta state is unknown | Preserve state and require the manager's activation decision/user approval before any deployment or recovery that may create active resources; checking only Platform is insufficient. |
 
 Verify referenced links/anchors and role authority remain consistent. Fixtures validate the contract, not runtime releases.
 

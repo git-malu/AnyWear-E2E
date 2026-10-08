@@ -13,7 +13,7 @@ Issue history is primarily for people. Write new comments and handoff reports in
 
 | Role | Owns | Must return |
 | --- | --- | --- |
-| `kanban_manager` | Intake, board scheduling, priority/dependencies, shared resources, cross-issue conflicts | Bounded issue decisions, assignments, verified handoffs, board reconciliation |
+| `kanban_manager` | Intake, board scheduling, priority/dependencies, shared resources and Beta lifecycle controls, cross-issue conflicts | Bounded issue decisions, assignments, verified handoffs, board reconciliation |
 | `issue_worker` | One issue from its current stage through closure or escalation | Integrated changes, stage/evidence records, acceptance, delivery, cleanup, final state |
 | `submodule_worker` | One repository slice | Exact revisions, PRs, checks, handoff evidence, or a blocker |
 
@@ -22,6 +22,14 @@ Use one active scheduling manager and one issue worker per issue. The assigning 
 For requested execution or continuation, the manager keeps coordinating until the requested work is verified complete, the user explicitly pauses or cancels it, or a concrete external blocker leaves no authorized next action. Dispatch, running jobs, and handoffs are intermediate steps: receive and verify results, advance ready gates, and continue other ready work while a scope waits. A worker awaiting a manager-owned review or writer window needs a manager decision, not renewed user permission to start. Make that decision within existing authorization and preserve release gates and any approval required for actions outside that scope.
 
 The manager may put an unresponsive issue into protective `Escalation` and preserve its prior resumption stage. This does not transfer execution ownership or authorize cleanup. Transfer or cleanup requires verified cessation of conflicting sessions, processes, Git writers, jobs, and resources. Follow [ownership and recovery](references/github-operations.md#ownership-and-unresponsive-workers); timeout alone is not evidence of cessation.
+
+## Beta Lifecycle Authority
+
+The active Kanban manager exclusively owns Beta on/off controls, including the `AnyWear-Service` repository variable `ENABLE_BETA_DEPLOY`, lifecycle start/stop dispatches, and equivalent direct infrastructure operations. The manager has standing user authorization to stop Beta autonomously when shutdown conditions and the shared environment writer window are satisfied. **Starting or reactivating Beta requires the user's explicit consent covering that start.** General issue execution, deployment authorization, a manager assignment, or a need for E2E does not imply permission to start Beta. Reuse an existing explicit user approval only within its recorded scope; retain its source with the environment coordination evidence.
+
+`issue_worker`, `submodule_worker`, and other delegated workers may inspect Beta state and request a manager decision, but must not change the Beta switch or invoke start/stop, even during retries, recovery, or cleanup. An assignment or deployment writer reservation does not transfer this authority. If the manager is unavailable, preserve the current state and report the blocker; a worker must not take over Beta controls.
+
+Before a gate change, workflow dispatch, deploying merge, or recovery, inspect whether it can activate a stopped or partially stopped Beta; preserve unknown environment state until verified. Enabling `ENABLE_BETA_DEPLOY` when it releases activation paths is part of the start permission boundary and requires explicit user consent; setting the gate to `false` does not itself prove resources stopped. After shutdown, the manager keeps automatic activation paths disabled until an approved start. Workers may deploy within their authorized scope to an already-running Beta only after the manager confirms the environment and release window; operations that could activate stopped, partially stopped, or unknown-state resources must return to the manager for the required user approval. Stop authorization alone does not authorize reactivation by automatic recovery: use a verified stop-only path or user consent explicitly covering that recovery before dispatching a pipeline that may restart Beta. Follow [Beta lifecycle operations](references/github-operations.md#beta-lifecycle-operations) for gate inspection, dispatch, and read-back. This authority does not expand Production permissions.
 
 ## Issue Intake
 
@@ -68,7 +76,7 @@ Preserve existing documented conditions; clarify unspecified legacy conditions b
 
 If a released input becomes invalid, the producer records the reason, notifies the manager and consumers, and requests suspension. Consumers stop dependent mutations and account for in-flight deployments and already-applied revisions. Resume only after a replacement is verified and affected results are rechecked. A newer revision or unrelated reopening alone does not invalidate a pinned input. Independent preparation may continue while dependent execution waits in its current stage; Escalation is for required human intervention.
 
-Without a manager, an issue worker may execute its ready assigned issue after checking board ownership, dependencies, handoffs, and resources. It may reconcile a documented incoming blocker but cannot silently change its condition, reassign work, resolve cross-issue conflicts, or launch other issues.
+Without a manager, an issue worker may execute its ready assigned issue after checking board ownership, dependencies, handoffs, and resources. It may reconcile a documented incoming blocker but cannot silently change its condition, reassign work, resolve cross-issue conflicts, launch other issues, or operate Beta lifecycle controls.
 
 ## Worktrees and Resources
 
