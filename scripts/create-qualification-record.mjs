@@ -1,10 +1,12 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { buildQualificationRecord } from './qualification-record.mjs';
+import { parseStrictJson } from './evidence-contract.mjs';
 
-const compatibility = JSON.parse(await readFile(new URL('../compatibility.json', import.meta.url), 'utf8'));
+const compatibility = parseStrictJson(await readFile(new URL('../compatibility.json', import.meta.url)));
 const evidencePath = resolve(process.env.QUALIFICATION_EVIDENCE_PATH ?? 'deployment-evidence.json');
-const evidence = JSON.parse(await readFile(evidencePath, 'utf8'));
+const after = parseStrictJson(await readFile(evidencePath));
+const before = parseStrictJson(await readFile(resolve(process.env.QUALIFICATION_BASELINE_PATH ?? 'deployment-evidence-before.json')));
 const record = buildQualificationRecord({
   result: process.env.QUALIFICATION_RESULT,
   e2eSha: process.env.GITHUB_SHA,
@@ -14,7 +16,9 @@ const record = buildQualificationRecord({
   serverUrl: process.env.GITHUB_SERVER_URL,
   awsAccountId: process.env.AWS_ACCOUNT_ID,
   awsRegion: process.env.AWS_REGION,
-}, compatibility, evidence);
+  workflowPath: '.github/workflows/beta-qualification.yml',
+  workflowRef: process.env.GITHUB_WORKFLOW_REF,
+}, compatibility, { before, after });
 
 const outputPath = resolve(process.env.QUALIFICATION_OUTPUT_PATH ?? 'qualification-record.json');
 await writeFile(outputPath, `${JSON.stringify(record, null, 2)}\n`, 'utf8');

@@ -6,6 +6,7 @@ import {
   collectDeploymentEvidence,
   verifyQualificationRecord,
 } from './qualification-record.mjs';
+import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 
 const compatibility = {
   client: { repository: 'git-malu/AnyWear-Client', sha: 'a'.repeat(40) },
@@ -53,7 +54,8 @@ test('collects only deployed revisions matching compatibility.json', async () =>
 });
 
 test('creates and verifies a checksummed passing record', () => {
-  const record = buildQualificationRecord(input, compatibility, evidence, new Date('2026-08-03T00:00:00.000Z'));
+  const fixture = qualificationFixture();
+  const record = buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence, new Date('2026-10-08T00:20:00.000Z'));
   assert.equal(record.qualification_id, 'beta-123-1');
   assert.equal(verifyQualificationRecord(record), true);
 

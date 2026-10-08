@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import {
   AdminDeleteUserCommand,
@@ -7,13 +8,17 @@ import {
   CognitoIdentityProviderClient,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { markAccountDeleted } from '../tests/support/account-budget.ts';
-import { findServiceCleanupRunId, serviceCleanupDispatchArgs } from '../tests/support/service-cleanup-dispatch.ts';
+import { assertServiceCleanupRunSource, findServiceCleanupRunId, serviceCleanupDispatchArgs } from '../tests/support/service-cleanup-dispatch.ts';
 import { cleanupWorkerAccounts } from '../tests/support/worker-cleanup.ts';
+import { assertE2EWriterWindow } from './writer-window.mjs';
+import { byteHash, parseStrictJson, requireCommit } from './evidence-contract.mjs';
 
 const exec = promisify(execFile);
 const manifestPath = process.env.E2E_ACCOUNT_BUDGET_PATH ?? 'test-results/account-budget.json';
 
 async function runServiceCleanup(inputs) {
+  assertE2EWriterWindow();
+  const operatorSha = requireCommit(process.env.E2E_CLEANUP_SERVICE_SHA, 'Reviewed Service data-cleanup operator source');
   const dispatchedAt = new Date().toISOString();
   try {
     await exec('gh', serviceCleanupDispatchArgs(inputs), { maxBuffer: 1024 * 1024 });
@@ -39,11 +44,31 @@ async function runServiceCleanup(inputs) {
     if (!runId) await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
   if (!runId) throw new Error('Service cleanup run was not observed; Cognito identities were retained');
+  const metadata = async () => parseStrictJson((await exec('gh', ['api', `repos/git-malu/AnyWear-Service/actions/runs/${runId}`], { maxBuffer: 1024 * 1024 })).stdout);
+  const started = await metadata();
+  if (started.id !== Number(runId)) throw new Error('Service cleanup run ID mismatch');
+  const attempt = assertServiceCleanupRunSource(started, operatorSha);
   try {
     await exec('gh', ['run', 'watch', runId, '--repo', 'git-malu/AnyWear-Service', '--exit-status'], { maxBuffer: 1024 * 1024 });
   } catch {
     throw new Error('Subject-bound Service cleanup did not succeed; Cognito identities were retained');
   }
+  const completed = await metadata();
+  if (completed.id !== Number(runId)) throw new Error('Service cleanup run ID changed');
+  assertServiceCleanupRunSource(completed, operatorSha, attempt);
+  if (completed.status !== 'completed' || completed.conclusion !== 'success') throw new Error('Exact Service cleanup attempt did not complete successfully');
+  const evidencePath = process.env.E2E_SERVICE_CLEANUP_EVIDENCE_PATH ?? 'test-results/service-cleanup-run.json';
+  await mkdir(dirname(evidencePath), { recursive: true });
+  await writeFile(evidencePath, `${JSON.stringify({
+    schema_version: 1, record_type: 'anywear_e2e_service_cleanup',
+    e2e: { repository: process.env.GITHUB_REPOSITORY, sha: process.env.GITHUB_SHA,
+      run_id: Number(process.env.GITHUB_RUN_ID), run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT) },
+    writer_record_url: process.env.E2E_WRITER_RECORD_URL,
+    operator_sha: operatorSha, dispatched_at: dispatchedAt, verified_at: new Date().toISOString(),
+    cleanup_request_sha256: byteHash(Buffer.from(inputs.cleanup_json)),
+    cleanup_request: parseStrictJson(inputs.cleanup_json), service_run: completed,
+  }, null, 2)}\n`, { mode: 0o600 });
+  assertE2EWriterWindow();
 }
 
 async function cognitoIo() {
@@ -56,6 +81,7 @@ async function cognitoIo() {
       return { Username: user.Username, UserAttributes: user.UserAttributes };
     },
     async deleteUser(username) {
+      assertE2EWriterWindow();
       await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
     },
     destroy() { client.destroy(); },
@@ -63,8 +89,9 @@ async function cognitoIo() {
 }
 
 try {
+  assertE2EWriterWindow();
   let manifest;
-  try { manifest = JSON.parse(await readFile(manifestPath, 'utf8')); }
+  try { manifest = parseStrictJson(await readFile(manifestPath)); }
   catch (error) {
     if (error?.code === 'ENOENT') process.exit(0);
     throw error;
@@ -74,6 +101,7 @@ try {
     const count = await cleanupWorkerAccounts(manifest, { ...io, runServiceCleanup });
     if (count === undefined) {
       process.stdout.write('Deferred exact E2E worker cleanup; the account manifest remains cleanup_pending for protected recovery.\n');
+      process.exitCode = 1;
     } else {
       for (const account of manifest.accounts) {
         if (account.mode === 'worker' && account.status === 'cleanup_pending') await markAccountDeleted(account.email);

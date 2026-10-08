@@ -4,6 +4,9 @@ import {
   AdminGetUserCommand,
   CognitoIdentityProviderClient,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { assertE2EWriterWindow } from './writer-window.mjs';
+
+assertE2EWriterWindow();
 
 const manifestPath = process.env.E2E_ACCOUNT_BUDGET_PATH;
 const userPoolId = process.env.USER_POOL_ID;
@@ -22,7 +25,9 @@ try {
     if (email !== account.email || subject !== account.subject) {
       throw new Error(`Recovery ownership check failed for ${account.email}`);
     }
-    await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: account.email }));
+    if (!user.Username || user.Username.includes('@')) throw new Error('Recovery deletion requires the returned immutable Cognito username');
+    assertE2EWriterWindow();
+    await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: user.Username }));
     account.status = 'deleted';
     account.updatedAt = new Date().toISOString();
   }

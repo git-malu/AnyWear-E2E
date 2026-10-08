@@ -11,6 +11,10 @@ on:
         description: Attempt number for the failed E2E workflow run
         required: true
         type: string
+      writer_window_token:
+        description: Manager-recorded frozen Beta E2E recovery writer window token
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -36,6 +40,16 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
+      E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-run.json
+      ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
+      E2E_WRITER_WINDOW_TOKEN: ${{ inputs.writer_window_token }}
+      E2E_EXPECTED_WRITER_WINDOW_TOKEN: ${{ vars.E2E_WRITER_WINDOW_TOKEN }}
+      E2E_WRITER_SHA: ${{ vars.E2E_WRITER_SHA }}
+      E2E_WRITER_RUN_ID: ${{ vars.E2E_WRITER_RUN_ID }}
+      E2E_WRITER_RUN_ATTEMPT: ${{ vars.E2E_WRITER_RUN_ATTEMPT }}
+      E2E_WRITER_EXPIRES_AT: ${{ vars.E2E_WRITER_EXPIRES_AT }}
+      E2E_WRITER_RECORD_URL: ${{ vars.E2E_WRITER_RECORD_URL }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
 
     steps:
       - name: Checkout E2E recovery tools
@@ -57,69 +71,65 @@ jobs:
       - name: Install E2E dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate repository token
-        id: generate-token
-        uses: actions/create-github-app-token@v1
+      - name: Require reviewed compatibility and recovery writer window
+        run: |
+          node scripts/check-compatibility.mjs --require-infra
+          node scripts/writer-window.mjs
+
+      - name: Generate Service cleanup token
+        id: service-cleanup-token
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-
-      - name: Checkout Service cleanup helper
-        uses: actions/checkout@v4
-        with:
-          repository: git-malu/AnyWear-Service
-          ref: main
-          path: AnyWear-Service
-          token: ${{ steps.generate-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Download failed-run account manifest
-        uses: actions/download-artifact@v4
-        with:
-          name: beta-account-lifecycle-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
-          path: recovery
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.source_run_id }}
-
-      - name: Locate account manifest
-        shell: bash
-        run: |
-          manifest=$(find recovery -name account-budget.json -type f -print -quit)
-          test -n "$manifest"
-          if [[ "$manifest" != recovery/account-budget.json ]]; then cp "$manifest" recovery/account-budget.json; fi
-          jq -e '.version == 1 and (.accounts | type == "array")' recovery/account-budget.json >/dev/null
+          repositories: AnyWear-Service
+          permission-actions: write
 
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-github-actions-pipeline-role
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
           aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify exact original E2E owner/artifact and prepare captured workers
+        id: recovery-scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          RECOVERY_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: node scripts/account-recovery-inputs.mjs
 
       - name: Load deployed identity configuration
         shell: bash
         run: |
           pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
           echo "USER_POOL_ID=$pool_id" >> "$GITHUB_ENV"
-          health=$(curl --fail --silent --show-error "$E2E_SERVICE_URL/readyz")
-          echo "SERVICE_COMMIT_SHA=$(jq -r '.service_commit' <<<"$health")" >> "$GITHUB_ENV"
-          echo "SERVICE_IMAGE_DIGEST=$(jq -r '.image_digest' <<<"$health")" >> "$GITHUB_ENV"
 
-      - name: Clean exact owned Service resources
-        shell: bash
+      - name: Recover exact worker data and identities through the reviewed Service operator
+        env:
+          GH_TOKEN: ${{ steps.service-cleanup-token.outputs.token }}
+          E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
+          E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
+          E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
+          E2E_MAX_NEW_ACCOUNTS_PER_RUN: ${{ steps.recovery-scope.outputs.max_new }}
+          E2E_MAX_QUARANTINED_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_quarantined }}
         run: |
-          payload=$(jq -c '{runScope: .runScope, users: [.accounts[] | select(.status != "deleted" and (.subject | type == "string")) | {sub: .subject, email: .email}]}' recovery/account-budget.json)
-          bash AnyWear-Service/.github/scripts/run-one-shot-task.sh beta tester-cleanup \
-            "$SERVICE_IMAGE_DIGEST" "$SERVICE_COMMIT_SHA" "" "$payload"
+          node scripts/writer-window.mjs
+          pnpm accounts:cleanup-workers
 
-      - name: Delete exact recovered Cognito identities
-        run: node scripts/delete-recovered-identities.mjs
+      - name: Reject remaining unknown or unrecovered accounts
+        run: jq -e 'all(.accounts[]; .status == "deleted")' recovery/account-budget.json >/dev/null
 
       - name: Upload recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: beta-account-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
-          path: recovery/account-budget.json
+          path: |
+            recovery/account-budget.json
+            recovery/service-cleanup-run.json
+            recovery/original-account-budget.json
+            recovery/original-service-cleanup-run.json
+            recovery/original-owner.json
           if-no-files-found: ignore
