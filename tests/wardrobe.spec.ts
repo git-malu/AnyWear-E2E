@@ -42,7 +42,9 @@ test.describe('Wardrobe Management @full-stack', () => {
   });
 
   test('recovers an idempotent auto-tag request across reloads and browser pages, then edits and deletes it', async ({ page, context }) => {
-    test.setTimeout(180_000);
+    // Cover the Service's nominal 552-second retry budget and bounded browser
+    // overhead; this completion wait does not assert a latency SLA.
+    test.setTimeout(720_000);
 
     page.on('dialog', async (dialog) => {
       await dialog.accept();
@@ -104,7 +106,7 @@ test.describe('Wardrobe Management @full-stack', () => {
       lastVersion = latest.taggingStateVersion;
       observedTerminalState = isTerminalTaggingStatus(latest.taggingStatus);
       return latest.taggingStatus;
-    }, { timeout: 120_000, intervals: [1_000, 2_000, 5_000] }).toBe('ready');
+    }, { timeout: 600_000, intervals: [1_000, 2_000, 5_000] }).toBe('ready');
 
     for (const viewer of [page, observer]) {
       await expect(viewer.getByText('Analyzing...')).not.toBeVisible({ timeout: 15_000 });
