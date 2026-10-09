@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { buildV2Compatibility } from './migrate-compatibility.mjs';
-import { candidateBuilderTarget, assertCandidateBuilderContext, buildCandidate } from './build-v2-candidate.mjs';
+import { candidateBuilderTarget, assertCandidateBuilderContext } from './build-v2-candidate.mjs';
 import { byteHash, parseStrictJson, payloadDigest, repositories } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 
@@ -126,18 +127,30 @@ function artifactHarness({ artifactId = candidateBuilderTarget.infraArtifactId }
 
 test('candidate build authenticates only the fixed Infra attempt and passes all scoped readers to migration', async () => {
   const outputRoot = await mkdtemp(join(tmpdir(), 'anywear-v2-builder-test-'));
+  const sourceRoot = join(outputRoot, 'source');
+  const compatibilityPath = join(sourceRoot, 'compatibility.json');
+  const committedCompatibilityBytes = await readFile(resolve(process.cwd(), 'compatibility.json'));
   try {
+    const committed = parseStrictJson(committedCompatibilityBytes);
+    assert.equal(committed.version, 2);
+    assert.equal(byteHash(committedCompatibilityBytes), 'fd42752d28e459b139ccab83277a700afb73a017c42cc5cfa25fb8a05af569b2');
+    // Candidate generation intentionally migrates from a v1 baseline. Keep that
+    // legacy input local to this migration test while the repository pins v2.
+    const migrationBaseline = {
+      version: 1,
+      client: committed.client,
+      service: committed.service,
+    };
+    const migrationBaselineBytes = Buffer.from(`${JSON.stringify(migrationBaseline, null, 2)}\n`);
+    await cp(resolve(process.cwd(), 'scripts'), join(sourceRoot, 'scripts'), { recursive: true });
+    await writeFile(compatibilityPath, migrationBaselineBytes);
+    const isolatedBuilder = await import(pathToFileURL(join(sourceRoot, 'scripts/build-v2-candidate.mjs')).href);
     const record = deploymentFixture();
     const recordBytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
-    const v1 = {
-      version: 1,
-      client: { repository: repositories.client, sha: record.observed.client_sha },
-      service: { repository: repositories.service, sha: record.observed.service_sha },
-    };
     const env = environment({ GITHUB_RUN_ID: '123456', GITHUB_RUN_ATTEMPT: '2' });
     const harness = artifactHarness();
     let migrationCalled = false;
-    const result = await buildCandidate({
+    const result = await isolatedBuilder.buildCandidate({
       environment: env,
       outputRoot,
       api: harness.api,
@@ -150,10 +163,12 @@ test('candidate build authenticates only the fixed Infra attempt and passes all 
         migrationCalled = true;
         assert.deepEqual(parseStrictJson(await readFile(recordPath)), record);
         for (const name of ['GH_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN', 'CLIENT_CONTENTS_READ_TOKEN']) assert.ok(migrationEnv[name]);
-        const candidate = buildV2Compatibility(v1, record, recordBytes, candidateBuilderTarget.infraArtifactId);
+        const candidate = buildV2Compatibility(migrationBaseline, record, recordBytes, candidateBuilderTarget.infraArtifactId);
         await writeFile(candidatePath, `${JSON.stringify(candidate, null, 2)}\n`, { flag: 'wx' });
       },
     });
+    assert.deepEqual(await readFile(compatibilityPath), migrationBaselineBytes,
+      'candidate generation must not modify the selected compatibility baseline');
     assert.equal(migrationCalled, true);
     assert.equal(result.candidate.version, 2);
     assert.equal(result.candidate.infra.sha, candidateBuilderTarget.infraSha);
@@ -172,6 +187,8 @@ test('candidate build authenticates only the fixed Infra attempt and passes all 
       assert.equal(call.env.GITHUB_TOKEN, undefined);
     }
   } finally {
+    assert.deepEqual(await readFile(resolve(process.cwd(), 'compatibility.json')), committedCompatibilityBytes,
+      'candidate generation must leave the committed v2 compatibility bytes unchanged');
     await rm(outputRoot, { recursive: true, force: true });
   }
 });
@@ -179,8 +196,12 @@ test('candidate build authenticates only the fixed Infra attempt and passes all 
 test('candidate build rejects a different artifact before downloading its contents', async () => {
   const outputRoot = await mkdtemp(join(tmpdir(), 'anywear-v2-builder-test-'));
   try {
+    const sourceRoot = join(outputRoot, 'source');
+    await cp(resolve(process.cwd(), 'scripts'), join(sourceRoot, 'scripts'), { recursive: true });
+    await cp(resolve(process.cwd(), 'compatibility.json'), join(sourceRoot, 'compatibility.json'));
+    const isolatedBuilder = await import(pathToFileURL(join(sourceRoot, 'scripts/build-v2-candidate.mjs')).href);
     const harness = artifactHarness({ artifactId: candidateBuilderTarget.infraArtifactId + 1 });
-    await assert.rejects(buildCandidate({ environment: environment(), outputRoot, api: harness.api }), /fixed candidate target/);
+    await assert.rejects(isolatedBuilder.buildCandidate({ environment: environment(), outputRoot, api: harness.api }), /fixed candidate target/);
     assert.equal(harness.calls.some((call) => call.binary), false);
   } finally {
     await rm(outputRoot, { recursive: true, force: true });
