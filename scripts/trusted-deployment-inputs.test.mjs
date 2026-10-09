@@ -87,8 +87,8 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
     io: {
       environment: { GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
         GITHUB_TOKEN: 'unrelated-write-fixture', CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture' },
-      api: async (path, binary, environment) => {
-        requests.push({ path, environment });
+      api: async (path, binary, environment, options) => {
+        requests.push({ path, binary, environment, options });
         if (binary && path.endsWith('/zip')) return Buffer.from('archive-fixture');
         if (binary && path.endsWith('/assets/11')) return manifestBytes;
         if (!responses.has(path)) throw new Error(`Unexpected fixture API request: ${path}`);
@@ -111,10 +111,10 @@ test('ghApi downloads binary artifact bytes through the JSON media type with sco
   const environment = { GH_TOKEN: 'infra-read-fixture' };
   let request;
   const result = ghApi('repos/git-malu/AnyWear-Infra/actions/artifacts/40/zip', true, environment,
-    (command, args, options) => {
+    { execute: (command, args, options) => {
       request = { command, args, options };
       return archive;
-    });
+    } });
 
   assert.equal(request.command, 'gh');
   assert.deepEqual(request.args, [
@@ -124,6 +124,27 @@ test('ghApi downloads binary artifact bytes through the JSON media type with sco
   assert.equal(request.options.encoding, undefined);
   assert.equal(request.options.env, environment);
   assert.deepEqual(result, archive);
+});
+
+test('ghApi downloads release asset bytes with octet-stream and preserves binary output', () => {
+  const manifest = Buffer.from('{"record_type":"anywear_service_artifacts"}\n', 'utf8');
+  const environment = { GH_TOKEN: 'service-read-fixture' };
+  let request;
+  const result = ghApi('repos/git-malu/AnyWear-Service/releases/assets/11', true, environment,
+    { execute: (command, args, options) => {
+      request = { command, args, options };
+      return manifest;
+    } });
+
+  assert.equal(request.command, 'gh');
+  assert.deepEqual(request.args, [
+    'api', 'repos/git-malu/AnyWear-Service/releases/assets/11',
+    '-H', 'Accept: application/octet-stream',
+  ]);
+  assert.equal(request.options.encoding, undefined);
+  assert.equal(request.options.env, environment);
+  assert.deepEqual(result, manifest);
+  assert.equal(byteHash(result), byteHash(manifest));
 });
 
 async function withDirectory(action) {
@@ -140,6 +161,11 @@ test('retrieves exact trusted attempt/artifact/manifest and requires attestation
     assert.equal(harness.attestations.length, 1);
     assert.equal(harness.attestations[0].digest, harness.compatibility.service_artifacts.manifest_sha256);
     assert.ok((await readFile(join(directory, 'verified-inputs.json'))).length > 0);
+    const archiveRequest = harness.requests.find(request => request.binary && request.path.endsWith('/actions/artifacts/40/zip'));
+    const manifestRequest = harness.requests.find(request => request.binary && request.path.endsWith('/releases/assets/11'));
+    assert.equal(archiveRequest.options.binaryAccept, 'application/json');
+    assert.equal(manifestRequest.options.binaryAccept, 'application/octet-stream');
+    assert.equal(byteHash(harness.manifestBytes), harness.compatibility.service_artifacts.manifest_sha256);
   });
 });
 

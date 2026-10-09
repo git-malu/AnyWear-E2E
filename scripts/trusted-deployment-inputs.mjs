@@ -101,11 +101,17 @@ export function repositoryReadEnvironment(repository, environment = process.env)
   return scoped;
 }
 
-export function ghApi(path, binary = false, environment = process.env, execute = execFileSync) {
-  // Actions artifact ZIP endpoints return a redirect to the archive. The GitHub
-  // API endpoint itself only accepts its JSON media type; gh follows the redirect
-  // and preserves the final archive bytes when encoding is unset.
-  return execute('gh', ['api', path, '-H', binary ? 'Accept: application/json' : 'Accept: application/vnd.github+json'], {
+export function ghApi(path, binary = false, environment = process.env, { execute = execFileSync, binaryAccept } = {}) {
+  // Actions artifact ZIP API endpoints accept JSON before redirecting to raw ZIP
+  // bytes, while release assets require octet-stream to return the asset itself.
+  const accept = binary
+    ? binaryAccept ?? (/\/actions\/artifacts\/\d+\/zip$/.test(path) ? 'application/json'
+      : /\/releases\/assets\/\d+$/.test(path) ? 'application/octet-stream' : undefined)
+    : 'application/vnd.github+json';
+  if (!accept || (binary && !['application/json', 'application/octet-stream'].includes(accept))) {
+    throw new Error('Unsupported binary GitHub API response type');
+  }
+  return execute('gh', ['api', path, '-H', `Accept: ${accept}`], {
     encoding: binary ? undefined : 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60_000,
     stdio: ['ignore', 'pipe', 'pipe'], env: environment,
   });
@@ -161,7 +167,8 @@ export async function loadTrustedInputs(compatibility, directory, { api = ghApi,
   const artifact = parseStrictJson(await api(`repos/${repositories.infra}/actions/artifacts/${expected.artifact_id}`, false, infraEnvironment));
   assertTrustedArtifact(artifact, compatibility, run);
   await mkdir(directory, { recursive: true });
-  const archive = await api(`repos/${repositories.infra}/actions/artifacts/${expected.artifact_id}/zip`, true, infraEnvironment);
+  const archive = await api(`repos/${repositories.infra}/actions/artifacts/${expected.artifact_id}/zip`, true, infraEnvironment,
+    { binaryAccept: 'application/json' });
   if (artifact.digest && artifact.digest !== `sha256:${byteHash(archive)}`) throw new Error('Deployment artifact archive digest mismatch');
   const archivePath = resolve(directory, 'deployment.zip');
   await writeFile(archivePath, archive);
@@ -173,7 +180,8 @@ export async function loadTrustedInputs(compatibility, directory, { api = ghApi,
   const service = compatibility.service_artifacts;
   const release = parseStrictJson(await api(`repos/${repositories.service}/releases/${service.release_id}`, false, serviceEnvironment));
   const asset = parseStrictJson(await api(`repos/${repositories.service}/releases/assets/${service.manifest_asset_id}`, false, serviceEnvironment));
-  const manifestBytes = await api(`repos/${repositories.service}/releases/assets/${service.manifest_asset_id}`, true, serviceEnvironment);
+  const manifestBytes = await api(`repos/${repositories.service}/releases/assets/${service.manifest_asset_id}`, true, serviceEnvironment,
+    { binaryAccept: 'application/octet-stream' });
   if (byteHash(manifestBytes) !== service.manifest_sha256) throw new Error('Service manifest exact-byte checksum mismatch');
   const manifest = parseStrictJson(manifestBytes);
   assertSealedRelease(release, asset, manifest, compatibility);
