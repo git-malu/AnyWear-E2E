@@ -10,7 +10,7 @@
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "ada13617da0280ca9a7da0798577db286e714edc"
+    "sha": "42d81d52d6939ee666b77896b9db9b7565f55337"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
