@@ -1,0 +1,104 @@
+name: Build Read-only Infra v2 Candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+
+jobs:
+  candidate:
+    name: Verify and package an untrusted-for-main candidate
+    if: github.repository == 'git-malu/AnyWear-E2E' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout protected E2E main source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check fixed protected dispatch context
+        run: node scripts/build-v2-candidate.mjs --preflight
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check source and candidate-builder regression coverage
+        run: pnpm check
+
+      - name: Generate Infra contents and Actions read token
+        id: infra-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+
+      - name: Generate Client contents-only read token
+        id: client-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Client
+          permission-contents: read
+
+      - name: Checkout exact Infra selection verifier
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Infra
+          ref: bafc3072ea6aee2d5193009c014cb1cf04b43848
+          path: .infra-source
+          token: ${{ steps.infra-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Build authenticated v2 candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ steps.infra-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-token.outputs.token }}
+          CLIENT_CONTENTS_READ_TOKEN: ${{ steps.client-token.outputs.token }}
+        run: node scripts/build-v2-candidate.mjs
+
+      - name: Upload untrusted-for-main candidate review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-v2-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.candidate.outputs.candidate_dir }}/*
+          if-no-files-found: error
+          retention-days: 30\n
