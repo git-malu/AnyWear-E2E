@@ -126,6 +126,9 @@ jobs:
           echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
           echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
 
+      - name: Require Beta admission eligibility
+        run: node scripts/beta-admission-eligibility.mjs
+
       - name: Observe authenticated deployed tuple before suite
         env:
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
