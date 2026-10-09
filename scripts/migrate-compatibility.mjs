@@ -10,12 +10,22 @@ import {
 } from './trusted-deployment-inputs.mjs';
 import { validateDeploymentRecord } from './vendor/deployment-contract.mjs';
 
-function argument(name) {
-  const index = process.argv.indexOf(name);
-  if (index < 0 || !process.argv[index + 1] || process.argv[index + 1].startsWith('--')) {
-    throw new Error(`${name} is required`);
+export function migrationArguments(argv) {
+  const options = new Map();
+  for (let index = 0; index < argv.length; index++) {
+    const name = argv[index];
+    if (!['--deployment-record', '--output'].includes(name)) {
+      throw new Error(`Unsupported argument ${name}; migration always uses committed compatibility.json`);
+    }
+    const value = argv[++index];
+    if (!value || value.startsWith('--')) throw new Error(`${name} requires a path`);
+    if (options.has(name)) throw new Error(`${name} may be supplied only once`);
+    options.set(name, value);
   }
-  return process.argv[index + 1];
+  for (const name of ['--deployment-record', '--output']) {
+    if (!options.has(name)) throw new Error(`${name} is required`);
+  }
+  return { inputPath: resolve(options.get('--deployment-record')), outputPath: resolve(options.get('--output')) };
 }
 
 export function buildV2Compatibility(v1, deployment, deploymentBytes, artifactId) {
@@ -63,37 +73,37 @@ export function selectDeploymentArtifact(artifacts, run) {
   return matches[0];
 }
 
-async function listRunArtifacts(run, environment) {
+export async function listRunArtifacts(run, environment, api = ghApi) {
   const found = [];
   let expectedCount;
   for (let page = 1; page <= 100; page++) {
-    const response = parseStrictJson(await ghApi(
+    const response = parseStrictJson(await api(
       `repos/${repositories.infra}/actions/runs/${run.id}/artifacts?per_page=100&page=${page}`,
       false, environment,
     ));
     if (!Array.isArray(response.artifacts) || !Number.isSafeInteger(response.total_count) || response.total_count < 0) {
       throw new Error('Infra run artifacts response is invalid');
     }
+    if (response.artifacts.length > 100) throw new Error('Infra run artifacts page exceeds the requested page size');
     if (expectedCount !== undefined && response.total_count !== expectedCount) throw new Error('Infra run artifact list changed while reading pages');
     expectedCount = response.total_count;
     found.push(...response.artifacts);
-    if (found.length >= expectedCount) return found;
+    if (found.length > expectedCount) throw new Error('Infra run artifact list exceeds its reported total_count');
+    if (found.length === expectedCount) return found;
     if (response.artifacts.length !== 100) throw new Error('Infra run artifact list pagination is incomplete');
   }
   throw new Error('Infra run artifact list exceeds the bounded pagination limit');
 }
 
 async function main() {
-  const inputPath = resolve(argument('--deployment-record'));
-  const outputPath = resolve(argument('--output'));
+  const { inputPath, outputPath } = migrationArguments(process.argv.slice(2));
   const currentCompatibilityPath = resolve(fileURLToPath(new URL('../compatibility.json', import.meta.url)));
-  const v1Path = resolve(process.argv.includes('--v1') ? argument('--v1') : 'compatibility.json');
-  if (inputPath === outputPath || v1Path === outputPath || outputPath === currentCompatibilityPath) {
+  if (inputPath === outputPath || outputPath === currentCompatibilityPath) {
     throw new Error('Migration output must be separate; compatibility.json is never modified');
   }
-  const v1 = parseStrictJson(await readFile(v1Path));
+  const v1 = parseStrictJson(await readFile(currentCompatibilityPath));
   validateCompatibility(v1, { allowLegacy: true });
-  if (v1.version !== 1) throw new Error('--v1 must point to the current v1 compatibility manifest');
+  if (v1.version !== 1) throw new Error('Committed compatibility.json must remain version 1 until migration');
   const bytes = await readFile(inputPath);
   const deployment = parseStrictJson(bytes);
   if (deployment.schema_version !== 2 || deployment.record_type !== 'anywear_infra_deployment') {

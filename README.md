@@ -235,8 +235,9 @@ A reviewed v2 compatibility file has these additional identities:
 The placeholders above are rejected by validation. Keep the committed
 `compatibility.json` at v1 until a real post-input Infra deployment record exists.
 Then run `node scripts/migrate-compatibility.mjs --deployment-record
-<downloaded-deployment-record.json> --output <reviewed-v2.json>` (optionally
-`--v1 <current-v1.json>`; by default it reads the committed v1 file). Prepare
+<downloaded-deployment-record.json> --output <reviewed-v2.json>`. The migration
+always reads the committed v1 file as its baseline; there is no alternate-pin
+override. Prepare
 `.infra-source` as a clean checkout of the record's exact Infra SHA from its
 expected origin. Supply the Infra reader as `GH_TOKEN`, the Service reader as
 `SERVICE_ARTIFACT_READ_TOKEN`, and a Client-only Contents read token as
