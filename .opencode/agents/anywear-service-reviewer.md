@@ -41,7 +41,7 @@ You are invoked after `anywear-service-dev` has completed its implementation. Yo
 ### Infrastructure
 - Service remains the deployed CDK authority until the separately verified #54 cutover. Are legacy `infra/lib/` changes within an explicitly assigned Service scope and consistent with [ADR 0021](../../AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md)? Shared infrastructure target source belongs to the separate Infra writer under [Infra instructions](../../AnyWear-Infra/AGENTS.md).
 - Are application/Lambda artifacts, migration and verification source still owned by Service, with immutable inputs handed to Infra rather than rebuilt there?
-- Keep source delivery, publication, native consumer acceptance, deployment and actual E2E qualification separate. A native signature alone does not replace the completed-success publisher and reviewed receipt gates in the [cutover runbook](../../AnyWear-Infra/docs/runbooks/cutover-and-recovery.md).
+- Keep source delivery, publication, native consumer acceptance, deployment and actual E2E qualification separate. A native signature alone is insufficient: Infra automatically binds it to the completed-success publisher run/attempt and verifies selected artifact bytes before requesting mutation credentials, as described in the [cutover runbook](../../AnyWear-Infra/docs/runbooks/cutover-and-recovery.md).
 - Client publishing is independent; generated API handoff remains Service → published API revision → Client.
 
 ### Code Quality
