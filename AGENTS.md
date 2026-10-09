@@ -15,11 +15,11 @@ This root directory is a **shell repository** containing five Git submodules. **
 2. **Service Repository**: `AnyWear-Service/` (Node.js / Hono Backend)
 3. **Meta Repository**: `AnyWear-Meta/` (Source of truth for documentation)
 4. **E2E Repository**: `AnyWear-E2E/` (Cross-repository Playwright system tests)
-5. **Infra Repository**: `AnyWear-Infra/` (Shared AWS CDK source and infrastructure migration target)
+5. **Infra Repository**: `AnyWear-Infra/` (Shared AWS CDK source and infrastructure workflows)
 
 ## Infrastructure Responsibilities
 
-The accepted [shared infrastructure ADR](AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md) assigns shared infrastructure to `AnyWear-Infra`. Until the separately verified #54 cutover, `AnyWear-Service/infra` remains the deployed infrastructure authority. Registering or merging Infra source does not transfer the environment writer or establish runtime acceptance.
+The accepted [shared infrastructure ADR](AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md) assigns shared infrastructure to `AnyWear-Infra`. Service's CDK/deployment entry points are source-retired; use the reviewed Infra workflows. Effective cloud permissions, environment writer allocations and runtime acceptance require separate #54 evidence. Root source pins do not establish deployed identity or transfer the environment writer.
 
 Service owns application code, Lambda source, database migrations, verification commands, generated API contracts and immutable Service artifacts. Infra automatically verifies those artifacts through native release verification and successful-publisher provenance before requesting mutation credentials; it does not generate API types or rebuild Service application artifacts. Client publishing stays independent, and E2E qualifies the recorded deployment tuple. Source delivery, artifact publication, native consumer acceptance, deployment and system qualification are separate gates.
 
