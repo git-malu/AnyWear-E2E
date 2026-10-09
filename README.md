@@ -232,17 +232,25 @@ A reviewed v2 compatibility file has these additional identities:
 }
 ```
 
-The placeholders above are rejected by validation. To migrate, supply all exact
-values explicitly to `node scripts/migrate-compatibility.mjs --reviewed-input
-<reviewed-v2.json>`. First prepare `.infra-source` as a clean checkout of the
-candidate's exact Infra SHA from its expected origin. Supply the Infra reader as
-`GH_TOKEN`, the Service reader as `SERVICE_ARTIFACT_READ_TOKEN`, and a Client-only
-Contents read token as `CLIENT_CONTENTS_READ_TOKEN` for remote commit checks.
-The script checks remote commit availability, retrieves the
-pinned trusted deployment artifact and sealed Service manifest, then writes the
-candidate for review. It does not infer SHAs, dispatch workflows, or run a suite.
-The final #54 tuple must pin the deployment record produced **after old IAM/trust
-retirement**; the rehearsal record cannot substitute.
+The placeholders above are rejected by validation. Keep the committed
+`compatibility.json` at v1 until a real post-input Infra deployment record exists.
+Then run `node scripts/migrate-compatibility.mjs --deployment-record
+<downloaded-deployment-record.json> --output <reviewed-v2.json>` (optionally
+`--v1 <current-v1.json>`; by default it reads the committed v1 file). Prepare
+`.infra-source` as a clean checkout of the record's exact Infra SHA from its
+expected origin. Supply the Infra reader as `GH_TOKEN`, the Service reader as
+`SERVICE_ARTIFACT_READ_TOKEN`, and a Client-only Contents read token as
+`CLIENT_CONTENTS_READ_TOKEN` for remote commit checks. The command checks remote
+commit availability, uniquely resolves the genuine Infra artifact for the bound
+completed run attempt, hashes the exact supplied record bytes, and retrieves the
+trusted deployment artifact and sealed Service manifest through the existing
+reader. It validates the pinned Infra committed selection and writes a new
+candidate file with exclusive creation; it never modifies `compatibility.json`,
+infers any pin, dispatches workflows, or runs a suite. The candidate is suitable
+for review only after the exact deployment and its record have passed these
+checks. The final #54 tuple must pin the deployment record produced **after the
+authorized Beta maintenance migration and restart**; a rehearsal record cannot
+substitute.
 
 The evidence reader accepts only the protected Infra `runtime.yml` and Service
 `service-artifacts.yml` completed-success main run/attempt. It rejects missing,
