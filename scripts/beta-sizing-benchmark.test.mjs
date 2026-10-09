@@ -8,7 +8,7 @@ const baseline = {
   provider_p95_ms: 500,
   queue_p95_ms: 400,
   cpu_sample_max_percent: 50,
-  route_p95_ms: { '/users/me': 100, '/wardrobes': 120, '/base-photos': 130, '/vto-jobs': 150 },
+  route_p95_ms: { '/users/me': 100, '/wardrobe': 120, '/vto/base-photos': 130, '/vto/generations': 150 },
 };
 
 function result(stage, overrides = {}) {
