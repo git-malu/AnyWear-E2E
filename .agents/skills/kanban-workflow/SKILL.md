@@ -7,7 +7,7 @@ description: Create, coordinate, or execute AnyWear GitHub Kanban issues across 
 
 This is the operating contract for `git-malu/AnyWear` Issues and Project #4. The Issue body owns scope, acceptance, affected repositories, and gate applicability; Project Status/Priority owns stage and relative priority. Use native relationships/labels and comments with linked PRs, Actions, and deployment evidence. Meta holds architecture and ADRs; working designs and evidence belong in Issue bodies/comments and linked artifacts. Read the relevant [GitHub operations](references/github-operations.md) section for CLI mutations, recovery, cleanup, release evidence, or delegation.
 
-Issue history is primarily for people. Write new comments and handoff reports in English using the [comment templates](references/comment-templates.md): lead with a descriptive title and conclusion, then state, changes, evidence links, and next steps. Keep titles, prose, table labels, and descriptive link labels consistently in English; preserve exact evidence in linked records or a collapsed traceability section, and distinguish intended actions from observed results. Post meaningful changes rather than repeated unchanged-status logs.
+Issue history is primarily for people. Write new comments and handoff reports in English using the [comment templates](references/comment-templates.md): lead with a descriptive title and conclusion, then state, changes, evidence links, and next steps. Progress and stage updates include the current overall completion percentage and a brief basis tied to verifiable scope; estimate completed acceptance criteria/work items against the issue's defined scope, not elapsed time, and never report 100% before closure gates pass. Keep titles, prose, table labels, and descriptive link labels consistently in English; preserve exact evidence in linked records or a collapsed traceability section, and distinguish intended actions from observed results. Post meaningful changes rather than repeated unchanged-status logs.
 
 ## Ownership
 
@@ -50,14 +50,14 @@ The normal path is:
 | Stage | Exit condition |
 | --- | --- |
 | Backlog | Scope, acceptance, owner, dependencies, resources, and workspace shape are ready |
-| Analysis | Design/diagnosis, API contracts, repository order, rollout compatibility, automatic deployment triggers, risks, and applicable gates are recorded |
+| Analysis | Design/diagnosis, API contracts, repository order, rollout compatibility, automatic deployment triggers, risks, and applicable gates are recorded; an actionable plan for the next stage is written in the Issue or a linked artifact |
 | Development | Required changes are published in repository PRs natively linked in the Issue's Development section; API order is Service -> published API revision -> Client |
 | Testing | Required checks and review pass on intended revisions |
 | Deployment | The target environment runs the intended revisions and applicable qualification passes |
 | Pending Closure | Acceptance, evidence, producer release obligations, repository/resource reconciliation, and cleanup pass |
 | Completed | Final evidence exists and Project Status plus native issue state read back as `Completed`, `CLOSED`, `COMPLETED` |
 
-Determine gate applicability in Analysis. Process-only work may mark runtime Deployment and system E2E `Not Applicable`, with document/link/schema/migration/workflow validation. Client browser checks mock Service/cloud boundaries; local smoke is optional and non-gating. Real cross-repository system E2E belongs to AnyWear-E2E in Beta and later stages. A merged PR is delivery evidence, not Issue completion.
+Determine gate applicability in Analysis. Write the next-stage plan with ordered actions, responsible role/repository, dependencies or release conditions, and validation/evidence expected; make it specific enough to start work without repeating Analysis. Record it in the Issue or a linked artifact and update it when findings materially change. Process-only work may mark runtime Deployment and system E2E `Not Applicable`, with document/link/schema/migration/workflow validation. Client browser checks mock Service/cloud boundaries; local smoke is optional and non-gating. Real cross-repository system E2E belongs to AnyWear-E2E in Beta and later stages. A merged PR is delivery evidence, not Issue completion.
 
 The owner has disabled `Auto-close issues with merged linked pull requests` in `git-malu/AnyWear`. Use the Issue's Development section to natively associate delivery PRs, including PRs from affected repositories; with this setting disabled, merging a linked PR does not close the Issue. Keep check/deployment/acceptance evidence in comments, avoid closing keywords, and close only after the lifecycle gates and cleanup pass. Follow [PR associations](references/github-operations.md#pr-associations) for linking and read-back.
 
