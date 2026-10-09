@@ -37,9 +37,12 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
-      E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-run.json
+      E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SOURCE_SHA }}
+      E2E_CLEANUP_SERVICE_IMAGE_DIGEST: ${{ vars.E2E_CLEANUP_SERVICE_IMAGE_DIGEST }}
+      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
 
     steps:
       - name: Checkout E2E recovery tools
@@ -65,16 +68,6 @@ jobs:
         run: |
           node scripts/check-compatibility.mjs --require-infra
           node scripts/execution-guard.mjs --source-only
-
-      - name: Generate Service cleanup token
-        id: service-cleanup-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Service
-          permission-actions: write
 
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -109,7 +102,6 @@ jobs:
 
       - name: Recover exact worker data and identities through the reviewed Service operator
         env:
-          GH_TOKEN: ${{ steps.service-cleanup-token.outputs.token }}
           E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
           E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
           E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
@@ -129,8 +121,10 @@ jobs:
           name: beta-account-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
           path: |
             recovery/account-budget.json
+            recovery/service-cleanup-operation.json
             recovery/service-cleanup-run.json
             recovery/original-account-budget.json
+            recovery/original-service-cleanup-operation.json
             recovery/original-service-cleanup-run.json
             recovery/original-owner.json
           if-no-files-found: ignore

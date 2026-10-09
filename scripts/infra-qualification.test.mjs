@@ -6,7 +6,6 @@ import { assertE2EExecution } from './execution-guard.mjs';
 import { assertDeploymentBinding, assertSealedRelease, assertTrustedArtifact, assertTrustedRun } from './trusted-deployment-inputs.mjs';
 import { buildQualificationRecord, collectDeploymentEvidence, verifyQualificationForPromotion, verifyQualificationRecord } from './qualification-record.mjs';
 import { assertRecoveryArtifact, prepareAccountRecovery } from './account-recovery-inputs.mjs';
-import { assertServiceCleanupRunSource } from '../tests/support/service-cleanup-dispatch.ts';
 
 const now = new Date('2026-10-08T00:20:00.000Z');
 const qualify = (f) => buildQualificationRecord(f.input, f.compatibility, f.evidence, now);
@@ -196,15 +195,6 @@ test('recovery artifact binds unique original source/attempt times and lifetime'
     { digest: undefined }, { digest: null }, { digest: '' }, { digest: 'invalid' }]) {
     assert.throws(() => assertRecoveryArtifact({ ...artifact, ...patch }, run));
   }
-});
-
-test('surviving Service data endpoint binds its operator source independently of image producer', () => {
-  const run = { id: 500, run_attempt: 1, repository: { full_name: 'git-malu/AnyWear-Service' }, path: '.github/workflows/beta-testers.yml',
-    head_sha: 'c'.repeat(40), head_branch: 'main', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' };
-  assert.equal(assertServiceCleanupRunSource(run, 'c'.repeat(40)), 1);
-  assert.throws(() => assertServiceCleanupRunSource(run, 'b'.repeat(40)));
-  assert.throws(() => assertServiceCleanupRunSource({ ...run, run_attempt: 2 }, 'c'.repeat(40), 1));
-  assert.throws(() => assertServiceCleanupRunSource({ ...run, head_branch: 'other' }, 'c'.repeat(40)));
 });
 
 test('deployment v2 requires committed selection path/hash and rejects historical receipt runtime records', () => {

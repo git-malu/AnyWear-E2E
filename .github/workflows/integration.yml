@@ -30,6 +30,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
       E2E_WORKERS: 2
       E2E_MAX_ACTIVE_ACCOUNTS: 2
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
@@ -206,16 +207,6 @@ jobs:
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
-      - name: Generate Service cleanup token
-        id: service-cleanup-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Service
-          permission-actions: write
-
       - name: Load Beta test identity configuration
         shell: bash
         run: |
@@ -226,6 +217,8 @@ jobs:
             echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
           } >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' AnyWear-E2E/deployment-evidence-before.json)" >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' AnyWear-E2E/deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Install Chromium
         working-directory: AnyWear-E2E
@@ -239,10 +232,8 @@ jobs:
           pnpm test:smoke
 
       - name: Clean up exact Beta worker identities
-        if: ${{ always() && steps.beta-suite.outcome != 'skipped' && steps.service-cleanup-token.outcome == 'success' }}
+        if: ${{ always() && steps.beta-suite.outcome != 'skipped' }}
         working-directory: AnyWear-E2E
-        env:
-          GH_TOKEN: ${{ steps.service-cleanup-token.outputs.token }}
         run: |
           node scripts/execution-guard.mjs
           pnpm accounts:cleanup-workers
@@ -275,5 +266,6 @@ jobs:
           name: beta-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             AnyWear-E2E/test-results/account-budget.json
+            AnyWear-E2E/test-results/service-cleanup-operation.json
             AnyWear-E2E/test-results/service-cleanup-run.json
           if-no-files-found: ignore
