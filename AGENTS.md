@@ -5,15 +5,25 @@
 > - `AnyWear-Client/AGENTS.md`
 > - `AnyWear-Service/AGENTS.md`
 > - `AnyWear-E2E/AGENTS.md`
+> - `AnyWear-Infra/AGENTS.md`
 > 
 > 💡 **Tip:** For cross-project architecture principles and guidelines, read [`AnyWear-Meta/architecture/architecture_principles.md`](AnyWear-Meta/architecture/architecture_principles.md). For system design details, see the [application architecture](AnyWear-Meta/architecture/system-component-architecture/application-architecture/overview.md) and [technical architecture](AnyWear-Meta/architecture/system-component-architecture/technical-architecture/overview.md) overviews.
 
-This root directory is a **shell repository** containing four Git submodules. **Do not run build or install commands in the root directory.** All code and package configuration lives in the subdirectories.
+This root directory is a **shell repository** containing five Git submodules. **Do not run build or install commands in the root directory.** All code and package configuration lives in the subdirectories.
 
 1. **Client Repository**: `AnyWear-Client/` (Tauri / React Frontend)
 2. **Service Repository**: `AnyWear-Service/` (Node.js / Hono Backend)
 3. **Meta Repository**: `AnyWear-Meta/` (Source of truth for documentation)
 4. **E2E Repository**: `AnyWear-E2E/` (Cross-repository Playwright system tests)
+5. **Infra Repository**: `AnyWear-Infra/` (Shared AWS CDK source and infrastructure migration target)
+
+## Infrastructure Responsibilities
+
+The accepted [shared infrastructure ADR](AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md) assigns shared infrastructure to `AnyWear-Infra`. Until the separately verified #54 cutover, `AnyWear-Service/infra` remains the deployed infrastructure authority. Registering or merging Infra source does not transfer the environment writer or establish runtime acceptance.
+
+Service owns application code, Lambda source, database migrations, verification commands, generated API contracts and immutable Service artifacts. Infra automatically verifies those artifacts through native release verification and successful-publisher provenance before requesting mutation credentials; it does not generate API types or rebuild Service application artifacts. Client publishing stays independent, and E2E qualifies the recorded deployment tuple. Source delivery, artifact publication, native consumer acceptance, deployment and system qualification are separate gates.
+
+Read [Infra source checks](AnyWear-Infra/AGENTS.md#required-source-checks), the [Beta runbook](AnyWear-Infra/docs/runbooks/beta-infrastructure.md) and the [cutover/recovery runbook](AnyWear-Infra/docs/runbooks/cutover-and-recovery.md) before assigned infrastructure work. Only the Kanban manager controls Beta on/off; starting or reactivating Beta requires the user's explicit consent under the [Beta lifecycle authority](.agents/skills/kanban-workflow/SKILL.md#beta-lifecycle-authority). An issue assignment or source pin does not grant deployment or lifecycle permission.
 
 ## Repository Relations
 
@@ -24,6 +34,7 @@ graph TD
     Anywear --> |submodule| AnyWear-Service
     Anywear --> |submodule| AnyWear-Meta
     Anywear --> |submodule| AnyWear-E2E
+    Anywear --> |submodule| AnyWear-Infra
     AnyWear-Client --> |submodule| api
     AnyWear-Service --> |submodule| api
 ```
@@ -33,10 +44,13 @@ graph TD
 graph TD
     AnyWear-Client --> |depends on| AnyWear-Meta
     AnyWear-Service --> |depends on| AnyWear-Meta 
+    AnyWear-Infra --> |depends on| AnyWear-Meta
+    AnyWear-Infra --> |consumes immutable artifacts| AnyWear-Service
     AnyWear-Client --> |depends on| api
     api --> |depends on| AnyWear-Service
     AnyWear-E2E --> |tests| AnyWear-Client
     AnyWear-E2E --> |tests| AnyWear-Service
+    AnyWear-E2E --> |qualifies recorded infrastructure| AnyWear-Infra
 ```
 
 ## Workflow
@@ -55,8 +69,8 @@ Use the GitHub CLI (`gh`) for GitHub issues, pull requests, projects, and reposi
 ## Git & Submodule Operations
 
 - Run `git submodule update --init --recursive` if directories are empty or missing.
-- **Git Commits**: Since each directory is an independent Git repository, you must execute `git` operations (add, commit, push) *inside* the specific subdirectory (`AnyWear-Client`, `AnyWear-Service`, `AnyWear-Meta`, or `AnyWear-E2E`). Committing at the root only updates the submodule commit pointers.
-- **Local Compatibility Workspace**: The root repository's four submodule pointers define a reproducible local workspace only. Full system E2E is owned by `AnyWear-E2E`, whose `compatibility.json` pins the exact Client and Service commits executed by CI. The root repository must not run CI or hold cross-repository credentials.
+- **Git Commits**: Since each directory is an independent Git repository, execute its `git` operations (add, commit, push) *inside* that repository (`AnyWear-Client`, `AnyWear-Service`, `AnyWear-Meta`, `AnyWear-E2E`, or `AnyWear-Infra`). Keep one Git writer per physical repository and stage only the allocated files. Root commits own shell documentation and submodule registration/pointers; they do not commit child repository contents.
+- **Local Compatibility Workspace**: The root repository's five submodule pointers define a reproducible local workspace only. Full system E2E is owned by `AnyWear-E2E`, whose versioned `compatibility.json` defines its exact CI inputs. Root pins do not select a runtime or authorize artifact acceptance. The root repository must not own deployment pipelines, build/install commands, or cross-repository credentials; its existing comment-triggered agent workflow is not a system CI or deployment pipeline.
 
 > ⚠️ **API Dependency Caution:** Both `AnyWear-Client` and `AnyWear-Service` reference the same remote `api` repo as a submodule, but with a strict producer/consumer relationship: **`AnyWear-Service` generates the API types, and `AnyWear-Client` only consumes them**. The update flow is always *Service generates → Client consumes* — never the reverse. If your task involves modifying these shared API types, make changes in `AnyWear-Service` first (it's the source of truth), and then update `AnyWear-Client`'s submodule pointer to pull in those changes. When working with parallel issues, be careful — two agents may introduce conflicting or inconsistent changes to the same API definitions. In such cases, handle the shared API changes first (or coordinate them explicitly in the issue descriptions), before creating parallel client/service issues.
 

@@ -36,10 +36,13 @@ You are invoked after `anywear-service-dev` has completed its implementation. Yo
 - Are user permissions checked where applicable?
 - No secrets, credentials, or API keys exposed in code or config.
 - IAM roles in CDK stacks scoped to least privilege.
+- Check effective deployment authority separately from role names or source checks; do not infer runtime isolation or acceptance from a successful synth.
 
 ### Infrastructure
-- Are CDK changes in `infra/lib/` correct and minimal?
-- Does the infrastructure match what's described in the design docs?
+- Service remains the deployed CDK authority until the separately verified #54 cutover. Are legacy `infra/lib/` changes within an explicitly assigned Service scope and consistent with [ADR 0021](../../AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md)? Shared infrastructure target source belongs to the separate Infra writer under [Infra instructions](../../AnyWear-Infra/AGENTS.md).
+- Are application/Lambda artifacts, migration and verification source still owned by Service, with immutable inputs handed to Infra rather than rebuilt there?
+- Keep source delivery, publication, native consumer acceptance, deployment and actual E2E qualification separate. A native signature alone is insufficient: Infra automatically binds it to the completed-success publisher run/attempt and verifies selected artifact bytes before requesting mutation credentials, as described in the [cutover runbook](../../AnyWear-Infra/docs/runbooks/cutover-and-recovery.md).
+- Client publishing is independent; generated API handoff remains Service → published API revision → Client.
 
 ### Code Quality
 - Follows Hono patterns and conventions?
@@ -51,6 +54,7 @@ You are invoked after `anywear-service-dev` has completed its implementation. Yo
 - TypeScript compiles without errors (`pnpm tsc --noEmit`).
 - All commands use `pnpm` (root) or `npm` (infra/), not the other way around.
 - `api/anywear_openapi.yaml` was regenerated after schema changes (not manually edited).
+- Review only this repository's allocated scope. Do not change peer repositories, approve a shared environment writer handoff, or operate Beta on/off controls. Those controls belong to the Kanban manager, with explicit user consent required for a start/reactivation under the [lifecycle authority](../../.agents/skills/kanban-workflow/SKILL.md#beta-lifecycle-authority).
 
 ## Review Output
 
