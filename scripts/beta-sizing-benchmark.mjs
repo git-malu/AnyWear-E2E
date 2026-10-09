@@ -11,7 +11,7 @@ export const SIZING_WORKLOAD = Object.freeze({
   upload_tagging_cases: 24,
   vto_generations: 10,
   paced_requests_per_route: 100,
-  paced_routes: Object.freeze(['/users/me', '/wardrobes', '/base-photos', '/vto-jobs']),
+  paced_routes: Object.freeze(['/users/me', '/wardrobe', '/vto/base-photos', '/vto/generations']),
   overlap_cases: 2,
   image_formats: Object.freeze(['image/jpeg', 'image/png', 'image/webp']),
   vto_shapes: Object.freeze(['ordinary-base-one-garment', 'large-base-three-garments', 'largest-supported-output']),

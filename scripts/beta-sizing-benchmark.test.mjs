@@ -8,7 +8,7 @@ const baseline = {
   provider_p95_ms: 500,
   queue_p95_ms: 400,
   cpu_sample_max_percent: 50,
-  route_p95_ms: { '/users/me': 100, '/wardrobes': 120, '/base-photos': 130, '/vto-jobs': 150 },
+  route_p95_ms: { '/users/me': 100, '/wardrobe': 120, '/vto/base-photos': 130, '/vto/generations': 150 },
 };
 
 function result(stage, overrides = {}) {
@@ -61,7 +61,7 @@ test('rejects stability and candidate headroom failures', () => {
   assert.equal(evaluateSizingResult(result('S1', { unexpected_oom: 1 }), baseline).status, 'rejected');
   assert.equal(evaluateSizingResult(result('S2', { api_peak_mib: 385 }), baseline).status, 'rejected');
   assert.equal(evaluateSizingResult(result('S3', { worker_peak_mib: 769 }), baseline).status, 'rejected');
-  assert.equal(evaluateSizingResult(result('S3', { route_p95_ms: { ...baseline.route_p95_ms, '/vto-jobs': 300 } }), baseline).status, 'rejected');
+  assert.equal(evaluateSizingResult(result('S3', { route_p95_ms: { ...baseline.route_p95_ms, '/vto/generations': 300 } }), baseline).status, 'rejected');
 });
 
 test('accepts a complete S0 baseline and a bounded S1 replica reduction', () => {
