@@ -32,6 +32,7 @@
   "devDependencies": {
     "@actions/artifact": "^6.2.1",
     "@aws-sdk/client-cognito-identity-provider": "^3.1097.0",
+    "@aws-sdk/client-sfn": "^3.1147.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.0",
     "@types/node": "~24.12.4",

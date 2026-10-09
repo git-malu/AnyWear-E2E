@@ -32,7 +32,7 @@ function readAccountArchive(archivePath) {
     'with zipfile.ZipFile(sys.argv[1]) as z:',
     ' entries=z.infolist()',
     ' names=[e.filename for e in entries]',
-    ' if len(names)!=len(set(names)) or "account-budget.json" not in names or any(n not in ("account-budget.json","service-cleanup-run.json") for n in names): raise ValueError("Unexpected account artifact contents")',
+    ' if len(names)!=len(set(names)) or "account-budget.json" not in names or any(n not in ("account-budget.json","service-cleanup-run.json","service-cleanup-operation.json") for n in names): raise ValueError("Unexpected account artifact contents")',
     ' if any(e.is_dir() or e.file_size>1048576 for e in entries): raise ValueError("Unbounded account artifact file")',
     ' print(json.dumps({e.filename:base64.b64encode(z.read(e)).decode("ascii") for e in entries}))',
   ].join('\n'), archivePath], { timeout: 15_000, maxBuffer: 3 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }));
@@ -86,6 +86,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   prepareAccountRecovery(manifest, run, id, attempt);
   await writeFile(resolve(dirname(path), 'original-account-budget.json'), bytes, { mode: 0o600 });
   if (files['service-cleanup-run.json']) await writeFile(resolve(dirname(path), 'original-service-cleanup-run.json'), Buffer.from(files['service-cleanup-run.json'], 'base64'), { mode: 0o600 });
+  if (files['service-cleanup-operation.json']) await writeFile(resolve(dirname(path), 'original-service-cleanup-operation.json'), Buffer.from(files['service-cleanup-operation.json'], 'base64'), { mode: 0o600 });
   await writeFile(resolve(dirname(path), 'original-owner.json'), `${JSON.stringify({
     schema_version: 1, record_type: 'anywear_e2e_recovery_origin', run, artifact,
     archive_sha256: byteHash(archive), manifest_sha256: byteHash(bytes),

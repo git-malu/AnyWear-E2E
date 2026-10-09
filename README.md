@@ -324,9 +324,11 @@ does not serialize those other repositories. Keep `ENABLE_INFRA_E2E` unset or
 | Variable | Required value |
 | --- | --- |
 | `ENABLE_INFRA_E2E` | `true` only after role/access/cutover gates pass |
-| `E2E_CLEANUP_SERVICE_SHA` | Full reviewed Service app-data operator SHA; independent of image producer SHA |
+| `E2E_CLEANUP_SERVICE_SOURCE_SHA` | Full reviewed deployed Service source SHA bound into the fixed cleanup capability |
+| `E2E_CLEANUP_SERVICE_SHA` | Legacy source/operator guard value retained during cutover |
+| `E2E_CLEANUP_SERVICE_IMAGE_DIGEST` | Reviewed deployed Service image digest |
+| `BETA_CLEANUP_STATE_MACHINE_VERSION_ARN` | Immutable version ARN of the Infra-owned cleanup state machine |
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | `650880818323`, `ap-east-1` |
-| `APP_ID`, `APP_PRIVATE_KEY` | Installed read/cleanup App configuration; private key remains a secret |
 
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
 allowed workflow path and matching workflow/checkout commit establish source identity.
@@ -335,23 +337,23 @@ assuming the dedicated `beta-e2e-qualification-role`, each workflow captures fre
 STS account/principal values and checks the exact account, role and region. Those
 values are supplied by the workflow, not dispatch inputs. The default guard requires
 that captured principal before observations, suite and mutation boundaries, including
-Cognito deletion after a nested Service cleanup wait. Missing or mismatched identity
+Cognito deletion after a fixed cleanup operation wait. Missing or mismatched identity
 retains the cleanup manifest for protected recovery. Qualification has a 90-minute
 job bound; integration and account recovery have 60-minute bounds. All three share
 the `beta-e2e-account-pool` concurrency group with cancellation disabled. The manager
 must verify all local/Actions/CFN/ECS/nested Service jobs have ceased before handing
 the environment to another writer; timeout alone never releases it.
 
-Service `beta-testers.yml` remains the bounded application-data cleanup entrypoint.
-Both normal and recovery cleanup dispatch that protected endpoint, verify its exact
-reviewed operator source/run/attempt and require completed
-success before deleting Cognito identities. Recovery validates the completed
+The Infra-owned versioned Step Functions cleanup capability invokes Service's fixed
+application-data task. Normal and recovery cleanup submit the same strict envelope,
+wait for its exact execution and committed result, and require terminal success
+before deleting Cognito identities. Recovery validates the completed
 original E2E owner and captured worker subjects; unknown or unrecovered identities
 and quarantined leases remain in its manifest and fail recovery. The account
-artifact also preserves the successful nested Service run/attempt/source and exact
-cleanup request before any Cognito deletion, including when later cleanup fails.
-This evidence is diagnostic; recovery still executes and verifies its own guarded
-Service cleanup. E2E does not check out a mutable cleanup
+artifact preserves the capability execution, source/image binding and exact cleanup
+request before any Cognito deletion, including when later cleanup fails. Legacy
+`service-cleanup-run.json` records remain accepted as historical recovery input;
+new runs use `service-cleanup-operation.json`. E2E does not check out a mutable cleanup
 helper or pass the Lifecycle/Cleanup task roles. Service's surviving operator must
 select the dedicated `CleanupTaskRoleArn` with no fallback to the old Lifecycle
 role. Its legacy image still needs narrowly reviewed data-cleanup permissions for

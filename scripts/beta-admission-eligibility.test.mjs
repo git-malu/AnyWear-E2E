@@ -181,7 +181,7 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.ok(eligibility > steps.findIndex(step => step.startsWith('Verify dedicated E2E principal')));
   assert.match(steps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
   assert.doesNotMatch(steps[eligibility], /\bif:|continue-on-error:/);
-  for (const name of ['Observe authenticated deployed tuple before suite', 'Generate Service cleanup token',
+  for (const name of ['Observe authenticated deployed tuple before suite',
     'Load Beta test identity configuration', 'Run complete deployed Beta suite']) {
     assert.ok(steps.findIndex(step => step.startsWith(name)) > eligibility, name);
   }
