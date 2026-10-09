@@ -18,7 +18,7 @@ AnyWear is an AI-powered virtual try-on and wardrobe management platform designe
 - **Service (Backend)**: A modular monolith deployed on AWS ECS Fargate using a "One Task" unified architecture. Built with Node.js, Hono, Drizzle ORM, and LangGraph.js.
 - **Architecture and API Contracts**: `AnyWear-Meta` owns product and architecture documentation. Service generates the shared `api` contract; Client consumes a published API revision in Service → API → Client order.
 - **System Tests**: `AnyWear-E2E` owns Playwright flows that cross the real Client and Service boundary. Its versioned `compatibility.json` defines the exact CI inputs; source delivery and actual deployment qualification have separate acceptance gates.
-- **Cloud Infrastructure**: `AnyWear-Infra` contains the shared AWS CDK source and reviewed operation runbooks for Cognito, Aurora Serverless, S3 and other shared resources. It is the accepted migration target under [ADR 0021](AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md); Service remains the deployed infrastructure authority until the verified #54 cutover.
+- **Cloud Infrastructure**: `AnyWear-Infra` owns the shared AWS CDK source and reviewed infrastructure workflows for Cognito, Aurora Serverless, S3 and other shared resources under [ADR 0021](AnyWear-Meta/architecture/ADR/0021-shared-infrastructure-repository.md). Service's CDK/deployment entry points are source-retired; effective cloud permissions and runtime acceptance are verified separately in #54.
 
 This shell contains five submodules: Client, Service, Meta, E2E and Infra. Their fixed commit pins reproduce a local workspace; the shell owns no application build, deployment pipeline or cross-repository credentials. Service owns immutable application/Lambda artifacts, migrations and verification commands; Infra verifies immutable Service releases and automatically verifies the publisher, while Client publishes independently. Infra source registration does not establish artifact publication, native consumer acceptance, deployment or system qualification.
 
@@ -57,7 +57,7 @@ pnpm test                          # vitest run
 
 #### Infrastructure Source and Operations
 
-Run bounded source checks in the Infra repository using [its required checks](AnyWear-Infra/AGENTS.md#required-source-checks) and [package scripts](AnyWear-Infra/package.json). These checks do not deploy resources. Keep changes to Service's currently deployed CDK source within a separately assigned Service scope until cutover.
+Run bounded source checks in the Infra repository using [its required checks](AnyWear-Infra/AGENTS.md#required-source-checks) and [package scripts](AnyWear-Infra/package.json). These checks do not deploy resources. Assign infrastructure source changes to Infra; Service owns application artifacts and migration/verification code.
 
 For cloud operations, follow the [Beta runbook](AnyWear-Infra/docs/runbooks/beta-infrastructure.md) and [cutover/recovery runbook](AnyWear-Infra/docs/runbooks/cutover-and-recovery.md) with the manager's exact source/input and environment writer allocation. Verify the AWS account, profile and region first. Only the Kanban manager controls Beta on/off, and a start or reactivation requires the user's explicit consent under the [lifecycle rules](.agents/skills/kanban-workflow/SKILL.md#beta-lifecycle-authority). Do not infer runtime authority from a local submodule pin.
 
