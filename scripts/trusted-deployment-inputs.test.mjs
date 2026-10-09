@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { byteHash, payloadDigest, parseStrictJson, canonicalJson } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
-import { loadTrustedInputs, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
+import { ghApi, loadTrustedInputs, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
 import { assertNativeReleaseAttestation, RELEASE_PREDICATE_TYPE } from './vendor/vendor/service-release-attestation.mjs';
 import { verifySelection, validateSelection } from './vendor/artifact-consumer.mjs';
 
@@ -105,6 +105,26 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
     },
   };
 }
+
+test('ghApi downloads binary artifact bytes through the JSON media type with scoped credentials', () => {
+  const archive = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff]);
+  const environment = { GH_TOKEN: 'infra-read-fixture' };
+  let request;
+  const result = ghApi('repos/git-malu/AnyWear-Infra/actions/artifacts/40/zip', true, environment,
+    (command, args, options) => {
+      request = { command, args, options };
+      return archive;
+    });
+
+  assert.equal(request.command, 'gh');
+  assert.deepEqual(request.args, [
+    'api', 'repos/git-malu/AnyWear-Infra/actions/artifacts/40/zip',
+    '-H', 'Accept: application/json',
+  ]);
+  assert.equal(request.options.encoding, undefined);
+  assert.equal(request.options.env, environment);
+  assert.deepEqual(result, archive);
+});
 
 async function withDirectory(action) {
   const directory = await mkdtemp(join(tmpdir(), 'anywear-e2e-contract-'));

@@ -101,8 +101,11 @@ export function repositoryReadEnvironment(repository, environment = process.env)
   return scoped;
 }
 
-export function ghApi(path, binary = false, environment = process.env) {
-  return execFileSync('gh', ['api', path, '-H', binary ? 'Accept: application/octet-stream' : 'Accept: application/vnd.github+json'], {
+export function ghApi(path, binary = false, environment = process.env, execute = execFileSync) {
+  // Actions artifact ZIP endpoints return a redirect to the archive. The GitHub
+  // API endpoint itself only accepts its JSON media type; gh follows the redirect
+  // and preserves the final archive bytes when encoding is unset.
+  return execute('gh', ['api', path, '-H', binary ? 'Accept: application/json' : 'Accept: application/vnd.github+json'], {
     encoding: binary ? undefined : 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60_000,
     stdio: ['ignore', 'pipe', 'pipe'], env: environment,
   });
