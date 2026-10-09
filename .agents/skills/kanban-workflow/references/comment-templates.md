@@ -6,6 +6,7 @@ Use these templates for new AnyWear issue comments and role handoffs. Write titl
 
 - Start with a descriptive event title and one short paragraph explaining the outcome, its consequence, and any action the reader needs to take. Use short paragraphs and parallel bullets instead of semicolon-separated operational dumps.
 - Distinguish **current observed state**, **planned action**, and **verified result**. A pre-mutation record says “ready” or “pending verification”; call work completed only after the required read-back. When adding a result, update the opening conclusion to the latest verified outcome while preserving the earlier intent and decision evidence. Keep failed, skipped, unknown, and Not Applicable results explicit, with their implications or reasons.
+- Every progress or stage update states the current overall completion percentage and its basis, tied to verified work against the defined scope. Use completed/total comparable work items or acceptance criteria where available; otherwise give a coarse estimate and explain it. Do not base it on elapsed time or imply false precision. Reassess when scope changes, and report 100% only after applicable acceptance, delivery, and closure gates are verified.
 - Use small tables for repository deliveries, acceptance results, state comparisons, and ownership/resource inventories. Do not pack unrelated facts into a table cell or reproduce the entire issue history.
 - Use descriptive Markdown links: `[Service PR #51](https://github.com/git-malu/AnyWear-Service/pull/51)` and `[Acceptance and cleanup evidence](https://github.com/git-malu/AnyWear/issues/87#issuecomment-6055496284)`. Include repository names for cross-repository PRs. Bare comment IDs, glued identifiers such as `Transfer0`, and unformatted path/hash strings are hard to read.
 - Preserve required exact revisions and identifiers in immutable linked evidence or the traceability block below. A short commit label may link to the full commit SHA; do not replace an exact revision record with an ambiguous abbreviation. Reference the existing owner claim and earlier evidence when they remain unchanged.
@@ -22,6 +23,7 @@ Use these templates for new AnyWear issue comments and role handoffs. Write titl
 | Item | Current record |
 | --- | --- |
 | Current state (verified) | <Issue state / Project Status / Priority> |
+| Overall progress | <NN%; concise basis, such as 3 of 5 acceptance items verified> |
 | Planned transition | <Current stage -> target stage; not yet executed or awaiting read-back; omit if unchanged> |
 | Owner | <Role / person; link to the existing owner claim> |
 
