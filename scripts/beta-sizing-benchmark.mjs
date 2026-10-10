@@ -1,6 +1,6 @@
 const STAGE_DEFINITIONS = Object.freeze([
-  Object.freeze({ id: 'S0', purpose: 'fresh-qualified-baseline', api: { desired: 2, minimum: 2, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
-  Object.freeze({ id: 'S1', purpose: 'required-replica-reduction', api: { desired: 1, minimum: 1, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
+  Object.freeze({ id: 'S0', purpose: 'historical-replica-cost-baseline', api: { desired: 2, minimum: 2, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
+  Object.freeze({ id: 'S1', purpose: 'fresh-common-runtime-baseline', api: { desired: 1, minimum: 1, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
   Object.freeze({ id: 'S2', purpose: 'api-memory-candidate', api: { desired: 1, minimum: 1, cpu: 256, memoryMiB: 512 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
   Object.freeze({ id: 'S3', purpose: 'worker-memory-candidate', api: { desired: 1, minimum: 1, cpu: 256, memoryMiB: 512 }, worker: { desired: 1, minimum: 1, cpu: 512, memoryMiB: 1024 } }),
 ]);
@@ -57,6 +57,7 @@ export function createSizingPlan({ fixtureManifestSha256, compatibilitySha } = {
     issue: 95,
     fixture_manifest_sha256: fixtureManifestSha256,
     compatibility_sha: compatibilitySha,
+    runtime_baseline: 'S1',
     stages: STAGE_DEFINITIONS.map((stage) => structuredClone(stage)),
     workload: structuredClone(SIZING_WORKLOAD),
     limits: structuredClone(SIZING_LIMITS),
@@ -67,6 +68,7 @@ export function validateSizingPlan(plan) {
   if (!plan || plan.schema_version !== 1 || plan.issue !== 95) fail('Unsupported Beta sizing plan');
   if (!HASH.test(plan.fixture_manifest_sha256)) fail('Sizing plan fixture manifest binding is required');
   if (!SHA.test(plan.compatibility_sha)) fail('Sizing plan compatibility binding is required');
+  if (plan.runtime_baseline !== 'S1') fail('Fresh runtime comparison must use the one-replica S1 baseline');
   if (!Array.isArray(plan.stages) || plan.stages.length !== STAGE_DEFINITIONS.length) fail('Sizing plan must contain S0 through S3 exactly once');
   plan.stages.forEach((stage, index) => exactStage(stage, STAGE_DEFINITIONS[index], `S${index}`));
   if (!plan.workload || plan.workload.upload_tagging_cases !== 24 || plan.workload.vto_generations !== 10
@@ -93,6 +95,16 @@ function queueBounds(item) {
   const queue = item.queue;
   if (!queue || queue.task_correlation_verified !== true || queue.clock_bound_verified !== true
     || !HASH.test(queue.clock_evidence_sha256)) return undefined;
+  if (queue.kind === 'same-worker-causal-bounds') {
+    const { absent_snapshot_started_ms: absent, send_started_ms: send,
+      send_acknowledged_ms: ack, first_execution_started_ms: execution } = queue;
+    if (!queue.process_instance || !queue.outbox_id || !queue.send_request_id
+      || queue.complete_unfiltered_absence_verified !== true || queue.first_attempt_verified !== true
+      || ![absent, send, ack, execution].every(Number.isFinite)
+      || absent < 0 || send < absent || ack < send || execution < send) return undefined;
+    return { commit_to_publish: [0, ack - absent],
+      publish_to_execution: [Math.max(0, execution - ack), execution - send] };
+  }
   if (queue.kind === 'exact-common-clock') {
     if (['commit_to_publish_ms', 'publish_to_execution_ms'].some((field) => !Number.isFinite(queue[field]) || queue[field] < 0)) return undefined;
     return { commit_to_publish: [queue.commit_to_publish_ms, queue.commit_to_publish_ms],
@@ -240,21 +252,21 @@ export function evaluateSizingResult(result, baseline) {
   const measured = summary(result);
   if (['S2', 'S3'].includes(stage.id) && measured.api_peak_mib > SIZING_LIMITS.api_memory_headroom_mib) return verdict('rejected', 'API candidate lacks 25% memory headroom');
   if (stage.id === 'S3' && measured.worker_peak_mib > SIZING_LIMITS.worker_memory_headroom_mib) return verdict('rejected', 'Worker candidate lacks 25% memory headroom');
-  if (stage.id !== 'S0') {
-    if (baseline?.stage !== 'S0' || evaluateSizingResult(baseline).status !== 'passed') return verdict('unqualified', 'A complete passing common S0 baseline is required');
+  if (['S2', 'S3'].includes(stage.id)) {
+    if (baseline?.stage !== 'S1' || evaluateSizingResult(baseline).status !== 'passed') return verdict('unqualified', 'A complete passing fresh common S1 baseline is required');
     for (const field of ['fixture_manifest_sha256', 'supported_input_envelope_sha256', 'provider_configuration_sha256', 'client_sha', 'service_sha', 'image_digest']) {
-      if (result.binding[field] !== baseline.binding[field]) return verdict('unqualified', `S0 comparison input ${field} changed`);
+      if (result.binding[field] !== baseline.binding[field]) return verdict('unqualified', `S1 comparison input ${field} changed`);
     }
     const before = summary(baseline);
     const limit = (value, slack) => value + Math.max(value * SIZING_LIMITS.latency_relative, slack);
     for (const route of ROUTES) {
-      if (measured.route_p95_ms[route] > limit(before.route_p95_ms[route], SIZING_LIMITS.latency_slack_ms)) return verdict('rejected', `${route} p95 exceeded the S0 regression limit`);
+      if (measured.route_p95_ms[route] > limit(before.route_p95_ms[route], SIZING_LIMITS.latency_slack_ms)) return verdict('rejected', `${route} p95 exceeded the S1 regression limit`);
     }
-    if (measured.local_processing_p95_ms > limit(before.local_processing_p95_ms, SIZING_LIMITS.local_processing_slack_ms)) return verdict('rejected', 'Provider-separated local processing exceeded the S0 regression limit');
+    if (measured.local_processing_p95_ms > limit(before.local_processing_p95_ms, SIZING_LIMITS.local_processing_slack_ms)) return verdict('rejected', 'Provider-separated local processing exceeded the S1 regression limit');
     for (const interval of ['commit_to_publish', 'publish_to_execution']) {
       if (measured.queue[interval].upper_p95_ms > before.queue[interval].lower_p95_ms + SIZING_LIMITS.queue_slack_ms) {
         const exact = measured.queue[interval].exact && before.queue[interval].exact;
-        return verdict(exact ? 'rejected' : 'unqualified', `${interval} ${exact ? 'exceeded' : 'upper bound cannot establish'} the S0 regression limit`);
+        return verdict(exact ? 'rejected' : 'unqualified', `${interval} ${exact ? 'exceeded' : 'upper bound cannot establish'} the S1 regression limit`);
       }
     }
   }

@@ -70,21 +70,23 @@ test('does not qualify legacy scalar summaries or incomplete business workload',
   assert.equal(evaluateSizingResult({ ...result('S1'), schema_version: 1 }).status, 'unqualified');
   const incomplete = result('S1');
   incomplete.workload.vto.pop();
-  assert.match(evaluateSizingResult(incomplete, result('S0')).reason, /VTO coverage/);
+  assert.match(evaluateSizingResult(incomplete, result('S1')).reason, /VTO coverage/);
   const insufficient = result('S2');
   insufficient.measurements.route_samples_ms['/users/me'] = Array(99).fill(1);
-  assert.match(evaluateSizingResult(insufficient, result('S0')).reason, /100 measured requests/);
+  assert.match(evaluateSizingResult(insufficient, result('S1')).reason, /100 measured requests/);
 });
 
-test('requires actual sizing, common application inputs and a passing common S0', () => {
+test('requires actual sizing, common application inputs and a passing common S1', () => {
   const wrongSize = result('S2');
   wrongSize.observed.api.memoryMiB = 1024;
-  assert.equal(evaluateSizingResult(wrongSize, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(wrongSize, result('S1')).status, 'unqualified');
   const changedImage = result('S2');
   changedImage.binding.image_digest = `sha256:${'c'.repeat(64)}`;
-  assert.match(evaluateSizingResult(changedImage, result('S0')).reason, /image_digest changed/);
-  assert.match(evaluateSizingResult(result('S2'), result('S1')).reason, /common S0 baseline/);
-  const incompleteBaseline = result('S0');
+  assert.match(evaluateSizingResult(changedImage, result('S1')).reason, /image_digest changed/);
+  assert.equal(evaluateSizingResult(result('S1')).status, 'passed');
+  assert.equal(evaluateSizingResult(result('S2'), result('S1')).status, 'passed');
+  assert.match(evaluateSizingResult(result('S2'), result('S0')).reason, /common S1 baseline/);
+  const incompleteBaseline = result('S1');
   incompleteBaseline.workload.uploads.pop();
   assert.equal(evaluateSizingResult(result('S2'), incompleteBaseline).status, 'unqualified');
 });
@@ -92,37 +94,37 @@ test('requires actual sizing, common application inputs and a passing common S0'
 test('sampled memory, missing task peaks and missing CPU minutes remain unqualified', () => {
   const sampled = result('S2');
   sampled.measurements.peak_method = 'container-insights-one-minute';
-  assert.equal(evaluateSizingResult(sampled, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(sampled, result('S1')).status, 'unqualified');
   const missing = result('S2');
   missing.measurements.container_peaks.pop();
-  assert.equal(evaluateSizingResult(missing, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(missing, result('S1')).status, 'unqualified');
   const cpuGap = result('S2');
   cpuGap.measurements.cpu_samples.pop();
-  assert.equal(evaluateSizingResult(cpuGap, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(cpuGap, result('S1')).status, 'unqualified');
 });
 
 test('rejects sustained CPU saturation while accepting an isolated high sample', () => {
   const isolated = result('S2');
   isolated.measurements.cpu_samples[0].percent = 95;
-  assert.equal(evaluateSizingResult(isolated, result('S0')).status, 'passed');
+  assert.equal(evaluateSizingResult(isolated, result('S1')).status, 'passed');
   const sustained = result('S2');
   sustained.measurements.cpu_samples.filter((item) => item.service === 'worker').forEach((item) => { item.percent = 90; });
-  assert.match(evaluateSizingResult(sustained, result('S0')).reason, /five consecutive/);
+  assert.match(evaluateSizingResult(sustained, result('S1')).reason, /five consecutive/);
 });
 
 test('compares provider-excluded local work and both queue intervals independently', () => {
   const providerVariation = result('S2');
   providerVariation.measurements.task_timings.forEach((item) => { item.provider_ms = 100000; });
-  assert.equal(evaluateSizingResult(providerVariation, result('S0')).status, 'passed');
+  assert.equal(evaluateSizingResult(providerVariation, result('S1')).status, 'passed');
   const local = result('S2');
   local.measurements.task_timings.forEach((item) => { item.local_processing_ms = 751; });
-  assert.match(evaluateSizingResult(local, result('S0')).reason, /local processing/);
+  assert.match(evaluateSizingResult(local, result('S1')).reason, /local processing/);
   const queue = result('S2');
   queue.measurements.task_timings.forEach((item) => { item.queue.commit_to_publish_ms = 1401; });
-  assert.match(evaluateSizingResult(queue, result('S0')).reason, /commit_to_publish/);
+  assert.match(evaluateSizingResult(queue, result('S1')).reason, /commit_to_publish/);
   const inseparable = result('S2');
   inseparable.measurements.task_timings[0].provider_separated = false;
-  assert.equal(evaluateSizingResult(inseparable, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(inseparable, result('S1')).status, 'unqualified');
 });
 
 test('uses candidate queue upper bounds against baseline lower bounds without inventing exact deltas', () => {
@@ -138,45 +140,64 @@ test('uses candidate queue upper bounds against baseline lower bounds without in
     });
     return value;
   }
-  assert.equal(evaluateSizingResult(bounded('S2', 900), bounded('S0', 5000)).status, 'passed');
-  assert.equal(evaluateSizingResult(bounded('S2', 1100), bounded('S0', 5000)).status, 'unqualified');
+  assert.equal(evaluateSizingResult(bounded('S2', 900), bounded('S1', 5000)).status, 'passed');
+  assert.equal(evaluateSizingResult(bounded('S2', 1100), bounded('S1', 5000)).status, 'unqualified');
   const unknownClock = bounded('S2', 900);
   unknownClock.measurements.task_timings[0].queue.clock_bound_verified = false;
-  assert.equal(evaluateSizingResult(unknownClock, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(unknownClock, result('S1')).status, 'unqualified');
   const impossibleOrder = bounded('S2', 900);
   impossibleOrder.measurements.task_timings[0].queue.first_execution_started_at = '2026-10-09T00:00:00Z';
-  assert.equal(evaluateSizingResult(impossibleOrder, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(impossibleOrder, result('S1')).status, 'unqualified');
+});
+
+test('uses same-Worker causal upper bounds without cross-process clock assumptions', () => {
+  function bounded(stage, upper) {
+    const value = result(stage);
+    value.measurements.task_timings.forEach(item => {
+      item.queue = { kind: 'same-worker-causal-bounds', task_correlation_verified: true, clock_bound_verified: true,
+        clock_evidence_sha256: hash, process_instance: 'worker-process', outbox_id: item.task_id,
+        send_request_id: 'request', complete_unfiltered_absence_verified: true, first_attempt_verified: true,
+        absent_snapshot_started_ms: 100, send_started_ms: 600, send_acknowledged_ms: 100 + upper,
+        first_execution_started_ms: 750 };
+    });
+    return value;
+  }
+  assert.equal(evaluateSizingResult(bounded('S2', 900), bounded('S1', 5000)).status, 'passed');
+  assert.equal(evaluateSizingResult(bounded('S2', 1100), bounded('S1', 5000)).status, 'unqualified');
+  const truncated = bounded('S2', 900);
+  truncated.measurements.task_timings[0].queue.complete_unfiltered_absence_verified = false;
+  assert.equal(evaluateSizingResult(truncated, result('S1')).status, 'unqualified');
 });
 
 test('rejects incorrect credits and claimed overlap on distinct Worker tasks', () => {
   const credits = result('S2');
   credits.workload.vto[0].credit_debit = 0;
-  assert.equal(evaluateSizingResult(credits, result('S0')).status, 'rejected');
+  assert.equal(evaluateSizingResult(credits, result('S1')).status, 'rejected');
   const overlap = result('S2');
   overlap.workload.vto[0].worker_task_arn = 'other';
-  assert.match(evaluateSizingResult(overlap, result('S0')).reason, /Same-Worker-task overlap/);
+  assert.match(evaluateSizingResult(overlap, result('S1')).reason, /Same-Worker-task overlap/);
 });
 
 test('retains API headroom at S3 and distinguishes observed failure from missing evidence', () => {
   const api = result('S3');
   api.measurements.container_peaks[0].peak_mib = 385;
-  assert.match(evaluateSizingResult(api, result('S0')).reason, /API candidate/);
+  assert.match(evaluateSizingResult(api, result('S1')).reason, /API candidate/);
   const worker = result('S3');
   worker.measurements.container_peaks[1].peak_mib = 769;
-  assert.match(evaluateSizingResult(worker, result('S0')).reason, /Worker candidate/);
+  assert.match(evaluateSizingResult(worker, result('S1')).reason, /Worker candidate/);
   const oom = result('S2');
   oom.unexpected_oom = 1;
-  assert.equal(evaluateSizingResult(oom, result('S0')).status, 'rejected');
+  assert.equal(evaluateSizingResult(oom, result('S1')).status, 'rejected');
   const unknown = result('S2');
   delete unknown.lost_accepted_work;
-  assert.equal(evaluateSizingResult(unknown, result('S0')).status, 'unqualified');
+  assert.equal(evaluateSizingResult(unknown, result('S1')).status, 'unqualified');
 });
 
 test('derives route percentiles from retained samples rather than supplied scalar values', () => {
   const measured = result('S2');
   measured.measurements.route_samples_ms['/users/me'] = [...Array(94).fill(100), ...Array(6).fill(201)];
-  assert.equal(evaluateSizingResult(measured, result('S0')).status, 'rejected');
-  const accepted = evaluateSizingResult(result('S2'), result('S0'));
+  assert.equal(evaluateSizingResult(measured, result('S1')).status, 'rejected');
+  const accepted = evaluateSizingResult(result('S2'), result('S1'));
   assert.equal(accepted.status, 'passed');
   assert.equal(accepted.measurements.route_p95_ms['/users/me'], 100);
 });

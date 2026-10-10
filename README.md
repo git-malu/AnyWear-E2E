@@ -396,9 +396,9 @@ manager still reconciles outstanding executions, tasks and manifests before reus
 
 ## Beta sizing evidence
 
-`scripts/beta-sizing-benchmark.mjs` classifies separately collected sizing evidence;
-it does not run a workload, collect telemetry, authenticate artifact publication or
-replace Beta Qualification. A normal suite pass alone cannot qualify smaller tasks.
+`scripts/beta-sizing-benchmark.mjs` classifies collected sizing evidence. It does
+not authenticate artifact publication or replace Beta Qualification. A normal
+suite pass alone cannot qualify smaller tasks.
 
 Measured result schema version 2 requires exact application/deployment and fixture
 bindings, raw evidence URLs/hashes, initial configured desired/minimum/task sizes,
@@ -407,11 +407,11 @@ same-Worker overlap cases, per-task container high-water readings, complete CPU 
 coverage, at least 100 samples per ordinary route, and provider-separated local and
 publication/execution intervals for each accepted task. Record every actual task and
 scaling event in the evidence; configured desired count does not imply a constant
-replica count. The larger VTO shape is a justified representative case confirmed on S0,
+replica count. The larger VTO shape is a justified representative case confirmed on S1,
 not an invented product maximum. Retain uncertain provider/model envelope limits.
 
 Missing metrics, unsupported peak sources, incomplete workloads, mismatched inputs or
-an unqualified common S0 remain **unqualified**. Observed correctness, headroom or
+an unqualified fresh common S1 remain **unqualified**. Observed correctness, headroom or
 regression failures are **rejected**. S3 retains the smaller API headroom criterion.
 CPU rejection requires five consecutive valid one-minute samples at or above 90%.
 Compare local processing separately from provider time and both queue intervals
@@ -419,10 +419,64 @@ independently; preserve provider timings without treating provider variability a
 local processing. Never substitute sampled memory, process RSS, missing buckets or
 transaction acknowledgement for an unobserved peak, zero usage or exact DB commit.
 Queue measurements may use exact common-clock intervals or verified conservative
-phase bounds. Upper bounds compare against independently known S0 lower bounds;
+phase bounds. Upper bounds compare against independently known S1 lower bounds;
 unknown exact baseline delays use the conservative lower bound zero. A failing
 upper-bound comparison remains inconclusive, while an exact measured regression
 is rejected. Every task needs clock/error evidence and same-task correlation;
 execution before send acknowledgement is legal, and the send-start boundary avoids
 inventing a clamped zero delay. Unverified clocks or contradictory ordering cannot
 qualify a result.
+
+S0 records historical two-replica cost/configuration evidence. It is not a new
+runtime gate. The changed telemetry image must first pass a fresh S1 workload at
+one API replica, 512 CPU / 1024 MiB and the existing Worker size. S2/S3 compare
+only against that passing S1 with identical image, Client, fixture and observed
+provider configurations. Do not reuse old-image timings or restore two replicas
+merely to collect a new baseline.
+
+The `sizing_stage` input of protected Beta Qualification defaults to `disabled`.
+An explicit manager-reviewed S1/S2/S3 selection runs `tests/beta-sizing.spec.ts`
+once with no retries: 24 uploads/tagging tasks (three formats, ordinary/9-9.75 MB
+valid images, sequential/burst, two repeats), then five VTO shapes twice. Two
+bursts overlap VTO submissions; actual same-Worker overlap must still be shown by
+telemetry. VTO uses one/three/five garment references, ordinary/large base photos,
+default 2K or the representative larger 4K output. These are baseline-successful
+representative cases, not asserted product/provider maxima. The reviewed provider
+PDF covers 5.0-lite, while deployed source uses 5.0; S1 failure must resolve this
+applicability gap before candidate measurements. Model/settings stay frozen after
+S1. The preflight requires ten existing daily credits; it changes no quota.
+
+Frozen image bytes, dimensions, SHA-256 and source/license provenance live in
+`tests/fixtures/beta-sizing/fixture-manifest.json`. Valid codec encoding/resize
+creates the large fixtures; no padding or noise is added. The optional Pillow
+builder records its version and requires separately downloaded exact source
+bytes. The near-limit WebP uses a detailed jacket photo because lossless encoding
+of the sweater cannot reach that byte range inside the pixel envelope.
+
+The workflow preserves `.qualification-inputs/beta-sizing-runtime-before.json`
+and `test-results/beta-sizing-workload.json` in qualification diagnostics, including
+partial business results after failure. Protected leased-account application
+cleanup handles all retained data and exact subjects; the scenario performs no
+ad hoc deletion. Unfinished tasks/failed cleanup cannot qualify the stage.
+
+After independently authenticating/downloading that exact run artifact, the
+owner uses `scripts/collect-beta-sizing-evidence.mjs` with explicit `--profile`,
+`--workload`, `--workload-sha256`, `--before`, `--before-sha256`, and `--output`.
+This tool only reads AWS STS, ECS, task definitions, scaling, CloudWatch CPU and
+reviewed API/Worker log streams in account 650880818323 / ap-east-1. Run it within
+50 minutes after the bounded workload finishes so stopped-task evidence remains
+available. Allow CloudWatch/log delivery first; missing minute buckets or final
+high-water samples remain gaps. The E2E principal receives no new metrics IAM
+grant. Preserve the resulting raw artifact and hash before composing final
+classification. Separate readiness, queue/DLQ/lease/backlog, notification,
+lost/duplicate-work and lifecycle evidence is still required; the collector never
+fills those acceptance counters with assumed zeros.
+
+Service's opt-in same-Worker causal method requires a complete unfiltered outbox-ID
+snapshot (256-row cap, 200 ms statement timeout, 250 ms bounded observer wait), an
+immutable task/outbox correlation, first send/ACK/execution and one process clock.
+Commit-to-publication upper bound is ACK minus an earlier snapshot query start
+that saw the ID absent; lower bound is zero. Publication-to-execution lies between
+`max(0, execution - ACK)` and `execution - send-start`. Missing/truncated snapshots,
+retry/republish/process replacement invalidate it. Both S1 and candidates retain
+query overhead and raw proof; no API/Worker wall-clock error is invented.

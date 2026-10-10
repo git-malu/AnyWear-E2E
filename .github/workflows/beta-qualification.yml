@@ -8,6 +8,12 @@ on:
         required: false
         default: 0
         type: number
+      sizing_stage:
+        description: Opt-in paid representative sizing workload; manager-reviewed tuple/window required
+        required: false
+        default: disabled
+        type: choice
+        options: [disabled, S1, S2, S3]
 
 permissions:
   contents: read
@@ -42,6 +48,7 @@ jobs:
       E2E_MAX_ACTIVE_ACCOUNTS: 2
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
       E2E_MAX_QUARANTINED_ACCOUNTS: 2
+      BETA_SIZING_STAGE: ${{ inputs.sizing_stage }}
 
     steps:
       - name: Checkout E2E sources
@@ -159,6 +166,10 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install chromium --with-deps
 
+      - name: Capture opt-in sizing task inventory
+        if: ${{ inputs.sizing_stage != 'disabled' }}
+        run: node scripts/beta-sizing-runtime.mjs
+
       - name: Run complete deployed Beta suite
         id: beta-suite
         run: |
@@ -215,6 +226,8 @@ jobs:
             deployment-evidence.json
             github-cli-version.txt
             test-results/**/error-context.md
+            .qualification-inputs/beta-sizing-runtime-before.json
+            test-results/beta-sizing-workload.json
           retention-days: 90
           include-hidden-files: true
           if-no-files-found: ignore
