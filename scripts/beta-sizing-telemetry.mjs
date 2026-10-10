@@ -15,7 +15,7 @@ export function correlateSizingTask(resourceId, events) {
   if (!processing || !started || !send || !ack || !config
     || processing.outcome !== 'completed' || processing.executionToken !== 1 || started.executionToken !== 1
     || send.attemptCount !== 1 || send.outboxId !== ack.outboxId || !ack.awsRequestId
-    || !finite(processing.localProcessingMs) || !finite(processing.providerMs)
+    || typeof config.model !== 'string' || !config.model || !finite(processing.localProcessingMs) || !finite(processing.providerMs)
     || !finite(started.startedMonotonicMs)) return { gap: 'First successful execution, provider config and unique send/ACK evidence required' };
   const sameClock = [send, ack, started, processing, config];
   if (!send.processInstance || sameClock.some(event => event.processInstance !== send.processInstance

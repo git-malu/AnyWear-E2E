@@ -12,7 +12,7 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
   const start = Date.parse(workload.started_at);
   const end = Date.parse(workload.finished_at);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 2_700_000
-    || Date.parse(before.observed_at) > start || Date.now() - end > 3_000_000) {
+    || Date.parse(before.observed_at) > start || Date.now() - start > 3_000_000) {
     throw new Error('Bounded workload and fresh before/runtime observations required; ECS stopped-task retention is limited');
   }
   const after = sizingRuntimeSnapshot(aws);
@@ -27,7 +27,7 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
   const stoppedTasks = [];
   for (let i = 0; i < stopped.taskArns.length; i += 100) {
     const observed = aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', ...stopped.taskArns.slice(i, i + 100)]);
-    if (observed.failures?.length) gaps.push('Stopped task description incomplete');
+    if (observed.failures?.length) { gaps.push('Stopped task description incomplete'); oomCoverage = false; }
     stoppedTasks.push(...observed.tasks.filter(task => ['service:beta-anywear-api', 'service:beta-anywear-worker'].includes(task.group)
       && Date.parse(task.stoppedAt) >= start && Date.parse(task.stoppedAt) <= end));
   }
@@ -71,7 +71,7 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
     const processIds = new Set(events.filter(event => event.workerTaskArn === task.taskArn).map(event => event.processInstance));
     if (!memory.length || memory.some(event => !Number.isInteger(event.oomEvents) || !Number.isInteger(event.oomKillEvents))) oomCoverage = false;
     else oomObserved += Math.max(...memory.map(event => Math.max(event.oomEvents, event.oomKillEvents)));
-    if (!memory.length || processIds.size !== 1) gaps.push(`Complete ${role} high-water/process coverage unavailable`);
+    if (!memory.length || processIds.size !== 1) { gaps.push(`Complete ${role} high-water/process coverage unavailable`); oomCoverage = false; }
     else {
       const highest = memory.reduce((a, b) => a.peakBytes > b.peakBytes ? a : b);
       peaks.push({ task_arn: task.taskArn, peak_mib: highest.peakBytes / 1048576, limit_mib: highest.limitBytes / 1048576 });

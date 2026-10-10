@@ -464,7 +464,7 @@ owner uses `scripts/collect-beta-sizing-evidence.mjs` with explicit `--profile`,
 `--workload`, `--workload-sha256`, `--before`, `--before-sha256`, and `--output`.
 This tool only reads AWS STS, ECS, task definitions, scaling, CloudWatch CPU and
 reviewed API/Worker log streams in account 650880818323 / ap-east-1. Run it within
-50 minutes after the bounded workload finishes so stopped-task evidence remains
+50 minutes after the bounded workload starts so stopped-task evidence remains
 available. Allow CloudWatch/log delivery first; missing minute buckets or final
 high-water samples remain gaps. The E2E principal receives no new metrics IAM
 grant. Preserve the resulting raw artifact and hash before composing final
