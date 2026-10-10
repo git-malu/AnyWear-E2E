@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { assertSizingCompatibilityEqual, validateSizingSource } from './beta-sizing-source.mjs';
 
 const STAGE_DEFINITIONS = Object.freeze([
   Object.freeze({ id: 'S0', purpose: 'historical-replica-cost-baseline', api: { desired: 2, minimum: 2, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
@@ -154,6 +155,15 @@ function evidenceGap(result, stage) {
     || !HASH.test(binding.provider_configuration_sha256) || !HASH.test(binding.deployment_record_sha256)
     || !SHA.test(binding.client_sha) || !SHA.test(binding.service_sha) || !SHA.test(binding.infra_sha)
     || !SHA.test(binding.e2e_sha) || !/^sha256:[a-f0-9]{64}$/.test(binding.image_digest)) return 'Exact workload and deployed input bindings are incomplete';
+  try {
+    validateSizingSource(result.source_proof, { e2eSha: binding.e2e_sha, runId: result.run_id, runAttempt: result.run_attempt });
+    const compatibility = result.source_proof.compatibility;
+    if (binding.benchmark_source_sha256 !== result.source_proof.benchmark_source_sha256
+      || binding.deployment_record_sha256 !== compatibility.deployment.record_sha256
+      || ['client', 'service', 'infra'].some(component => binding[`${component}_sha`] !== compatibility[component].sha)) {
+      return 'Actual sizing source/deployment binding mismatch';
+    }
+  } catch { return 'Complete actual run/source proof is missing or invalid'; }
   if (!Array.isArray(result.raw_evidence) || !result.raw_evidence.length
     || result.raw_evidence.some((item) => !HASH.test(item.sha256) || !/^https:\/\/github\.com\//.test(item.url))) return 'Immutable raw evidence references are incomplete';
   if (!result.observed) return 'Actual deployed sizing is missing';
@@ -291,9 +301,11 @@ export function evaluateSizingResult(result, baseline) {
   if (stage.id === 'S3' && measured.worker_peak_mib > SIZING_LIMITS.worker_memory_headroom_mib) return verdict('rejected', 'Worker candidate lacks 25% memory headroom');
   if (['S2', 'S3'].includes(stage.id)) {
     if (baseline?.stage !== 'S1' || evaluateSizingResult(baseline).status !== 'passed') return verdict('unqualified', 'A complete passing fresh common S1 baseline is required');
-    for (const field of ['fixture_manifest_sha256', 'supported_input_envelope_sha256', 'provider_configuration_sha256', 'client_sha', 'service_sha', 'image_digest', 'e2e_sha']) {
+    for (const field of ['fixture_manifest_sha256', 'supported_input_envelope_sha256', 'provider_configuration_sha256', 'client_sha', 'service_sha', 'infra_sha', 'image_digest', 'benchmark_source_sha256']) {
       if (result.binding[field] !== baseline.binding[field]) return verdict('unqualified', `S1 comparison input ${field} changed`);
     }
+    try { assertSizingCompatibilityEqual(result.source_proof.compatibility, baseline.source_proof.compatibility); }
+    catch { return verdict('unqualified', 'S1 strict compatibility changed outside four deployment record fields'); }
     const before = summary(baseline);
     const limit = (value, slack) => value + Math.max(value * SIZING_LIMITS.latency_relative, slack);
     for (const route of ROUTES) {

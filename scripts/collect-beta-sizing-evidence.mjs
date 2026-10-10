@@ -4,11 +4,20 @@ import { pathToFileURL } from 'node:url';
 import { hashBytes } from './beta-sizing-workload.mjs';
 import { correlateSizingWorkload } from './beta-sizing-telemetry.mjs';
 import { sizingAwsReader, sizingRuntimeSnapshot } from './beta-sizing-runtime.mjs';
+import { assertEqual } from './evidence-contract.mjs';
+import { validateSizingSource } from './beta-sizing-source.mjs';
 
 export function collectSizingCloudEvidence({ workload, before, aws }) {
-  if (workload.schema_version !== 1 || workload.issue !== 95 || !['S1', 'S2', 'S3'].includes(workload.stage)
+  if (workload.schema_version !== 1 || workload.issue !== 95 || workload.result !== 'passed' || !['S1', 'S2', 'S3'].includes(workload.stage)
     || !/^[a-f0-9]{40}$/.test(workload.e2e_sha) || !/^[1-9]\d*$/.test(workload.run_id)
     || !/^[1-9]\d*$/.test(workload.run_attempt)) throw new Error('Exact sizing run/source/stage binding required');
+  const sourceBinding = { e2eSha: workload.e2e_sha, runId: workload.run_id,
+    runAttempt: workload.run_attempt, compatibility: workload.deployment?.compatibility };
+  validateSizingSource(workload.source_proof, sourceBinding);
+  validateSizingSource(workload.source_proof_after, sourceBinding);
+  validateSizingSource(before.source_proof, sourceBinding);
+  assertEqual(workload.source_proof_after, workload.source_proof, 'After/workload complete source proof');
+  assertEqual(before.source_proof, workload.source_proof, 'Before/workload complete source proof');
   const start = Date.parse(workload.started_at);
   const end = Date.parse(workload.finished_at);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 2_700_000
@@ -89,7 +98,8 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
   }));
   return { schema_version: 1, collected_at: new Date().toISOString(), workload,
     before, after, stopped_tasks: stoppedTasks, metrics, telemetry_events: events, scaling_targets: limits,
-    measured: { schema_version: 2, stage: workload.stage,
+    measured: { schema_version: 2, stage: workload.stage, source_proof: workload.source_proof,
+      run_id: workload.run_id, run_attempt: workload.run_attempt,
       task_replacements: replacements + stoppedTasks.length,
       ...(oomCoverage ? { unexpected_oom: oomObserved + stoppedTasks.filter(task => task.containers.some(container => /outofmemory|oom/i.test(container.reason ?? ''))).length } : {}),
       binding: { fixture_manifest_sha256: workload.fixture_manifest_sha256,
@@ -98,6 +108,7 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
         deployment_record_sha256: workload.deployment.compatibility.deployment.record_sha256,
         client_sha: workload.deployment.client.source_commit, service_sha: workload.deployment.service.source_commit,
         infra_sha: workload.deployment.compatibility.infra.sha, e2e_sha: workload.e2e_sha,
+        benchmark_source_sha256: workload.source_proof.benchmark_source_sha256,
         image_digest: workload.deployment.service.image_digest }, observed,
       workload: correlation.workload, provider_configuration: correlation.provider_configuration,
       measurements: { started_at: new Date(alignedStart).toISOString(), finished_at: new Date(alignedEnd).toISOString(),
@@ -106,6 +117,7 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
         route_samples_ms: workload.route_samples_ms, task_timings: correlation.task_timings },
       evidence_gaps: gaps,
       remaining_acceptance: ['readiness, lease/queue/DLQ/backlog, duplicate/lost-work and notification evidence',
+        'native completed-success exact run/artifact authentication and independent actual commit inventory reconstruction',
         'authenticated raw artifact references', 'final profile interruption/recovery and qualification cleanup'] } };
 }
 

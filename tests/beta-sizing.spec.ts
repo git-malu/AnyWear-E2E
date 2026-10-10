@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { APIResponse, Page } from '@playwright/test';
 import { assertE2EExecution } from '../scripts/execution-guard.mjs';
+import { captureSizingSource, validateSizingSource } from '../scripts/beta-sizing-source.mjs';
 import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases,
   SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
 import { expect, login, test } from './support/fixtures.js';
@@ -25,6 +26,11 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     const deploymentBytes = await readFile('deployment-evidence-before.json');
     const runtimeBytes = await readFile('.qualification-inputs/beta-sizing-runtime-before.json');
     const deployment = JSON.parse(deploymentBytes.toString());
+    const sourceProof = captureSizingSource();
+    const runtime = JSON.parse(runtimeBytes.toString());
+    validateSizingSource(runtime.source_proof, { e2eSha: sourceProof.e2e_sha,
+      runId: sourceProof.run_id, runAttempt: sourceProof.run_attempt, compatibility: deployment.compatibility });
+    expect(runtime.source_proof).toEqual(sourceProof);
     const serviceUrl = requireEnvironment('E2E_SERVICE_URL');
     const uploads: Observation[] = [];
     const vto: Observation[] = [];
@@ -34,7 +40,8 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     );
     const record = { schema_version: 1, issue: 95, stage: process.env.BETA_SIZING_STAGE,
       run_id: process.env.GITHUB_RUN_ID, run_attempt: process.env.GITHUB_RUN_ATTEMPT,
-      e2e_sha: process.env.GITHUB_SHA, fixture_manifest_sha256: frozen.manifestSha256,
+      e2e_sha: process.env.GITHUB_SHA, source_proof: sourceProof,
+      source_proof_after: null as typeof sourceProof | null, fixture_manifest_sha256: frozen.manifestSha256,
       supported_input_envelope_sha256: frozen.envelopeSha256, provider_envelope: SIZING_PROVIDER_ENVELOPE,
       deployment_evidence_sha256: hashBytes(deploymentBytes), deployment,
       runtime_before_sha256: hashBytes(runtimeBytes),
@@ -171,6 +178,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       }
     };
 
+    let sourceError: unknown;
     try {
       expect(await credit()).toBeGreaterThanOrEqual(10);
       const basePhotos = new Map<string, string>();
@@ -251,11 +259,14 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       }
       record.result = 'passed';
     } finally {
+      try { record.source_proof_after = captureSizingSource(); expect(record.source_proof_after).toEqual(sourceProof); }
+      catch (error) { record.result = 'failed-or-incomplete'; sourceError = error; }
       record.finished_at = new Date().toISOString();
       if (record.result !== 'passed') record.result = 'failed-or-incomplete';
       await preserve();
       // No ad hoc deletion: protected application cleanup receives the exact
       // leased subjects even after a partial/provider failure.
     }
+    if (sourceError) throw sourceError;
   });
 });

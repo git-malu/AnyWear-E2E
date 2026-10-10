@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertE2EExecution } from './execution-guard.mjs';
+import { captureSizingSource } from './beta-sizing-source.mjs';
 
 export function sizingAwsReader(profile) {
   return args => JSON.parse(execFileSync('aws', [...args, '--region', 'ap-east-1',
@@ -40,6 +41,7 @@ export function sizingRuntimeSnapshot(aws) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length !== 2) throw new Error('Snapshot does not accept options');
   assertE2EExecution();
+  const sourceProof = captureSizingSource();
   if (!['S1', 'S2', 'S3'].includes(process.env.BETA_SIZING_STAGE)) throw new Error('Manager-selected sizing stage required');
   const deploymentBytes = await readFile('deployment-evidence-before.json');
   const snapshot = sizingRuntimeSnapshot(sizingAwsReader());
@@ -48,7 +50,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     throw new Error('Sizing task image differs from authenticated qualification tuple');
   }
   Object.assign(snapshot, { e2e_sha: process.env.GITHUB_SHA, run_id: process.env.GITHUB_RUN_ID,
-    run_attempt: process.env.GITHUB_RUN_ATTEMPT, stage: process.env.BETA_SIZING_STAGE });
+    run_attempt: process.env.GITHUB_RUN_ATTEMPT, stage: process.env.BETA_SIZING_STAGE, source_proof: sourceProof });
   const output = '.qualification-inputs/beta-sizing-runtime-before.json';
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(snapshot, null, 2)}\n`);

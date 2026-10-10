@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createSizingPlan, evaluateSizingResult, sizingUploadCases, SIZING_STAGES, SIZING_WORKLOAD, validateSizingPlan } from './beta-sizing-benchmark.mjs';
+import { sizingSourceFixture } from './fixtures/beta-sizing-source.mjs';
 
 const hash = 'a'.repeat(64);
 const sha = 'b'.repeat(40);
@@ -31,8 +32,12 @@ function result(stage) {
     started_at: '2026-10-10T00:01:30Z', finished_at: '2026-10-10T00:03:00Z',
   }));
   const tasks = [{ task_arn: 'api', service: 'api' }, { task_arn: 'worker', service: 'worker' }];
+  const source = sizingSourceFixture();
+  source.compatibility.client.sha = sha; source.compatibility.service.sha = sha; source.compatibility.infra.sha = sha;
+  source.compatibility.deployment.record_sha256 = hash;
+  const proof = sizingSourceFixture({ compatibility: source.compatibility });
   return {
-    schema_version: 2, stage, evidence_gaps: [],
+    schema_version: 2, stage, evidence_gaps: [], source_proof: proof, run_id: '1', run_attempt: '1',
     unexpected_oom: 0, task_replacements: 0, lost_accepted_work: 0,
     readiness_failures: 0, duplicate_effects: 0, manual_intervention: 0,
     unexpected_dlq: 0, missed_lease_renewals: 0, notification_failures: 0, unexplained_backlog: 0,
@@ -40,6 +45,7 @@ function result(stage) {
       fixture_manifest_sha256: manifestSha256, supported_input_envelope_sha256: hash,
       provider_configuration_sha256: hash, deployment_record_sha256: hash,
       client_sha: sha, service_sha: sha, infra_sha: sha, e2e_sha: sha,
+      benchmark_source_sha256: proof.benchmark_source_sha256,
       image_digest: `sha256:${hash}`,
     },
     raw_evidence: [{ url: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/1/artifacts/2', sha256: hash }],
@@ -98,7 +104,27 @@ test('requires actual sizing, common application inputs and a passing common S1'
   assert.equal(evaluateSizingResult(result('S2'), incompleteBaseline).status, 'unqualified');
   const changedSource = result('S2');
   changedSource.binding.e2e_sha = 'c'.repeat(40);
-  assert.match(evaluateSizingResult(changedSource, result('S1')).reason, /e2e_sha changed/);
+  assert.match(evaluateSizingResult(changedSource, result('S1')).reason, /source proof/);
+});
+
+test('permits only four deployment record fields with complete identical benchmark source proof', () => {
+  const baseline = result('S1');
+  const candidate = result('S2');
+  const compatibility = structuredClone(candidate.source_proof.compatibility);
+  Object.assign(compatibility.deployment, { run_id: 31, run_attempt: 1, artifact_id: 41, record_sha256: 'd'.repeat(64) });
+  candidate.source_proof = sizingSourceFixture({ e2eSha: 'd'.repeat(40), compatibility, runId: '2' });
+  candidate.run_id = '2'; candidate.binding.e2e_sha = 'd'.repeat(40);
+  candidate.binding.deployment_record_sha256 = compatibility.deployment.record_sha256;
+  assert.equal(evaluateSizingResult(candidate, baseline).status, 'passed');
+  candidate.source_proof.compatibility.service_artifacts.release_id++;
+  candidate.source_proof = sizingSourceFixture({ e2eSha: 'd'.repeat(40), compatibility: candidate.source_proof.compatibility, runId: '2' });
+  assert.match(evaluateSizingResult(candidate, baseline).reason, /strict compatibility/);
+  for (const mutate of [value => { delete value.source_proof; }, value => { value.source_proof.run_id = '99'; },
+    value => { value.source_proof.inventory.pop(); }, value => { value.source_proof.benchmark_source_sha256 = hash; },
+    value => { value.source_proof.compatibility_bytes_base64 = 'e30='; }]) {
+    const value = result('S1'); mutate(value);
+    assert.equal(evaluateSizingResult(value).status, 'unqualified');
+  }
 });
 
 test('unresolved or malformed collector gaps block S1 and candidate qualification', () => {

@@ -463,6 +463,27 @@ partial business results after failure. Protected leased-account application
 cleanup handles all retained data and exact subjects; the scenario performs no
 ad hoc deletion. Unfinished tasks/failed cleanup cannot qualify the stage.
 
+Sizing captures a complete canonical Git path-byte/mode/type/object inventory at
+the actual protected E2E HEAD before and after the workload, with exact source,
+run/attempt, origin, tracked-byte, index-flag and clean initialized-submodule
+checks. The benchmark digest excludes **only root `compatibility.json`**; gitlinks
+remain pinned commit entries, and no tracked file is omitted through ignore
+patterns. Actual E2E SHAs and full compatibility bytes/blob hashes stay visible.
+S1/candidates require identical digests and strict compatibility, allowing only
+`deployment.run_id`, `run_attempt`, `artifact_id` and `record_sha256` to change.
+Client/Service/Infra/artifact/API/fixture/model or any other source/contract change
+requires a fresh common S1. Missing or malformed proof remains unqualified.
+
+The proof's self-hash is not an authenticity claim. Before candidate dispatch the
+manager reviews the exact commit diff, confined to `compatibility.json` and those
+four fields. During acceptance the manager independently authenticates the native
+completed-success protected-main qualification run, exact head/attempt and artifact
+IDs/name/run/digest/byte checksums. `assertSizingSourceRun` checks supplied native
+run metadata, and `verifySizingSourceAtCommit` independently reconstructs the full
+inventory from that trusted actual commit; use both with authenticated inputs.
+Neither function fetches metadata or grants credentials. Collector/classifier
+success does not satisfy this separate manager-owned trust gate.
+
 After independently authenticating/downloading that exact run artifact, the
 owner uses `scripts/collect-beta-sizing-evidence.mjs` with explicit `--profile`,
 `--workload`, `--workload-sha256`, `--before`, `--before-sha256`, and `--output`.
