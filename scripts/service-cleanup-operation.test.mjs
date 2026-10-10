@@ -155,14 +155,20 @@ test('actual nonterminal, failed, foreign image, task definition and command obs
     verify: async execute => { await assert.rejects(execute(), /identities retained/); } });
 });
 
-test('duplicate, truncated, foreign, and queue-deleting committed markers fail closed', async () => {
+test('duplicate, truncated, foreign, and unassigned diagnostic message markers fail closed', async () => {
   const record = `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}`;
   for (const events of [[{ message: record }, { message: record }], [{ message: 'ANYWEAR_BETA_CLEANUP_RESULT={' }],
     [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ transaction_committed: false }))}` }],
     [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ envelope_sha256: 'f'.repeat(64) }))}` }],
-    [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ dlq: { deleted: 1, preserved: 0 } }))}` }]]) {
+    [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ dlq: { deleted: -1, preserved: 0 } }))}` }],
+    [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ dlq: { deleted: 1, preserved: 0, known_message: { message_id: 'foreign' } } }))}` }]]) {
     await run({ logs: token => ({ events: token ? [] : events, nextForwardToken: 'end' }), verify: async execute => { await assert.rejects(execute(), /identities retained/); } });
   }
+});
+
+test('trusted Service may report owned terminal-task DLQ deletions without diagnostic message authority', async () => {
+  await run({ logs: token => ({ events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ dlq: { deleted: 2, preserved: 3 } }))}` }], nextForwardToken: 'end' }),
+    verify: async execute => { assert.equal((await execute()).operation.committed_result.dlq.deleted, 2); } });
 });
 
 test('bounded log visibility waits and pagination limits preserve incomplete proof', async () => {
@@ -252,4 +258,9 @@ test('required source CI and protected recovery carry proof tests, original evid
   assert.match(workflow, /E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH:.*original_operation_path/);
   assert.match(workflow, /retry_failed_execution:/);
   assert.match(workflow, /E2E_CLEANUP_RETRY_FAILED:/);
+  for (const name of ['integration', 'beta-qualification']) {
+    const owner = await readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
+    assert.match(owner, /worker_slot_offset:/);
+    assert.match(owner, /E2E_WORKER_SLOT_OFFSET:.*inputs.worker_slot_offset/);
+  }
 });

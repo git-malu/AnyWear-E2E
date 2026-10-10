@@ -2,15 +2,17 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseStrictJson } from './evidence-contract.mjs';
 import { assertE2EExecution } from './execution-guard.mjs';
+import { workerSlotOffset } from './worker-slots.mjs';
 
 const policyNames = ['admission_suspended', 'intake_open', 'tester_allowlist'];
 const parameterNames = policyNames.map(name => `/anywear/beta/${name}`);
-const workerEmails = [0, 1].map(slot => `e2e-beta-worker-${slot}-chromium@anywear.local`);
 const qualificationWorkflow = 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main';
 // Match the Infra tester producer's accepted email syntax and normalization.
 const emailPattern = /^[a-z0-9.!#$%&'+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
-export function validateBetaAdmissionPolicy(response) {
+export function validateBetaAdmissionPolicy(response, slotOffset = 0) {
+  const offset = workerSlotOffset({ E2E_WORKER_SLOT_OFFSET: String(slotOffset) }, 2);
+  const workerEmails = [offset, offset + 1].map(slot => `e2e-beta-worker-${slot}-chromium@anywear.local`);
   if (!response || !Array.isArray(response.Parameters) || response.Parameters.length !== parameterNames.length
     || (response.InvalidParameters !== undefined
       && (!Array.isArray(response.InvalidParameters) || response.InvalidParameters.length !== 0))) {
@@ -61,6 +63,7 @@ export function verifyBetaAdmissionEligibility(environment = process.env, { exec
   if (environment.GITHUB_WORKFLOW_REF !== qualificationWorkflow || environment.E2E_WORKERS !== '2') {
     throw new Error('Beta admission eligibility requires the exact qualification workflow with two stable Chromium workers');
   }
+  const offset = workerSlotOffset(environment, 2);
   let response;
   try {
     response = parseStrictJson(execute('aws', ['ssm', 'get-parameters', '--names', ...parameterNames,
@@ -72,7 +75,7 @@ export function verifyBetaAdmissionEligibility(environment = process.env, { exec
     // CLI failures may include raw values or credentials; keep the diagnostic bounded.
     throw new Error('Beta admission eligibility could not read valid SSM policy; qualification refused');
   }
-  return validateBetaAdmissionPolicy(response);
+  return validateBetaAdmissionPolicy(response, offset);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

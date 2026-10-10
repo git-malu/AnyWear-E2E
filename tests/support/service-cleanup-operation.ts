@@ -233,8 +233,9 @@ function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): 
     throw new Error('Service completion marker lacks exact committed request/source proof');
   }
   const dlq = object(result.dlq, 'Preserved DLQ proof');
-  if (dlq.deleted !== 0 || !Number.isSafeInteger(dlq.preserved) || (dlq.preserved as number) < 0 || dlq.known_message !== undefined) {
-    throw new Error('Cleanup unexpectedly deleted an unassigned queue message');
+  if (!Number.isSafeInteger(dlq.deleted) || (dlq.deleted as number) < 0
+    || !Number.isSafeInteger(dlq.preserved) || (dlq.preserved as number) < 0 || dlq.known_message !== undefined) {
+    throw new Error('Cleanup lacks bounded DLQ counters or includes an unassigned diagnostic message');
   }
   return result;
 }

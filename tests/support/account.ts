@@ -9,6 +9,7 @@ import {
 import type { Page, WorkerInfo } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { assertE2EExecution } from '../../scripts/execution-guard.mjs';
+import { workerSlotOffset } from '../../scripts/worker-slots.mjs';
 import {
   markAccountCleanupPending,
   markAccountDeleted,
@@ -18,7 +19,7 @@ import {
   reserveAccount,
   accountRunScope,
   type AccountMode,
-} from './account-budget.js';
+} from './account-budget.ts';
 
 export interface TestAccount {
   email: string;
@@ -65,13 +66,13 @@ export function configuredE2eWorkers(): number {
 
 export function createWorkerAccount(workerInfo: WorkerInfo, browserName: string): TestAccount {
   const workers = configuredE2eWorkers();
-  if (workerInfo.parallelIndex >= workers) {
+  if (!Number.isInteger(workerInfo.parallelIndex) || workerInfo.parallelIndex < 0 || workerInfo.parallelIndex >= workers) {
     throw new Error(`parallelIndex ${workerInfo.parallelIndex} exceeds E2E_WORKERS=${workers}`);
   }
 
   const stage = accountScopeSegment(process.env.E2E_STAGE ?? 'test', 'test', 8);
   const run = accountScopeSegment(accountRunScope(), `local-${process.pid}`, 33);
-  const slot = String(workerInfo.parallelIndex);
+  const slot = String(workerInfo.parallelIndex + workerSlotOffset(process.env, workers));
   const browser = accountScopeSegment(browserName, 'browser', 12);
   const email = stage === 'beta'
     ? `e2e-${stage}-worker-${slot}-${browser}@anywear.local`

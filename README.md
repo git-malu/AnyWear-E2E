@@ -328,6 +328,7 @@ does not serialize those other repositories. Keep `ENABLE_INFRA_E2E` unset or
 | `E2E_CLEANUP_SERVICE_SHA` | Legacy source/operator guard value retained during cutover |
 | `E2E_CLEANUP_SERVICE_IMAGE_DIGEST` | Reviewed deployed Service image digest |
 | `BETA_CLEANUP_STATE_MACHINE_VERSION_ARN` | Immutable version ARN of the Infra-owned cleanup state machine |
+| `E2E_WORKER_SLOT_OFFSET` | Allocated first slot, integer 0 through 6; selected workers must fit within slots 0 through 7 |
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | `650880818323`, `ap-east-1` |
 
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
@@ -369,6 +370,12 @@ hash binds the actual ECS command bytes, while its request hash binds the origin
 captured worker JSON. Requests exceeding ECS's 8192-byte serialized override bound
 are rejected before starting an execution.
 
+DLQ counters may include messages that the fixed Service implementation proves
+belong to deleted terminal tasks. E2E validates nonnegative counters and refuses an
+unassigned diagnostic `known_message`; those counters alone do not establish
+per-message ownership. Source/image-bound Service validation and live unrelated
+data/message preservation evidence provide that acceptance boundary.
+
 Protected account recovery consumes the preserved original operation input and
 version before any invocation. A completed successful named execution is resumed
 and its real task/log proof is revalidated. A failed, timed-out or aborted execution
@@ -378,3 +385,11 @@ for every submitted task and read-only ECS observations prove those exact tasks
 stopped. Unknown launches, truncated history, missing tasks, source/version drift,
 or a failed retry retain the accounts. This input does not authorize environment
 activation, deployment, queue deletion or broader cleanup.
+
+Integration and Qualification accept `worker_slot_offset` (default `0`) for the
+manager-allocated pair of stable Chromium identities. Account allocation and
+admission eligibility use the same validated offset; for example `2` selects slots
+2 and 3 without reusing slots 0 and 1. Recovery always uses the exact captured
+original emails/subjects, independent of later slot allocations. An offset does
+not establish cessation of other jobs or authorize use of occupied slots: the
+manager still reconciles outstanding executions, tasks and manifests before reuse.

@@ -2,6 +2,12 @@ name: Beta Qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      worker_slot_offset:
+        description: First of two captured worker slots (0 through 6; manager allocation required)
+        required: false
+        default: 0
+        type: number
 
 permissions:
   contents: read
@@ -32,6 +38,7 @@ jobs:
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
       E2E_WORKERS: 2
+      E2E_WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
       E2E_MAX_ACTIVE_ACCOUNTS: 2
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
       E2E_MAX_QUARANTINED_ACCOUNTS: 2

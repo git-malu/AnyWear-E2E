@@ -92,6 +92,17 @@ test('the qualification requires explicitly configured two workers before any SS
   }
 });
 
+test('allocated worker offset checks selected memberships and invalid offsets refuse cloud access', () => {
+  const io = reader(JSON.stringify(response({ tester_allowlist: JSON.stringify(['e2e-beta-worker-2-chromium@anywear.local', 'e2e-beta-worker-3-chromium@anywear.local']) })));
+  assert.equal(verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: '2' }), { execute: io.execute, sourceSha }).workerCount, 2);
+  assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: '2' }), { execute: reader().execute, sourceSha }), /configured stable/);
+  for (const E2E_WORKER_SLOT_OFFSET of ['', '-1', '7', '2.5', '02', '1e0']) {
+    const rejected = reader();
+    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET }), { execute: rejected.execute, sourceSha }), /SLOT_OFFSET/);
+    assert.equal(rejected.calls.length, 0);
+  }
+});
+
 test('suspended admission and open public intake refuse qualification without any policy mutation', () => {
   for (const [patch, message] of [
     [{ admission_suspended: 'true' }, /admission is suspended/],
