@@ -1,6 +1,7 @@
 import type { Page, Request, Response } from '@playwright/test';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
+import { recordForActiveStep } from './support/auth-startup-attribution.mjs';
 
 interface UiEvidence {
   loginHeading: boolean;
@@ -16,9 +17,8 @@ interface StepEvidence extends UiEvidence {
 }
 
 interface ObservationWindow extends Window {
-  __authStartupBeginDocument: (documentId: string) => Promise<void>;
-  __authStartupReport: (documentId: string, evidence: UiEvidence) => Promise<void>;
-  __authStartupPath: (documentId: string, path: string) => Promise<void>;
+  __authStartupReport: (evidence: UiEvidence) => Promise<void>;
+  __authStartupPath: (path: string) => Promise<void>;
   __authStartupFlush: (reset?: boolean) => Promise<UiEvidence>;
 }
 
@@ -26,8 +26,6 @@ interface ObservationWindow extends Window {
 function observeAuthUi(): void {
   if (window !== window.top) return;
   const target = window as unknown as ObservationWindow;
-  const documentId = `${performance.timeOrigin}:${Math.random()}`;
-  const pendingDocument = target.__authStartupBeginDocument(documentId).catch(() => {});
   const evidence: UiEvidence = {
     loginHeading: false, loginForm: false, protectedHeading: false,
   };
@@ -42,7 +40,7 @@ function observeAuthUi(): void {
     const original = history[method].bind(history);
     history[method] = ((data: unknown, unused: string, url?: string | URL | null) => {
       const result = original(data, unused, url);
-      pendingPaths.push(target.__authStartupPath(documentId, location.pathname).catch(() => {}));
+      pendingPaths.push(target.__authStartupPath(location.pathname).catch(() => {}));
       return result;
     }) as History[typeof method];
   }
@@ -111,7 +109,7 @@ function observeAuthUi(): void {
       }
     }
     if (JSON.stringify(evidence) !== before) {
-      pending.push(target.__authStartupReport(documentId, { ...evidence }).catch(() => {}));
+      pending.push(target.__authStartupReport({ ...evidence }).catch(() => {}));
     }
   }
 
@@ -122,7 +120,7 @@ function observeAuthUi(): void {
   });
   target.__authStartupFlush = async (reset = false) => {
     collect(observer.takeRecords());
-    await Promise.all([pendingDocument, ...pending, ...pendingPaths]);
+    await Promise.all([...pending, ...pendingPaths]);
     const result = { ...evidence };
     if (reset) {
       evidence.loginHeading = false;
@@ -142,7 +140,6 @@ test.describe('Session startup @smoke @full-stack', () => {
     const serviceOrigin = new URL(requireEnvironment('E2E_SERVICE_URL')).origin;
     const steps: StepEvidence[] = [];
     const current = new Map<Page, StepEvidence>();
-    const documentSteps = new Map<string, StepEvidence>();
     const activeProfiles = new Set<Request>();
     const isProfileRequest = (request: Request) => {
       const url = new URL(request.url());
@@ -235,20 +232,15 @@ test.describe('Session startup @smoke @full-stack', () => {
     let secondPage: Page | undefined;
     try {
       await authenticated(page, 'initial sign-in', () => login(page, workerAccount), '/dashboard', 'Today', false);
-      await context.exposeBinding('__authStartupBeginDocument', ({ page: viewer }, documentId: string) => {
-        const step = current.get(viewer);
-        if (step) documentSteps.set(documentId, step);
-      });
-      await context.exposeBinding('__authStartupReport', (_source, documentId: string, ui: UiEvidence) => {
-        const step = documentSteps.get(documentId);
-        if (step) {
+      await context.exposeBinding('__authStartupReport', ({ page: viewer }, ui: UiEvidence) => {
+        recordForActiveStep(current, viewer, (step) => {
           step.loginHeading ||= ui.loginHeading;
           step.loginForm ||= ui.loginForm;
           step.protectedHeading ||= ui.protectedHeading;
-        }
+        });
       });
-      await context.exposeBinding('__authStartupPath', (_source, documentId: string, path: string) => {
-        documentSteps.get(documentId)?.paths.push(path);
+      await context.exposeBinding('__authStartupPath', ({ page: viewer }, path: string) => {
+        recordForActiveStep(current, viewer, (step) => step.paths.push(path));
       });
       await context.addInitScript(observeAuthUi);
 
