@@ -29,7 +29,7 @@ test.describe('Optional public registration @full-stack', () => {
   test('registers, confirms a synthetic user, and signs in', async ({ page }) => {
     await registerAndLogin(page, account!);
 
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({
+    await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible({
       timeout: 10_000,
     });
   });
