@@ -95,6 +95,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await appendFile(process.env.GITHUB_OUTPUT, [
     `run_scope=${manifest.runScope}`, `max_active=${manifest.config.maxActiveAccounts}`,
     `max_new=${manifest.config.maxNewAccountsPerRun}`, `max_quarantined=${manifest.config.maxQuarantinedAccounts}`, '',
+    `original_operation_path=${files['service-cleanup-operation.json'] ? resolve(dirname(path), 'original-service-cleanup-operation.json') : ''}`, '',
   ].join('\n'));
   console.log('Prepared only captured original worker identities for subject-bound Service cleanup.');
 }

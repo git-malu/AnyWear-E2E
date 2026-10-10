@@ -359,3 +359,22 @@ select the dedicated `CleanupTaskRoleArn` with no fallback to the old Lifecycle
 role. Its legacy image still needs narrowly reviewed data-cleanup permissions for
 the two Beta DLQs, while admission controls remain outside that role. None of these
 workflows deploy CDK, change admission policy, or revive the retired runtime drill.
+
+Operation evidence uses schema 3 and records initiation, observed terminal state,
+and a separate `proof_status`. Step Functions success alone does not permit identity
+deletion: E2E rechecks the exact execution input/version, both stopped ECS tasks,
+their immutable definitions, image/source, fixed command and log paths, and the
+unique `ANYWEAR_BETA_CLEANUP_RESULT=` Service completion marker. The marker's envelope
+hash binds the actual ECS command bytes, while its request hash binds the original
+captured worker JSON. Requests exceeding ECS's 8192-byte serialized override bound
+are rejected before starting an execution.
+
+Protected account recovery consumes the preserved original operation input and
+version before any invocation. A completed successful named execution is resumed
+and its real task/log proof is revalidated. A failed, timed-out or aborted execution
+is retained by default. The optional `retry_failed_execution` workflow input permits
+one deterministic `-retry1` execution only after complete original history accounts
+for every submitted task and read-only ECS observations prove those exact tasks
+stopped. Unknown launches, truncated history, missing tasks, source/version drift,
+or a failed retry retain the accounts. This input does not authorize environment
+activation, deployment, queue deletion or broader cleanup.

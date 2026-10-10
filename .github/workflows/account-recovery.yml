@@ -11,6 +11,11 @@ on:
         description: Attempt number for the failed E2E workflow run
         required: true
         type: string
+      retry_failed_execution:
+        description: Allow one retry only after exact prior execution and ECS task cessation are proven
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -38,6 +43,7 @@ jobs:
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
+      E2E_CLEANUP_RETRY_FAILED: ${{ inputs.retry_failed_execution && 'true' || 'false' }}
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SOURCE_SHA }}
@@ -102,6 +108,7 @@ jobs:
 
       - name: Recover exact worker data and identities through the reviewed Service operator
         env:
+          E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.original_operation_path }}
           E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
           E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
           E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
