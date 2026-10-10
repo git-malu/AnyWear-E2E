@@ -175,8 +175,11 @@ export function assertTeardownApplicationProof(primary, sentinel, bootstrap) {
 
 export async function deleteAcceptanceIdentities(identities, io, beforeDelete, afterDelete) {
   for (const identity of identities) {
+    if (typeof identity.username !== 'string' || !identity.username || identity.username.includes('@')
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(identity.sub)
+      || !EMAILS.includes(identity.email)) throw new Error('Exact captured immutable Cognito identity required for deletion');
     let user;
-    try { user = await io.get(identity.email); }
+    try { user = await io.get(identity.username); }
     catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
     if (user) {
       const actual = capturedIdentity(user, identity);
@@ -184,7 +187,7 @@ export async function deleteAcceptanceIdentities(identities, io, beforeDelete, a
       await beforeDelete(identity);
       await io.delete(identity.username);
     }
-    try { await io.get(identity.email); throw new Error('Captured identity remains after deletion'); }
+    try { await io.get(identity.username); throw new Error('Captured immutable identity remains after deletion'); }
     catch (error) { if (error?.name !== 'UserNotFoundException') throw error; }
     await afterDelete(identity);
   }

@@ -54,6 +54,10 @@ changed tuple or missing, partial, expired, unavailable, or changed proof stops
 the route and preserves evidence for the manager. Creation never reuses an
 existing identity, confirms an account, sets a password, authenticates, or calls
 an application HTTP route. Automatic finally deletion is forbidden.
+Teardown reads and deletes each captured immutable Cognito username, validates its
+captured email and subject before deletion, and proves that exact username absent
+before marking the account deleted. Missing or changed email aliases cannot prove
+the immutable identity's absence.
 
 The qualification interruption is deliberate cessation of result tracking after
 an authenticated submission. It does not claim an abrupt operating-system or

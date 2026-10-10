@@ -241,11 +241,55 @@ test('teardown refuses changed immutable usernames/subjects and reads back exact
   const user = { Username: identity.username, UserStatus: 'FORCE_CHANGE_PASSWORD', UserAttributes: [
     { Name: 'email', Value: identity.email }, { Name: 'sub', Value: identity.sub }, { Name: 'custom:e2e_bootstrap', Value: 'true' }, { Name: 'email_verified', Value: 'true' },
   ] };
-  await assert.rejects(() => deleteAcceptanceIdentities([identity], { get: async () => ({ ...user, Username: 'changed' }), delete: async () => assert.fail('must retain') }, async () => {}, async () => {}));
+  for (const changed of [{ ...user, Username: 'changed' }, { ...user, UserAttributes: user.UserAttributes.map(row => row.Name === 'sub' ? { ...row, Value: '10000000-0000-4000-8000-000000000009' } : row) }]) {
+    await assert.rejects(() => deleteAcceptanceIdentities([identity], { get: async () => changed, delete: async () => assert.fail('must retain') }, async () => {}, async () => assert.fail('must not mark deleted')));
+  }
   let missing = false;
-  await deleteAcceptanceIdentities([identity], { get: async () => { if (missing) throw Object.assign(new Error(), { name: 'UserNotFoundException' }); return user; },
+  await deleteAcceptanceIdentities([identity], { get: async username => { assert.equal(username, identity.username); if (missing) throw Object.assign(new Error(), { name: 'UserNotFoundException' }); return user; },
     delete: async username => { deleted.push(username); missing = true; } }, async () => {}, async () => {});
   assert.deepEqual(deleted, [identity.username]);
+});
+
+test('missing mutable email alias never marks a retained immutable Cognito identity deleted', async () => {
+  const identity = cleanupAcceptanceFixture().bootstrap.identities[0], lookups = [];
+  const changed = { Username: identity.username, UserStatus: 'FORCE_CHANGE_PASSWORD', UserAttributes: [
+    { Name: 'email', Value: 'changed@anywear.local' }, { Name: 'sub', Value: identity.sub },
+    { Name: 'custom:e2e_bootstrap', Value: 'true' }, { Name: 'email_verified', Value: 'true' },
+  ] };
+  await assert.rejects(() => deleteAcceptanceIdentities([identity], {
+    get: async username => { lookups.push(username); if (username === identity.email) throw Object.assign(new Error(), { name: 'UserNotFoundException' }); return changed; },
+    delete: async () => assert.fail('changed captured email must retain identity'),
+  }, async () => assert.fail('changed capture must refuse before deletion'), async () => assert.fail('retained immutable user must not be marked deleted')));
+  assert.deepEqual(lookups, [identity.username]);
+});
+
+test('post-delete alias mutation cannot replace exact immutable username absence read-back', async () => {
+  const identity = cleanupAcceptanceFixture().bootstrap.identities[0], lookups = [];
+  const user = { Username: identity.username, UserStatus: 'FORCE_CHANGE_PASSWORD', UserAttributes: [
+    { Name: 'email', Value: identity.email }, { Name: 'sub', Value: identity.sub },
+    { Name: 'custom:e2e_bootstrap', Value: 'true' }, { Name: 'email_verified', Value: 'true' },
+  ] };
+  let attempted = false;
+  await assert.rejects(() => deleteAcceptanceIdentities([identity], {
+    get: async username => {
+      lookups.push(username);
+      if (username === identity.email) throw Object.assign(new Error(), { name: 'UserNotFoundException' });
+      return attempted ? { ...user, UserAttributes: user.UserAttributes.map(row => row.Name === 'email' ? { ...row, Value: 'changed@anywear.local' } : row) } : user;
+    }, delete: async username => { assert.equal(username, identity.username); attempted = true; },
+  }, async () => {}, async () => assert.fail('retained immutable user must not be marked deleted')), /immutable identity remains/);
+  assert.equal(attempted, true); assert.deepEqual(lookups, [identity.username, identity.username]);
+});
+
+test('already absent captured immutable user reconciles without reading or deleting a replacement email alias', async () => {
+  const identity = cleanupAcceptanceFixture().bootstrap.identities[0], lookups = [], reconciled = [];
+  await deleteAcceptanceIdentities([identity], {
+    get: async username => { assert.equal(username, identity.username); lookups.push(username); throw Object.assign(new Error(), { name: 'UserNotFoundException' }); },
+    delete: async () => assert.fail('already absent captured identity needs no deletion'),
+  }, async () => assert.fail('absent identity has no deletion intent'), async actual => reconciled.push(actual));
+  assert.deepEqual(lookups, [identity.username, identity.username]); assert.deepEqual(reconciled, [identity]);
+  await assert.rejects(() => deleteAcceptanceIdentities([{ ...identity, username: identity.email }], {
+    get: async () => assert.fail('mutable aliases must refuse before lookup'), delete: async () => assert.fail('must not delete'),
+  }, async () => {}, async () => assert.fail('must not mark deleted')));
 });
 
 test('Cognito teardown is gated by verified exact primary and sentinel application proof', () => {
