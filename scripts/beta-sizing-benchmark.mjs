@@ -163,9 +163,10 @@ function evidenceGap(result, stage) {
     const upload = uploads.find((entry) => entry.task_id === item.upload_task_id);
     const generation = vto.find((entry) => entry.task_id === item.vto_task_id);
     if (!upload || !generation || !upload.worker_task_arn || upload.worker_task_arn !== generation.worker_task_arn
-      || ![upload.started_at, upload.finished_at, generation.started_at, generation.finished_at].every((value) => Number.isFinite(time(value)))
-      || time(upload.started_at) >= time(upload.finished_at) || time(generation.started_at) >= time(generation.finished_at)
-      || Math.max(time(upload.started_at), time(generation.started_at)) >= Math.min(time(upload.finished_at), time(generation.finished_at))) return 'Same-Worker-task overlap is not demonstrated';
+      || !upload.worker_process_instance || upload.worker_process_instance !== generation.worker_process_instance
+      || ![upload.started_monotonic_ms, upload.finished_monotonic_ms, generation.started_monotonic_ms, generation.finished_monotonic_ms].every(value => Number.isFinite(value) && value >= 0)
+      || upload.started_monotonic_ms >= upload.finished_monotonic_ms || generation.started_monotonic_ms >= generation.finished_monotonic_ms
+      || Math.max(upload.started_monotonic_ms, generation.started_monotonic_ms) >= Math.min(upload.finished_monotonic_ms, generation.finished_monotonic_ms)) return 'Same-Worker-task overlap is not demonstrated';
   }
 
   const measurements = result.measurements;

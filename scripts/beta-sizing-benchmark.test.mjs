@@ -15,12 +15,14 @@ function result(stage) {
     fixture_sha256: hash, submission: index % 2 ? 'burst' : 'sequential',
     terminal_state: 'ready', replay_verified: true, reload_verified: true,
     worker_task_arn: 'arn:aws:ecs:ap-east-1:650880818323:task/cluster/worker',
+    worker_process_instance: 'worker-process', started_monotonic_ms: 1000, finished_monotonic_ms: 2000,
     started_at: '2026-10-10T00:01:00Z', finished_at: '2026-10-10T00:02:00Z',
   }));
   const vto = Array.from({ length: 10 }, (_, index) => ({
     task_id: `vto-${index}`, shape: SIZING_WORKLOAD.vto_shapes[index % 5],
     terminal_state: 'Complete', output_retrievable: true, progress_reload_verified: true,
     replay_verified: true, credit_debit: 1, worker_task_arn: uploads[0].worker_task_arn,
+    worker_process_instance: 'worker-process', started_monotonic_ms: 1500, finished_monotonic_ms: 3000,
     started_at: '2026-10-10T00:01:30Z', finished_at: '2026-10-10T00:03:00Z',
   }));
   const tasks = [{ task_arn: 'api', service: 'api' }, { task_arn: 'worker', service: 'worker' }];

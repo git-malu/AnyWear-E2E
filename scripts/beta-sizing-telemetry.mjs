@@ -32,6 +32,8 @@ export function correlateSizingTask(resourceId, events) {
     || started.startedMonotonicMs < send.monotonicMs) return { gap: 'Complete same-clock immutable-ID absence proof unavailable' };
   const proof = [acceptance, snapshot, send, ack, started, processing, config];
   return { task_id: acceptance.taskId, worker_task_arn: send.workerTaskArn,
+    worker_process_instance: send.processInstance, started_monotonic_ms: started.startedMonotonicMs,
+    finished_monotonic_ms: processing.monotonicMs,
     started_at: started.observedAt, finished_at: processing.observedAt,
     provider_configuration: Object.fromEntries(['provider', 'model', 'size', 'outputFormat', 'stream', 'imageCount',
       'sequentialImageGeneration', 'watermark'].filter(key => config[key] !== undefined).map(key => [key, config[key]])),
@@ -58,6 +60,8 @@ export function correlateSizingWorkload(workload, events) {
       timings.push(task.timing);
       configuration.push({ case_id: item.case_id, ...task.provider_configuration });
       return { ...item, task_id: task.task_id, worker_task_arn: task.worker_task_arn,
+        worker_process_instance: task.worker_process_instance, started_monotonic_ms: task.started_monotonic_ms,
+        finished_monotonic_ms: task.finished_monotonic_ms,
         started_at: task.started_at, finished_at: task.finished_at };
     });
   }
@@ -66,8 +70,9 @@ export function correlateSizingWorkload(workload, events) {
     const generation = result.vto.find(item => item.resource_id === intent.vto_resource_id);
     const upload = result.uploads.find(item => intent.upload_resource_ids.includes(item.resource_id)
       && item.worker_task_arn && item.worker_task_arn === generation.worker_task_arn
-      && Math.max(Date.parse(item.started_at), Date.parse(generation.started_at))
-        < Math.min(Date.parse(item.finished_at), Date.parse(generation.finished_at)));
+      && item.worker_process_instance === generation.worker_process_instance
+      && Math.max(item.started_monotonic_ms, generation.started_monotonic_ms)
+        < Math.min(item.finished_monotonic_ms, generation.finished_monotonic_ms));
     if (upload && generation.task_id) result.overlap.push({ upload_task_id: upload.task_id, vto_task_id: generation.task_id });
   }
   configuration.sort((a, b) => a.case_id.localeCompare(b.case_id));
