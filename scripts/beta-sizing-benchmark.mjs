@@ -89,6 +89,28 @@ function time(value) {
   return typeof value === 'string' && /Z$/.test(value) ? Date.parse(value) : NaN;
 }
 
+function queueBounds(item) {
+  const queue = item.queue;
+  if (!queue || queue.task_correlation_verified !== true || queue.clock_bound_verified !== true
+    || !HASH.test(queue.clock_evidence_sha256)) return undefined;
+  if (queue.kind === 'exact-common-clock') {
+    if (['commit_to_publish_ms', 'publish_to_execution_ms'].some((field) => !Number.isFinite(queue[field]) || queue[field] < 0)) return undefined;
+    return { commit_to_publish: [queue.commit_to_publish_ms, queue.commit_to_publish_ms],
+      publish_to_execution: [queue.publish_to_execution_ms, queue.publish_to_execution_ms] };
+  }
+  if (queue.kind !== 'conservative-phase-bounds' || !Number.isFinite(queue.clock_error_bound_ms)
+    || queue.clock_error_bound_ms < 0 || !queue.outbox_id || !queue.send_request_id) return undefined;
+  const precommit = time(queue.precommit_at);
+  const sendStart = time(queue.send_started_at);
+  const acknowledged = time(queue.send_acknowledged_at);
+  const execution = time(queue.first_execution_started_at);
+  const error = queue.clock_error_bound_ms;
+  if (![precommit, sendStart, acknowledged, execution].every(Number.isFinite)
+    || acknowledged < sendStart || sendStart + error < precommit || execution + error < sendStart) return undefined;
+  return { commit_to_publish: [0, acknowledged - precommit + error],
+    publish_to_execution: [0, execution - sendStart + error] };
+}
+
 function evidenceGap(result, stage) {
   const binding = result.binding;
   if (!binding || !HASH.test(binding.fixture_manifest_sha256) || !HASH.test(binding.supported_input_envelope_sha256)
@@ -145,7 +167,7 @@ function evidenceGap(result, stage) {
   for (const task of tasks) {
     const peak = peaks.filter((item) => item.task_arn === task.task_arn);
     if (!task.task_arn || !['api', 'worker'].includes(task.service) || peak.length !== 1
-      || !Number.isFinite(peak[0].peak_mib) || peak[0].peak_mib < 0
+      || !Number.isFinite(peak[0].peak_mib) || peak[0].peak_mib <= 0
       || peak[0].limit_mib !== stage[task.service].memoryMiB) return 'Peak evidence is not bound to every actual task and hard limit';
   }
   const start = time(measurements.started_at);
@@ -166,7 +188,8 @@ function evidenceGap(result, stage) {
   const timings = measurements.task_timings;
   if (!Array.isArray(timings) || timings.length !== ids.length || new Set(timings.map((item) => item.task_id)).size !== ids.length
     || timings.some((item) => !ids.includes(item.task_id) || item.provider_separated !== true
-      || ['local_processing_ms', 'commit_to_publish_ms', 'publish_to_execution_ms', 'provider_ms'].some((field) => !Number.isFinite(item[field]) || item[field] < 0))) return 'Provider-separated local and both queue intervals are required for every accepted task';
+      || ['local_processing_ms', 'provider_ms'].some((field) => !Number.isFinite(item[field]) || item[field] < 0)
+      || !queueBounds(item))) return 'Provider-separated local and clock-verified correlated queue evidence are required for every accepted task';
   return undefined;
 }
 
@@ -178,8 +201,11 @@ function summary(result) {
     worker_peak_mib: Math.max(...measurements.container_peaks.filter((peak) => tasks.some((task) => task.task_arn === peak.task_arn && task.service === 'worker')).map((peak) => peak.peak_mib)),
     route_p95_ms: Object.fromEntries([...ROUTES].map((route) => [route, percentile95(measurements.route_samples_ms[route], `${route} latency`)])),
     local_processing_p95_ms: percentile95(measurements.task_timings.map((item) => item.local_processing_ms), 'local processing'),
-    commit_to_publish_p95_ms: percentile95(measurements.task_timings.map((item) => item.commit_to_publish_ms), 'commit to publish'),
-    publish_to_execution_p95_ms: percentile95(measurements.task_timings.map((item) => item.publish_to_execution_ms), 'publish to execution'),
+    queue: Object.fromEntries(['commit_to_publish', 'publish_to_execution'].map((interval) => [interval, {
+      lower_p95_ms: percentile95(measurements.task_timings.map((item) => queueBounds(item)[interval][0]), `${interval} lower bound`),
+      upper_p95_ms: percentile95(measurements.task_timings.map((item) => queueBounds(item)[interval][1]), `${interval} upper bound`),
+      exact: measurements.task_timings.every((item) => item.queue.kind === 'exact-common-clock'),
+    }])),
   };
 }
 
@@ -225,8 +251,11 @@ export function evaluateSizingResult(result, baseline) {
       if (measured.route_p95_ms[route] > limit(before.route_p95_ms[route], SIZING_LIMITS.latency_slack_ms)) return verdict('rejected', `${route} p95 exceeded the S0 regression limit`);
     }
     if (measured.local_processing_p95_ms > limit(before.local_processing_p95_ms, SIZING_LIMITS.local_processing_slack_ms)) return verdict('rejected', 'Provider-separated local processing exceeded the S0 regression limit');
-    for (const field of ['commit_to_publish_p95_ms', 'publish_to_execution_p95_ms']) {
-      if (measured[field] > before[field] + SIZING_LIMITS.queue_slack_ms) return verdict('rejected', `${field} exceeded the S0 regression limit`);
+    for (const interval of ['commit_to_publish', 'publish_to_execution']) {
+      if (measured.queue[interval].upper_p95_ms > before.queue[interval].lower_p95_ms + SIZING_LIMITS.queue_slack_ms) {
+        const exact = measured.queue[interval].exact && before.queue[interval].exact;
+        return verdict(exact ? 'rejected' : 'unqualified', `${interval} ${exact ? 'exceeded' : 'upper bound cannot establish'} the S0 regression limit`);
+      }
     }
   }
   return { ...verdict('passed', 'Recorded representative workload, stability, latency and sizing limits passed'), measurements: measured };

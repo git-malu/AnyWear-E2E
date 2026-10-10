@@ -50,7 +50,9 @@ function result(stage) {
       }))),
       route_samples_ms: Object.fromEntries(SIZING_WORKLOAD.paced_routes.map((route) => [route, Array(100).fill(100)])),
       task_timings: [...uploads, ...vto].map((item) => ({ task_id: item.task_id, provider_separated: true,
-        local_processing_ms: 500, commit_to_publish_ms: 400, publish_to_execution_ms: 400, provider_ms: 1000 })),
+        local_processing_ms: 500, provider_ms: 1000, queue: { kind: 'exact-common-clock',
+          task_correlation_verified: true, clock_bound_verified: true, clock_evidence_sha256: hash,
+          commit_to_publish_ms: 400, publish_to_execution_ms: 400 } })),
     },
   };
 }
@@ -116,11 +118,34 @@ test('compares provider-excluded local work and both queue intervals independent
   local.measurements.task_timings.forEach((item) => { item.local_processing_ms = 751; });
   assert.match(evaluateSizingResult(local, result('S0')).reason, /local processing/);
   const queue = result('S2');
-  queue.measurements.task_timings.forEach((item) => { item.commit_to_publish_ms = 1401; });
+  queue.measurements.task_timings.forEach((item) => { item.queue.commit_to_publish_ms = 1401; });
   assert.match(evaluateSizingResult(queue, result('S0')).reason, /commit_to_publish/);
   const inseparable = result('S2');
   inseparable.measurements.task_timings[0].provider_separated = false;
   assert.equal(evaluateSizingResult(inseparable, result('S0')).status, 'unqualified');
+});
+
+test('uses candidate queue upper bounds against baseline lower bounds without inventing exact deltas', () => {
+  function bounded(stage, milliseconds) {
+    const value = result(stage);
+    value.measurements.task_timings.forEach((item) => {
+      item.queue = { kind: 'conservative-phase-bounds', task_correlation_verified: true,
+        clock_bound_verified: true, clock_evidence_sha256: hash, clock_error_bound_ms: 10,
+        outbox_id: `outbox-${item.task_id}`, send_request_id: 'request-1',
+        precommit_at: started, send_started_at: new Date(Date.parse(started) + milliseconds - 20).toISOString(),
+        send_acknowledged_at: new Date(Date.parse(started) + milliseconds - 10).toISOString(),
+        first_execution_started_at: new Date(Date.parse(started) + milliseconds - 15).toISOString() };
+    });
+    return value;
+  }
+  assert.equal(evaluateSizingResult(bounded('S2', 900), bounded('S0', 5000)).status, 'passed');
+  assert.equal(evaluateSizingResult(bounded('S2', 1100), bounded('S0', 5000)).status, 'unqualified');
+  const unknownClock = bounded('S2', 900);
+  unknownClock.measurements.task_timings[0].queue.clock_bound_verified = false;
+  assert.equal(evaluateSizingResult(unknownClock, result('S0')).status, 'unqualified');
+  const impossibleOrder = bounded('S2', 900);
+  impossibleOrder.measurements.task_timings[0].queue.first_execution_started_at = '2026-10-09T00:00:00Z';
+  assert.equal(evaluateSizingResult(impossibleOrder, result('S0')).status, 'unqualified');
 });
 
 test('rejects incorrect credits and claimed overlap on distinct Worker tasks', () => {

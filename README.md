@@ -418,3 +418,11 @@ Compare local processing separately from provider time and both queue intervals
 independently; preserve provider timings without treating provider variability as
 local processing. Never substitute sampled memory, process RSS, missing buckets or
 transaction acknowledgement for an unobserved peak, zero usage or exact DB commit.
+Queue measurements may use exact common-clock intervals or verified conservative
+phase bounds. Upper bounds compare against independently known S0 lower bounds;
+unknown exact baseline delays use the conservative lower bound zero. A failing
+upper-bound comparison remains inconclusive, while an exact measured regression
+is rejected. Every task needs clock/error evidence and same-task correlation;
+execution before send acknowledgement is legal, and the send-start boundary avoids
+inventing a clamped zero delay. Unverified clocks or contradictory ordering cannot
+qualify a result.
