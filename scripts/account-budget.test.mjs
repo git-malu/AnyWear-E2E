@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
+import { createWorkerAccount } from '../tests/support/account.ts';
 import {
   markAccountDeleted,
   markAccountInUse,
@@ -15,6 +16,8 @@ const environment = [
   'E2E_ACCOUNT_BUDGET_PATH',
   'E2E_ACCOUNT_RUN_SCOPE',
   'E2E_WORKERS',
+  'E2E_STAGE',
+  'E2E_WORKER_SLOT_OFFSET',
   'E2E_MAX_ACTIVE_ACCOUNTS',
   'E2E_MAX_NEW_ACCOUNTS_PER_RUN',
   'E2E_MAX_QUARANTINED_ACCOUNTS',
@@ -33,6 +36,33 @@ function restoreEnvironment() {
 afterEach(async () => {
   restoreEnvironment();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+test('worker slot allocation defaults to zero and an allocated offset preserves other captured slots', () => {
+  process.env.E2E_STAGE = 'beta';
+  process.env.E2E_WORKERS = '2';
+  delete process.env.E2E_WORKER_SLOT_OFFSET;
+  assert.equal(createWorkerAccount({ parallelIndex: 0 }, 'chromium').email, 'e2e-beta-worker-0-chromium@anywear.local');
+  assert.equal(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, 'e2e-beta-worker-1-chromium@anywear.local');
+  process.env.E2E_WORKER_SLOT_OFFSET = '2';
+  assert.equal(createWorkerAccount({ parallelIndex: 0 }, 'chromium').email, 'e2e-beta-worker-2-chromium@anywear.local');
+  assert.equal(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, 'e2e-beta-worker-3-chromium@anywear.local');
+  process.env.E2E_WORKER_SLOT_OFFSET = '6';
+  assert.equal(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, 'e2e-beta-worker-7-chromium@anywear.local');
+});
+
+test('invalid offset, pool overflow and invalid parallel index refuse account allocation', () => {
+  process.env.E2E_STAGE = 'beta';
+  process.env.E2E_WORKERS = '2';
+  for (const raw of ['', '-1', '7', '1.5', '02', '1e0', 'invalid']) {
+    process.env.E2E_WORKER_SLOT_OFFSET = raw;
+    assert.throws(() => createWorkerAccount({ parallelIndex: 0 }, 'chromium'), /SLOT_OFFSET/);
+  }
+  process.env.E2E_WORKER_SLOT_OFFSET = '6';
+  process.env.E2E_WORKERS = '3';
+  assert.throws(() => createWorkerAccount({ parallelIndex: 0 }, 'chromium'), /SLOT_OFFSET/);
+  process.env.E2E_WORKERS = '2';
+  for (const parallelIndex of [-1, 0.5, 2]) assert.throws(() => createWorkerAccount({ parallelIndex }, 'chromium'), /parallelIndex/);
 });
 
 async function configureBudget(maxNewAccountsPerRun = 2) {
