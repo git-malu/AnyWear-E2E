@@ -1,71 +1,157 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSizingPlan, evaluateSizingResult, SIZING_STAGES, validateSizingPlan } from './beta-sizing-benchmark.mjs';
+import { createSizingPlan, evaluateSizingResult, SIZING_STAGES, SIZING_WORKLOAD, validateSizingPlan } from './beta-sizing-benchmark.mjs';
 
-const baseline = {
-  api_peak_mib: 100,
-  worker_peak_mib: 300,
-  provider_p95_ms: 500,
-  queue_p95_ms: 400,
-  cpu_sample_max_percent: 50,
-  route_p95_ms: { '/users/me': 100, '/wardrobe': 120, '/vto/base-photos': 130, '/vto/generations': 150 },
-};
+const hash = 'a'.repeat(64);
+const sha = 'b'.repeat(40);
+const started = '2026-10-10T00:00:00Z';
+const finished = '2026-10-10T00:05:00Z';
 
-function result(stage, overrides = {}) {
+function result(stage) {
+  const sizing = SIZING_STAGES.find((item) => item.id === stage);
+  const uploads = Array.from({ length: 24 }, (_, index) => ({
+    task_id: `upload-${index}`, mime: SIZING_WORKLOAD.image_formats[index % 3],
+    size_class: Math.floor(index / 3) % 2 ? 'near-supported-limit' : 'ordinary',
+    fixture_sha256: hash, submission: index % 2 ? 'burst' : 'sequential',
+    terminal_state: 'ready', replay_verified: true, reload_verified: true,
+    worker_task_arn: 'arn:aws:ecs:ap-east-1:650880818323:task/cluster/worker',
+    started_at: '2026-10-10T00:01:00Z', finished_at: '2026-10-10T00:02:00Z',
+  }));
+  const vto = Array.from({ length: 10 }, (_, index) => ({
+    task_id: `vto-${index}`, shape: SIZING_WORKLOAD.vto_shapes[index % 5],
+    terminal_state: 'Complete', output_retrievable: true, progress_reload_verified: true,
+    replay_verified: true, credit_debit: 1, worker_task_arn: uploads[0].worker_task_arn,
+    started_at: '2026-10-10T00:01:30Z', finished_at: '2026-10-10T00:03:00Z',
+  }));
+  const tasks = [{ task_arn: 'api', service: 'api' }, { task_arn: 'worker', service: 'worker' }];
   return {
-    stage,
-    unexpected_oom: 0,
-    task_replacements: 0,
-    lost_accepted_work: 0,
-    readiness_failures: 0,
-    duplicate_effects: 0,
-    manual_intervention: 0,
-    api_peak_mib: 100,
-    worker_peak_mib: 300,
-    provider_p95_ms: 500,
-    queue_p95_ms: 400,
-    cpu_sample_max_percent: 50,
-    route_p95_ms: { ...baseline.route_p95_ms },
-    ...overrides,
+    schema_version: 2, stage,
+    unexpected_oom: 0, task_replacements: 0, lost_accepted_work: 0,
+    readiness_failures: 0, duplicate_effects: 0, manual_intervention: 0,
+    unexpected_dlq: 0, missed_lease_renewals: 0, notification_failures: 0, unexplained_backlog: 0,
+    binding: {
+      fixture_manifest_sha256: hash, supported_input_envelope_sha256: hash,
+      provider_configuration_sha256: hash, deployment_record_sha256: hash,
+      client_sha: sha, service_sha: sha, infra_sha: sha, e2e_sha: sha,
+      image_digest: `sha256:${hash}`,
+    },
+    raw_evidence: [{ url: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/1/artifacts/2', sha256: hash }],
+    observed: { api: { ...sizing.api }, worker: { ...sizing.worker } },
+    workload: { uploads, vto, overlap: [
+      { upload_task_id: 'upload-0', vto_task_id: 'vto-0' },
+      { upload_task_id: 'upload-1', vto_task_id: 'vto-1' },
+    ] },
+    measurements: {
+      started_at: started, finished_at: finished, peak_method: 'container-cgroup-high-water', peak_window_covered: true,
+      tasks, container_peaks: tasks.map((item) => ({ task_arn: item.task_arn,
+        peak_mib: item.service === 'api' ? 100 : 300, limit_mib: sizing[item.service].memoryMiB })),
+      cpu_samples: ['api', 'worker'].flatMap((service) => Array.from({ length: 5 }, (_, minute) => ({
+        service, minute_utc: new Date(Date.parse(started) + minute * 60000).toISOString(), percent: 50,
+      }))),
+      route_samples_ms: Object.fromEntries(SIZING_WORKLOAD.paced_routes.map((route) => [route, Array(100).fill(100)])),
+      task_timings: [...uploads, ...vto].map((item) => ({ task_id: item.task_id, provider_separated: true,
+        local_processing_ms: 500, commit_to_publish_ms: 400, publish_to_execution_ms: 400, provider_ms: 1000 })),
+    },
   };
 }
 
-test('fixes the reviewed S0 -> S3 order and workload contract', () => {
-  const plan = createSizingPlan({ fixtureManifestSha256: 'a'.repeat(64), compatibilitySha: 'b'.repeat(40) });
-  assert.deepEqual(plan.stages.map(({ id }) => id), ['S0', 'S1', 'S2', 'S3']);
-  assert.equal(plan.stages[0].api.desired, 2);
-  assert.equal(plan.stages[1].api.desired, 1);
-  assert.equal(plan.stages[2].api.memoryMiB, 512);
-  assert.equal(plan.stages[3].worker.memoryMiB, 1024);
+test('binds the reviewed plan to full hashes and five supported VTO shapes', () => {
+  const plan = createSizingPlan({ fixtureManifestSha256: hash, compatibilitySha: sha });
   assert.equal(validateSizingPlan(plan), true);
-});
-
-test('rejects plans that alter production-like settings or omit a representative route', () => {
-  const plan = createSizingPlan({ fixtureManifestSha256: 'a'.repeat(64), compatibilitySha: 'b'.repeat(40) });
+  assert.equal(plan.workload.vto_shapes.length, 5);
+  assert.throws(() => createSizingPlan({ fixtureManifestSha256: 'partial', compatibilitySha: sha }), /full SHA-256/);
   plan.stages[0].api.desired = 1;
   assert.throws(() => validateSizingPlan(plan), /S0 api.desired differs/);
-
-  const fresh = createSizingPlan({ fixtureManifestSha256: 'a'.repeat(64), compatibilitySha: 'b'.repeat(40) });
-  fresh.workload.paced_routes.pop();
-  assert.throws(() => validateSizingPlan(fresh), /representative set/);
 });
 
-test('requires complete evidence and classifies incomplete peaks as unqualified', () => {
-  assert.deepEqual(evaluateSizingResult(result('S1', { api_peak_mib: undefined }), baseline), {
-    status: 'unqualified', reason: 'Container peak evidence is incomplete', stage: 'S1',
-  });
-  assert.throws(() => evaluateSizingResult(result('S1', { route_p95_ms: { '/users/me': 100 } }), baseline), /each reviewed route/);
+test('does not qualify legacy scalar summaries or incomplete business workload', () => {
+  assert.equal(evaluateSizingResult({ ...result('S1'), schema_version: 1 }).status, 'unqualified');
+  const incomplete = result('S1');
+  incomplete.workload.vto.pop();
+  assert.match(evaluateSizingResult(incomplete, result('S0')).reason, /VTO coverage/);
+  const insufficient = result('S2');
+  insufficient.measurements.route_samples_ms['/users/me'] = Array(99).fill(1);
+  assert.match(evaluateSizingResult(insufficient, result('S0')).reason, /100 measured requests/);
 });
 
-test('rejects stability and candidate headroom failures', () => {
-  assert.equal(evaluateSizingResult(result('S1', { unexpected_oom: 1 }), baseline).status, 'rejected');
-  assert.equal(evaluateSizingResult(result('S2', { api_peak_mib: 385 }), baseline).status, 'rejected');
-  assert.equal(evaluateSizingResult(result('S3', { worker_peak_mib: 769 }), baseline).status, 'rejected');
-  assert.equal(evaluateSizingResult(result('S3', { route_p95_ms: { ...baseline.route_p95_ms, '/vto/generations': 300 } }), baseline).status, 'rejected');
+test('requires actual sizing, common application inputs and a passing common S0', () => {
+  const wrongSize = result('S2');
+  wrongSize.observed.api.memoryMiB = 1024;
+  assert.equal(evaluateSizingResult(wrongSize, result('S0')).status, 'unqualified');
+  const changedImage = result('S2');
+  changedImage.binding.image_digest = `sha256:${'c'.repeat(64)}`;
+  assert.match(evaluateSizingResult(changedImage, result('S0')).reason, /image_digest changed/);
+  assert.match(evaluateSizingResult(result('S2'), result('S1')).reason, /common S0 baseline/);
+  const incompleteBaseline = result('S0');
+  incompleteBaseline.workload.uploads.pop();
+  assert.equal(evaluateSizingResult(result('S2'), incompleteBaseline).status, 'unqualified');
 });
 
-test('accepts a complete S0 baseline and a bounded S1 replica reduction', () => {
-  assert.equal(evaluateSizingResult(result('S0'), baseline).status, 'passed');
-  assert.equal(evaluateSizingResult(result('S1'), baseline).status, 'passed');
-  assert.equal(SIZING_STAGES[1].api.minimum, 1);
+test('sampled memory, missing task peaks and missing CPU minutes remain unqualified', () => {
+  const sampled = result('S2');
+  sampled.measurements.peak_method = 'container-insights-one-minute';
+  assert.equal(evaluateSizingResult(sampled, result('S0')).status, 'unqualified');
+  const missing = result('S2');
+  missing.measurements.container_peaks.pop();
+  assert.equal(evaluateSizingResult(missing, result('S0')).status, 'unqualified');
+  const cpuGap = result('S2');
+  cpuGap.measurements.cpu_samples.pop();
+  assert.equal(evaluateSizingResult(cpuGap, result('S0')).status, 'unqualified');
+});
+
+test('rejects sustained CPU saturation while accepting an isolated high sample', () => {
+  const isolated = result('S2');
+  isolated.measurements.cpu_samples[0].percent = 95;
+  assert.equal(evaluateSizingResult(isolated, result('S0')).status, 'passed');
+  const sustained = result('S2');
+  sustained.measurements.cpu_samples.filter((item) => item.service === 'worker').forEach((item) => { item.percent = 90; });
+  assert.match(evaluateSizingResult(sustained, result('S0')).reason, /five consecutive/);
+});
+
+test('compares provider-excluded local work and both queue intervals independently', () => {
+  const providerVariation = result('S2');
+  providerVariation.measurements.task_timings.forEach((item) => { item.provider_ms = 100000; });
+  assert.equal(evaluateSizingResult(providerVariation, result('S0')).status, 'passed');
+  const local = result('S2');
+  local.measurements.task_timings.forEach((item) => { item.local_processing_ms = 751; });
+  assert.match(evaluateSizingResult(local, result('S0')).reason, /local processing/);
+  const queue = result('S2');
+  queue.measurements.task_timings.forEach((item) => { item.commit_to_publish_ms = 1401; });
+  assert.match(evaluateSizingResult(queue, result('S0')).reason, /commit_to_publish/);
+  const inseparable = result('S2');
+  inseparable.measurements.task_timings[0].provider_separated = false;
+  assert.equal(evaluateSizingResult(inseparable, result('S0')).status, 'unqualified');
+});
+
+test('rejects incorrect credits and claimed overlap on distinct Worker tasks', () => {
+  const credits = result('S2');
+  credits.workload.vto[0].credit_debit = 0;
+  assert.equal(evaluateSizingResult(credits, result('S0')).status, 'rejected');
+  const overlap = result('S2');
+  overlap.workload.vto[0].worker_task_arn = 'other';
+  assert.match(evaluateSizingResult(overlap, result('S0')).reason, /Same-Worker-task overlap/);
+});
+
+test('retains API headroom at S3 and distinguishes observed failure from missing evidence', () => {
+  const api = result('S3');
+  api.measurements.container_peaks[0].peak_mib = 385;
+  assert.match(evaluateSizingResult(api, result('S0')).reason, /API candidate/);
+  const worker = result('S3');
+  worker.measurements.container_peaks[1].peak_mib = 769;
+  assert.match(evaluateSizingResult(worker, result('S0')).reason, /Worker candidate/);
+  const oom = result('S2');
+  oom.unexpected_oom = 1;
+  assert.equal(evaluateSizingResult(oom, result('S0')).status, 'rejected');
+  const unknown = result('S2');
+  delete unknown.lost_accepted_work;
+  assert.equal(evaluateSizingResult(unknown, result('S0')).status, 'unqualified');
+});
+
+test('derives route percentiles from retained samples rather than supplied scalar values', () => {
+  const measured = result('S2');
+  measured.measurements.route_samples_ms['/users/me'] = [...Array(94).fill(100), ...Array(6).fill(201)];
+  assert.equal(evaluateSizingResult(measured, result('S0')).status, 'rejected');
+  const accepted = evaluateSizingResult(result('S2'), result('S0'));
+  assert.equal(accepted.status, 'passed');
+  assert.equal(accepted.measurements.route_p95_ms['/users/me'], 100);
 });

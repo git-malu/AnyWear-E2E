@@ -14,7 +14,7 @@ export const SIZING_WORKLOAD = Object.freeze({
   paced_routes: Object.freeze(['/users/me', '/wardrobe', '/vto/base-photos', '/vto/generations']),
   overlap_cases: 2,
   image_formats: Object.freeze(['image/jpeg', 'image/png', 'image/webp']),
-  vto_shapes: Object.freeze(['ordinary-base-one-garment', 'large-base-three-garments', 'largest-supported-output']),
+  vto_shapes: Object.freeze(['ordinary-base-one-garment', 'large-base-one-garment', 'ordinary-base-three-garments', 'large-base-three-garments', 'representative-larger-outfit-output']),
 });
 
 export const SIZING_LIMITS = Object.freeze({
@@ -22,13 +22,14 @@ export const SIZING_LIMITS = Object.freeze({
   worker_memory_headroom_mib: 768,
   latency_relative: 0.25,
   latency_slack_ms: 100,
-  provider_slack_ms: 250,
+  local_processing_slack_ms: 250,
   queue_slack_ms: 1000,
   cpu_sample_limit_percent: 90,
 });
 
-const STAGE_IDS = new Set(STAGE_DEFINITIONS.map(({ id }) => id));
 const ROUTES = new Set(SIZING_WORKLOAD.paced_routes);
+const SHA = /^[a-f0-9]{40}$/;
+const HASH = /^[a-f0-9]{64}$/;
 
 function fail(message) {
   throw new Error(message);
@@ -49,8 +50,8 @@ function exactStage(stage, expected, label) {
 }
 
 export function createSizingPlan({ fixtureManifestSha256, compatibilitySha } = {}) {
-  if (typeof fixtureManifestSha256 !== 'string' || fixtureManifestSha256.length === 0) fail('fixtureManifestSha256 is required');
-  if (typeof compatibilitySha !== 'string' || compatibilitySha.length === 0) fail('compatibilitySha is required');
+  if (!HASH.test(fixtureManifestSha256)) fail('fixtureManifestSha256 must be a full SHA-256');
+  if (!SHA.test(compatibilitySha)) fail('compatibilitySha must be a full commit SHA');
   return {
     schema_version: 1,
     issue: 95,
@@ -64,12 +65,12 @@ export function createSizingPlan({ fixtureManifestSha256, compatibilitySha } = {
 
 export function validateSizingPlan(plan) {
   if (!plan || plan.schema_version !== 1 || plan.issue !== 95) fail('Unsupported Beta sizing plan');
-  if (typeof plan.fixture_manifest_sha256 !== 'string' || plan.fixture_manifest_sha256.length === 0) fail('Sizing plan fixture manifest binding is required');
-  if (typeof plan.compatibility_sha !== 'string' || plan.compatibility_sha.length === 0) fail('Sizing plan compatibility binding is required');
+  if (!HASH.test(plan.fixture_manifest_sha256)) fail('Sizing plan fixture manifest binding is required');
+  if (!SHA.test(plan.compatibility_sha)) fail('Sizing plan compatibility binding is required');
   if (!Array.isArray(plan.stages) || plan.stages.length !== STAGE_DEFINITIONS.length) fail('Sizing plan must contain S0 through S3 exactly once');
   plan.stages.forEach((stage, index) => exactStage(stage, STAGE_DEFINITIONS[index], `S${index}`));
   if (!plan.workload || plan.workload.upload_tagging_cases !== 24 || plan.workload.vto_generations !== 10
-    || plan.workload.paced_requests_per_route !== 100 || plan.workload.overlap_cases < 2
+    || plan.workload.paced_requests_per_route !== 100 || plan.workload.overlap_cases !== 2
     || JSON.stringify(plan.workload.paced_routes) !== JSON.stringify(SIZING_WORKLOAD.paced_routes)
     || JSON.stringify(plan.workload.image_formats) !== JSON.stringify(SIZING_WORKLOAD.image_formats)
     || JSON.stringify(plan.workload.vto_shapes) !== JSON.stringify(SIZING_WORKLOAD.vto_shapes)) fail('Sizing workload does not match the reviewed representative set');
@@ -79,38 +80,154 @@ export function validateSizingPlan(plan) {
   return true;
 }
 
-function limitFor(stage, baseline, key, slack, label) {
-  const observed = finiteNumber(baseline?.[key], `S0 ${label}`);
-  return observed + Math.max(observed * SIZING_LIMITS.latency_relative, slack);
+function percentile95(samples, label) {
+  samples.forEach((value) => finiteNumber(value, label));
+  return [...samples].sort((a, b) => a - b)[Math.ceil(samples.length * 0.95) - 1];
+}
+
+function time(value) {
+  return typeof value === 'string' && /Z$/.test(value) ? Date.parse(value) : NaN;
+}
+
+function evidenceGap(result, stage) {
+  const binding = result.binding;
+  if (!binding || !HASH.test(binding.fixture_manifest_sha256) || !HASH.test(binding.supported_input_envelope_sha256)
+    || !HASH.test(binding.provider_configuration_sha256) || !HASH.test(binding.deployment_record_sha256)
+    || !SHA.test(binding.client_sha) || !SHA.test(binding.service_sha) || !SHA.test(binding.infra_sha)
+    || !SHA.test(binding.e2e_sha) || !/^sha256:[a-f0-9]{64}$/.test(binding.image_digest)) return 'Exact workload and deployed input bindings are incomplete';
+  if (!Array.isArray(result.raw_evidence) || !result.raw_evidence.length
+    || result.raw_evidence.some((item) => !HASH.test(item.sha256) || !/^https:\/\/github\.com\//.test(item.url))) return 'Immutable raw evidence references are incomplete';
+  if (!result.observed) return 'Actual deployed sizing is missing';
+  for (const service of ['api', 'worker']) {
+    for (const field of ['desired', 'minimum', 'cpu', 'memoryMiB']) {
+      if (result.observed[service]?.[field] !== stage[service][field]) return `Actual ${service}.${field} differs from the selected stage`;
+    }
+  }
+
+  const uploads = result.workload?.uploads;
+  if (!Array.isArray(uploads) || uploads.length !== SIZING_WORKLOAD.upload_tagging_cases) return 'Representative upload/tagging coverage is incomplete';
+  const vto = result.workload?.vto;
+  if (!Array.isArray(vto) || vto.length !== SIZING_WORKLOAD.vto_generations) return 'Representative VTO coverage is incomplete';
+  const ids = [...uploads, ...vto].map((item) => item.task_id);
+  if (ids.some((id) => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length) return 'Accepted task identities must be distinct';
+  for (const format of SIZING_WORKLOAD.image_formats) {
+    for (const size of ['ordinary', 'near-supported-limit']) {
+      if (!uploads.some((item) => item.mime === format && item.size_class === size && HASH.test(item.fixture_sha256))) return 'Upload formats or supported size envelope are incomplete';
+    }
+  }
+  if (!['sequential', 'burst'].every((mode) => uploads.some((item) => item.submission === mode))) return 'Sequential and burst coverage are incomplete';
+  if (uploads.some((item) => item.terminal_state !== 'ready' || item.replay_verified !== true || item.reload_verified !== true)) return 'Upload terminal, replay or recovery evidence is incomplete';
+  for (const shape of SIZING_WORKLOAD.vto_shapes) {
+    if (vto.filter((item) => item.shape === shape).length !== 2) return 'Each of five supported VTO shapes must run twice';
+  }
+  if (vto.some((item) => item.terminal_state !== 'Complete' || item.output_retrievable !== true
+    || item.progress_reload_verified !== true || item.replay_verified !== true || item.credit_debit !== 1)) return 'VTO completion, output, progress, replay or credit evidence is incomplete';
+  const overlap = result.workload?.overlap;
+  if (!Array.isArray(overlap) || overlap.length < SIZING_WORKLOAD.overlap_cases
+    || new Set(overlap.map((item) => `${item.upload_task_id}:${item.vto_task_id}`)).size !== overlap.length) return 'Distinct overlap cases are incomplete';
+  for (const item of overlap) {
+    const upload = uploads.find((entry) => entry.task_id === item.upload_task_id);
+    const generation = vto.find((entry) => entry.task_id === item.vto_task_id);
+    if (!upload || !generation || !upload.worker_task_arn || upload.worker_task_arn !== generation.worker_task_arn
+      || ![upload.started_at, upload.finished_at, generation.started_at, generation.finished_at].every((value) => Number.isFinite(time(value)))
+      || time(upload.started_at) >= time(upload.finished_at) || time(generation.started_at) >= time(generation.finished_at)
+      || Math.max(time(upload.started_at), time(generation.started_at)) >= Math.min(time(upload.finished_at), time(generation.finished_at))) return 'Same-Worker-task overlap is not demonstrated';
+  }
+
+  const measurements = result.measurements;
+  if (!measurements) return 'Measurements are missing';
+  if (measurements.peak_method !== 'container-cgroup-high-water' || measurements.peak_window_covered !== true) return 'Complete container high-water evidence is unavailable; sampled memory or RSS is insufficient';
+  const tasks = measurements.tasks;
+  const peaks = measurements.container_peaks;
+  if (!Array.isArray(tasks) || !tasks.length || new Set(tasks.map((item) => item.task_arn)).size !== tasks.length
+    || !Array.isArray(peaks) || peaks.length !== tasks.length
+    || !['api', 'worker'].every((service) => tasks.some((item) => item.service === service))) return 'Per-task peak inventory is incomplete';
+  for (const task of tasks) {
+    const peak = peaks.filter((item) => item.task_arn === task.task_arn);
+    if (!task.task_arn || !['api', 'worker'].includes(task.service) || peak.length !== 1
+      || !Number.isFinite(peak[0].peak_mib) || peak[0].peak_mib < 0
+      || peak[0].limit_mib !== stage[task.service].memoryMiB) return 'Peak evidence is not bound to every actual task and hard limit';
+  }
+  const start = time(measurements.started_at);
+  const end = time(measurements.finished_at);
+  const minutes = (end - start) / 60000;
+  if (!Number.isFinite(start) || !Number.isInteger(minutes) || minutes < 5 || start % 60000) return 'Complete aligned measurement window is missing';
+  const cpu = measurements.cpu_samples;
+  if (!Array.isArray(cpu) || cpu.length !== minutes * 2) return 'CPU samples must cover both services in every minute; missing buckets are not zero';
+  for (const service of ['api', 'worker']) {
+    for (let minute = 0; minute < minutes; minute += 1) {
+      const samples = cpu.filter((item) => item.service === service && time(item.minute_utc) === start + minute * 60000);
+      if (samples.length !== 1 || !Number.isFinite(samples[0].percent) || samples[0].percent < 0) return 'CPU sample coverage is incomplete or duplicated';
+    }
+  }
+  const routes = measurements.route_samples_ms;
+  if (!routes || Object.keys(routes).length !== ROUTES.size || Object.keys(routes).some((route) => !ROUTES.has(route))
+    || [...ROUTES].some((route) => !Array.isArray(routes[route]) || routes[route].length < SIZING_WORKLOAD.paced_requests_per_route)) return 'At least 100 measured requests are required for each ordinary route';
+  const timings = measurements.task_timings;
+  if (!Array.isArray(timings) || timings.length !== ids.length || new Set(timings.map((item) => item.task_id)).size !== ids.length
+    || timings.some((item) => !ids.includes(item.task_id) || item.provider_separated !== true
+      || ['local_processing_ms', 'commit_to_publish_ms', 'publish_to_execution_ms', 'provider_ms'].some((field) => !Number.isFinite(item[field]) || item[field] < 0))) return 'Provider-separated local and both queue intervals are required for every accepted task';
+  return undefined;
+}
+
+function summary(result) {
+  const measurements = result.measurements;
+  const tasks = measurements.tasks;
+  return {
+    api_peak_mib: Math.max(...measurements.container_peaks.filter((peak) => tasks.some((task) => task.task_arn === peak.task_arn && task.service === 'api')).map((peak) => peak.peak_mib)),
+    worker_peak_mib: Math.max(...measurements.container_peaks.filter((peak) => tasks.some((task) => task.task_arn === peak.task_arn && task.service === 'worker')).map((peak) => peak.peak_mib)),
+    route_p95_ms: Object.fromEntries([...ROUTES].map((route) => [route, percentile95(measurements.route_samples_ms[route], `${route} latency`)])),
+    local_processing_p95_ms: percentile95(measurements.task_timings.map((item) => item.local_processing_ms), 'local processing'),
+    commit_to_publish_p95_ms: percentile95(measurements.task_timings.map((item) => item.commit_to_publish_ms), 'commit to publish'),
+    publish_to_execution_p95_ms: percentile95(measurements.task_timings.map((item) => item.publish_to_execution_ms), 'publish to execution'),
+  };
 }
 
 export function evaluateSizingResult(result, baseline) {
-  if (!result || !STAGE_IDS.has(result.stage)) fail('Sizing result stage must be S0, S1, S2 or S3');
-  const stage = STAGE_DEFINITIONS.find(({ id }) => id === result.stage);
-  for (const field of ['unexpected_oom', 'task_replacements', 'lost_accepted_work', 'readiness_failures', 'duplicate_effects', 'manual_intervention']) {
-    if (result[field] !== 0) return { status: 'rejected', reason: `${field} must remain zero`, stage: stage.id };
+  const stage = STAGE_DEFINITIONS.find((item) => item.id === result?.stage);
+  if (!stage) fail('Sizing result stage must be S0, S1, S2 or S3');
+  const verdict = (status, reason) => ({ status, reason, stage: stage.id });
+  if (result.schema_version !== 2) return verdict('unqualified', 'Measured sizing evidence schema version 2 is required');
+  for (const field of ['unexpected_oom', 'task_replacements', 'lost_accepted_work', 'readiness_failures', 'duplicate_effects', 'manual_intervention', 'unexpected_dlq', 'missed_lease_renewals', 'notification_failures', 'unexplained_backlog']) {
+    if (result[field] === undefined) return verdict('unqualified', `${field} evidence is missing`);
+    finiteNumber(result[field], field);
+    if (result[field] !== 0) return verdict('rejected', `${field} must remain zero`);
   }
-  if (result.api_peak_mib == null || result.worker_peak_mib == null) return { status: 'unqualified', reason: 'Container peak evidence is incomplete', stage: stage.id };
-  for (const field of ['api_peak_mib', 'worker_peak_mib', 'provider_p95_ms', 'queue_p95_ms', 'cpu_sample_max_percent']) {
-    finiteNumber(result[field], `${stage.id} ${field}`);
-  }
-  if (result.cpu_sample_max_percent >= SIZING_LIMITS.cpu_sample_limit_percent) return { status: 'rejected', reason: 'CPU sample reached the sustained limit', stage: stage.id };
-
-  const routeP95 = result.route_p95_ms;
-  if (!routeP95 || typeof routeP95 !== 'object' || Object.keys(routeP95).length !== ROUTES.size || Object.keys(routeP95).some((route) => !ROUTES.has(route))) {
-    fail('Route p95 evidence must include each reviewed route exactly once');
-  }
-  for (const [route, value] of Object.entries(routeP95)) {
-    finiteNumber(value, `${stage.id} ${route} p95`);
-    if (stage.id !== 'S0' && value > limitFor(stage, { route_p95_ms: baseline?.route_p95_ms?.[route] }, 'route_p95_ms', SIZING_LIMITS.latency_slack_ms, `${route} p95`)) {
-      return { status: 'rejected', reason: `${route} p95 exceeded the S0 regression limit`, stage: stage.id };
+  for (const [kind, terminal] of [['uploads', 'ready'], ['vto', 'Complete']]) {
+    for (const item of result.workload?.[kind] ?? []) {
+      if (item.terminal_state !== undefined && item.terminal_state !== terminal) return verdict('rejected', `${kind} has an unsuccessful terminal state`);
+      for (const field of ['replay_verified', 'reload_verified', 'output_retrievable', 'progress_reload_verified']) {
+        if (item[field] === false) return verdict('rejected', `${kind} ${field} failed`);
+      }
+      if (kind === 'vto' && item.credit_debit !== undefined && item.credit_debit !== 1) return verdict('rejected', 'VTO credit debit differs from one accepted generation');
     }
   }
-  if (stage.id !== 'S0') {
-    if (result.provider_p95_ms > limitFor(stage, baseline, 'provider_p95_ms', SIZING_LIMITS.provider_slack_ms, 'provider p95')) return { status: 'rejected', reason: 'Provider p95 exceeded the S0 regression limit', stage: stage.id };
-    if (result.queue_p95_ms > limitFor(stage, baseline, 'queue_p95_ms', SIZING_LIMITS.queue_slack_ms, 'queue p95')) return { status: 'rejected', reason: 'Queue p95 exceeded the S0 regression limit', stage: stage.id };
+  const gap = evidenceGap(result, stage);
+  if (gap) return verdict('unqualified', gap);
+  for (const service of ['api', 'worker']) {
+    let consecutive = 0;
+    for (const sample of result.measurements.cpu_samples.filter((item) => item.service === service).sort((a, b) => time(a.minute_utc) - time(b.minute_utc))) {
+      consecutive = sample.percent >= SIZING_LIMITS.cpu_sample_limit_percent ? consecutive + 1 : 0;
+      if (consecutive >= 5) return verdict('rejected', `${service} CPU reached 90% in five consecutive one-minute samples`);
+    }
   }
-  if (stage.id === 'S2' && result.api_peak_mib > SIZING_LIMITS.api_memory_headroom_mib) return { status: 'rejected', reason: 'API candidate lacks 25% memory headroom', stage: stage.id };
-  if (stage.id === 'S3' && result.worker_peak_mib > SIZING_LIMITS.worker_memory_headroom_mib) return { status: 'rejected', reason: 'Worker candidate lacks 25% memory headroom', stage: stage.id };
-  return { status: 'passed', reason: 'All recorded stability, latency and sizing limits passed', stage: stage.id };
+  const measured = summary(result);
+  if (['S2', 'S3'].includes(stage.id) && measured.api_peak_mib > SIZING_LIMITS.api_memory_headroom_mib) return verdict('rejected', 'API candidate lacks 25% memory headroom');
+  if (stage.id === 'S3' && measured.worker_peak_mib > SIZING_LIMITS.worker_memory_headroom_mib) return verdict('rejected', 'Worker candidate lacks 25% memory headroom');
+  if (stage.id !== 'S0') {
+    if (baseline?.stage !== 'S0' || evaluateSizingResult(baseline).status !== 'passed') return verdict('unqualified', 'A complete passing common S0 baseline is required');
+    for (const field of ['fixture_manifest_sha256', 'supported_input_envelope_sha256', 'provider_configuration_sha256', 'client_sha', 'service_sha', 'image_digest']) {
+      if (result.binding[field] !== baseline.binding[field]) return verdict('unqualified', `S0 comparison input ${field} changed`);
+    }
+    const before = summary(baseline);
+    const limit = (value, slack) => value + Math.max(value * SIZING_LIMITS.latency_relative, slack);
+    for (const route of ROUTES) {
+      if (measured.route_p95_ms[route] > limit(before.route_p95_ms[route], SIZING_LIMITS.latency_slack_ms)) return verdict('rejected', `${route} p95 exceeded the S0 regression limit`);
+    }
+    if (measured.local_processing_p95_ms > limit(before.local_processing_p95_ms, SIZING_LIMITS.local_processing_slack_ms)) return verdict('rejected', 'Provider-separated local processing exceeded the S0 regression limit');
+    for (const field of ['commit_to_publish_p95_ms', 'publish_to_execution_p95_ms']) {
+      if (measured[field] > before[field] + SIZING_LIMITS.queue_slack_ms) return verdict('rejected', `${field} exceeded the S0 regression limit`);
+    }
+  }
+  return { ...verdict('passed', 'Recorded representative workload, stability, latency and sizing limits passed'), measurements: measured };
 }

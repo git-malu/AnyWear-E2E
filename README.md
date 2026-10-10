@@ -393,3 +393,28 @@ admission eligibility use the same validated offset; for example `2` selects slo
 original emails/subjects, independent of later slot allocations. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: the
 manager still reconciles outstanding executions, tasks and manifests before reuse.
+
+## Beta sizing evidence
+
+`scripts/beta-sizing-benchmark.mjs` classifies separately collected sizing evidence;
+it does not run a workload, collect telemetry, authenticate artifact publication or
+replace Beta Qualification. A normal suite pass alone cannot qualify smaller tasks.
+
+Measured result schema version 2 requires exact application/deployment and fixture
+bindings, raw evidence URLs/hashes, initial configured desired/minimum/task sizes,
+24 completed upload/tagging cases, five representative VTO shapes twice, two distinct
+same-Worker overlap cases, per-task container high-water readings, complete CPU minute
+coverage, at least 100 samples per ordinary route, and provider-separated local and
+publication/execution intervals for each accepted task. Record every actual task and
+scaling event in the evidence; configured desired count does not imply a constant
+replica count. The larger VTO shape is a justified representative case confirmed on S0,
+not an invented product maximum. Retain uncertain provider/model envelope limits.
+
+Missing metrics, unsupported peak sources, incomplete workloads, mismatched inputs or
+an unqualified common S0 remain **unqualified**. Observed correctness, headroom or
+regression failures are **rejected**. S3 retains the smaller API headroom criterion.
+CPU rejection requires five consecutive valid one-minute samples at or above 90%.
+Compare local processing separately from provider time and both queue intervals
+independently; preserve provider timings without treating provider variability as
+local processing. Never substitute sampled memory, process RSS, missing buckets or
+transaction acknowledgement for an unobserved peak, zero usage or exact DB commit.
