@@ -1,0 +1,180 @@
+name: Beta Cleanup Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Manager-coordinated issue 86 phase
+        required: true
+        type: choice
+        options: [bootstrap, refusals, qualification, recovery, teardown]
+      bootstrap_origin:
+        description: Exact Origin8 JSON for the captured bootstrap artifact, or null for bootstrap
+        required: false
+        default: 'null'
+        type: string
+      previous_origin:
+        description: Exact Origin8 JSON for the preceding phase, or null for bootstrap/refusals
+        required: false
+        default: 'null'
+        type: string
+      fixture_origins:
+        description: Ordered JSON array of manager-owned fixture action and Origin8 records
+        required: false
+        default: '[]'
+        type: string
+      frozen_tuple:
+        description: Exact reviewed Service and fixture tuple JSON, bootstrap only
+        required: false
+        default: 'null'
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: beta-e2e-account-pool
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: beta
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      E2E_WORKERS: '2'
+      E2E_WORKER_SLOT_OFFSET: '2'
+      E2E_MAX_ACTIVE_ACCOUNTS: '2'
+      E2E_MAX_NEW_ACCOUNTS_PER_RUN: '2'
+      E2E_MAX_QUARANTINED_ACCOUNTS: '2'
+      ACCEPTANCE_PHASE: ${{ inputs.phase }}
+      ACCEPTANCE_BOOTSTRAP_ORIGIN: ${{ inputs.bootstrap_origin }}
+      ACCEPTANCE_PREVIOUS_ORIGIN: ${{ inputs.previous_origin }}
+      ACCEPTANCE_FIXTURE_ORIGINS: ${{ inputs.fixture_origins }}
+      ACCEPTANCE_FROZEN_TUPLE: ${{ inputs.frozen_tuple }}
+      E2E_EVIDENCE_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify protected source and fixed allocation
+        run: |
+          node --input-type=module -e 'import { assertAcceptanceExecution } from "./scripts/cleanup-acceptance.mjs"; assertAcceptanceExecution(process.env, { sourceOnly: true });'
+          pnpm check
+      - name: Generate scoped Infra evidence read token
+        id: infra-read
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+      - name: Configure dedicated Beta credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Verify dedicated principal and load user pool
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          echo "USER_POOL_ID=$pool_id" >> "$GITHUB_ENV"
+      - name: Prepare exact phase and preserve pre-mutation checkpoints
+        id: prepare
+        env:
+          INFRA_EVIDENCE_READ_TOKEN: ${{ steps.infra-read.outputs.token }}
+        run: node scripts/cleanup-acceptance.mjs prepare
+      - name: Upload immutable creation intent before identity creation
+        if: inputs.phase == 'bootstrap'
+        id: creation-intent
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-cleanup-acceptance-intent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cleanup-acceptance/creation-intent.json
+            cleanup-acceptance/account-budget.json
+          if-no-files-found: error
+      - name: Read back intent and create only fresh unconfirmed identities
+        if: inputs.phase == 'bootstrap'
+        env:
+          ACCEPTANCE_UPLOAD_ID: ${{ steps.creation-intent.outputs.artifact-id }}
+          ACCEPTANCE_UPLOAD_DIGEST: ${{ steps.creation-intent.outputs.artifact-digest }}
+        run: node scripts/cleanup-acceptance.mjs bootstrap-create
+      - name: Upload immutable retry intent before execution start
+        if: inputs.phase == 'qualification'
+        id: retry-intent
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-cleanup-acceptance-retry-intent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cleanup-acceptance/retry-intent.json
+            cleanup-acceptance/account-budget.json
+          if-no-files-found: error
+      - name: Submit exact retry and deliberately interrupt result tracking
+        if: inputs.phase == 'qualification'
+        env:
+          INFRA_EVIDENCE_READ_TOKEN: ${{ steps.infra-read.outputs.token }}
+          ACCEPTANCE_UPLOAD_ID: ${{ steps.retry-intent.outputs.artifact-id }}
+          ACCEPTANCE_UPLOAD_DIGEST: ${{ steps.retry-intent.outputs.artifact-digest }}
+        run: node scripts/cleanup-acceptance.mjs qualification-start
+      - name: Upload completed captured bootstrap
+        if: inputs.phase == 'bootstrap' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-cleanup-acceptance-bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cleanup-acceptance/bootstrap-manifest.json
+            cleanup-acceptance/account-budget.json
+            cleanup-acceptance/creation-intent.json
+          if-no-files-found: error
+      - name: Preserve bounded phase outcomes and pending operations
+        if: always() && inputs.phase != 'bootstrap'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-cleanup-acceptance-${{ inputs.phase }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            cleanup-acceptance/acceptance-state.json
+            cleanup-acceptance/account-budget.json
+            cleanup-acceptance/service-cleanup-operation.json
+            cleanup-acceptance/service-cleanup-repeat.json
+            cleanup-acceptance/retry-intent.json
+            cleanup-acceptance/sentinel-cleanup-operation.json
+          if-no-files-found: error
+      - name: Preserve incomplete bootstrap for manager recovery
+        if: failure() && inputs.phase == 'bootstrap'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-cleanup-acceptance-bootstrap-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cleanup-acceptance/*.json
+          if-no-files-found: ignore

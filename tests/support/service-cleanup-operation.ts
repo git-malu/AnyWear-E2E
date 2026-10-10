@@ -67,7 +67,7 @@ export interface CleanupOperationEvidence {
     output?: CleanupOperationResult;
     tasks?: Record<string, unknown>[];
     committed_result?: Record<string, unknown>;
-    preceding_execution?: { execution_arn: string; status: string; stopped_tasks: string[] };
+    preceding_execution?: { execution_arn: string; status: string; stopped_tasks: string[]; task_proofs?: Record<string, unknown>[] };
     failure?: string;
   };
 }
@@ -331,6 +331,133 @@ function defaultIo(versionArn: string): CleanupOperationIo {
     },
     sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
   };
+}
+
+export async function observeFailedCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
+  io?: CleanupOperationIo): Promise<Record<string, unknown>> {
+  const envelope = createCleanupOperationEnvelope(inputs, environment);
+  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
+  const name = deterministicCleanupExecutionName(envelope);
+  const arn = cleanupExecutionArn(versionArn, name);
+  const transport = io ?? defaultIo(versionArn);
+  const description = await transport.describe(arn);
+  validateDescription(description, envelope, versionArn, name);
+  if (description.status !== 'FAILED' || !description.startDate || !description.stopDate) throw new Error('Expected refusal lacks exact terminal failure');
+  const arns = await proveStoppedExecution(transport, arn, envelope);
+  const tasks = await Promise.all(arns.map(task => observeTask(transport, envelope, task, undefined, false)));
+  const verification = tasks.filter(task => task.kind === 'verification');
+  const cleanup = tasks.filter(task => task.kind === 'cleanup');
+  if (tasks.length !== 2 || verification.length !== 1 || cleanup.length !== 1
+    || verification[0].exit_code !== 0 || cleanup[0].exit_code === 0) throw new Error('Refusal needs a successful verifier and exact stopped failed cleanup');
+  const snapshots: string[] = [];
+  for (let scan = 0; scan < 2; scan += 1) {
+    const events: unknown[] = [];
+    let token: string | undefined;
+    let complete = false;
+    for (let page = 0; page < 20; page += 1) {
+      const response = object(await transport.aws(['logs', 'get-log-events', '--log-group-name', LOG_GROUP,
+        '--log-stream-name', String(cleanup[0].log_stream), '--start-from-head', '--limit', '1000', ...(token ? ['--next-token', token] : [])]), 'Refusal logs');
+      const pageEvents = array(response.events, 'Refusal events');
+      if (pageEvents.length > 1000 || events.length + pageEvents.length > 4096) throw new Error('Refusal log inventory exceeds bound');
+      for (const value of pageEvents) {
+        const event = object(value, 'Refusal event');
+        if (typeof event.message !== 'string' || event.message.length > 262144 || event.message.includes(MARKER)) throw new Error('Refused cleanup exposes a committed marker or malformed log');
+        events.push(event);
+      }
+      if (typeof response.nextForwardToken !== 'string') throw new Error('Refusal log pagination is incomplete');
+      if (response.nextForwardToken === token) { complete = true; break; }
+      token = response.nextForwardToken;
+    }
+    if (!complete || events.length === 0) throw new Error('Refusal log proof unavailable');
+    snapshots.push(hash(JSON.stringify(events)));
+    if (scan === 0) await transport.sleep(2_000);
+  }
+  if (snapshots[0] !== snapshots[1]) throw new Error('Refusal logs changed during observation');
+  return { schema_version: 1, record_type: 'anywear_e2e_cleanup_refusal_proof', execution_arn: arn,
+    started_at: description.startDate.toISOString(), stopped_at: description.stopDate.toISOString(), status: 'FAILED',
+    input_sha256: hash(JSON.stringify(envelope)), tasks, committed_marker_observed: false, log_snapshot_sha256: snapshots[0] };
+}
+
+export async function prepareCleanupRetryIntent(inputs: ServiceCleanupInputs, original: CleanupOperationEvidence,
+  environment: NodeJS.ProcessEnv = process.env, io?: CleanupOperationIo): Promise<CleanupOperationEvidence> {
+  const envelope = createCleanupOperationEnvelope(inputs, environment);
+  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
+  const name = deterministicCleanupExecutionName(envelope);
+  if (original.schema_version !== 3 || original.record_type !== 'anywear_e2e_service_cleanup_operation'
+    || original.operation.state_machine_version_arn !== versionArn || original.operation.execution_name !== name
+    || original.operation.execution_arn !== cleanupExecutionArn(versionArn, name)
+    || original.operation.input_sha256 !== hash(JSON.stringify(envelope)) || !isDeepStrictEqual(original.operation.input, envelope)
+    || original.operation.status !== 'FAILED' || original.operation.proof_status !== 'refused') throw new Error('Retry intent lacks the exact original refused operation');
+  const proof = await observeFailedCleanupOperation(inputs, environment, io);
+  const retryName = `${name.slice(0, 72)}-retry1`;
+  return { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
+    state_machine_version_arn: versionArn, execution_name: retryName, execution_arn: cleanupExecutionArn(versionArn, retryName),
+    input: envelope, input_sha256: hash(JSON.stringify(envelope)), status: 'PENDING', proof_status: 'pending',
+    preceding_execution: { execution_arn: String(proof.execution_arn), status: 'FAILED', task_proofs: proof.tasks as Record<string, unknown>[],
+      stopped_tasks: (proof.tasks as Record<string, unknown>[]).map(task => String(task.task_arn)) },
+  } };
+}
+
+export async function submitCleanupRetryIntent(evidence: CleanupOperationEvidence, environment: NodeJS.ProcessEnv = process.env,
+  start?: (input: CleanupOperationEnvelope, name: string) => Promise<{ executionArn?: string; startDate?: Date }>): Promise<{ execution_arn: string; started_at: string; submitted_at: string }> {
+  const operation = evidence.operation;
+  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
+  const base = deterministicCleanupExecutionName(operation.input);
+  const expectedInput = createCleanupOperationEnvelope({ action: 'cleanup', emails: '[]', cleanup_json: operation.input.cleanup_request }, environment);
+  if (evidence.schema_version !== 3 || operation.proof_status !== 'pending' || operation.status !== 'PENDING'
+    || operation.state_machine_version_arn !== versionArn || operation.execution_name !== `${base.slice(0, 72)}-retry1`
+    || operation.execution_arn !== cleanupExecutionArn(versionArn, operation.execution_name)
+    || operation.preceding_execution?.execution_arn !== cleanupExecutionArn(versionArn, base)
+    || operation.preceding_execution.status !== 'FAILED' || operation.preceding_execution.stopped_tasks.length !== 2
+    || new Set(operation.preceding_execution.stopped_tasks).size !== 2 || operation.preceding_execution.stopped_tasks.some(arn => !TASK_ARN.test(arn))
+    || !isDeepStrictEqual(operation.input, expectedInput)
+    || operation.input_sha256 !== hash(JSON.stringify(operation.input))) throw new Error('Submit requires the exact stopped-failure retry intent');
+  const client = new SFNClient({ region: 'ap-east-1', maxAttempts: 1 });
+  try {
+    const result = await (start ? start(operation.input, operation.execution_name)
+      : client.send(new StartExecutionCommand({ stateMachineArn: versionArn, name: operation.execution_name, input: JSON.stringify(operation.input) })));
+    if (result.executionArn !== operation.execution_arn || !result.startDate || !Number.isFinite(result.startDate.getTime())) throw new Error('Retry submit did not return authenticated exact ARN/start time');
+    return { execution_arn: result.executionArn, started_at: result.startDate.toISOString(), submitted_at: new Date().toISOString() };
+  } finally { client.destroy(); }
+}
+
+export async function observeSubmittedCleanupOperation(evidence: CleanupOperationEvidence, environment: NodeJS.ProcessEnv = process.env,
+  io?: CleanupOperationIo): Promise<Record<string, unknown>> {
+  const operation = evidence.operation;
+  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
+  const transport = io ?? defaultIo(versionArn);
+  const description = await transport.describe(operation.execution_arn);
+  validateDescription(description, operation.input, versionArn, operation.execution_name);
+  if (!['RUNNING', 'SUCCEEDED'].includes(description.status!) || description.startDate?.toISOString() !== operation.started_at) throw new Error('Original submitted execution is unavailable or changed');
+  const history = object(await transport.aws(['stepfunctions', 'get-execution-history', '--execution-arn', operation.execution_arn,
+    '--max-results', '1000', '--no-paginate']), 'Submitted history');
+  if (history.nextToken) throw new Error('Original submitted history is incomplete');
+  const events = array(history.events, 'Submitted events').map(event => object(event, 'Submitted event'));
+  const terminal = events.filter(event => ['ExecutionFailed', 'ExecutionTimedOut', 'ExecutionAborted', 'ExecutionSucceeded'].includes(String(event.type)));
+  if (description.status === 'RUNNING' ? terminal.length !== 0 : terminal.length !== 1 || terminal[0].type !== 'ExecutionSucceeded') throw new Error('Original submitted terminal history changed');
+  const scheduledTasks = events.filter(event => event.type === 'TaskScheduled');
+  if (scheduledTasks.length > 2 || scheduledTasks.some(event => {
+    const details = object(event.taskScheduledEventDetails, 'Submitted schedule');
+    return details.resourceType !== 'ecs' || details.resource !== 'runTask.sync';
+  })) throw new Error('Original scheduled capability changed');
+  const begun = events.filter(event => event.type === 'ExecutionStarted');
+  const details = object(begun[0]?.executionStartedEventDetails, 'Submitted input');
+  if (begun.length !== 1 || details.input !== JSON.stringify(operation.input)
+    || object(details.inputDetails, 'Submitted completeness').truncated !== false || events.some(event => event.type === 'ExecutionRedriven')) throw new Error('Original submitted input/history changed');
+  const tasks = events.filter(event => event.type === 'TaskSubmitted').map(event => {
+    const value = object(event.taskSubmittedEventDetails, 'Submitted task');
+    if (value.resourceType !== 'ecs' || value.resource !== 'runTask.sync'
+      || object(value.outputDetails, 'Submitted task completeness').truncated !== false) throw new Error('Original task submission is unknown');
+    const output = object(parseStrictJson(String(value.output)), 'Submitted task output');
+    const rows = array(output.Tasks, 'Submitted task rows');
+    const task = object(rows[0], 'Submitted task identity');
+    if (rows.length !== 1 || array(output.Failures, 'Submitted task errors').length !== 0
+      || typeof task.TaskArn !== 'string' || !TASK_ARN.test(task.TaskArn)) throw new Error('Original submitted task identity unavailable');
+    return task.TaskArn;
+  });
+  if (tasks.length > scheduledTasks.length || tasks.length > 2 || new Set(tasks).size !== tasks.length
+    || (description.status === 'SUCCEEDED' && (tasks.length !== 2 || scheduledTasks.length !== 2))) throw new Error('Original task submission inventory changed');
+  return { execution_arn: operation.execution_arn, started_at: operation.started_at, status: description.status, task_arns: tasks };
 }
 
 async function writeEvidence(path: string, evidence: CleanupOperationEvidence): Promise<void> {

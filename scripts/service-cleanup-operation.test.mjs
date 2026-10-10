@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { cleanupExecutionArn, createCleanupOperationEnvelope, deterministicCleanupExecutionName, runCleanupOperation } from '../tests/support/service-cleanup-operation.ts';
+import { cleanupExecutionArn, createCleanupOperationEnvelope, deterministicCleanupExecutionName, observeFailedCleanupOperation,
+  observeSubmittedCleanupOperation, prepareCleanupRetryIntent, runCleanupOperation, submitCleanupRetryIntent } from '../tests/support/service-cleanup-operation.ts';
 
 const scope = `123456789-1-${'a'.repeat(16)}`;
 const inputs = { action: 'cleanup', emails: '[]', cleanup_json: JSON.stringify({ runScope: scope,
@@ -263,4 +264,59 @@ test('required source CI and protected recovery carry proof tests, original evid
     assert.match(owner, /worker_slot_offset:/);
     assert.match(owner, /E2E_WORKER_SLOT_OFFSET:.*inputs.worker_slot_offset/);
   }
+});
+
+function refusalIo(patch = {}) {
+  const cleanupSubmission = { ...submitted, taskSubmittedEventDetails: { ...submitted.taskSubmittedEventDetails,
+    output: JSON.stringify({ Failures: [], Tasks: [{ TaskArn: task('cleanup') }] }) } };
+  return fixture({ description: () => ({ status: 'FAILED' }), history: history([scheduled, submitted, scheduled, cleanupSubmission]),
+    task: (value, kind) => ({ ...value, containers: value.containers.map(container => ({ ...container, exitCode: kind === 'cleanup' ? 1 : 0 })) }),
+    logs: token => ({ events: token ? [] : [{ message: 'Beta cleanup operation failed; captured identities retained' }], nextForwardToken: 'end' }), ...patch });
+}
+
+test('refusal requires exact failed stopped cleanup, successful verifier, complete stable logs and no committed marker', async () => {
+  const proof = await observeFailedCleanupOperation(inputs, environment, refusalIo());
+  assert.equal(proof.status, 'FAILED'); assert.equal(proof.committed_marker_observed, false); assert.equal(proof.tasks.length, 2);
+  for (const patch of [{ description: () => ({ status: 'TIMED_OUT' }) }, { history: history([scheduled, submitted]) },
+    { task: value => ({ ...value, lastStatus: 'RUNNING' }) }, { logs: () => ({ events: [], nextForwardToken: 'end' }) },
+    { logs: token => ({ events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}` }], nextForwardToken: 'end' }) },
+    { logs: token => ({ events: token ? [] : [{ message: 'prefixed ANYWEAR_BETA_CLEANUP_RESULT={}' }], nextForwardToken: 'end' }) },
+    { logs: () => ({ events: Array.from({ length: 1001 }, () => ({ message: 'overflow' })), nextForwardToken: 'end' }) },
+    { logs: () => ({ events: [{ message: 'x'.repeat(262145) }], nextForwardToken: 'end' }) },
+    { logs: (token, count) => ({ events: token ? [] : [{ message: `unstable-${count}` }], nextForwardToken: 'end' }) }]) {
+    await assert.rejects(() => observeFailedCleanupOperation(inputs, environment, refusalIo(patch)));
+  }
+});
+
+test('retry preparation proves actual prior cessation without any start and submission is authenticated once', async () => {
+  const original = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
+    state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, execution_name: name, execution_arn: arn,
+    input_sha256: hash(JSON.stringify(envelope)), input: envelope, status: 'FAILED', proof_status: 'refused' } };
+  const io = refusalIo();
+  const intent = await prepareCleanupRetryIntent(inputs, original, environment, io);
+  assert.equal(io.calls.filter(call => call.start).length, 0);
+  assert.equal(intent.operation.status, 'PENDING'); assert.equal(intent.operation.preceding_execution.task_proofs.length, 2);
+  let starts = 0;
+  const submission = await submitCleanupRetryIntent(intent, environment, async (input, executionName) => {
+    starts++; assert.deepEqual(input, envelope); assert.equal(executionName, `${name.slice(0, 72)}-retry1`);
+    return { executionArn: intent.operation.execution_arn, startDate: new Date('2026-10-10T00:00:02Z') };
+  });
+  assert.equal(starts, 1); assert.equal(submission.execution_arn, intent.operation.execution_arn);
+  await assert.rejects(() => submitCleanupRetryIntent(intent, environment, async () => ({ executionArn: 'foreign', startDate: new Date() })));
+  await assert.rejects(() => prepareCleanupRetryIntent(inputs, { ...original, operation: { ...original.operation, proof_status: 'pending' } }, environment, refusalIo()));
+  await assert.rejects(() => prepareCleanupRetryIntent(inputs, original, environment, refusalIo({ history: { ...history(), nextToken: 'truncated' } })));
+});
+
+test('recovery reads exact original submitted execution/tasks before attempting any replay start', async () => {
+  const retryName = `${name.slice(0, 72)}-retry1`;
+  const pending = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
+    execution_name: retryName, execution_arn: cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, retryName),
+    input: envelope, started_at: '2026-10-10T00:00:00.000Z' } };
+  const io = fixture({ history: { events: history([scheduled, submitted]).events.slice(0, -1) } });
+  io.describe = async () => description(retryName, { status: 'RUNNING' });
+  const observed = await observeSubmittedCleanupOperation(pending, environment, io);
+  assert.deepEqual(observed.task_arns, [task('verification')]); assert.equal(io.calls.filter(call => call.start).length, 0);
+  await assert.rejects(() => observeSubmittedCleanupOperation({ ...pending, operation: { ...pending.operation, started_at: 'different' } }, environment, io));
+  const unknown = fixture({ history: { ...history(), nextToken: 'more' } }); unknown.describe = io.describe;
+  await assert.rejects(() => observeSubmittedCleanupOperation(pending, environment, unknown));
 });

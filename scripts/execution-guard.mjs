@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { requireCommit, requireString } from './evidence-contract.mjs';
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
-const workflows = ['beta-qualification', 'integration', 'account-recovery'];
+const workflows = ['beta-qualification', 'integration', 'account-recovery', 'beta-cleanup-acceptance'];
 
 export function assertE2EExecution(environment = process.env, { sourceOnly = false, sourceSha } = {}) {
   if (environment.GITHUB_REPOSITORY !== 'git-malu/AnyWear-E2E'
