@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+
 const STAGE_DEFINITIONS = Object.freeze([
   Object.freeze({ id: 'S0', purpose: 'historical-replica-cost-baseline', api: { desired: 2, minimum: 2, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
   Object.freeze({ id: 'S1', purpose: 'fresh-common-runtime-baseline', api: { desired: 1, minimum: 1, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
@@ -30,6 +33,28 @@ export const SIZING_LIMITS = Object.freeze({
 const ROUTES = new Set(SIZING_WORKLOAD.paced_routes);
 const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
+const fixtureManifestBytes = readFileSync(new URL('../tests/fixtures/beta-sizing/fixture-manifest.json', import.meta.url));
+const fixtureManifestSha256 = createHash('sha256').update(fixtureManifestBytes).digest('hex');
+const frozenFixtures = new Map(JSON.parse(fixtureManifestBytes).fixtures.map(fixture => [fixture.id, fixture]));
+
+export function sizingUploadCases() {
+  const cases = [];
+  const extraGarments = ['trousers', 'jacket', 'shoes', 'bag'];
+  let extra = 0;
+  for (const submission of ['sequential', 'burst']) {
+    for (const size of ['ordinary', 'near-supported-limit']) {
+      for (const ext of ['jpg', 'png', 'webp']) {
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          const fixture = size === 'ordinary' && ext === 'jpg'
+            ? `${extraGarments[extra++]}-ordinary.jpg`
+            : `sweater-${size === 'ordinary' ? 'ordinary' : 'large'}.${ext}`;
+          cases.push({ case_id: `${submission}-${size}-${ext}-${repeat}`, fixture, submission, size_class: size });
+        }
+      }
+    }
+  }
+  return cases;
+}
 
 function fail(message) {
   throw new Error(message);
@@ -99,7 +124,7 @@ function queueBounds(item) {
     const { absent_snapshot_started_ms: absent, send_started_ms: send,
       send_acknowledged_ms: ack, first_execution_started_ms: execution } = queue;
     if (!queue.process_instance || !queue.outbox_id || !queue.send_request_id
-      || queue.complete_unfiltered_absence_verified !== true || queue.first_attempt_verified !== true
+      || queue.complete_unfiltered_absence_verified !== true || queue.first_attempt_verified !== true || queue.send_sdk_attempts !== 1
       || ![absent, send, ack, execution].every(Number.isFinite)
       || absent < 0 || send < absent || ack < send || execution < send) return undefined;
     return { commit_to_publish: [0, ack - absent],
@@ -140,16 +165,24 @@ function evidenceGap(result, stage) {
 
   const uploads = result.workload?.uploads;
   if (!Array.isArray(uploads) || uploads.length !== SIZING_WORKLOAD.upload_tagging_cases) return 'Representative upload/tagging coverage is incomplete';
+  if (binding.fixture_manifest_sha256 !== fixtureManifestSha256) return 'Upload fixture manifest differs from the frozen source';
+  const cases = new Map(sizingUploadCases().map(item => [item.case_id, item]));
+  if (new Set(uploads.map(item => item.case_id)).size !== cases.size) return 'Upload matrix requires unique canonical case IDs';
+  for (const item of uploads) {
+    const expected = cases.get(item.case_id);
+    const fixture = expected && frozenFixtures.get(expected.fixture);
+    if (!fixture || item.fixture !== expected.fixture || item.submission !== expected.submission
+      || item.size_class !== expected.size_class || item.mime !== fixture.mime
+      || item.fixture_sha256 !== fixture.sha256 || item.fixture_bytes !== fixture.bytes
+      || !Array.isArray(item.fixture_dimensions) || item.fixture_dimensions.length !== 2
+      || item.fixture_dimensions[0] !== fixture.width || item.fixture_dimensions[1] !== fixture.height) {
+      return 'Upload matrix or frozen fixture binding differs from the reviewed case';
+    }
+  }
   const vto = result.workload?.vto;
   if (!Array.isArray(vto) || vto.length !== SIZING_WORKLOAD.vto_generations) return 'Representative VTO coverage is incomplete';
   const ids = [...uploads, ...vto].map((item) => item.task_id);
   if (ids.some((id) => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length) return 'Accepted task identities must be distinct';
-  for (const format of SIZING_WORKLOAD.image_formats) {
-    for (const size of ['ordinary', 'near-supported-limit']) {
-      if (!uploads.some((item) => item.mime === format && item.size_class === size && HASH.test(item.fixture_sha256))) return 'Upload formats or supported size envelope are incomplete';
-    }
-  }
-  if (!['sequential', 'burst'].every((mode) => uploads.some((item) => item.submission === mode))) return 'Sequential and burst coverage are incomplete';
   if (uploads.some((item) => item.terminal_state !== 'ready' || item.replay_verified !== true || item.reload_verified !== true)) return 'Upload terminal, replay or recovery evidence is incomplete';
   for (const shape of SIZING_WORKLOAD.vto_shapes) {
     if (vto.filter((item) => item.shape === shape).length !== 2) return 'Each of five supported VTO shapes must run twice';
@@ -227,6 +260,9 @@ export function evaluateSizingResult(result, baseline) {
   if (!stage) fail('Sizing result stage must be S0, S1, S2 or S3');
   const verdict = (status, reason) => ({ status, reason, stage: stage.id });
   if (result.schema_version !== 2) return verdict('unqualified', 'Measured sizing evidence schema version 2 is required');
+  if (!Array.isArray(result.evidence_gaps) || result.evidence_gaps.length !== 0) {
+    return verdict('unqualified', 'Collector evidence gaps must be explicitly empty before qualification');
+  }
   for (const field of ['unexpected_oom', 'task_replacements', 'lost_accepted_work', 'readiness_failures', 'duplicate_effects', 'manual_intervention', 'unexpected_dlq', 'missed_lease_renewals', 'notification_failures', 'unexplained_backlog']) {
     if (result[field] === undefined) return verdict('unqualified', `${field} evidence is missing`);
     finiteNumber(result[field], field);
@@ -255,7 +291,7 @@ export function evaluateSizingResult(result, baseline) {
   if (stage.id === 'S3' && measured.worker_peak_mib > SIZING_LIMITS.worker_memory_headroom_mib) return verdict('rejected', 'Worker candidate lacks 25% memory headroom');
   if (['S2', 'S3'].includes(stage.id)) {
     if (baseline?.stage !== 'S1' || evaluateSizingResult(baseline).status !== 'passed') return verdict('unqualified', 'A complete passing fresh common S1 baseline is required');
-    for (const field of ['fixture_manifest_sha256', 'supported_input_envelope_sha256', 'provider_configuration_sha256', 'client_sha', 'service_sha', 'image_digest']) {
+    for (const field of ['fixture_manifest_sha256', 'supported_input_envelope_sha256', 'provider_configuration_sha256', 'client_sha', 'service_sha', 'image_digest', 'e2e_sha']) {
       if (result.binding[field] !== baseline.binding[field]) return verdict('unqualified', `S1 comparison input ${field} changed`);
     }
     const before = summary(baseline);

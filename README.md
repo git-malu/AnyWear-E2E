@@ -411,7 +411,11 @@ replica count. The larger VTO shape is a justified representative case confirmed
 not an invented product maximum. Retain uncertain provider/model envelope limits.
 
 Missing metrics, unsupported peak sources, incomplete workloads, mismatched inputs or
-an unqualified fresh common S1 remain **unqualified**. Observed correctness, headroom or
+an unqualified fresh common S1 remain **unqualified**. Collector `evidence_gaps`
+must be an explicitly empty array for S1 and candidates. Each upload must match its
+unique canonical case ID, mode, format, size and frozen fixture hash/bytes/dimensions;
+totals or partial matrix presence do not establish the 24-case coverage.
+Observed correctness, headroom or
 regression failures are **rejected**. S3 retains the smaller API headroom criterion.
 CPU rejection requires five consecutive valid one-minute samples at or above 90%.
 Compare local processing separately from provider time and both queue intervals
@@ -430,7 +434,7 @@ qualify a result.
 S0 records historical two-replica cost/configuration evidence. It is not a new
 runtime gate. The changed telemetry image must first pass a fresh S1 workload at
 one API replica, 512 CPU / 1024 MiB and the existing Worker size. S2/S3 compare
-only against that passing S1 with identical image, Client, fixture and observed
+only against that passing S1 with identical E2E source, image, Client, fixture and observed
 provider configurations. Do not reuse old-image timings or restore two replicas
 merely to collect a new baseline.
 

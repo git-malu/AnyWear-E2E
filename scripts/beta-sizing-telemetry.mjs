@@ -14,7 +14,7 @@ export function correlateSizingTask(resourceId, events) {
   const config = one(related.filter(event => event.event === 'provider_configuration'));
   if (!processing || !started || !send || !ack || !config
     || processing.outcome !== 'completed' || processing.executionToken !== 1 || started.executionToken !== 1
-    || send.attemptCount !== 1 || send.outboxId !== ack.outboxId || !ack.awsRequestId
+    || send.attemptCount !== 1 || ack.awsSdkAttempts !== 1 || send.outboxId !== ack.outboxId || !ack.awsRequestId
     || typeof config.model !== 'string' || !config.model || !finite(processing.localProcessingMs) || !finite(processing.providerMs)
     || !finite(started.startedMonotonicMs)) return { gap: 'First successful execution, provider config and unique send/ACK evidence required' };
   const sameClock = [send, ack, started, processing, config];
@@ -42,7 +42,7 @@ export function correlateSizingTask(resourceId, events) {
       queue: { kind: 'same-worker-causal-bounds', task_correlation_verified: true, clock_bound_verified: true,
         clock_evidence_sha256: hashBytes(JSON.stringify(proof)), process_instance: send.processInstance,
         outbox_id: send.outboxId, send_request_id: ack.awsRequestId,
-        complete_unfiltered_absence_verified: true, first_attempt_verified: true,
+        complete_unfiltered_absence_verified: true, first_attempt_verified: true, send_sdk_attempts: ack.awsSdkAttempts,
         absent_snapshot_started_ms: snapshot.startedMonotonicMs,
         send_started_ms: send.monotonicMs, send_acknowledged_ms: ack.monotonicMs,
         first_execution_started_ms: started.startedMonotonicMs } } };

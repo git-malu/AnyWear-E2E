@@ -12,7 +12,7 @@ function logs() {
       cap: 256, statementTimeoutMs: 200, ids: ['existing'], querySemantics: 'unfiltered-immutable-outbox-ids-read-committed' },
     { ...common, event: 'task_outbox_send_started', outboxId: 'outbox', attemptCount: 1,
       absentSnapshotStartedMonotonicMs: 100, monotonicMs: 600 },
-    { ...common, event: 'task_outbox_send_acknowledged', outboxId: 'outbox', awsRequestId: 'request', monotonicMs: 900 },
+    { ...common, event: 'task_outbox_send_acknowledged', outboxId: 'outbox', awsRequestId: 'request', awsSdkAttempts: 1, monotonicMs: 900 },
     { ...common, event: 'task_execution_started', executionToken: 1, startedMonotonicMs: 750, monotonicMs: 750 },
     { ...common, event: 'provider_configuration', model: 'model', provider: 'tagging' },
     { ...common, event: 'task_processing_timing', executionToken: 1, outcome: 'completed', localProcessingMs: 100, providerMs: 1000 },
@@ -26,6 +26,14 @@ test('correlates first execution on one Worker clock even when it starts before 
   assert.equal(result.timing.queue.first_execution_started_ms, 750);
   assert.equal(result.timing.queue.send_acknowledged_ms, 900);
   assert.match(result.timing.queue.clock_evidence_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.timing.queue.send_sdk_attempts, 1);
+});
+
+test('successful SQS ACK after SDK resend or without attempts metadata cannot prove first publication', () => {
+  for (const attempts of [2, 0, undefined, null, '1']) {
+    const events = logs(); events[3].awsSdkAttempts = attempts;
+    assert.ok(correlateSizingTask('resource', events).gap);
+  }
 });
 
 test('missing/truncated absence proof, re-publication, retries and process changes stay unavailable', () => {

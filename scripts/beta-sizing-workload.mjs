@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
+export { sizingUploadCases } from './beta-sizing-benchmark.mjs';
 
 export const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
 export const SIZING_PROVIDER_ENVELOPE = Object.freeze({
@@ -31,25 +32,6 @@ export async function loadSizingFixtures(directory) {
     fixtures.set(fixture.id, { ...fixture, data });
   }
   return { fixtures, manifestSha256: hashBytes(bytes), envelopeSha256: hashBytes(JSON.stringify(SIZING_PROVIDER_ENVELOPE)) };
-}
-
-export function sizingUploadCases() {
-  const cases = [];
-  const extraGarments = ['trousers', 'jacket', 'shoes', 'bag'];
-  let extra = 0;
-  for (const submission of ['sequential', 'burst']) {
-    for (const size of ['ordinary', 'near-supported-limit']) {
-      for (const ext of ['jpg', 'png', 'webp']) {
-        for (let repeat = 0; repeat < 2; repeat += 1) {
-          const fixture = size === 'ordinary' && ext === 'jpg'
-            ? `${extraGarments[extra++]}-ordinary.jpg`
-            : `sweater-${size === 'ordinary' ? 'ordinary' : 'large'}.${ext}`;
-          cases.push({ case_id: `${submission}-${size}-${ext}-${repeat}`, fixture, submission, size_class: size });
-        }
-      }
-    }
-  }
-  return cases;
 }
 
 export function sizingVtoCases() {

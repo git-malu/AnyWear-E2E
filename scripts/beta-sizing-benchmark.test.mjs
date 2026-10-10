@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSizingPlan, evaluateSizingResult, SIZING_STAGES, SIZING_WORKLOAD, validateSizingPlan } from './beta-sizing-benchmark.mjs';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createSizingPlan, evaluateSizingResult, sizingUploadCases, SIZING_STAGES, SIZING_WORKLOAD, validateSizingPlan } from './beta-sizing-benchmark.mjs';
 
 const hash = 'a'.repeat(64);
 const sha = 'b'.repeat(40);
 const started = '2026-10-10T00:00:00Z';
 const finished = '2026-10-10T00:05:00Z';
+const fixtureBytes = readFileSync(new URL('../tests/fixtures/beta-sizing/fixture-manifest.json', import.meta.url));
+const fixtures = new Map(JSON.parse(fixtureBytes).fixtures.map(fixture => [fixture.id, fixture]));
+const manifestSha256 = createHash('sha256').update(fixtureBytes).digest('hex');
 
 function result(stage) {
   const sizing = SIZING_STAGES.find((item) => item.id === stage);
-  const uploads = Array.from({ length: 24 }, (_, index) => ({
-    task_id: `upload-${index}`, mime: SIZING_WORKLOAD.image_formats[index % 3],
-    size_class: Math.floor(index / 3) % 2 ? 'near-supported-limit' : 'ordinary',
-    fixture_sha256: hash, submission: index % 2 ? 'burst' : 'sequential',
+  const uploads = sizingUploadCases().map((item, index) => ({
+    ...item, task_id: `upload-${index}`, mime: fixtures.get(item.fixture).mime,
+    fixture_sha256: fixtures.get(item.fixture).sha256, fixture_bytes: fixtures.get(item.fixture).bytes,
+    fixture_dimensions: [fixtures.get(item.fixture).width, fixtures.get(item.fixture).height],
     terminal_state: 'ready', replay_verified: true, reload_verified: true,
     worker_task_arn: 'arn:aws:ecs:ap-east-1:650880818323:task/cluster/worker',
     worker_process_instance: 'worker-process', started_monotonic_ms: 1000, finished_monotonic_ms: 2000,
@@ -27,12 +32,12 @@ function result(stage) {
   }));
   const tasks = [{ task_arn: 'api', service: 'api' }, { task_arn: 'worker', service: 'worker' }];
   return {
-    schema_version: 2, stage,
+    schema_version: 2, stage, evidence_gaps: [],
     unexpected_oom: 0, task_replacements: 0, lost_accepted_work: 0,
     readiness_failures: 0, duplicate_effects: 0, manual_intervention: 0,
     unexpected_dlq: 0, missed_lease_renewals: 0, notification_failures: 0, unexplained_backlog: 0,
     binding: {
-      fixture_manifest_sha256: hash, supported_input_envelope_sha256: hash,
+      fixture_manifest_sha256: manifestSha256, supported_input_envelope_sha256: hash,
       provider_configuration_sha256: hash, deployment_record_sha256: hash,
       client_sha: sha, service_sha: sha, infra_sha: sha, e2e_sha: sha,
       image_digest: `sha256:${hash}`,
@@ -91,6 +96,39 @@ test('requires actual sizing, common application inputs and a passing common S1'
   const incompleteBaseline = result('S1');
   incompleteBaseline.workload.uploads.pop();
   assert.equal(evaluateSizingResult(result('S2'), incompleteBaseline).status, 'unqualified');
+  const changedSource = result('S2');
+  changedSource.binding.e2e_sha = 'c'.repeat(40);
+  assert.match(evaluateSizingResult(changedSource, result('S1')).reason, /e2e_sha changed/);
+});
+
+test('unresolved or malformed collector gaps block S1 and candidate qualification', () => {
+  for (const stage of ['S1', 'S2']) {
+    for (const gaps of [['Non-JSON sizing event in api'], [{ resource_id: 'item', reason: 'Missing ACK' }], undefined, null, '']) {
+      const value = result(stage); value.evidence_gaps = gaps;
+      assert.equal(evaluateSizingResult(value, result('S1')).status, 'unqualified');
+    }
+  }
+});
+
+test('all formats and sizes require two sequential and two burst cases with frozen bindings', () => {
+  const replaced = result('S1');
+  // Preserve total count and all format/size/mode presence while replacing most
+  // cells with repeated ordinary sequential JPEG uploads.
+  const keep = new Set([0, 2, 4, 6, 8, 10, 12]);
+  for (let index = 0; index < replaced.workload.uploads.length; index++) {
+    if (!keep.has(index)) replaced.workload.uploads[index] = { ...replaced.workload.uploads[0], task_id: `upload-${index}` };
+  }
+  assert.equal(evaluateSizingResult(replaced).status, 'unqualified');
+  const missingBurst = result('S1');
+  const item = missingBurst.workload.uploads.find(upload => upload.case_id === 'burst-near-supported-limit-webp-1');
+  item.submission = 'sequential';
+  assert.match(evaluateSizingResult(missingBurst).reason, /Upload matrix/);
+  for (const mutate of [upload => { upload.case_id = 'invented-case'; }, upload => { upload.fixture = 'sweater-large.jpg'; },
+    upload => { upload.fixture_sha256 = hash; }, upload => { upload.fixture_bytes++; },
+    upload => { upload.fixture_dimensions[0]++; }]) {
+    const value = result('S1'); mutate(value.workload.uploads[0]);
+    assert.match(evaluateSizingResult(value).reason, /Upload matrix/);
+  }
 });
 
 test('sampled memory, missing task peaks and missing CPU minutes remain unqualified', () => {
@@ -158,7 +196,7 @@ test('uses same-Worker causal upper bounds without cross-process clock assumptio
     value.measurements.task_timings.forEach(item => {
       item.queue = { kind: 'same-worker-causal-bounds', task_correlation_verified: true, clock_bound_verified: true,
         clock_evidence_sha256: hash, process_instance: 'worker-process', outbox_id: item.task_id,
-        send_request_id: 'request', complete_unfiltered_absence_verified: true, first_attempt_verified: true,
+        send_request_id: 'request', complete_unfiltered_absence_verified: true, first_attempt_verified: true, send_sdk_attempts: 1,
         absent_snapshot_started_ms: 100, send_started_ms: 600, send_acknowledged_ms: 100 + upper,
         first_execution_started_ms: 750 };
     });
@@ -169,6 +207,9 @@ test('uses same-Worker causal upper bounds without cross-process clock assumptio
   const truncated = bounded('S2', 900);
   truncated.measurements.task_timings[0].queue.complete_unfiltered_absence_verified = false;
   assert.equal(evaluateSizingResult(truncated, result('S1')).status, 'unqualified');
+  const retried = bounded('S2', 900);
+  retried.measurements.task_timings[0].queue.send_sdk_attempts = 2;
+  assert.equal(evaluateSizingResult(retried, result('S1')).status, 'unqualified');
 });
 
 test('rejects incorrect credits and claimed overlap on distinct Worker tasks', () => {
