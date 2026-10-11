@@ -135,6 +135,9 @@ function fixtureRecord(f) {
 test('fixture records bind raw stack source hash, all explicit producers and actual stopped launch/command/image proof', () => {
   const f = cleanupAcceptanceFixture(), { origin, record } = fixtureRecord(f);
   assertFixtureRecord(record, origin, f.bootstrap, f.origin, 'inspect');
+  const inert = structuredClone(record);
+  inert.task_observation.overrides.inferenceAcceleratorOverrides = [];
+  assertFixtureRecord(inert, origin, f.bootstrap, f.origin, 'inspect');
   for (const change of [r => delete r.stack_sources, r => r.stack_sources.sha256 = '0'.repeat(64), r => r.stack_sources.file = '../fixture.json',
     r => r.reviewed_stack_sources[1].source_sha = '0'.repeat(40), r => r.reviewed_stack_sources[1].source_repository = 'git-malu/AnyWear-Service',
     r => r.reviewed_stack_sources[0] = r.reviewed_stack_sources[1], r => r.reviewed_stack_sources[3].region = 'ap-east-1',
@@ -143,7 +146,8 @@ test('fixture records bind raw stack source hash, all explicit producers and act
     r => r.task_observation.status = 'RUNNING', r => r.task_observation.task_definition_arn = r.task_observation.task_definition_arn.replace(':7', ':8'),
     r => r.task_observation.container.image_digest = `sha256:${'0'.repeat(64)}`, r => r.task_observation.container.exit_code = 1,
     r => r.task_observation.overrides.containerOverrides[0].command[2] = 'cleanup',
-    r => r.task_observation.overrides.containerOverrides[0].command[3] += ' ', r => r.task_observation.overrides.taskRoleArn = 'foreign']) {
+    r => r.task_observation.overrides.containerOverrides[0].command[3] += ' ', r => r.task_observation.overrides.taskRoleArn = 'foreign',
+    r => r.task_observation.overrides.inferenceAcceleratorOverrides = ['foreign']]) {
     const changed = structuredClone(record); change(changed);
     assert.throws(() => assertFixtureRecord(changed, origin, f.bootstrap, f.origin, 'inspect'));
   }

@@ -300,7 +300,14 @@ export function assertFixtureRecord(record, origin, bootstrap, bootstrapOrigin, 
     unidentified_task_count: 0, identities_truncated: false }, 'Unique actual fixture launch');
   const observed = record.task_observation;
   exactKeys(observed, ['task_arn', 'cluster_arn', 'task_definition_arn', 'status', 'container', 'overrides'], 'Actual fixture task');
-  assertEqual(observed, { task_arn: record.task_arn, cluster_arn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
+  const overrides = observed.overrides;
+  if (Object.hasOwn(overrides, 'inferenceAcceleratorOverrides')
+    && (!Array.isArray(overrides.inferenceAcceleratorOverrides) || overrides.inferenceAcceleratorOverrides.length !== 0)) {
+    throw new Error('Non-empty ECS inference accelerator overrides are forbidden');
+  }
+  const normalizedObserved = { ...observed, overrides: { ...overrides } };
+  delete normalizedObserved.overrides.inferenceAcceleratorOverrides;
+  assertEqual(normalizedObserved, { task_arn: record.task_arn, cluster_arn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
     task_definition_arn: tuple.fixture_task_definition_arn, status: 'STOPPED',
     container: { name: 'OneShot', status: 'STOPPED', exit_code: 0, image_digest: tuple.service_image_digest },
     overrides: { containerOverrides: [{ name: 'OneShot', command: ['node', 'dist/ops/beta-cleanup-acceptance-fixture.js', action, bootstrap.fixture_request] }] },
