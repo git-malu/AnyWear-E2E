@@ -29,6 +29,33 @@ export interface TestAccount {
 }
 
 const DEFAULT_TEST_PASSWORD = 'TestPassword123!';
+const STABLE_WORKER_EMAIL_PATTERN = /^e2e-beta-worker-[0-7]-chromium@anywear\.local$/;
+const COGNITO_SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+export interface CognitoAccountUser {
+  Username?: string;
+  UserAttributes?: { Name?: string; Value?: string }[];
+}
+
+export function isReusableStableWorkerEmail(email: string): boolean {
+  return STABLE_WORKER_EMAIL_PATTERN.test(email);
+}
+
+export function reusableStableWorkerSubject(user: CognitoAccountUser, expectedEmail: string): string {
+  const email = userAttribute(user.UserAttributes, 'email');
+  const subject = userAttribute(user.UserAttributes, 'sub');
+  const emailVerified = userAttribute(user.UserAttributes, 'email_verified');
+  const bootstrapMarker = userAttribute(user.UserAttributes, 'custom:e2e_bootstrap');
+  if (!isReusableStableWorkerEmail(expectedEmail)
+    || email !== expectedEmail
+    || !subject
+    || !COGNITO_SUBJECT_PATTERN.test(subject)
+    || emailVerified !== 'true'
+    || bootstrapMarker !== 'true') {
+    throw new Error(`Existing Cognito identity is not an eligible stable E2E worker: ${expectedEmail}`);
+  }
+  return subject;
+}
 
 export function requireEnvironment(name: string): string {
   const value = process.env[name];
@@ -126,16 +153,27 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
   const client = cognitoClient();
   try {
     assertE2EExecution();
-    await client.send(new AdminCreateUserCommand({
-      UserPoolId: userPoolId,
-      Username: account.email,
-      MessageAction: 'SUPPRESS',
-      UserAttributes: [
-        { Name: 'email', Value: account.email },
-        { Name: 'email_verified', Value: 'true' },
-        { Name: 'custom:e2e_bootstrap', Value: 'true' },
-      ],
-    }));
+    try {
+      await client.send(new AdminCreateUserCommand({
+        UserPoolId: userPoolId,
+        Username: account.email,
+        MessageAction: 'SUPPRESS',
+        UserAttributes: [
+          { Name: 'email', Value: account.email },
+          { Name: 'email_verified', Value: 'true' },
+          { Name: 'custom:e2e_bootstrap', Value: 'true' },
+        ],
+      }));
+    } catch (error: unknown) {
+      const usernameExists = error instanceof Error && error.name === 'UsernameExistsException';
+      if (!usernameExists || !isReusableStableWorkerEmail(account.email)) throw error;
+      assertE2EExecution();
+      const existing = await client.send(new AdminGetUserCommand({
+        UserPoolId: userPoolId,
+        Username: account.email,
+      }));
+      reusableStableWorkerSubject(existing, account.email);
+    }
     await getAccountSubject(client, userPoolId, account);
     assertE2EExecution();
     await client.send(new AdminSetUserPasswordCommand({
