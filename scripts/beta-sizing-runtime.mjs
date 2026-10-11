@@ -42,6 +42,15 @@ export function sizingRuntimeSnapshot(aws, stageId) {
       || Number(definition.memory) !== expected.memoryMiB) {
       throw new Error(`Sizing snapshot ${stage.id} ${service.serviceName} task CPU/memory differs from the reviewed stage`);
     }
+    const containers = definition.containerDefinitions;
+    if (!Array.isArray(containers) || containers.length !== 1
+      || !Array.isArray(containers[0].environment)) {
+      throw new Error(`Sizing snapshot ${stage.id} ${service.serviceName} telemetry environment is unavailable`);
+    }
+    const telemetry = containers[0].environment.filter(entry => entry.name === 'BETA_SIZING_TELEMETRY');
+    if (telemetry.length !== 1 || telemetry[0].value !== 'true') {
+      throw new Error(`Sizing snapshot ${stage.id} ${service.serviceName} requires BETA_SIZING_TELEMETRY=true`);
+    }
     definitions.push(definition);
   }
   const scalingTargets = aws(['application-autoscaling', 'describe-scalable-targets', '--service-namespace', 'ecs']);

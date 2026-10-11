@@ -27,6 +27,8 @@ function fixture(stageId = 'S1') {
   }));
   const definitions = ['api', 'worker'].map(role => ({
     taskDefinitionArn: `definition-${role}`, cpu: String(sizing[role].cpu), memory: String(sizing[role].memory),
+    containerDefinitions: [{ name: `${role === 'api' ? 'Api' : 'Worker'}Container`,
+      environment: [{ name: 'BETA_SIZING_TELEMETRY', value: 'true' }] }],
   }));
   const tasks = ['api', 'worker'].map(role => ({ taskArn: `task-${role}`,
     taskDefinitionArn: `definition-${role}`, lastStatus: 'RUNNING' }));
@@ -77,4 +79,19 @@ test('sizing preflight refuses stage drift before any workload can start', () =>
     assert.throws(() => sizingRuntimeSnapshot(input.aws, 'S2'));
   }
   assert.throws(() => sizingRuntimeSnapshot(fixture().aws, 'S0'), /Manager-selected sizing stage/);
+});
+
+test('sizing preflight requires telemetry enabled in both API and Worker task definitions', () => {
+  const mutations = [
+    definition => { definition.containerDefinitions[0].environment = []; },
+    definition => { definition.containerDefinitions[0].environment[0].value = 'false'; },
+    definition => { definition.containerDefinitions[0].environment.push({ name: 'BETA_SIZING_TELEMETRY', value: 'true' }); },
+    definition => { delete definition.containerDefinitions; },
+  ];
+  for (const roleIndex of [0, 1]) {
+    for (const mutate of mutations) {
+      const input = fixture('S2'); mutate(input.definitions[roleIndex]);
+      assert.throws(() => sizingRuntimeSnapshot(input.aws, 'S2'), /BETA_SIZING_TELEMETRY=true|telemetry environment is unavailable/);
+    }
+  }
 });

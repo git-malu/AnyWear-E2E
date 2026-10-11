@@ -18,7 +18,8 @@ function fixture() {
     workload: { uploads: [], vto: [], overlap_intent: [] }, route_samples_ms: {} };
   const definitions = ['api', 'worker'].map(role => ({ taskDefinitionArn: `definition-${role}`,
     cpu: role === 'api' ? '512' : '1024', memory: role === 'api' ? '1024' : '2048',
-    containerDefinitions: [{ name: role, logConfiguration: { options: { 'awslogs-group': `/anywear/beta/${role}`, 'awslogs-stream-prefix': role } } }] }));
+    containerDefinitions: [{ name: role, environment: [{ name: 'BETA_SIZING_TELEMETRY', value: 'true' }],
+      logConfiguration: { options: { 'awslogs-group': `/anywear/beta/${role}`, 'awslogs-stream-prefix': role } } }] }));
   const tasks = ['api', 'worker'].map(role => ({ taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${role}`,
     taskDefinitionArn: `definition-${role}`, group: `service:beta-anywear-${role}`, lastStatus: 'RUNNING',
     containers: [{ imageDigest: image }] }));
