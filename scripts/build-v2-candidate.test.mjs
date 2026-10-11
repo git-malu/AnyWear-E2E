@@ -69,8 +69,8 @@ test('candidate builder workflow is read-only and labels its uploaded artifact',
 
 function deploymentFixture() {
   const deployment = qualificationFixture().deployment;
-  const clientSha = '8320db0816b1c2d36e79a583160548744fd3d8c0';
-  const serviceSha = 'ab211c8212444b735e614ef9a74f184d24744d6b';
+  const clientSha = '380643a8a6e0261a0c24760ae66356314123f194';
+  const serviceSha = '2c9e6582a04e587ad627e2e96191b68069dab876';
   deployment.infra.sha = candidateBuilderTarget.infraSha;
   deployment.infra.run_id = candidateBuilderTarget.infraRunId;
   deployment.infra.run_attempt = candidateBuilderTarget.infraRunAttempt;
@@ -87,9 +87,9 @@ function deploymentFixture() {
   Object.values(deployment.selection.components.lambdas).forEach((value) => { value.service_sha = serviceSha; });
   deployment.selection.components.runtime_policy.service_sha = serviceSha;
   deployment.selection.components.schema.service_sha = serviceSha;
-  deployment.selection.release.id = 407218593;
-  deployment.selection.release.manifest_asset_id = 622871644;
-  deployment.selection.release.manifest_sha256 = '137e132cedff55f6905ca16f6c8d33f8c000547e9a2efc3717eb6198261a5f6a';
+  deployment.selection.release.id = 409515424;
+  deployment.selection.release.manifest_asset_id = 630141009;
+  deployment.selection.release.manifest_sha256 = 'bc52404eb45842b23a4243a85585aec1278b76743a73c12a4cac85fa785caa47';
   deployment.selection.sha256 = payloadDigest({
     schema_version: 2,
     record_type: 'anywear_infra_selection',
