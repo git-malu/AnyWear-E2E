@@ -24,7 +24,7 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
     || Date.parse(before.observed_at) > start || Date.now() - start > 3_000_000) {
     throw new Error('Bounded workload and fresh before/runtime observations required; ECS stopped-task retention is limited');
   }
-  const after = sizingRuntimeSnapshot(aws);
+  const after = sizingRuntimeSnapshot(aws, workload.stage);
   if (before.e2e_sha !== workload.e2e_sha || before.run_id !== workload.run_id
     || before.run_attempt !== workload.run_attempt || before.stage !== workload.stage) throw new Error('Before snapshot belongs to another workload run/source');
   const taskIds = snapshot => snapshot.tasks.map(task => task.taskArn).sort();
