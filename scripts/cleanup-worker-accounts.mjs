@@ -1,14 +1,17 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   AdminDeleteUserCommand,
   AdminGetUserCommand,
   CognitoIdentityProviderClient,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { markAccountDeleted } from '../tests/support/account-budget.ts';
-import { runCleanupOperation } from '../tests/support/service-cleanup-operation.ts';
+import { runCleanupOperation, runRecoveryCleanupOperation } from '../tests/support/service-cleanup-operation.ts';
 import { cleanupWorkerAccounts } from '../tests/support/worker-cleanup.ts';
 import { assertE2EExecution } from './execution-guard.mjs';
 import { parseStrictJson } from './evidence-contract.mjs';
+import { validateAccountRecoverySelection } from './account-recovery-inputs.mjs';
 const manifestPath = process.env.E2E_ACCOUNT_BUDGET_PATH ?? 'test-results/account-budget.json';
 
 async function cognitoIo() {
@@ -28,6 +31,35 @@ async function cognitoIo() {
   };
 }
 
+export async function runCapturedWorkerCleanup(manifest, environment, io, operations = { normal: runCleanupOperation, recovery: runRecoveryCleanupOperation }) {
+  const mode = environment.E2E_CLEANUP_OPERATION_MODE ?? 'normal';
+  let captured = manifest;
+  let canonicalRequest;
+  if (mode === 'recovery') {
+    validateAccountRecoverySelection(environment);
+    const original = parseStrictJson(await readFile(environment.E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH));
+    canonicalRequest = original.operation?.input?.cleanup_request;
+    const request = parseStrictJson(canonicalRequest);
+    if (request.runScope !== manifest.runScope || !Array.isArray(request.users) || request.users.length < 1 || request.users.length > 8) throw new Error('Recovery canonical owner request is invalid');
+    const users = request.users;
+    for (const user of users) {
+      const accounts = manifest.accounts.filter(account => account.mode === 'worker' && account.email === user.email && account.subject === user.sub);
+      if (accounts.length !== 1 || !['cleanup_pending', 'deleted'].includes(accounts[0].status)) throw new Error('Recovery drops or changes a captured worker identity');
+    }
+    if (manifest.accounts.some(account => account.mode === 'worker' && account.status === 'cleanup_pending'
+      && !users.some(user => user.email === account.email && user.sub === account.subject))) throw new Error('Recovery adds an unowned worker identity');
+    captured = { ...manifest, accounts: users.map(user => ({ email: user.email, subject: user.sub, mode: 'worker', status: 'cleanup_pending' })) };
+  } else if (mode !== 'normal' || environment.E2E_CLEANUP_RECOVERY_ATTEMPT) throw new Error('Cleanup mode/attempt is invalid');
+  return cleanupWorkerAccounts(captured, { ...io, runServiceCleanup: async inputs => {
+    if (canonicalRequest !== undefined && inputs.cleanup_json !== canonicalRequest) throw new Error('Recovery changes canonical captured request bytes');
+    const result = await operations[mode](inputs, environment);
+    if (result === undefined) return false;
+    if (result.operation?.proof_status !== 'verified') throw new Error('Service cleanup did not prove the committed result; identities retained');
+    return true;
+  } });
+}
+
+async function main() {
 try {
   assertE2EExecution();
   let manifest;
@@ -38,14 +70,11 @@ try {
   }
   const io = await cognitoIo();
   try {
-    const count = await cleanupWorkerAccounts(manifest, {
+    const count = await runCapturedWorkerCleanup(manifest, process.env, {
       ...io,
-      runServiceCleanup: async (inputs) => {
-        assertE2EExecution();
-        const result = await runCleanupOperation(inputs);
-        assertE2EExecution();
-        return result === undefined ? false : true;
-      },
+    }, {
+      normal: async (...args) => { assertE2EExecution(); const result = await runCleanupOperation(...args); assertE2EExecution(); return result; },
+      recovery: async (...args) => { assertE2EExecution(); const result = await runRecoveryCleanupOperation(...args); assertE2EExecution(); return result; },
     });
     if (count === undefined) {
       process.stdout.write('Deferred exact E2E worker cleanup; the account manifest remains cleanup_pending for protected recovery.\n');
@@ -60,6 +89,13 @@ try {
     io.destroy();
   }
 } catch (error) {
+  const directory = dirname(manifestPath);
+  await mkdir(directory, { recursive: true });
+  await writeFile(resolve(directory, 'account-recovery-failure.json'), `${JSON.stringify({ schema_version: 1,
+    record_type: 'anywear_e2e_account_recovery_failure', phase: 'cleanup', proof_status: 'refused', identities_retained: true })}\n`);
   console.error(error instanceof Error ? error.message : 'E2E worker cleanup failed; identities were retained');
   process.exitCode = 1;
 }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
