@@ -426,9 +426,10 @@ function historyEvent(events: Record<string, unknown>[], id: number, type: strin
 function scheduledTask(event: Record<string, unknown>, taskDefinition: string, command?: string[]): void {
   const details = exactObject(event.taskScheduledEventDetails, 'Scheduled task details', ['resourceType', 'resource', 'region', 'parameters', 'timeoutInSeconds']);
   if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync' || details.region !== 'ap-east-1' || typeof details.parameters !== 'string') throw new Error('Prior scheduled task is outside the fixed capability');
-  const parameters = exactObject(parseStrictJson(details.parameters), 'Scheduled task parameters', ['Cluster', 'TaskDefinition', 'LaunchType', 'NetworkConfiguration', 'Overrides', 'ClientToken']);
+  const parameters = exactObject(parseStrictJson(details.parameters), 'Scheduled task parameters', ['Cluster', 'TaskDefinition', 'LaunchType', 'NetworkConfiguration', 'Overrides', 'ClientToken', 'StartedBy']);
   if (parameters.Cluster !== CLUSTER || parameters.TaskDefinition !== taskDefinition || parameters.LaunchType !== 'FARGATE'
-    || typeof parameters.ClientToken !== 'string' || !/^[a-f0-9]{64}$/.test(parameters.ClientToken)) throw new Error('Prior scheduled task binding is invalid');
+    || typeof parameters.ClientToken !== 'string' || !/^[a-f0-9]{64}$/.test(parameters.ClientToken)
+    || parameters.StartedBy !== 'AWS Step Functions') throw new Error('Prior scheduled task binding is invalid');
   const network = exactObject(parameters.NetworkConfiguration, 'Scheduled network configuration', ['AwsvpcConfiguration']);
   const awsvpc = exactObject(network.AwsvpcConfiguration, 'Scheduled awsvpc configuration', ['Subnets', 'SecurityGroups', 'AssignPublicIp']);
   if (!Array.isArray(awsvpc.Subnets) || awsvpc.Subnets.length < 1 || !Array.isArray(awsvpc.SecurityGroups) || awsvpc.SecurityGroups.length !== 1 || awsvpc.AssignPublicIp !== 'DISABLED') throw new Error('Prior scheduled network binding is invalid');
@@ -760,7 +761,8 @@ async function cessationSnapshot(io: CleanupOperationIo, description: DescribeEx
   const events = (await completePages(io, ['stepfunctions', 'get-execution-history', '--execution-arn', description.executionArn!, '--max-results', '1000'], 'events', deadline))
     .map(event => object(event, 'Recovery history event'));
   const ids = new Set(events.map(event => event.id));
-  if (events.length < 2 || ids.size !== events.length || events.some(event => !Number.isInteger(event.id) || Number(event.id) < 1 || Number(event.id) > events.length || !ids.has(event.previousEventId) && event.id !== 1)
+  if (events.length < 2 || ids.size !== events.length || events.some(event => !Number.isInteger(event.id) || Number(event.id) < 1 || Number(event.id) > events.length
+    || (!ids.has(event.previousEventId) && event.id !== 1 && !(event.id === 2 && event.previousEventId === 0)))
     || events.some(event => event.type === 'ExecutionRedriven')) throw new Error('Recovery history has gaps or redrive');
   const begun = events.filter(event => event.type === 'ExecutionStarted');
   const terminal = events.filter(event => ['ExecutionFailed', 'ExecutionAborted', 'ExecutionTimedOut', 'ExecutionSucceeded'].includes(String(event.type)));
