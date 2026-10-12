@@ -308,6 +308,7 @@ function history(events = [], envelope = createCleanupOperationEnvelope(inputs, 
             }],
           },
         }),
+        StartedBy: 'AWS Step Functions',
         ClientToken: 'a'.repeat(64),
       };
       return {
@@ -737,6 +738,8 @@ test('recovery authenticates an old normal owner and starts the current version 
   const ownerVersionArn = versionArn(1);
   const currentVersionArn = versionArn(2);
   await recoveryCase({ ownerVersionArn, originalVersionArn: ownerVersionArn, expiredHistorical: true,
+    history: value => ({ ...value, events: value.events.map(event => event.id === 2
+      ? { ...event, type: 'ChoiceStateEntered', previousEventId: 0 } : event) }),
     environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: currentVersionArn } }, async ({ io, run, path, priorPath }) => {
     const result = await run();
     assert.equal(result.operation.proof_status, 'verified');
@@ -752,6 +755,27 @@ test('recovery authenticates an old normal owner and starts the current version 
     assert.equal(resumed.operation.proof_status, 'verified');
     assert.equal(io.calls.filter(call => call.start).length, 1);
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), resumed);
+  });
+});
+
+test('recovery rejects foreign StartedBy, unknown scheduled fields, and non-root history gaps before StartExecution', async () => {
+  const mutateSchedule = (mutation) => value => ({ ...value, events: value.events.map(event => {
+    if (event.id !== 7) return event;
+    const details = { ...event.taskScheduledEventDetails };
+    const parameters = JSON.parse(details.parameters);
+    mutation(parameters);
+    return { ...event, taskScheduledEventDetails: { ...details, parameters: JSON.stringify(parameters) } };
+  }) });
+  const cases = [
+    { history: mutateSchedule(parameters => { parameters.StartedBy = 'foreign'; }) },
+    { history: mutateSchedule(parameters => { delete parameters.StartedBy; }) },
+    { history: mutateSchedule(parameters => { parameters.Unexpected = true; }) },
+    { history: value => ({ ...value, events: value.events.map(event => event.id === 2 ? { ...event, previousEventId: 99 } : event) }) },
+    { history: value => ({ ...value, events: value.events.map(event => event.id === 3 ? { ...event, previousEventId: 0 } : event) }) },
+  ];
+  for (const options of cases) await recoveryCase(options, async ({ io, run }) => {
+    await assert.rejects(run(), /identities retained/);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
   });
 });
 
