@@ -1,7 +1,7 @@
 import type { Page, Request, Response } from '@playwright/test';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
-import { recordForActiveStep } from './support/auth-startup-attribution.mjs';
+import { recordForActiveStep, recordPathForActiveStep } from './support/auth-startup-attribution.mjs';
 
 interface UiEvidence {
   loginHeading: boolean;
@@ -158,7 +158,7 @@ test.describe('Session startup @smoke @full-stack', () => {
       viewer.on('requestfailed', (request) => activeProfiles.delete(request));
       viewer.on('framenavigated', (frame) => {
         if (frame === viewer.mainFrame()) {
-          current.get(viewer)?.paths.push(new URL(frame.url()).pathname);
+          recordPathForActiveStep(current, viewer, new URL(frame.url()).pathname);
         }
       });
     }
@@ -240,7 +240,7 @@ test.describe('Session startup @smoke @full-stack', () => {
         });
       });
       await context.exposeBinding('__authStartupPath', ({ page: viewer }, path: string) => {
-        recordForActiveStep(current, viewer, (step) => step.paths.push(path));
+        recordPathForActiveStep(current, viewer, path);
       });
       await context.addInitScript(observeAuthUi);
 

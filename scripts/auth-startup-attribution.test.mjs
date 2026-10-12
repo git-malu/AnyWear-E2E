@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recordForActiveStep } from '../tests/support/auth-startup-attribution.mjs';
+import { recordForActiveStep, recordPathForActiveStep } from '../tests/support/auth-startup-attribution.mjs';
 
 test('attributes same-document SPA observations to the active step', () => {
   const page = {};
@@ -16,4 +16,20 @@ test('attributes same-document SPA observations to the active step', () => {
 
   assert.deepEqual(directLogin, { paths: [], loginHeading: false });
   assert.deepEqual(logout, { paths: ['/login'], loginHeading: true });
+});
+
+test('records route changes once while preserving a later return to the same route', () => {
+  const page = {};
+  const activeSteps = new Map();
+  const step = { paths: [] };
+  activeSteps.set(page, step);
+
+  // Playwright and the injected history observer can report the same transition.
+  recordPathForActiveStep(activeSteps, page, '/login');
+  recordPathForActiveStep(activeSteps, page, '/login');
+  recordPathForActiveStep(activeSteps, page, '/dashboard');
+  recordPathForActiveStep(activeSteps, page, '/dashboard');
+  recordPathForActiveStep(activeSteps, page, '/login');
+
+  assert.deepEqual(step.paths, ['/login', '/dashboard', '/login']);
 });
