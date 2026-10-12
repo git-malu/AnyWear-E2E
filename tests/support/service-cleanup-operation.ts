@@ -322,6 +322,12 @@ function validateDescription(description: DescribeExecutionOutput, envelope: Cle
   }
 }
 
+function canonicalDescription(description: DescribeExecutionOutput): DescribeExecutionOutput {
+  const canonical = { ...description };
+  delete (canonical as unknown as { $metadata?: unknown }).$metadata;
+  return canonical;
+}
+
 function validateResult(value: unknown, envelope: CleanupOperationEnvelope): CleanupOperationResult {
   const output = object(value, 'Cleanup task output');
   if (output.schema_version !== 1 || output.record_type !== 'anywear_beta_cleanup_tasks'
@@ -734,7 +740,7 @@ async function recoveryExecutions(io: CleanupOperationIo, envelope: CleanupOpera
       || row.stateMachineArn !== baseArn || row.executionArn !== baseExecutionArn(baseArn, row.name)) throw new Error('Recovery execution inventory is malformed or duplicated');
     arns.add(row.executionArn);
     if (!['RUNNING', 'SUCCEEDED', ...TERMINAL_FAILURE].includes(String(row.status))) throw new Error('Recovery execution inventory status is unknown');
-    const description = await io.describe(row.executionArn);
+    const description = canonicalDescription(await io.describe(row.executionArn));
     if (description.executionArn !== row.executionArn || description.name !== row.name || description.status !== row.status || description.stateMachineArn !== baseArn
       || typeof description.stateMachineVersionArn !== 'string' || !VERSION_ARN.test(description.stateMachineVersionArn)
       || description.stateMachineVersionArn.replace(/:[1-9][0-9]*$/, '') !== baseArn

@@ -625,6 +625,7 @@ function operationEvidence(input, status = 'FAILED', stateMachineVersionArn = en
 function statefulRecoveryIo(options = {}) {
   const executions = new Map();
   const calls = [];
+  let describeCount = 0;
   const currentVersionArn = options.currentVersionArn ?? environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
   const ownerVersionArn = options.ownerVersionArn ?? currentVersionArn;
   const recoveryVersionArn = options.recoveryVersionArn ?? currentVersionArn;
@@ -666,7 +667,9 @@ function statefulRecoveryIo(options = {}) {
       if (!record) throw new Error('Execution unavailable');
       currentInput = JSON.parse(record.input);
       currentStatus = record.status;
-      return structuredClone(record);
+      const response = structuredClone(record);
+      if (options.metadataChurn) response.$metadata = { requestId: `request-${++describeCount}` };
+      return response;
     },
     async aws(args) {
       calls.push({ aws: args });
@@ -755,6 +758,20 @@ test('recovery authenticates an old normal owner and starts the current version 
     assert.equal(resumed.operation.proof_status, 'verified');
     assert.equal(io.calls.filter(call => call.start).length, 1);
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), resumed);
+  });
+});
+
+test('recovery ignores volatile DescribeExecution metadata while proving a stable owner inventory', async () => {
+  const ownerVersionArn = versionArn(1);
+  const currentVersionArn = versionArn(2);
+  await recoveryCase({ ownerVersionArn, originalVersionArn: ownerVersionArn, expiredHistorical: true, metadataChurn: true,
+    history: value => ({ ...value, events: value.events.map(event => event.id === 2
+      ? { ...event, type: 'ChoiceStateEntered', previousEventId: 0 } : event) }),
+    environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: currentVersionArn } }, async ({ io, run }) => {
+    const result = await run();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.recovery_preflight.predecessor_execution_arn, cleanupExecutionArn(ownerVersionArn, name));
+    assert.equal(io.calls.filter(call => call.start).length, 1);
   });
 });
 
