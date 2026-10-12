@@ -13,6 +13,11 @@ interface WardrobeStatus {
   taggingStateVersion: number;
 }
 
+interface WardrobeItem extends WardrobeStatus {
+  name: string | null;
+  category: string;
+}
+
 test.describe('Wardrobe Management @full-stack', () => {
   // This scenario invokes the external VLM. A failed attempt must not be
   // repeated automatically; protected recovery owns non-terminal resources.
@@ -50,8 +55,15 @@ test.describe('Wardrobe Management @full-stack', () => {
       await dialog.accept();
     });
 
+    const initialWardrobe = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === '/wardrobe'
+      && response.request().method() === 'GET'
+    ));
     await page.goto('/wardrobe');
     await expect(page.getByRole('heading', { name: 'Wardrobe' })).toBeVisible();
+    const initialWardrobeResponse = await initialWardrobe;
+    expect(initialWardrobeResponse.status()).toBe(200);
+    const baselineItems = await initialWardrobeResponse.json() as WardrobeItem[];
 
     await page.getByRole('button', { name: 'Add Item' }).click();
     await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).toBeVisible();
@@ -82,6 +94,7 @@ test.describe('Wardrobe Management @full-stack', () => {
     expect(idempotencyKey).toBeTruthy();
     const headers = { Authorization: authorization!, 'Idempotency-Key': idempotencyKey! };
     const serviceUrl = requireEnvironment('E2E_SERVICE_URL');
+    const ownedItemUrl = `${serviceUrl}/wardrobe/items/${createdItemId}`;
 
     const replay = await page.request.post(`${serviceUrl}/wardrobe/upload`, {
       headers,
@@ -98,7 +111,7 @@ test.describe('Wardrobe Management @full-stack', () => {
     let latest: WardrobeStatus | undefined;
     let lastVersion = 0;
     await expect.poll(async () => {
-      const response = await page.request.get(`${serviceUrl}/wardrobe/items/${createdItemId}`, { headers });
+      const response = await page.request.get(ownedItemUrl, { headers });
       expect(response.status()).toBe(200);
       latest = await response.json() as WardrobeStatus;
       expect(latest.id).toBe(createdItemId);
@@ -108,43 +121,88 @@ test.describe('Wardrobe Management @full-stack', () => {
       return latest.taggingStatus;
     }, { timeout: 600_000, intervals: [1_000, 2_000, 5_000] }).toBe('ready');
 
-    for (const viewer of [page, observer]) {
-      await expect(viewer.getByText('Analyzing...')).not.toBeVisible({ timeout: 15_000 });
-      await expect(viewer.getByText('Failed', { exact: true })).not.toBeVisible();
-      await expect(viewer.locator('main h3').first()).toBeVisible();
-    }
-
     const terminalReplay = await observer.request.post(`${serviceUrl}/wardrobe/upload`, {
       headers,
       data: { itemId: createdItemId },
     });
     expect(terminalReplay.status()).toBe(202);
     expect(await terminalReplay.json()).toEqual(accepted);
-    const afterReplay = await observer.request.get(`${serviceUrl}/wardrobe/items/${createdItemId}`, { headers });
+    const afterReplay = await observer.request.get(ownedItemUrl, { headers });
     expect(afterReplay.status()).toBe(200);
-    expect(await afterReplay.json()).toMatchObject({
+    const ownedItem = await afterReplay.json() as WardrobeItem;
+    expect(ownedItem).toMatchObject({
       id: createdItemId,
       taggingStatus: 'ready',
       taggingStateVersion: latest!.taggingStateVersion,
     });
+
+    const ownedItemLabel = ownedItem.name || ownedItem.category || 'wardrobe item';
+    const ownedCardName = `View ${ownedItemLabel} details`;
+    const wardrobeBeforeEdit = await page.request.get(`${serviceUrl}/wardrobe`, { headers });
+    expect(wardrobeBeforeEdit.status()).toBe(200);
+    const itemsBeforeEdit = await wardrobeBeforeEdit.json() as WardrobeItem[];
+    // The UI exposes a label rather than an ID. Fail before mutation if that
+    // label cannot identify exactly the item created by this scenario.
+    expect(itemsBeforeEdit.filter((item) => (
+      (item.name || item.category || 'wardrobe item') === ownedItemLabel
+    )).map((item) => item.id)).toEqual([createdItemId]);
+
+    for (const viewer of [page, observer]) {
+      const itemCard = viewer.getByRole('button', { name: ownedCardName, exact: true });
+      await expect(itemCard).toHaveCount(1, { timeout: 15_000 });
+      await expect(itemCard).toBeVisible();
+      await expect(itemCard).toBeEnabled({ timeout: 15_000 });
+      await expect(itemCard.getByText('Analyzing...')).not.toBeVisible();
+      await expect(itemCard.getByText('Failed', { exact: true })).not.toBeVisible();
+    }
     await observer.close();
 
-    const itemCardTitle = page.locator('main h3').first();
-    await expect(itemCardTitle).toBeVisible();
-    await itemCardTitle.click();
-    await expect(page.getByRole('heading', { name: 'Item Details' })).toBeVisible();
+    const itemCard = page.getByRole('button', { name: ownedCardName, exact: true });
+    await expect(itemCard).toHaveCount(1);
+    await itemCard.click();
+    const details = page.getByRole('dialog', { name: 'Item Details', exact: true });
+    await expect(details).toBeVisible();
 
-    await page.getByPlaceholder('e.g. My favorite hoodie').fill('E2E Test Sweater');
-    await page.getByPlaceholder('e.g. Top').fill('Jacket');
-    await page.getByPlaceholder('e.g. Black, White').fill('Red');
-    await page.getByPlaceholder('e.g. Cotton').fill('Cotton');
-    await page.getByRole('button', { name: 'Save Changes' }).click();
+    const editedItemName = `E2E Test Sweater ${createdItemId}`;
+    await details.getByPlaceholder('e.g. My favorite hoodie').fill(editedItemName);
+    await details.getByPlaceholder('e.g. Top').fill('Jacket');
+    await details.getByPlaceholder('e.g. Black, White').fill('Red');
+    await details.getByPlaceholder('e.g. Cotton').fill('Cotton');
+    const saved = page.waitForResponse((response) => (
+      response.url() === ownedItemUrl && response.request().method() === 'PATCH'
+    ));
+    await details.getByRole('button', { name: 'Save Changes', exact: true }).click();
+    const savedResponse = await saved;
+    expect(savedResponse.status()).toBe(200);
+    expect(await savedResponse.json()).toMatchObject({ id: createdItemId, name: editedItemName });
+    await expect(details).not.toBeVisible();
 
-    await expect(page.getByText('E2E Test Sweater')).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText(/red.*cotton/i).first()).toBeVisible({ timeout: 5_000 });
+    const editedCard = page.getByRole('button', { name: `View ${editedItemName} details`, exact: true });
+    await expect(editedCard).toHaveCount(1, { timeout: 10_000 });
+    await expect(editedCard.getByRole('heading', { name: editedItemName, exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(editedCard.getByText(/red.*cotton/i)).toBeVisible({ timeout: 5_000 });
 
-    await page.getByText('E2E Test Sweater').click();
-    await page.getByRole('button', { name: 'Delete' }).click();
-    await expect(page.getByText('Your wardrobe is empty.')).toBeVisible({ timeout: 10_000 });
+    await editedCard.click();
+    await expect(details).toBeVisible();
+    const deleted = page.waitForResponse((response) => (
+      response.url() === ownedItemUrl && response.request().method() === 'DELETE'
+    ));
+    await details.getByRole('button', { name: 'Delete', exact: true }).click();
+    expect((await deleted).status()).toBe(200);
+    await expect(details).not.toBeVisible();
+    await expect(editedCard).toHaveCount(0);
+    const deletedItem = await page.request.get(ownedItemUrl, { headers });
+    expect(deletedItem.status()).toBe(404);
+
+    const finalWardrobe = await page.request.get(`${serviceUrl}/wardrobe`, { headers });
+    expect(finalWardrobe.status()).toBe(200);
+    const finalItems = await finalWardrobe.json() as WardrobeItem[];
+    expect(finalItems.map((item) => item.id)).not.toContain(createdItemId);
+    for (const baselineItem of baselineItems) {
+      expect(finalItems.find((item) => item.id === baselineItem.id)).toMatchObject({
+        id: baselineItem.id,
+        name: baselineItem.name,
+      });
+    }
   });
 });
