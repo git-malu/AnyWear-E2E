@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "builder": "Pillow 12.3.0",
+  "license": "Public Unsplash images: https://unsplash.com/license; existing dummy.png retains repository provenance",
+  "transform": "EXIF transpose, RGB, Lanczos resize, valid codec; no padding or added noise",
+  "fixtures": [
+    {
+      "id": "sweater-ordinary.jpg",
+      "file": "sweater-ordinary.jpg",
+      "mime": "image/jpeg",
+      "size_class": "ordinary",
+      "bytes": 673157,
+      "width": 1200,
+      "height": 1039,
+      "sha256": "9d1641c89e7f7cb7277b1ecf0defed3d6cd6dec0bf6d0bd5e3776a4eab6b3b39",
+      "source": "../dummy.png",
+      "source_sha256": "f18222764d576d931d9f41901d23dd90670c89f1643b49e2d71203b724312b7e"
+    },
+    {
+      "id": "sweater-large.jpg",
+      "file": "sweater-large.jpg",
+      "mime": "image/jpeg",
+      "size_class": "near-supported-limit",
+      "bytes": 9218003,
+      "width": 6357,
+      "height": 5505,
+      "sha256": "9e1cde764270b3b10cbbaf0fee21c2b260d438fc67d256f42c9ca5a52680b02b",
+      "source": "../dummy.png",
+      "source_sha256": "f18222764d576d931d9f41901d23dd90670c89f1643b49e2d71203b724312b7e"
+    },
+    {
+      "id": "sweater-ordinary.png",
+      "file": "sweater-ordinary.png",
+      "mime": "image/png",
+      "size_class": "ordinary",
+      "bytes": 3742711,
+      "width": 1200,
+      "height": 1039,
+      "sha256": "4341430c05ebcc7af7385fce5025c8930b8def0fb5c13f9b4c0f1014bcd3f130",
+      "source": "../dummy.png",
+      "source_sha256": "f18222764d576d931d9f41901d23dd90670c89f1643b49e2d71203b724312b7e"
+    },
+    {
+      "id": "sweater-large.png",
+      "file": "sweater-large.png",
+      "mime": "image/png",
+      "size_class": "near-supported-limit",
+      "bytes": 9749963,
+      "width": 1937,
+      "height": 1677,
+      "sha256": "f2403c1c0134179aedb0fbdc7cc6ed4ad7834fa2f838cf5450cf8889a6b7d36d",
+      "source": "../dummy.png",
+      "source_sha256": "f18222764d576d931d9f41901d23dd90670c89f1643b49e2d71203b724312b7e"
+    },
+    {
+      "id": "sweater-ordinary.webp",
+      "file": "sweater-ordinary.webp",
+      "mime": "image/webp",
+      "size_class": "ordinary",
+      "bytes": 686274,
+      "width": 1200,
+      "height": 1039,
+      "sha256": "9f3cc709c0d5670017a9635d49ee88ba7ef96bf2890e9a0cbfae79b5784f8e8c",
+      "source": "../dummy.png",
+      "source_sha256": "f18222764d576d931d9f41901d23dd90670c89f1643b49e2d71203b724312b7e"
+    },
+    {
+      "id": "sweater-large.webp",
+      "file": "sweater-large.webp",
+      "mime": "image/webp",
+      "size_class": "near-supported-limit",
+      "bytes": 9748684,
+      "width": 3952,
+      "height": 5269,
+      "sha256": "5cbef6e1b51f33ff99e24cec94a6742f4af216402eccb76dba203f18bbae2386",
+      "source": "https://images.unsplash.com/photo-1551028719-00167b16eac5",
+      "source_sha256": "e1b8efb972e6ac388e0d4e327d00da2137a54d1b362b4db6b5c15f057c3c4799"
+    },
+    {
+      "id": "base-photo-ordinary.jpg",
+      "file": "base-photo-ordinary.jpg",
+      "mime": "image/jpeg",
+      "size_class": "ordinary",
+      "bytes": 801552,
+      "width": 867,
+      "height": 1200,
+      "sha256": "37137ca090c58721d64cff5fa7bf7d570f1a8c182514c7ac34f620b030aeec33",
+      "source": "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f",
+      "source_sha256": "56d9a43acbca4457e63eea2242f7055c65eae4df47ddbae2c3a4c2bd1b7cc57d"
+    },
+    {
+      "id": "base-photo-large.jpg",
+      "file": "base-photo-large.jpg",
+      "mime": "image/jpeg",
+      "size_class": "large-base",
+      "bytes": 2611145,
+      "width": 2124,
+      "height": 2940,
+      "sha256": "a7b6638f370cf06800211280934da7ccf00d04eac7fb86654fe54b5784c96b46",
+      "source": "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f",
+      "source_sha256": "56d9a43acbca4457e63eea2242f7055c65eae4df47ddbae2c3a4c2bd1b7cc57d"
+    },
+    {
+      "id": "trousers-ordinary.jpg",
+      "file": "trousers-ordinary.jpg",
+      "mime": "image/jpeg",
+      "size_class": "ordinary",
+      "bytes": 441913,
+      "width": 1200,
+      "height": 960,
+      "sha256": "82c3856471426840f623a08db02161ec1089623621defa474264b715d781005c",
+      "source": "https://images.unsplash.com/photo-1542272604-787c3835535d",
+      "source_sha256": "fd8b1542ad673271f1189a00b483106fe0226d2b217c29bf3b3e436a4d9bfd23"
+    },
+    {
+      "id": "shoes-ordinary.jpg",
+      "file": "shoes-ordinary.jpg",
+      "mime": "image/jpeg",
+      "size_class": "ordinary",
+      "bytes": 534533,
+      "width": 1200,
+      "height": 800,
+      "sha256": "8512ef612b2ab263b957b3137c854cb631ad47b99354e5c22fe765e61bf4c568",
+      "source": "https://images.unsplash.com/photo-1542291026-7eec264c27ff",
+      "source_sha256": "28862dde4cceee6d5491c5b81225de346e853a91732b01ad08c993461c9b5dab"
+    },
+    {
+      "id": "bag-ordinary.jpg",
+      "file": "bag-ordinary.jpg",
+      "mime": "image/jpeg",
+      "size_class": "ordinary",
+      "bytes": 379982,
+      "width": 800,
+      "height": 1200,
+      "sha256": "87f84f4a5b8fd6e234ab158f4a7ceae3a11eb436da9f554f8fc7a5232c9bcc6b",
+      "source": "https://images.unsplash.com/photo-1553062407-98eeb64c6a62",
+      "source_sha256": "1f76c759205d896a3e58a2bb82a38ee94d8ab264a63c6a8546a18c8804448348"
+    },
+    {
+      "id": "jacket-ordinary.jpg",
+      "file": "jacket-ordinary.jpg",
+      "mime": "image/jpeg",
+      "size_class": "ordinary",
+      "bytes": 697437,
+      "width": 900,
+      "height": 1200,
+      "sha256": "583f3be6bf2ff0ad596c50fecc8ece0b3824d594889b415794fbccb843feec40",
+      "source": "https://images.unsplash.com/photo-1551028719-00167b16eac5",
+      "source_sha256": "047b011be480c108e799754bef9249fcf3e845c74471b54954c08031101727a0"
+    }
+  ]
+}
