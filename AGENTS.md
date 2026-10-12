@@ -30,8 +30,7 @@ boundaries. It uses TypeScript, Playwright Test, Node.js 24, and pnpm 11.18.0.
 - Smoke tests: `pnpm test:smoke`
 - Full suite: `pnpm test`
 
-Run install and build commands from this repository, never from the AnyWear
-shell root.
+Run install and build commands from this repository.
 
 ## Test Design
 
@@ -58,5 +57,4 @@ shell root.
   pinned source alone does not prove the deployed system ran it.
 - The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
   execution for beta and later stages; it must not target dev. The Beta Qualification
-  workflow owns the complete deployed suite and release evidence. The AnyWear shell
-  repository is a local workspace and must not own E2E CI credentials.
+  workflow owns the complete deployed suite and release evidence.

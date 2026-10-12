@@ -18,17 +18,6 @@ boundaries; repository-local tests remain with the Client or Service.
 - AWS credentials for the Beta test identity boundary
 - Deployed Beta Client and Service endpoints with HTTPS
 
-The preferred local layout is the AnyWear shell repository:
-
-```text
-AnyWear/
-|-- AnyWear-Client/
-|-- AnyWear-Service/
-|-- AnyWear-Meta/
-|-- AnyWear-Infra/
-`-- AnyWear-E2E/
-```
-
 ## Setup
 
 Install dependencies from this repository:
@@ -194,8 +183,6 @@ rejected. When invoked, the E2E Integration workflow checks out those exact priv
 repositories, including their recursive API submodules, and records every tested
 revision as an artifact.
 
-The AnyWear shell repository remains a convenient local workspace and may pin
-the same revisions, but it does not run CI or hold cross-repository credentials.
 Update `compatibility.json` only after the peer commits exist on their remotes
 and their repository-owned pipelines pass.
 
