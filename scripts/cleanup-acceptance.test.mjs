@@ -73,7 +73,7 @@ function refusalState(f, combined = false) {
         log_stream: `${prefix}/OneShot/${String(index + 1).repeat(32)}`, ...(index ? { envelope_sha256: byteHash(JSON.stringify(input)) } : {}) };
     });
     return { producer: Object.fromEntries(['repository', 'workflow_path', 'source_sha', 'run_id', 'run_attempt'].map(key => [key, producerOrigin[key]])),
-      evidence: { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: { state_machine_version_arn: f.bootstrap.frozen_tuple.state_machine_version_arn,
+      evidence: { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: { operation_mode: 'normal', state_machine_version_arn: f.bootstrap.frozen_tuple.state_machine_version_arn,
         execution_arn: arn, execution_name: name, status: 'FAILED', proof_status: 'refused', input_sha256: byteHash(JSON.stringify(input)), input } },
       failure_proof: { schema_version: 1, record_type: 'anywear_e2e_cleanup_refusal_proof', execution_arn: arn, started_at: '2026-10-10T00:03:00Z', stopped_at: '2026-10-10T00:04:00Z',
         status: 'FAILED', input_sha256: byteHash(JSON.stringify(input)), tasks, committed_marker_observed: false, log_snapshot_sha256: '4'.repeat(64) } };
@@ -309,7 +309,7 @@ test('Cognito teardown is gated by verified exact primary and sentinel applicati
       execution_arn: cleanupExecutionArn(f.bootstrap.frozen_tuple.state_machine_version_arn, name), status: 'SUCCEEDED', proof_status: 'verified',
       started_at: '2026-10-10T00:03:00Z', stopped_at: '2026-10-10T00:04:00Z', tasks,
       committed_result: { schema_version: 1, record_type: 'anywear_beta_cleanup_result', source: 'beta-tester-cleanup', cleanup: 'beta-testers',
-        transaction_committed: true, operation_id: input.operation_id, request_sha256: input.request_sha256, run_scope: input.run_scope,
+        transaction_committed: true, operation_mode: input.operation_mode, operation_id: input.operation_id, request_sha256: input.request_sha256, run_scope: input.run_scope,
         service_commit_sha: input.service_commit_sha, service_image_digest: input.service_image_digest, envelope_sha256: byteHash(JSON.stringify(input)),
         users: 1, items: 1, tasks: request === 'primary' ? 1 : 0, missingUsers: 0, outbox: 0, idempotency: 0, generations: 0, relations: 0, outfits: 0, photos: 0 } });
     return source;

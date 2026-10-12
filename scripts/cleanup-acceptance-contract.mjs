@@ -205,15 +205,15 @@ export function assertPhaseState(state, origin, bootstrap, bootstrapOrigin, expe
 export function assertAcceptanceOperation(evidence, bootstrap, request, result, retry = false) {
   exactKeys(evidence, ['schema_version', 'record_type', 'operation'], 'Cleanup evidence');
   const operation = evidence.operation, tuple = bootstrap.frozen_tuple, captured = bootstrap.cleanup_requests[request];
-  exactKeys(operation, ['state_machine_version_arn', 'execution_arn', 'execution_name', 'status', 'proof_status', 'input_sha256', 'input'], 'Cleanup operation',
+  exactKeys(operation, ['operation_mode', 'state_machine_version_arn', 'execution_arn', 'execution_name', 'status', 'proof_status', 'input_sha256', 'input'], 'Cleanup operation',
     ['started_at', 'stopped_at', 'output', 'tasks', 'committed_result', 'preceding_execution', 'failure']);
-  const input = { schema_version: 1, operation_id: `beta-tester-cleanup:${bootstrap.run_scope}`, run_scope: bootstrap.run_scope,
+  const input = { schema_version: 1, operation_mode: 'normal', operation_id: `beta-tester-cleanup:${bootstrap.run_scope}`, run_scope: bootstrap.run_scope,
     request_sha256: captured.sha256, service_commit_sha: tuple.service_source_sha, service_image_digest: tuple.service_image_digest, cleanup_request: captured.json };
   const base = `beta-cleanup-${bootstrap.run_scope}-${captured.sha256.slice(0, 16)}`;
   const name = retry ? `${base.slice(0, 72)}-retry1` : base;
   const arn = `arn:aws:states:ap-east-1:650880818323:execution:beta-anywear-tester-cleanup:${name}`;
   if (evidence.schema_version !== 3 || evidence.record_type !== 'anywear_e2e_service_cleanup_operation'
-    || operation.state_machine_version_arn !== tuple.state_machine_version_arn || operation.execution_name !== name
+    || operation.operation_mode !== 'normal' || operation.state_machine_version_arn !== tuple.state_machine_version_arn || operation.execution_name !== name
     || operation.execution_arn !== arn || operation.input_sha256 !== byteHash(JSON.stringify(input))) throw new Error('Foreign cleanup operation evidence');
   assertEqual(operation.input, input, 'Captured cleanup envelope');
   const status = { intent: 'PENDING', refused: 'FAILED', verified: 'SUCCEEDED' };
@@ -232,7 +232,7 @@ export function assertAcceptanceOperation(evidence, bootstrap, request, result, 
     const marker = operation.committed_result;
     if (marker?.schema_version !== 1 || marker.record_type !== 'anywear_beta_cleanup_result' || marker.source !== 'beta-tester-cleanup' || marker.cleanup !== 'beta-testers'
       || marker.transaction_committed !== true || marker.operation_id !== input.operation_id || marker.request_sha256 !== input.request_sha256
-      || marker.run_scope !== input.run_scope || marker.service_commit_sha !== input.service_commit_sha || marker.service_image_digest !== input.service_image_digest
+      || marker.run_scope !== input.run_scope || marker.operation_mode !== input.operation_mode || marker.service_commit_sha !== input.service_commit_sha || marker.service_image_digest !== input.service_image_digest
       || marker.envelope_sha256 !== operation.input_sha256 || marker.users !== 1 || marker.items !== 1 || marker.tasks !== (request === 'primary' ? 1 : 0)
       || marker.missingUsers !== 0) throw new Error('Application cleanup marker does not prove the exact fixture deletion');
     for (const key of ['outbox', 'idempotency', 'generations', 'relations', 'outfits', 'photos']) if (marker[key] !== 0) throw new Error('Application cleanup touched unexpected fixture resources');

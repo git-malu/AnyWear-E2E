@@ -11,8 +11,26 @@ on:
         description: Attempt number for the failed E2E workflow run
         required: true
         type: string
+      operation_mode:
+        description: Cleanup execution mode
+        required: true
+        default: normal
+        type: choice
+        options: [normal, recovery]
+      recovery_attempt:
+        description: Explicit recovery attempt (1..999999); empty for normal
+        required: false
+        type: string
+      previous_recovery_run_id:
+        description: Latest completed recovery run containing its trusted artifact
+        required: false
+        type: string
+      previous_recovery_run_attempt:
+        description: Attempt number of that recovery workflow run
+        required: false
+        type: string
       retry_failed_execution:
-        description: Allow one retry only after exact prior execution and ECS task cessation are proven
+        description: Legacy normal-mode retry after exact no-commit and task-cessation proof; forbidden for recovery
         required: false
         default: false
         type: boolean
@@ -43,7 +61,13 @@ jobs:
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
+      E2E_CLEANUP_OPERATION_MODE: ${{ inputs.operation_mode }}
+      E2E_CLEANUP_RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
       E2E_CLEANUP_RETRY_FAILED: ${{ inputs.retry_failed_execution && 'true' || 'false' }}
+      RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RECOVERY_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+      RECOVERY_PREVIOUS_RUN_ID: ${{ inputs.previous_recovery_run_id }}
+      RECOVERY_PREVIOUS_RUN_ATTEMPT: ${{ inputs.previous_recovery_run_attempt }}
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SOURCE_SHA }}
@@ -72,8 +96,15 @@ jobs:
 
       - name: Require reviewed compatibility and protected recovery execution
         run: |
+          node scripts/account-recovery-inputs.mjs --validate-inputs
           node scripts/check-compatibility.mjs --require-infra
           node scripts/execution-guard.mjs --source-only
+
+      - name: Verify exact original E2E owner and previous recovery artifact
+        id: recovery-scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/account-recovery-inputs.mjs
 
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -92,14 +123,6 @@ jobs:
           echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
           echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
 
-      - name: Verify exact original E2E owner/artifact and prepare captured workers
-        id: recovery-scope
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          RECOVERY_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
-        run: node scripts/account-recovery-inputs.mjs
-
       - name: Load deployed identity configuration
         shell: bash
         run: |
@@ -109,6 +132,7 @@ jobs:
       - name: Recover exact worker data and identities through the reviewed Service operator
         env:
           E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.original_operation_path }}
+          E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.previous_operation_path }}
           E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
           E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
           E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
@@ -121,11 +145,15 @@ jobs:
       - name: Reject remaining unknown or unrecovered accounts
         run: jq -e 'all(.accounts[]; .status == "deleted")' recovery/account-budget.json >/dev/null
 
+      - name: Preserve structured recovery failure
+        if: failure()
+        run: node scripts/account-recovery-inputs.mjs --record-failure
+
       - name: Upload recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: beta-account-recovery-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
+          name: beta-account-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             recovery/account-budget.json
             recovery/service-cleanup-operation.json
@@ -134,4 +162,8 @@ jobs:
             recovery/original-service-cleanup-operation.json
             recovery/original-service-cleanup-run.json
             recovery/original-owner.json
+            recovery/previous-recovery-operation.json
+            recovery/previous-recovery-owner.json
+            recovery/recovery-selection.json
+            recovery/account-recovery-failure.json
           if-no-files-found: ignore

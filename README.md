@@ -363,15 +363,25 @@ unassigned diagnostic `known_message`; those counters alone do not establish
 per-message ownership. Source/image-bound Service validation and live unrelated
 data/message preservation evidence provide that acceptance boundary.
 
-Protected account recovery consumes the preserved original operation input and
-version before any invocation. A completed successful named execution is resumed
-and its real task/log proof is revalidated. A failed, timed-out or aborted execution
-is retained by default. The optional `retry_failed_execution` workflow input permits
-one deterministic `-retry1` execution only after complete original history accounts
-for every submitted task and read-only ECS observations prove those exact tasks
-stopped. Unknown launches, truncated history, missing tasks, source/version drift,
-or a failed retry retain the accounts. This input does not authorize environment
-activation, deployment, queue deletion or broader cleanup.
+Protected account recovery defaults to `operation_mode=normal`. Explicit recovery
+requires `operation_mode=recovery` and `recovery_attempt` (1..999999). Attempt 1
+uses the original integration or qualification run's authenticated owner artifact
+and canonical captured request. Later runs also select the latest completed main
+recovery workflow through `previous_recovery_run_id` and
+`previous_recovery_run_attempt`; each artifact is named by that recovery workflow's
+own run ID and attempt. These inputs are checked before AWS credentials.
+
+Recovery execution names bind the original run scope and attempt alone. Resuming
+the latest attempt preserves its exact source, image, version and input, including
+after a lost success response. Repair requires explicit latest+1 after the prior
+execution failed, timed out or was aborted. Full bounded execution/history records
+bind the predecessor and every submitted task. Two stable current ECS inventory
+scans must prove no active work; expired historical task descriptions do not block
+a new attempt. Unavailable listed current tasks, incomplete pages, stale artifacts,
+changed captured subjects or active work retain the accounts. Recovery does not
+enter the legacy normal retry/no-commit path. Partial Cognito reconciliation never shrinks the
+canonical cleanup request. Shared account-pool concurrency does not establish a
+cross-repository writer allocation; that remains an operational preflight gate.
 
 Integration and Qualification accept `worker_slot_offset` (default `0`) for a
 pair of stable Chromium identities allocated to the run. Account allocation and
