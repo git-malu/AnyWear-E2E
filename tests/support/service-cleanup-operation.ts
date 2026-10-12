@@ -829,6 +829,19 @@ async function recoveryPreflight(io: CleanupOperationIo, envelope: CleanupOperat
   if (!originalPath) throw new Error('Recovery requires the canonical original owner/request evidence');
   const original = recordedOperation(parseStrictJson(await readFile(originalPath)), true);
   if ((original.operation_mode ?? 'normal') !== 'normal' || original.input.cleanup_request !== envelope.cleanup_request || original.input.run_scope !== envelope.run_scope) throw new Error('Recovery changes the original captured request or owner scope');
+  const owner = inventory.matches.find(entry => entry.description.executionArn === original.execution_arn);
+  const currentVersion = Number(VERSION_ARN.exec(versionArn)?.[1]);
+  const ownerVersion = owner && Number(VERSION_ARN.exec(String(owner.description.stateMachineVersionArn))?.[1]);
+  if (!owner || !isDeepStrictEqual(owner.input, original.input)
+    || owner.description.executionArn !== original.execution_arn || owner.description.name !== original.execution_name
+    || owner.description.stateMachineVersionArn !== original.state_machine_version_arn
+    || original.input_sha256 !== hash(JSON.stringify(original.input))
+    || !Number.isSafeInteger(currentVersion) || !Number.isSafeInteger(ownerVersion)
+    || ownerVersion! > currentVersion) throw new Error('Original cleanup predecessor is unavailable');
+  for (const entry of inventory.matches) {
+    if (entry.input.operation_mode === 'normal' && entry !== owner
+      && entry.description.stateMachineVersionArn !== versionArn) throw new Error('Recovery inventory has a foreign normal execution version');
+  }
   let predecessor: typeof latest;
   if (latest) {
     if (!priorPath) throw new Error('Recovery requires the latest trusted recovery artifact');
@@ -844,19 +857,6 @@ async function recoveryPreflight(io: CleanupOperationIo, envelope: CleanupOperat
     predecessor = latest;
   } else {
     if (envelope.recovery_attempt !== 1 || priorPath) throw new Error('First recovery requires attempt 1 without a previous recovery artifact');
-    const owner = inventory.matches.find(entry => entry.description.executionArn === original.execution_arn);
-    const currentVersion = Number(VERSION_ARN.exec(versionArn)?.[1]);
-    const ownerVersion = owner && Number(VERSION_ARN.exec(String(owner.description.stateMachineVersionArn))?.[1]);
-    if (!owner || !isDeepStrictEqual(owner.input, original.input)
-      || owner.description.executionArn !== original.execution_arn || owner.description.name !== original.execution_name
-      || owner.description.stateMachineVersionArn !== original.state_machine_version_arn
-      || original.input_sha256 !== hash(JSON.stringify(original.input))
-      || !Number.isSafeInteger(currentVersion) || !Number.isSafeInteger(ownerVersion)
-      || ownerVersion! > currentVersion) throw new Error('Original cleanup predecessor is unavailable');
-    for (const entry of inventory.matches) {
-      if (entry.input.operation_mode === 'normal' && entry !== owner
-        && entry.description.stateMachineVersionArn !== versionArn) throw new Error('Recovery inventory has a foreign normal execution version');
-    }
     predecessor = owner;
   }
   if (inventory.matches.some(entry => entry.description.status === 'RUNNING')) throw new Error('Recovery owner has active executions');
