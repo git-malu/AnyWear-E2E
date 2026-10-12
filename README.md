@@ -204,8 +204,8 @@ and their repository-owned pipelines pass.
 [ADR 0021](https://github.com/git-malu/AnyWear-Meta/blob/a8eba148cfef4c124c46010276e66e4c8c41e420/architecture/ADR/0021-shared-infrastructure-repository.md)
 defines the shared infrastructure cutover. Offline source checks still accept the
 existing reviewed v1 Client/Service pins. The Infra qualification, integration and
-recovery workflows require v2 and remain disabled until the manager activates their
-writer gate. These changes do not select a newer image or refresh current pins.
+recovery workflows require v2 and remain disabled until their required writer
+authorization is in place. These changes do not select a newer image or refresh current pins.
 
 A reviewed v2 compatibility file has these additional identities:
 
@@ -316,8 +316,8 @@ The [public-contract provenance and source acceptance](scripts/vendor/README.md)
 records the exact Service builder and Infra revisions, asset integrity cases and
 the limits of this offline result.
 
-The manager records and verifies cessation of Infra/Client/legacy writers before
-allocating an E2E qualification or recovery window. Repository-local concurrency
+Verify that Infra/Client/legacy writers have ceased before allocating an E2E
+qualification or recovery window. Repository-local concurrency
 does not serialize those other repositories. Keep `ENABLE_INFRA_E2E` unset or
 `false` during preparation. For an authorized protected Beta dispatch, configure:
 
@@ -341,9 +341,9 @@ that captured principal before observations, suite and mutation boundaries, incl
 Cognito deletion after a fixed cleanup operation wait. Missing or mismatched identity
 retains the cleanup manifest for protected recovery. Qualification has a 90-minute
 job bound; integration and account recovery have 60-minute bounds. All three share
-the `beta-e2e-account-pool` concurrency group with cancellation disabled. The manager
-must verify all local/Actions/CFN/ECS/nested Service jobs have ceased before handing
-the environment to another writer; timeout alone never releases it.
+the `beta-e2e-account-pool` concurrency group with cancellation disabled. Verify
+all local/Actions/CFN/ECS/nested Service jobs have ceased before handing the
+environment to another writer; timeout alone never releases it.
 
 The Infra-owned versioned Step Functions cleanup capability invokes Service's fixed
 application-data task. Normal and recovery cleanup submit the same strict envelope,
@@ -386,13 +386,13 @@ stopped. Unknown launches, truncated history, missing tasks, source/version drif
 or a failed retry retain the accounts. This input does not authorize environment
 activation, deployment, queue deletion or broader cleanup.
 
-Integration and Qualification accept `worker_slot_offset` (default `0`) for the
-manager-allocated pair of stable Chromium identities. Account allocation and
+Integration and Qualification accept `worker_slot_offset` (default `0`) for a
+pair of stable Chromium identities allocated to the run. Account allocation and
 admission eligibility use the same validated offset; for example `2` selects slots
 2 and 3 without reusing slots 0 and 1. Recovery always uses the exact captured
 original emails/subjects, independent of later slot allocations. An offset does
-not establish cessation of other jobs or authorize use of occupied slots: the
-manager still reconciles outstanding executions, tasks and manifests before reuse.
+not establish cessation of other jobs or authorize use of occupied slots: verify
+outstanding executions, tasks and manifests are reconciled before reuse.
 
 ## Beta sizing evidence
 
@@ -439,7 +439,7 @@ provider configurations. Do not reuse old-image timings or restore two replicas
 merely to collect a new baseline.
 
 The `sizing_stage` input of protected Beta Qualification defaults to `disabled`.
-An explicit manager-reviewed S1/S2/S3 selection runs `tests/beta-sizing.spec.ts`
+An explicitly reviewed S1/S2/S3 selection runs `tests/beta-sizing.spec.ts`
 once with no retries: 24 uploads/tagging tasks (three formats, ordinary/9-9.75 MB
 valid images, sequential/burst, two repeats), then five VTO shapes twice. Two
 bursts overlap VTO submissions; actual same-Worker overlap must still be shown by
@@ -474,15 +474,15 @@ S1/candidates require identical digests and strict compatibility, allowing only
 Client/Service/Infra/artifact/API/fixture/model or any other source/contract change
 requires a fresh common S1. Missing or malformed proof remains unqualified.
 
-The proof's self-hash is not an authenticity claim. Before candidate dispatch the
-manager reviews the exact commit diff, confined to `compatibility.json` and those
-four fields. During acceptance the manager independently authenticates the native
+The proof's self-hash is not an authenticity claim. Before candidate dispatch,
+review the exact commit diff, confined to `compatibility.json` and those four fields.
+During acceptance, independently authenticate the native
 completed-success protected-main qualification run, exact head/attempt and artifact
 IDs/name/run/digest/byte checksums. `assertSizingSourceRun` checks supplied native
 run metadata, and `verifySizingSourceAtCommit` independently reconstructs the full
 inventory from that trusted actual commit; use both with authenticated inputs.
 Neither function fetches metadata or grants credentials. Collector/classifier
-success does not satisfy this separate manager-owned trust gate.
+success does not satisfy this separate trust gate.
 
 After independently authenticating/downloading that exact run artifact, the
 owner uses `scripts/collect-beta-sizing-evidence.mjs` with explicit `--profile`,

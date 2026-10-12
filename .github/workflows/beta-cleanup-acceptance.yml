@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: Manager-coordinated issue 86 phase
+        description: Ordered cleanup acceptance phase
         required: true
         type: choice
         options: [bootstrap, refusals, qualification, recovery, teardown]
@@ -19,7 +19,7 @@ on:
         default: 'null'
         type: string
       fixture_origins:
-        description: Ordered JSON array of manager-owned fixture action and Origin8 records
+        description: Ordered JSON array of fixture action and Origin8 records
         required: false
         default: '[]'
         type: string
@@ -171,7 +171,7 @@ jobs:
             cleanup-acceptance/retry-intent.json
             cleanup-acceptance/sentinel-cleanup-operation.json
           if-no-files-found: error
-      - name: Preserve incomplete bootstrap for manager recovery
+      - name: Preserve incomplete bootstrap for recovery
         if: failure() && inputs.phase == 'bootstrap'
         uses: actions/upload-artifact@v4
         with:

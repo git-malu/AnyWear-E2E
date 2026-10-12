@@ -133,8 +133,8 @@ export function captureSizingSource(environment = process.env, { root = defaultR
   return proof;
 }
 
-// This verifies commit contents, not GitHub run/artifact authenticity. The manager
-// must independently authenticate those native records before accepting evidence.
+// This verifies commit contents, not GitHub run/artifact authenticity. Acceptance
+// also requires independent authentication of those native records.
 export function verifySizingSourceAtCommit(proof, { root = defaultRoot, expectedSha } = {}) {
   validateSizingSource(proof, { e2eSha: expectedSha, runId: proof.run_id, runAttempt: proof.run_attempt });
   const source = { ...proof }; delete source.run_id; delete source.run_attempt;

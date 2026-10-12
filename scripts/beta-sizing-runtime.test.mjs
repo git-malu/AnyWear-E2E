@@ -78,7 +78,7 @@ test('sizing preflight refuses stage drift before any workload can start', () =>
     const input = fixture('S2'); mutate(input);
     assert.throws(() => sizingRuntimeSnapshot(input.aws, 'S2'));
   }
-  assert.throws(() => sizingRuntimeSnapshot(fixture().aws, 'S0'), /Manager-selected sizing stage/);
+  assert.throws(() => sizingRuntimeSnapshot(fixture().aws, 'S0'), /explicit sizing stage/);
 });
 
 test('sizing preflight requires telemetry enabled in both API and Worker task definitions', () => {

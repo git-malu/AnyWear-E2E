@@ -140,7 +140,7 @@ export function assertPhaseState(state, origin, bootstrap, bootstrapOrigin, expe
     || (state.previous_origin.run_id === origin.run_id && state.previous_origin.run_attempt === origin.run_attempt))) throw new Error('Previous phase source/run was substituted');
   state.fixture_origins.forEach(entry => { exactKeys(entry, ['action', 'origin'], 'Fixture phase origin'); assertOrigin(entry.origin, repositories.infra); });
   const fixtureActions = { refusals: refusalStage === 'active' ? ['prepare', 'inspect'] : ['inspect'], qualification: ['inspect', 'release-task'], recovery: [], teardown: ['inspect'] };
-  assertEqual(state.fixture_origins.map(entry => entry.action), fixtureActions[expectedPhase], 'Phase manager fixture actions');
+  assertEqual(state.fixture_origins.map(entry => entry.action), fixtureActions[expectedPhase], 'Phase fixture actions');
   const operations = state.operations;
   if (expectedPhase === 'refusals') {
     if (operations.refusal_stage !== refusalStage) throw new Error('Refusal stage was skipped or duplicated');
@@ -151,9 +151,9 @@ export function assertPhaseState(state, origin, bootstrap, bootstrapOrigin, expe
       exactKeys(inspection, ['origin', 'snapshot'], 'Refusal inspection'); assertOrigin(inspection.origin, repositories.infra);
       assertPreserved(operations.fixture_baseline, inspection.snapshot);
     }
-    if (refusalStage === 'active') assertEqual(operations.inspections.before_active.origin, state.fixture_origins[1].origin, 'Original manager fixture inspection');
+    if (refusalStage === 'active') assertEqual(operations.inspections.before_active.origin, state.fixture_origins[1].origin, 'Original fixture inspection');
     if (refusalStage === 'combined') {
-      assertEqual(operations.inspections.after_active.origin, state.fixture_origins[0].origin, 'Fresh post-active manager inspection');
+      assertEqual(operations.inspections.after_active.origin, state.fixture_origins[0].origin, 'Fresh post-active fixture inspection');
       if (operations.inspections.before_active.origin.artifact_id === operations.inspections.after_active.origin.artifact_id) throw new Error('Post-active inspection was duplicated');
     }
     for (const key of refusalStage === 'active' ? ['active'] : ['active', 'mismatch']) {
@@ -346,7 +346,7 @@ export function assertRetryIntent(record, origin, bootstrap, bootstrapOrigin, pr
   exactKeys(record, ['schema_version', 'record_type', 'issue', 'producer', 'bootstrap_origin', 'previous_origin', 'fixture_origins', 'operation'], 'Retry intent');
   if (record.schema_version !== 1 || record.record_type !== 'anywear_e2e_cleanup_acceptance_retry_intent' || record.issue !== 86) throw new Error('Unknown retry intent');
   assertProducer(record.producer, origin); assertEqual(record.bootstrap_origin, bootstrapOrigin, 'Retry bootstrap origin');
-  assertEqual(record.previous_origin, previousOrigin, 'Retry preceding refusal origin'); assertEqual(record.fixture_origins, fixtureOrigins, 'Retry manager fixture origins');
+  assertEqual(record.previous_origin, previousOrigin, 'Retry preceding refusal origin'); assertEqual(record.fixture_origins, fixtureOrigins, 'Retry fixture origins');
   assertAcceptanceOperation(record.operation, bootstrap, 'primary', 'intent', true);
   return record;
 }
@@ -382,7 +382,7 @@ export function parsePhaseInputs(environment) {
     if (phase !== 'refusals' && !previousOrigin) throw new Error('Incorrect previous phase input');
     if (previousOrigin) assertOrigin(previousOrigin);
     const actions = { refusals: previousOrigin ? ['inspect'] : ['prepare', 'inspect'], qualification: ['inspect', 'release-task'], recovery: [], teardown: ['inspect'] };
-    assertEqual(fixtures.map(entry => entry.action), actions[phase], 'Required manager fixture sequence');
+    assertEqual(fixtures.map(entry => entry.action), actions[phase], 'Required fixture sequence');
   }
   return { phase, bootstrapOrigin, previousOrigin, fixtures, tuple };
 }

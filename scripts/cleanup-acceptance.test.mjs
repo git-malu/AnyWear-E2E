@@ -41,7 +41,7 @@ test('budget rejects expanded pools, unknown nested fields, changed leases and p
   assert.throws(() => assertBudgetLeaseChain(f.intentBudget, changed));
 });
 
-test('phase routes require exact manager fixtures and reject imported bootstrap authority', () => {
+test('phase routes require exact fixture evidence and reject imported bootstrap authority', () => {
   const f = cleanupAcceptanceFixture();
   assert.equal(parsePhaseInputs({ ACCEPTANCE_PHASE: 'bootstrap', ACCEPTANCE_FROZEN_TUPLE: JSON.stringify(f.bootstrap.frozen_tuple) }).phase, 'bootstrap');
   assert.throws(() => parsePhaseInputs({ ACCEPTANCE_PHASE: 'bootstrap', ACCEPTANCE_BOOTSTRAP_ORIGIN: JSON.stringify(f.origin), ACCEPTANCE_FROZEN_TUPLE: JSON.stringify(f.bootstrap.frozen_tuple) }));
@@ -89,7 +89,7 @@ function refusalState(f, combined = false) {
   return { origin, state };
 }
 
-test('ordered refusal states require two exact proofs and a fresh unchanged manager inspection', () => {
+test('ordered refusal states require two exact proofs and a fresh unchanged fixture inspection', () => {
   const f = cleanupAcceptanceFixture(), active = refusalState(f), combined = refusalState(f, true);
   assertPhaseState(active.state, active.origin, f.bootstrap, f.origin, 'refusals', { refusalStage: 'active' });
   assertPhaseState(combined.state, combined.origin, f.bootstrap, f.origin, 'refusals');
@@ -153,7 +153,7 @@ test('fixture records bind raw stack source hash, all explicit producers and act
   }
 });
 
-test('manager fixture actions must start after the previous completed operation, not concurrently or with unknown time', () => {
+test('fixture actions must start after the previous completed operation, not concurrently or with unknown time', () => {
   const prior = { updated_at: '2026-10-10T00:01:00Z' };
   assertFixtureAfter({ run_started_at: '2026-10-10T00:02:00Z' }, prior);
   for (const time of ['2026-10-10T00:00:00Z', prior.updated_at, 'unknown']) assert.throws(() => assertFixtureAfter({ run_started_at: time }, prior));

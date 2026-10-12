@@ -304,7 +304,7 @@ test('fixture recovery normalizes ECS environment and secret ordering without ch
   assert.deepEqual(normalized.secrets.map(({ name }) => name), ['ALPHA_SECRET', 'ZED_SECRET']);
 });
 
-test('control requires empty baseline queues before any registration and manager window acknowledgement', async () => {
+test('control requires empty baseline queues before any registration and authorized window acknowledgement', async () => {
   const dirty = controlHarness({ dirtyQueue: true });
   await assert.rejects(prepareNonPaidRuntime({ scope: dirty.scope, fixture: dirty.fixture }, dirty.io, dirty.environment, dirty.wait), /empty/);
   assert.ok(!dirty.calls.some((args) => args[1] === 'register-task-definition'));

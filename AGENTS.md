@@ -60,7 +60,3 @@ shell root.
   execution for beta and later stages; it must not target dev. The Beta Qualification
   workflow owns the complete deployed suite and release evidence. The AnyWear shell
   repository is a local workspace and must not own E2E CI credentials.
-
-After committing E2E changes, update the `AnyWear-E2E` submodule pointer in the
-AnyWear shell repository for local workspace reproducibility. This pointer does
-not trigger or select the E2E CI compatibility set.

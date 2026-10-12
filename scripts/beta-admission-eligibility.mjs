@@ -35,7 +35,7 @@ export function validateBetaAdmissionPolicy(response, slotOffset = 0) {
     }
   }
   if (policy.admission_suspended.Value !== 'false') {
-    throw new Error('Beta admission is suspended; the manager must authorize an admission window before qualification');
+    throw new Error('Beta admission is suspended; an authorized admission window is required before qualification');
   }
   if (policy.intake_open.Value !== 'false') {
     throw new Error('Beta qualification requires public intake closed');

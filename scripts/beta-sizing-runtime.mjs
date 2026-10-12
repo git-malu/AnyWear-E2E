@@ -16,7 +16,7 @@ export function sizingAwsReader(profile) {
 
 export function sizingRuntimeSnapshot(aws, stageId) {
   const stage = SIZING_STAGES.find(item => item.id === stageId && ['S1', 'S2', 'S3'].includes(item.id));
-  if (!stage) throw new Error('Manager-selected sizing stage required');
+  if (!stage) throw new Error('An explicit sizing stage is required');
   const identity = aws(['sts', 'get-caller-identity']);
   if (identity.Account !== '650880818323') throw new Error('Sizing evidence requires reviewed Beta account');
   const services = aws(['ecs', 'describe-services', '--cluster', 'beta-anywear',
@@ -70,7 +70,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (process.argv.length !== 2) throw new Error('Snapshot does not accept options');
   assertE2EExecution();
   const sourceProof = captureSizingSource();
-  if (!['S1', 'S2', 'S3'].includes(process.env.BETA_SIZING_STAGE)) throw new Error('Manager-selected sizing stage required');
+  if (!['S1', 'S2', 'S3'].includes(process.env.BETA_SIZING_STAGE)) throw new Error('An explicit sizing stage is required');
   const deploymentBytes = await readFile('deployment-evidence-before.json');
   const snapshot = sizingRuntimeSnapshot(sizingAwsReader(), process.env.BETA_SIZING_STAGE);
   const expected = JSON.parse(deploymentBytes).service;

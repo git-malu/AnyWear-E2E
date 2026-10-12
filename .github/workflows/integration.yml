@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       worker_slot_offset:
-        description: First of two captured worker slots (0 through 6; manager allocation required)
+        description: First of two captured worker slots (0 through 6; choose an unused pair)
         required: false
         default: 0
         type: number

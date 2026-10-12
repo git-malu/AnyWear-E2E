@@ -38,7 +38,7 @@ source `1616783bf604c6c837f32452f039019fc5dd65f5`. The complete manifest has
 raw SHA-256 `beed1d70d328193de6a616e3b492e22ed64bee4cd2dcc049218d5d515b0be878`.
 The acceptance command is
 `node scripts/verify-artifact-builder-fixture.mjs <actual-builder-output> <Infra-checkout>`;
-the original output directory is retained by the issue owner outside the removable
+the original output directory is retained outside the removable
 workspace. Its report records the exact Infra HEAD, checkout cleanliness, contract
 file bytes and original asset hashes. All four asset tamper cases and all four
 missing-asset cases are rejected. The real schema version is 16, with 18 SQL

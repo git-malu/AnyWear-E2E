@@ -145,7 +145,7 @@ async function importFixtures(inputs, bootstrap) {
 
 export function assertFixtureAfter(fixtureRun, priorRun) {
   const started = Date.parse(fixtureRun.run_started_at), completed = Date.parse(priorRun.updated_at);
-  if (!Number.isFinite(started) || !Number.isFinite(completed) || started <= completed) throw new Error('Manager fixture action is not after the preceding completed operation');
+  if (!Number.isFinite(started) || !Number.isFinite(completed) || started <= completed) throw new Error('Fixture action is not after the preceding completed operation');
 }
 
 export function assertOperationBinding(evidence, json, bootstrap, { pending = false, retry = false } = {}) {
@@ -252,7 +252,7 @@ async function prepare() {
     const previous = previousRun.record;
     const activeRun = await importPhase(previous.previous_origin, 'refusals', bootstrap, inputs.bootstrapOrigin, { refusalStage: 'active' });
     assertEqual(previous.operations.active, activeRun.record.operations.active, 'Ordered immutable active refusal proof');
-    assertEqual(previous.operations.inspections.before_active, activeRun.record.operations.inspections.before_active, 'Original manager fixture baseline');
+    assertEqual(previous.operations.inspections.before_active, activeRun.record.operations.inspections.before_active, 'Original fixture baseline');
     assertFixtureAfter(fixtureRuns[0], previousRun.run);
     assertFixtureAfter(fixtureRuns[1], fixtureRuns[0]);
     assertPreserved(previous.operations.fixture_baseline, fixtures[0].after);
@@ -309,7 +309,7 @@ async function prepare() {
     assertOperationBinding(previous.operations.recovered, bootstrap.cleanup_requests.primary.json, bootstrap, { retry: true });
     assertSameCompletedOperation(previous.operations.recovered, previous.operations.replayed);
     const snapshot = fixtures[0].after;
-    if (!snapshot[0].absent || snapshot[1].absent) throw new Error('Post-recovery manager inspection requires absent primary and retained sentinel');
+    if (!snapshot[0].absent || snapshot[1].absent) throw new Error('Post-recovery fixture inspection requires absent primary and retained sentinel');
     assertPreserved(previous.operations.fixture_released[1], snapshot[1]);
     process.env.E2E_CLEANUP_RETRY_FAILED = 'false';
     process.env.E2E_SERVICE_CLEANUP_EVIDENCE_PATH = join(directory, 'sentinel-cleanup-operation.json');
@@ -357,7 +357,7 @@ async function afterIntentUpload(command) {
       await save(join(directory, 'bootstrap-manifest.json'), bootstrap);
       await checkpoint(state, 'complete');
     } catch (error) {
-      for (const identity of intent.identities) await quarantineAccount(identity.email, 'Bootstrap incomplete; exact manager recovery required');
+      for (const identity of intent.identities) await quarantineAccount(identity.email, 'Bootstrap incomplete; exact authorized recovery required');
       state.result = 'incomplete-identities-retained'; await checkpoint(state, 'failed'); throw error;
     } finally { io.destroy(); }
   } else {
@@ -390,5 +390,5 @@ export async function main(command) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { await main(process.argv[2]); console.log('Protected cleanup acceptance source phase completed; durable evidence retained.'); }
-  catch { console.error('Cleanup acceptance phase failed; preserve exact artifacts and captured identities for manager recovery.'); process.exitCode = 1; }
+  catch { console.error('Cleanup acceptance phase failed; preserve exact artifacts and captured identities for recovery.'); process.exitCode = 1; }
 }

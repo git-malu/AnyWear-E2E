@@ -104,7 +104,7 @@ export function assertRuntimeDrillExecutionEnvironment(environment = process.env
     throw new Error('Runtime mutations require a bounded RUNTIME_DRILL_RUN_SCOPE');
   }
   if (environment.RUNTIME_DRILL_EXCLUSIVE_WINDOW !== 'beta-exclusive-runtime') {
-    throw new Error('Runtime mutations require a manager-reserved beta-exclusive-runtime window');
+    throw new Error('Runtime mutations require an authorized beta-exclusive-runtime window');
   }
   assertRuntimeDrillMutationConfirmation(environment);
   if (!DRILL_ID_PATTERN.test(environment.RUNTIME_DRILL_ID ?? '')) {
