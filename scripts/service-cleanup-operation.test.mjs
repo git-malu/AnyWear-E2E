@@ -257,6 +257,10 @@ function history(events = []) {
           Command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)],
         }],
         InferenceAcceleratorOverrides: [],
+        TaskRoleArn: '',
+        ExecutionRoleArn: '',
+        Cpu: '',
+        Memory: '',
       },
     };
     if (type === 'TaskStateEntered' || type === 'TaskStateExited') {
@@ -522,6 +526,18 @@ test('historical fallback rejects malformed snapshots, unknown overrides, redriv
   overrideSnapshot.Overrides.UnexpectedOverride = true;
   overrideVerifier.taskSucceededEventDetails.output = JSON.stringify(overrideSnapshot);
 
+  const nonemptyTaskRole = retryRefusalOptions().history;
+  const roleVerifier = nonemptyTaskRole.events.find(event => event.id === 10);
+  const roleSnapshot = JSON.parse(roleVerifier.taskSucceededEventDetails.output);
+  roleSnapshot.Overrides.TaskRoleArn = 'arn:aws:iam::650880818323:role/foreign';
+  roleVerifier.taskSucceededEventDetails.output = JSON.stringify(roleSnapshot);
+
+  const nonemptyCpu = retryRefusalOptions().history;
+  const cpuVerifier = nonemptyCpu.events.find(event => event.id === 10);
+  const cpuSnapshot = JSON.parse(cpuVerifier.taskSucceededEventDetails.output);
+  cpuSnapshot.Overrides.Cpu = '512';
+  cpuVerifier.taskSucceededEventDetails.output = JSON.stringify(cpuSnapshot);
+
   const byteDriftedSchedule = retryRefusalOptions().history;
   const cleanupSchedule = byteDriftedSchedule.events.find(event => event.id === 15);
   const parameters = JSON.parse(cleanupSchedule.taskScheduledEventDetails.parameters);
@@ -531,6 +547,8 @@ test('historical fallback rejects malformed snapshots, unknown overrides, redriv
   for (const evidence of [
     malformedSnapshot,
     unknownOverride,
+    nonemptyTaskRole,
+    nonemptyCpu,
     { ...retryRefusalOptions().history, events: [...retryRefusalOptions().history.events, { id: 20, previousEventId: 19, type: 'ExecutionRedriven' }] },
     { ...retryRefusalOptions().history, events: retryRefusalOptions().history.events.map(event => event.id === 2 ? { ...event, id: 3 } : event) },
     byteDriftedSchedule,

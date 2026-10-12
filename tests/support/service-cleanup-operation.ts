@@ -127,6 +127,11 @@ function optionalArray(value: unknown, label: string): unknown[] {
   return array(value, label);
 }
 
+function inertHistoryScalar(value: unknown, label: string): undefined {
+  if (value === undefined || value === '') return undefined;
+  throw new Error(`${label} contains a nonempty override`);
+}
+
 function mapLiveTask(value: unknown): CanonicalTask {
   const task = object(value, 'Live ECS task');
   for (const key of ['taskArn', 'clusterArn', 'taskDefinitionArn', 'lastStatus', 'desiredStatus', 'startedBy']) {
@@ -166,7 +171,10 @@ function mapHistoryTask(value: unknown): CanonicalTask {
   return { taskArn: task.TaskArn as string, clusterArn: task.ClusterArn as string, taskDefinitionArn: task.TaskDefinitionArn as string,
     lastStatus: task.LastStatus as string, desiredStatus: task.DesiredStatus as string, startedBy: task.StartedBy as string,
     containers, overrides: { containerOverrides, inferenceAcceleratorOverrides: optionalArray(rawOverrides.InferenceAcceleratorOverrides, 'History accelerator overrides'),
-      taskRoleArn: rawOverrides.TaskRoleArn, executionRoleArn: rawOverrides.ExecutionRoleArn, cpu: rawOverrides.Cpu, memory: rawOverrides.Memory } };
+      taskRoleArn: inertHistoryScalar(rawOverrides.TaskRoleArn, 'History task role'),
+      executionRoleArn: inertHistoryScalar(rawOverrides.ExecutionRoleArn, 'History execution role'),
+      cpu: inertHistoryScalar(rawOverrides.Cpu, 'History CPU'),
+      memory: inertHistoryScalar(rawOverrides.Memory, 'History memory') } };
 }
 
 function validateCanonicalTask(task: CanonicalTask, envelope: CleanupOperationEnvelope, io: CleanupOperationIo,
