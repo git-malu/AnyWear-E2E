@@ -11,6 +11,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const RUN_SCOPE = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 const VERSION_ARN = /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:([1-9][0-9]*)$/;
+const BASE_ARN = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
 const TASK_ARN = /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/([a-f0-9]{32})$/;
 const DEFINITION_ARN = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/(beta-anywear-cleanup(?:-verify)?):[1-9][0-9]*$/;
 const CLUSTER = 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear';
@@ -305,6 +306,11 @@ export function deterministicCleanupExecutionName(envelope: CleanupOperationEnve
 export function cleanupExecutionArn(versionArn: string, name: string): string {
   if (!VERSION_ARN.test(versionArn) || !/^[A-Za-z0-9_-]{1,80}$/.test(name)) throw new Error('Cleanup requires the fixed Beta state-machine version ARN and execution name');
   return `${versionArn.replace(/:stateMachine:/, ':execution:').replace(/:[1-9][0-9]*$/, '')}:${name}`;
+}
+
+function baseExecutionArn(baseArn: string, name: string): string {
+  if (baseArn !== BASE_ARN || !/^[A-Za-z0-9_-]{1,80}$/.test(name)) throw new Error('Cleanup execution inventory has an invalid state-machine or name');
+  return `${baseArn.replace(':stateMachine:', ':execution:')}:${name}`;
 }
 
 function validateDescription(description: DescribeExecutionOutput, envelope: CleanupOperationEnvelope, versionArn: string, name: string): void {
@@ -724,11 +730,14 @@ async function recoveryExecutions(io: CleanupOperationIo, envelope: CleanupOpera
     if (Date.now() > deadline) throw new Error('Recovery description deadline exceeded');
     const row = object(entry, 'Recovery execution entry');
     if (typeof row.executionArn !== 'string' || typeof row.name !== 'string' || arns.has(row.executionArn)
-      || row.stateMachineArn !== baseArn || row.executionArn !== cleanupExecutionArn(versionArn, row.name)) throw new Error('Recovery execution inventory is malformed or duplicated');
+      || row.stateMachineArn !== baseArn || row.executionArn !== baseExecutionArn(baseArn, row.name)) throw new Error('Recovery execution inventory is malformed or duplicated');
     arns.add(row.executionArn);
     if (!['RUNNING', 'SUCCEEDED', ...TERMINAL_FAILURE].includes(String(row.status))) throw new Error('Recovery execution inventory status is unknown');
     const description = await io.describe(row.executionArn);
-    if (description.inputDetails?.included !== true || typeof description.input !== 'string') throw new Error('Recovery inventory input is unavailable');
+    if (description.executionArn !== row.executionArn || description.name !== row.name || description.status !== row.status || description.stateMachineArn !== baseArn
+      || typeof description.stateMachineVersionArn !== 'string' || !VERSION_ARN.test(description.stateMachineVersionArn)
+      || description.stateMachineVersionArn.replace(/:[1-9][0-9]*$/, '') !== baseArn
+      || description.inputDetails?.included !== true || typeof description.input !== 'string') throw new Error('Recovery execution row and description differ');
     const input = object(parseStrictJson(description.input), 'Recovery inventory input');
     const prefix = `beta-cleanup-recovery-${envelope.run_scope}`;
     if (input.run_scope !== envelope.run_scope && !row.name.startsWith(prefix)) continue;
@@ -736,7 +745,9 @@ async function recoveryExecutions(io: CleanupOperationIo, envelope: CleanupOpera
     const expectedName = deterministicCleanupExecutionName(canonical);
     if (canonical.run_scope !== envelope.run_scope || canonical.cleanup_request !== envelope.cleanup_request
       || (canonical.operation_mode === 'recovery' ? row.name !== expectedName : ![expectedName, `${expectedName.slice(0, 72)}-retry1`].includes(row.name))) throw new Error('Recovery inventory scope/name binding is invalid');
-    validateDescription(description, canonical, String(description.stateMachineVersionArn), row.name);
+    const actualVersion = description.stateMachineVersionArn;
+    if (canonical.operation_mode === 'recovery' && actualVersion !== versionArn) throw new Error('Recovery execution is attached to a foreign state-machine version');
+    validateDescription(description, canonical, actualVersion, row.name);
     matches.push({ input: canonical, description });
   }
   const recovery = matches.filter(entry => entry.input.operation_mode === 'recovery').sort((a, b) => a.input.recovery_attempt! - b.input.recovery_attempt!);
@@ -818,6 +829,19 @@ async function recoveryPreflight(io: CleanupOperationIo, envelope: CleanupOperat
   if (!originalPath) throw new Error('Recovery requires the canonical original owner/request evidence');
   const original = recordedOperation(parseStrictJson(await readFile(originalPath)), true);
   if ((original.operation_mode ?? 'normal') !== 'normal' || original.input.cleanup_request !== envelope.cleanup_request || original.input.run_scope !== envelope.run_scope) throw new Error('Recovery changes the original captured request or owner scope');
+  const owner = inventory.matches.find(entry => entry.description.executionArn === original.execution_arn);
+  const currentVersion = Number(VERSION_ARN.exec(versionArn)?.[1]);
+  const ownerVersion = owner && Number(VERSION_ARN.exec(String(owner.description.stateMachineVersionArn))?.[1]);
+  if (!owner || !isDeepStrictEqual(owner.input, original.input)
+    || owner.description.executionArn !== original.execution_arn || owner.description.name !== original.execution_name
+    || owner.description.stateMachineVersionArn !== original.state_machine_version_arn
+    || original.input_sha256 !== hash(JSON.stringify(original.input))
+    || !Number.isSafeInteger(currentVersion) || !Number.isSafeInteger(ownerVersion)
+    || ownerVersion! > currentVersion) throw new Error('Original cleanup predecessor is unavailable');
+  for (const entry of inventory.matches) {
+    if (entry.input.operation_mode === 'normal' && entry !== owner
+      && entry.description.stateMachineVersionArn !== versionArn) throw new Error('Recovery inventory has a foreign normal execution version');
+  }
   let predecessor: typeof latest;
   if (latest) {
     if (!priorPath) throw new Error('Recovery requires the latest trusted recovery artifact');
@@ -833,8 +857,6 @@ async function recoveryPreflight(io: CleanupOperationIo, envelope: CleanupOperat
     predecessor = latest;
   } else {
     if (envelope.recovery_attempt !== 1 || priorPath) throw new Error('First recovery requires attempt 1 without a previous recovery artifact');
-    const owner = inventory.matches.find(entry => entry.description.executionArn === original.execution_arn);
-    if (!owner || !isDeepStrictEqual(owner.input, original.input)) throw new Error('Original cleanup predecessor is unavailable');
     predecessor = owner;
   }
   if (inventory.matches.some(entry => entry.description.status === 'RUNNING')) throw new Error('Recovery owner has active executions');
