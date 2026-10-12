@@ -20,6 +20,7 @@ const task = kind => `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${(ki
 const prefix = kind => kind === 'verification' ? 'beta-anywear-cleanup-verify' : 'beta-anywear-cleanup';
 const definition = kind => `arn:aws:ecs:ap-east-1:650880818323:task-definition/${prefix(kind)}:7`;
 const hash = text => createHash('sha256').update(text).digest('hex');
+const versionArn = version => environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', `:${version}`);
 
 function output(input = envelope) {
   return { schema_version: 1, record_type: 'anywear_beta_cleanup_tasks', operation_mode: input.operation_mode, operation_id: input.operation_id,
@@ -28,9 +29,9 @@ function output(input = envelope) {
     ...Object.fromEntries(['verification', 'cleanup'].flatMap(kind => Object.entries({ task_arn: task(kind),
       task_definition_arn: definition(kind), task_status: 'STOPPED', exit_code: 0, log_stream_prefix: prefix(kind) }).map(([key, value]) => [`${kind}_${key}`, value]))) };
 }
-function description(currentName = name, patch = {}, input = envelope) {
-  return { executionArn: cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, currentName), name: currentName,
-    stateMachineArn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(/:7$/, ''), stateMachineVersionArn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN,
+function description(currentName = name, patch = {}, input = envelope, stateMachineVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN) {
+  return { executionArn: cleanupExecutionArn(stateMachineVersionArn, currentName), name: currentName,
+    stateMachineArn: stateMachineVersionArn.replace(/:[1-9][0-9]*$/, ''), stateMachineVersionArn,
     input: JSON.stringify(input), inputDetails: { included: true }, status: 'SUCCEEDED', output: JSON.stringify(output(input)), outputDetails: { included: true },
     startDate: new Date('2026-10-10T00:00:00Z'), stopDate: new Date('2026-10-10T00:00:01Z'), ...patch };
 }
@@ -609,29 +610,32 @@ test('recovery reads exact original submitted execution/tasks before attempting 
   await assert.rejects(() => observeSubmittedCleanupOperation(pending, environment, unknown));
 });
 
-function operationEvidence(input, status = 'FAILED') {
+function operationEvidence(input, status = 'FAILED', stateMachineVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN) {
   const executionName = deterministicCleanupExecutionName(input);
   return { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
     ...(input.operation_mode ? { operation_mode: input.operation_mode } : {}),
     ...(input.recovery_attempt ? { recovery_attempt: input.recovery_attempt } : {}),
     input, input_sha256: hash(JSON.stringify(input)), execution_name: executionName,
-    execution_arn: cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, executionName),
-    state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, status, proof_status: 'refused',
+    execution_arn: cleanupExecutionArn(stateMachineVersionArn, executionName),
+    state_machine_version_arn: stateMachineVersionArn, status, proof_status: 'refused',
   } };
 }
 
 function statefulRecoveryIo(options = {}) {
   const executions = new Map();
   const calls = [];
+  const currentVersionArn = options.currentVersionArn ?? environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
+  const ownerVersionArn = options.ownerVersionArn ?? currentVersionArn;
+  const recoveryVersionArn = options.recoveryVersionArn ?? currentVersionArn;
   let currentInput = options.original ?? envelope;
   let currentStatus = 'FAILED';
-  const insert = (input, status) => {
+  const insert = (input, status, stateMachineVersionArn = input.operation_mode === 'recovery' ? recoveryVersionArn : ownerVersionArn) => {
     const executionName = deterministicCleanupExecutionName(input);
-    const value = description(executionName, { status, ...(status === 'RUNNING' ? { stopDate: undefined } : {}) }, input);
+    const value = description(executionName, { status, ...(status === 'RUNNING' ? { stopDate: undefined } : {}) }, input, stateMachineVersionArn);
     executions.set(value.executionArn, value);
     return value;
   };
-  insert(currentInput, 'FAILED');
+  insert(currentInput, options.ownerStatus ?? 'FAILED');
   for (const [input, status] of options.existing ?? []) insert(input, status);
   const base = fixture({
     task: (value, kind) => ({ ...value, lastStatus: options.activeTask ? 'RUNNING' : 'STOPPED',
@@ -645,13 +649,13 @@ function statefulRecoveryIo(options = {}) {
   const io = { calls, executions, insert,
     async start(input, executionName) {
       calls.push({ start: executionName, input });
-      const executionArn = cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, executionName);
+      const executionArn = cleanupExecutionArn(currentVersionArn, executionName);
       const old = executions.get(executionArn);
       if (old) {
         if (old.status === 'RUNNING' && old.input === JSON.stringify(input)) return { executionArn };
         throw Object.assign(new Error('Execution exists with its original input/status'), { name: 'ExecutionAlreadyExists' });
       }
-      insert(input, options.newStatus ?? 'SUCCEEDED');
+      insert(input, options.newStatus ?? 'SUCCEEDED', currentVersionArn);
       if (options.lostResponse) throw Object.assign(new Error('Lost response'), { name: 'TimeoutError' });
       return { executionArn };
     },
@@ -693,12 +697,13 @@ function statefulRecoveryIo(options = {}) {
 async function recoveryCase(options, verify) {
   const directory = await mkdtemp(join(tmpdir(), 'anywear-recovery-attempt-'));
   const original = options.original ?? envelope;
+  const envBase = { ...environment, ...(options.environmentPatch ?? {}) };
   const originalPath = join(directory, 'original.json');
   const priorPath = join(directory, 'prior.json');
   const path = join(directory, 'operation.json');
-  await writeFile(originalPath, JSON.stringify(operationEvidence(original)));
-  const io = statefulRecoveryIo(options);
-  const env = { ...environment, E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: originalPath, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: path,
+  await writeFile(originalPath, JSON.stringify(operationEvidence(original, 'FAILED', options.originalVersionArn ?? envBase.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN)));
+  const io = statefulRecoveryIo({ ...options, currentVersionArn: envBase.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN });
+  const env = { ...envBase, E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: originalPath, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: path,
     E2E_CLEANUP_RECOVERY_ATTEMPT: '1' };
   try { await verify({ io, env, path, priorPath, originalPath, run: patch => runRecoveryCleanupOperation(options.inputs ?? inputs, { ...env, ...patch }, io) }); }
   finally { await rm(directory, { recursive: true, force: true }); }
@@ -725,6 +730,47 @@ test('AWS-like closed execution cannot be revived by same attempt, repair requir
     assert.equal(result.operation.recovery_preflight.predecessor_execution_arn, failed.executionArn);
     assert.equal(failed.status, 'FAILED');
     assert.equal(io.executions.size, 3);
+  });
+});
+
+test('recovery authenticates an old normal owner and starts the current version exactly once', async () => {
+  const ownerVersionArn = versionArn(1);
+  const currentVersionArn = versionArn(2);
+  await recoveryCase({ ownerVersionArn, originalVersionArn: ownerVersionArn, expiredHistorical: true,
+    environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: currentVersionArn } }, async ({ io, run, path, priorPath }) => {
+    const result = await run();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.recovery_preflight.predecessor_execution_arn, cleanupExecutionArn(ownerVersionArn, name));
+    assert.equal(result.operation.input.recovery_attempt, 1);
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    const owner = [...io.executions.values()].find(record => record.input === JSON.stringify(envelope));
+    const recovery = [...io.executions.values()].find(record => record.name.startsWith('beta-cleanup-recovery-'));
+    assert.equal(owner.stateMachineVersionArn, ownerVersionArn);
+    assert.equal(recovery.stateMachineVersionArn, currentVersionArn);
+    await writeFile(priorPath, JSON.stringify(result));
+    const resumed = await run({ E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH: priorPath });
+    assert.equal(resumed.operation.proof_status, 'verified');
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), resumed);
+  });
+});
+
+test('cross-version recovery refuses unsafe execution inventory before StartExecution', async () => {
+  const ownerVersionArn = versionArn(1);
+  const currentVersionArn = versionArn(2);
+  const recovery = createCleanupOperationEnvelope(inputs, environment, 'recovery', 1);
+  const cases = [
+    { ownerVersionArn, originalVersionArn: ownerVersionArn, ownerStatus: 'RUNNING' },
+    { ownerVersionArn, originalVersionArn: ownerVersionArn, ownerStatus: 'UNKNOWN' },
+    { ownerVersionArn, originalVersionArn: ownerVersionArn, existing: [[recovery, 'FAILED']], recoveryVersionArn: ownerVersionArn },
+    { ownerVersionArn, originalVersionArn: ownerVersionArn, existing: [[recovery, 'FAILED']], recoveryVersionArn: versionArn(3) },
+    { ownerVersionArn, originalVersionArn: ownerVersionArn, list: rows => ({ executions: rows.map(row => ({ ...row, executionArn: `${row.executionArn}-foreign` })) }) },
+    { ownerVersionArn: currentVersionArn, originalVersionArn: ownerVersionArn },
+  ];
+  for (const options of cases) await recoveryCase({ ...options, environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: currentVersionArn } }, async ({ io, run, path }) => {
+    await assert.rejects(run(), /identities retained/);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).operation.refusal_phase, 'recovery_preflight');
   });
 });
 
