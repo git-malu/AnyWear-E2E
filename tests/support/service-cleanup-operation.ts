@@ -18,6 +18,7 @@ const LOG_GROUP = '/anywear/beta/one-shot';
 const MARKER = 'ANYWEAR_BETA_CLEANUP_RESULT=';
 const TERMINAL_FAILURE = ['FAILED', 'TIMED_OUT', 'ABORTED'];
 const execute = promisify(execFile);
+export type CleanupOperationMode = 'normal' | 'recovery';
 
 type CleanupRefusalPhase = 'operation_start' | 'execution_observation' | 'retry_eligibility' | 'retry_proof'
   | 'result_proof' | 'task_proof' | 'completion_proof';
@@ -27,6 +28,7 @@ type CleanupRefusalCategory = 'operation_start_unavailable' | 'execution_observa
 
 export interface CleanupOperationEnvelope {
   schema_version: 1;
+  operation_mode: CleanupOperationMode;
   operation_id: string;
   run_scope: string;
   request_sha256: string;
@@ -61,6 +63,7 @@ export interface CleanupOperationEvidence {
   schema_version: 3;
   record_type: 'anywear_e2e_service_cleanup_operation';
   operation: {
+    operation_mode: CleanupOperationMode;
     state_machine_version_arn: string;
     execution_arn: string;
     execution_name: string;
@@ -249,7 +252,9 @@ function validateCanonicalTask(task: CanonicalTask, envelope: CleanupOperationEn
   })();
 }
 
-export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env): CleanupOperationEnvelope {
+export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
+  operationMode: CleanupOperationMode = 'normal'): CleanupOperationEnvelope {
+  if (operationMode !== 'normal' && operationMode !== 'recovery') throw new Error('Cleanup operation mode is invalid');
   if (inputs.action !== 'cleanup' || inputs.emails !== '[]') throw new Error('Unsupported Service cleanup action');
   if (Buffer.byteLength(inputs.cleanup_json, 'utf8') > 16_384) throw new Error('Cleanup request exceeds the Service limit');
   const request = object(parseStrictJson(inputs.cleanup_json), 'Cleanup request');
@@ -275,7 +280,8 @@ export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, env
   const digest = environment.E2E_CLEANUP_SERVICE_IMAGE_DIGEST;
   if (!source || !SHA.test(source)) throw new Error('Reviewed cleanup source must be a full commit SHA');
   if (!digest || !DIGEST.test(digest)) throw new Error('Reviewed cleanup image must be an OCI digest');
-  const envelope: CleanupOperationEnvelope = { schema_version: 1, operation_id: `beta-tester-cleanup:${request.runScope}`, run_scope: request.runScope,
+  const envelope: CleanupOperationEnvelope = { schema_version: 1, operation_mode: operationMode,
+    operation_id: `beta-tester-cleanup:${operationMode === 'recovery' ? 'recovery:' : ''}${request.runScope}`, run_scope: request.runScope,
     request_sha256: hash(inputs.cleanup_json), service_commit_sha: source, service_image_digest: digest, cleanup_request: inputs.cleanup_json };
   const overrides = { ContainerOverrides: [{ Name: 'OneShot', Command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)] }] };
   if (Buffer.byteLength(JSON.stringify(overrides), 'utf8') > 8192) throw new Error('Cleanup envelope exceeds the ECS container override limit');
@@ -283,7 +289,7 @@ export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, env
 }
 
 export function deterministicCleanupExecutionName(envelope: CleanupOperationEnvelope): string {
-  const name = `beta-cleanup-${envelope.run_scope}-${envelope.request_sha256.slice(0, 16)}`;
+  const name = `beta-cleanup-${envelope.operation_mode === 'recovery' ? 'recovery-' : ''}${envelope.run_scope}-${envelope.request_sha256.slice(0, 16)}`;
   if (name.length > 80) throw new Error('Cleanup execution name exceeds the Step Functions limit');
   return name;
 }
@@ -343,7 +349,7 @@ function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): 
   const counters = ['users', 'missingUsers', 'tasks', 'outbox', 'idempotency', 'generations', 'relations', 'outfits', 'items', 'photos'];
   if (result.schema_version !== 1 || result.record_type !== 'anywear_beta_cleanup_result' || result.source !== 'beta-tester-cleanup'
     || result.cleanup !== 'beta-testers' || result.operation_id !== envelope.operation_id || result.request_sha256 !== envelope.request_sha256
-    || result.run_scope !== envelope.run_scope || result.transaction_committed !== true
+    || result.run_scope !== envelope.run_scope || result.operation_mode !== envelope.operation_mode || result.transaction_committed !== true
     || result.service_commit_sha !== envelope.service_commit_sha || result.service_image_digest !== envelope.service_image_digest
     || typeof result.envelope_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.envelope_sha256)
     || counters.some(key => !Number.isSafeInteger(result[key]) || (result[key] as number) < 0)
@@ -556,13 +562,14 @@ export async function prepareCleanupRetryIntent(inputs: ServiceCleanupInputs, or
   const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
   const name = deterministicCleanupExecutionName(envelope);
   if (original.schema_version !== 3 || original.record_type !== 'anywear_e2e_service_cleanup_operation'
+    || original.operation.operation_mode !== 'normal'
     || original.operation.state_machine_version_arn !== versionArn || original.operation.execution_name !== name
     || original.operation.execution_arn !== cleanupExecutionArn(versionArn, name)
     || original.operation.input_sha256 !== hash(JSON.stringify(envelope)) || !isDeepStrictEqual(original.operation.input, envelope)
     || original.operation.status !== 'FAILED' || original.operation.proof_status !== 'refused') throw new Error('Retry intent lacks the exact original refused operation');
   const proof = await observeFailedCleanupOperation(inputs, environment, io);
   const retryName = `${name.slice(0, 72)}-retry1`;
-  return { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
+  return { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: { operation_mode: 'normal',
     state_machine_version_arn: versionArn, execution_name: retryName, execution_arn: cleanupExecutionArn(versionArn, retryName),
     input: envelope, input_sha256: hash(JSON.stringify(envelope)), status: 'PENDING', proof_status: 'pending',
     preceding_execution: { execution_arn: String(proof.execution_arn), status: 'FAILED', task_proofs: proof.tasks as Record<string, unknown>[],
@@ -578,6 +585,7 @@ export async function submitCleanupRetryIntent(evidence: CleanupOperationEvidenc
   const base = deterministicCleanupExecutionName(operation.input);
   const expectedInput = createCleanupOperationEnvelope({ action: 'cleanup', emails: '[]', cleanup_json: operation.input.cleanup_request }, environment);
   if (evidence.schema_version !== 3 || operation.proof_status !== 'pending' || operation.status !== 'PENDING'
+    || operation.operation_mode !== 'normal'
     || operation.state_machine_version_arn !== versionArn || operation.execution_name !== `${base.slice(0, 72)}-retry1`
     || operation.execution_arn !== cleanupExecutionArn(versionArn, operation.execution_name)
     || operation.preceding_execution?.execution_arn !== cleanupExecutionArn(versionArn, base)
@@ -639,13 +647,14 @@ async function writeEvidence(path: string, evidence: CleanupOperationEvidence): 
   await rename(`${path}.tmp`, path);
 }
 
-export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env, io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
+export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
+  io?: CleanupOperationIo, operationMode: CleanupOperationMode = 'normal'): Promise<CleanupOperationEvidence | undefined> {
   const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
   if (!versionArn) {
     console.warn('Beta cleanup capability is not configured; cleanup deferred and identities retained');
     return undefined;
   }
-  const envelope = createCleanupOperationEnvelope(inputs, environment);
+  const envelope = createCleanupOperationEnvelope(inputs, environment, operationMode);
   let name = deterministicCleanupExecutionName(envelope);
   cleanupExecutionArn(versionArn, name);
   const originalPath = environment.E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH;
@@ -654,14 +663,14 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     const operation = object(original.operation, 'Original cleanup operation');
     const retryName = `${name.slice(0, 72)}-retry1`;
     if (![2, 3].includes(original.schema_version as number) || original.record_type !== 'anywear_e2e_service_cleanup_operation'
-      || operation.state_machine_version_arn !== versionArn || !isDeepStrictEqual(operation.input, envelope)
-      || operation.input_sha256 !== hash(JSON.stringify(envelope)) || ![name, retryName].includes(String(operation.execution_name))
+      || operation.operation_mode !== operationMode || operation.state_machine_version_arn !== versionArn || !isDeepStrictEqual(operation.input, envelope)
+      || operation.input_sha256 !== hash(JSON.stringify(envelope)) || (operationMode === 'normal' ? ![name, retryName].includes(String(operation.execution_name)) : operation.execution_name !== name)
       || operation.execution_arn !== cleanupExecutionArn(versionArn, String(operation.execution_name))) throw new Error('Original cleanup evidence does not bind this exact request/source/version');
   }
   const transport = io ?? defaultIo(versionArn);
   const path = environment.E2E_SERVICE_CLEANUP_EVIDENCE_PATH ?? 'test-results/service-cleanup-operation.json';
   const evidence: CleanupOperationEvidence = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation',
-    operation: { state_machine_version_arn: versionArn, execution_arn: cleanupExecutionArn(versionArn, name), execution_name: name,
+    operation: { operation_mode: operationMode, state_machine_version_arn: versionArn, execution_arn: cleanupExecutionArn(versionArn, name), execution_name: name,
       status: 'PENDING', proof_status: 'pending', input_sha256: hash(JSON.stringify(envelope)), input: envelope } };
   let refusalPhase: CleanupRefusalPhase = 'operation_start';
   let refusalCategory: CleanupRefusalCategory = 'operation_start_unavailable';
@@ -691,7 +700,7 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       if (TERMINAL_FAILURE.includes(description.status!)) {
         refusalPhase = 'retry_eligibility';
         refusalCategory = 'retry_not_authorized';
-        if (environment.E2E_CLEANUP_RETRY_FAILED !== 'true' || name.endsWith('-retry1')) throw new Error('Cleanup terminated without success; identities retained and retry requires explicit task-cessation proof');
+        if (operationMode === 'recovery' || environment.E2E_CLEANUP_RETRY_FAILED !== 'true' || name.endsWith('-retry1')) throw new Error('Cleanup terminated without success; identities retained and retry requires explicit task-cessation proof');
         refusalPhase = 'retry_proof';
         refusalCategory = 'retry_proof_unavailable';
         const proof = await observeFailedCleanupOperation(inputs, environment, transport);
@@ -746,4 +755,11 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     await writeEvidence(path, evidence);
     throw new Error(evidence.operation.failure);
   }
+}
+
+/** Start or resume the explicitly requested recovery operation. It has a distinct
+ * deterministic identity and never enters the legacy FAILED retry proof path. */
+export function runRecoveryCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
+  io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
+  return runCleanupOperation(inputs, environment, io, 'recovery');
 }

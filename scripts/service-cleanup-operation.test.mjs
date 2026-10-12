@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { cleanupExecutionArn, createCleanupOperationEnvelope, deterministicCleanupExecutionName, observeFailedCleanupOperation,
-  observeSubmittedCleanupOperation, prepareCleanupRetryIntent, runCleanupOperation, submitCleanupRetryIntent } from '../tests/support/service-cleanup-operation.ts';
+  observeSubmittedCleanupOperation, prepareCleanupRetryIntent, runCleanupOperation, runRecoveryCleanupOperation, submitCleanupRetryIntent } from '../tests/support/service-cleanup-operation.ts';
 
 const scope = `123456789-1-${'a'.repeat(16)}`;
 const inputs = { action: 'cleanup', emails: '[]', cleanup_json: JSON.stringify({ runScope: scope,
@@ -22,7 +22,7 @@ const definition = kind => `arn:aws:ecs:ap-east-1:650880818323:task-definition/$
 const hash = text => createHash('sha256').update(text).digest('hex');
 
 function output() {
-  return { schema_version: 1, record_type: 'anywear_beta_cleanup_tasks', operation_id: envelope.operation_id,
+  return { schema_version: 1, record_type: 'anywear_beta_cleanup_tasks', operation_mode: envelope.operation_mode, operation_id: envelope.operation_id,
     request_sha256: envelope.request_sha256, run_scope: scope, service_commit_sha: environment.E2E_CLEANUP_SERVICE_SHA,
     service_image_digest: environment.E2E_CLEANUP_SERVICE_IMAGE_DIGEST, cluster_arn: cluster, log_group_name: '/anywear/beta/one-shot',
     ...Object.fromEntries(['verification', 'cleanup'].flatMap(kind => Object.entries({ task_arn: task(kind),
@@ -36,7 +36,7 @@ function description(currentName = name, patch = {}) {
 }
 function committed(patch = {}) {
   return { schema_version: 1, record_type: 'anywear_beta_cleanup_result', source: 'beta-tester-cleanup', cleanup: 'beta-testers',
-    operation_id: envelope.operation_id, request_sha256: envelope.request_sha256, run_scope: scope, transaction_committed: true,
+    operation_mode: envelope.operation_mode, operation_id: envelope.operation_id, request_sha256: envelope.request_sha256, run_scope: scope, transaction_committed: true,
     service_commit_sha: envelope.service_commit_sha, service_image_digest: envelope.service_image_digest, envelope_sha256: hash(JSON.stringify(envelope)),
     users: 1, missingUsers: 0, tasks: 0, outbox: 0, idempotency: 0, generations: 0, relations: 0, outfits: 0, items: 0, photos: 0,
     dlq: { deleted: 0, preserved: 0 }, ...patch };
@@ -117,6 +117,51 @@ test('normal cleanup persists pending evidence and requires actual tasks and uni
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), result);
     assert.equal(io.calls.filter(call => call.aws?.[0] === 'ecs').length, 4);
   } });
+});
+
+test('explicit recovery uses a distinct deterministic operation and persists resumable refusal', async () => {
+  const recovery = createCleanupOperationEnvelope(inputs, environment, 'recovery');
+  const recoveryName = deterministicCleanupExecutionName(recovery);
+  const recoveryArn = cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, recoveryName);
+  assert.equal(recovery.operation_mode, 'recovery');
+  assert.equal(recovery.operation_id, `beta-tester-cleanup:recovery:${scope}`);
+  assert.notEqual(recoveryName, name);
+  assert.match(recoveryName, /^beta-cleanup-recovery-/);
+  const directory = await mkdtemp(join(tmpdir(), 'anywear-recovery-proof-'));
+  const evidencePath = join(directory, 'operation.json');
+  let starts = 0;
+  const io = {
+    async start(input, executionName) {
+      starts += 1;
+      assert.deepEqual(input, recovery);
+      assert.equal(executionName, recoveryName);
+      return { executionArn: recoveryArn };
+    },
+    async describe(executionArn) {
+      assert.equal(executionArn, recoveryArn);
+      return { executionArn: recoveryArn, name: recoveryName,
+        stateMachineArn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(/:7$/, ''),
+        stateMachineVersionArn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN,
+        input: JSON.stringify(recovery), inputDetails: { included: true }, status: 'FAILED',
+        startDate: new Date('2026-10-10T00:00:00Z'), stopDate: new Date('2026-10-10T00:00:01Z') };
+    },
+    async aws() { throw new Error('Recovery failure must not inspect legacy retry evidence'); },
+    async sleep() { throw new Error('Recovery failure must not poll after terminal status'); },
+  };
+  try {
+    const patch = { ...environment, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: evidencePath };
+    await assert.rejects(runRecoveryCleanupOperation(inputs, patch, io), /identities retained/);
+    const first = JSON.parse(await readFile(evidencePath, 'utf8'));
+    assert.equal(first.operation.operation_mode, 'recovery');
+    assert.equal(first.operation.execution_name, recoveryName);
+    assert.equal(first.operation.execution_arn, recoveryArn);
+    assert.equal(first.operation.proof_status, 'refused');
+    await assert.rejects(runRecoveryCleanupOperation(inputs, patch, io), /identities retained/);
+    assert.equal(starts, 2);
+    const second = JSON.parse(await readFile(evidencePath, 'utf8'));
+    assert.equal(second.operation.execution_name, first.operation.execution_name);
+    assert.deepEqual(second.operation.input, first.operation.input);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 for (const startError of ['ExecutionAlreadyExists', 'TimeoutError', 'NetworkingError']) {
@@ -453,7 +498,7 @@ test('a pending execution remains bounded and retains recoverable execution iden
 
 test('original operation evidence is consumed and source/version/request drift refuses any start', async () => {
   const original = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
-    state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, execution_name: name, execution_arn: arn,
+    operation_mode: 'normal', state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, execution_name: name, execution_arn: arn,
     input_sha256: hash(JSON.stringify(envelope)), input: envelope, status: 'RUNNING' } };
   for (const corrupt of [false, true]) {
     await run({ verify: async (execute, io) => {
@@ -560,7 +605,7 @@ test('historical fallback rejects malformed snapshots, unknown overrides, redriv
 
 test('retry preparation proves actual prior cessation without any start and submission is authenticated once', async () => {
   const original = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
-    state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, execution_name: name, execution_arn: arn,
+    operation_mode: 'normal', state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, execution_name: name, execution_arn: arn,
     input_sha256: hash(JSON.stringify(envelope)), input: envelope, status: 'FAILED', proof_status: 'refused' } };
   const io = refusalIo();
   const intent = await prepareCleanupRetryIntent(inputs, original, environment, io);
