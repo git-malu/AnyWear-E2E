@@ -87,6 +87,25 @@ export interface CleanupOperationIo {
   sleep(milliseconds: number): Promise<void>;
 }
 
+interface CanonicalTask {
+  taskArn: string;
+  clusterArn: string;
+  taskDefinitionArn: string;
+  lastStatus: string;
+  desiredStatus: string;
+  startedBy: string;
+  containers: Record<string, unknown>[];
+  overrides: Record<string, unknown>;
+}
+
+interface TaskProofOptions {
+  expectedDefinition?: string;
+  requireSuccess: boolean;
+  origin: 'live' | 'history';
+  eventIds?: number[];
+  snapshotText?: string;
+}
+
 function hash(text: string): string { return createHash('sha256').update(text, 'utf8').digest('hex'); }
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -95,6 +114,139 @@ function object(value: unknown, label: string): Record<string, unknown> {
 function array(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return value;
+}
+
+function exactObject(value: unknown, label: string, allowed: string[]): Record<string, unknown> {
+  const result = object(value, label);
+  if (Object.keys(result).some(key => !allowed.includes(key))) throw new Error(`${label} contains an unknown field`);
+  return result;
+}
+
+function optionalArray(value: unknown, label: string): unknown[] {
+  if (value === undefined) return [];
+  return array(value, label);
+}
+
+function inertHistoryScalar(value: unknown, label: string): undefined {
+  if (value === undefined || value === '') return undefined;
+  throw new Error(`${label} contains a nonempty override`);
+}
+
+function mapLiveTask(value: unknown): CanonicalTask {
+  const task = object(value, 'Live ECS task');
+  for (const key of ['taskArn', 'clusterArn', 'taskDefinitionArn', 'lastStatus', 'desiredStatus', 'startedBy']) {
+    if (typeof task[key] !== 'string' || task[key] === '') throw new Error(`Live ECS task field ${key} is malformed`);
+  }
+  const containers = array(task.containers, 'Live ECS containers').map(entry => object(entry, 'Live ECS container'));
+  return { taskArn: task.taskArn as string, clusterArn: task.clusterArn as string, taskDefinitionArn: task.taskDefinitionArn as string,
+    lastStatus: task.lastStatus as string, desiredStatus: task.desiredStatus as string, startedBy: task.startedBy as string, containers,
+    overrides: object(task.overrides === undefined ? {} : task.overrides, 'Live ECS overrides') };
+}
+
+function mapHistoryTask(value: unknown): CanonicalTask {
+  const task = object(value, 'History ECS task');
+  for (const key of ['TaskArn', 'ClusterArn', 'TaskDefinitionArn', 'LastStatus', 'DesiredStatus', 'StartedBy']) {
+    if (typeof task[key] !== 'string' || task[key] === '') throw new Error(`History ECS task field ${key} is malformed`);
+  }
+  const containers = array(task.Containers, 'History ECS containers').map(entry => {
+    const container = object(entry, 'History ECS container');
+    if (typeof container.Name !== 'string' || typeof container.LastStatus !== 'string'
+      || !Number.isInteger(container.ExitCode) || typeof container.ImageDigest !== 'string') throw new Error('History ECS container is malformed');
+    return { name: container.Name, lastStatus: container.LastStatus, exitCode: container.ExitCode, imageDigest: container.ImageDigest };
+  });
+  const rawOverrides = object(task.Overrides === undefined ? {} : task.Overrides, 'History ECS overrides');
+  if (Object.keys(rawOverrides).some(key => !['ContainerOverrides', 'InferenceAcceleratorOverrides', 'TaskRoleArn', 'ExecutionRoleArn', 'Cpu', 'Memory'].includes(key))) {
+    throw new Error('History ECS overrides contain an unknown field');
+  }
+  const containerOverrides = optionalArray(rawOverrides.ContainerOverrides, 'History container overrides').map(entry => {
+    const override = object(entry, 'History container override');
+    if (Object.keys(override).some(key => !['Name', 'Command', 'Environment', 'EnvironmentFiles', 'ResourceRequirements'].includes(key))) {
+      throw new Error('History container override contains an unknown field');
+    }
+    if (typeof override.Name !== 'string') throw new Error('History container override name is malformed');
+    if (override.Command !== undefined && !Array.isArray(override.Command)) throw new Error('History container override command is malformed');
+    return { name: override.Name, command: override.Command, environment: override.Environment,
+      environmentFiles: override.EnvironmentFiles, resourceRequirements: override.ResourceRequirements };
+  });
+  return { taskArn: task.TaskArn as string, clusterArn: task.ClusterArn as string, taskDefinitionArn: task.TaskDefinitionArn as string,
+    lastStatus: task.LastStatus as string, desiredStatus: task.DesiredStatus as string, startedBy: task.StartedBy as string,
+    containers, overrides: { containerOverrides, inferenceAcceleratorOverrides: optionalArray(rawOverrides.InferenceAcceleratorOverrides, 'History accelerator overrides'),
+      taskRoleArn: inertHistoryScalar(rawOverrides.TaskRoleArn, 'History task role'),
+      executionRoleArn: inertHistoryScalar(rawOverrides.ExecutionRoleArn, 'History execution role'),
+      cpu: inertHistoryScalar(rawOverrides.Cpu, 'History CPU'),
+      memory: inertHistoryScalar(rawOverrides.Memory, 'History memory') } };
+}
+
+function validateCanonicalTask(task: CanonicalTask, envelope: CleanupOperationEnvelope, io: CleanupOperationIo,
+  options: TaskProofOptions): Promise<Record<string, unknown>> {
+  return (async () => {
+    if (!TASK_ARN.test(task.taskArn) || task.clusterArn !== CLUSTER || task.lastStatus !== 'STOPPED' || task.desiredStatus !== 'STOPPED'
+      || task.startedBy !== 'AWS Step Functions' || !DEFINITION_ARN.test(task.taskDefinitionArn)
+      || (options.expectedDefinition && task.taskDefinitionArn !== options.expectedDefinition)) throw new Error('Cleanup task has not stopped under the exact definition');
+    if (task.containers.length !== 1) throw new Error('Cleanup task must have exactly one container');
+    const container = task.containers[0];
+    if (container.name !== 'OneShot' || container.lastStatus !== 'STOPPED' || !Number.isInteger(container.exitCode)
+      || (options.requireSuccess && container.exitCode !== 0) || container.imageDigest !== envelope.service_image_digest) {
+      throw new Error('OneShot task image/status/exit proof failed');
+    }
+    const definitionResponse = object(await io.aws(['ecs', 'describe-task-definition', '--task-definition', task.taskDefinitionArn]), 'Task definition response');
+    const definition = object(definitionResponse.taskDefinition, 'Task definition');
+    const definitions = array(definition.containerDefinitions, 'Definition containers');
+    if (definitions.length !== 1 || definition.taskDefinitionArn !== task.taskDefinitionArn || definition.cpu !== '512' || definition.memory !== '1024'
+      || definition.networkMode !== 'awsvpc' || !isDeepStrictEqual(definition.requiresCompatibilities, ['FARGATE'])) throw new Error('Immutable cleanup definition changed');
+    const fixed = object(definitions[0], 'Fixed OneShot definition');
+    if (fixed.name !== 'OneShot' || typeof fixed.image !== 'string' || !fixed.image.startsWith('650880818323.dkr.ecr.ap-east-1.amazonaws.com/')
+      || fixed.image.split('@')[1] !== envelope.service_image_digest) throw new Error('Task definition image binding failed');
+    if (fixed.entryPoint !== undefined && (!Array.isArray(fixed.entryPoint) || fixed.entryPoint.length !== 0)) throw new Error('Task definition entrypoint was overridden');
+    for (const field of ['environmentFiles', 'resourceRequirements']) {
+      if (fixed[field] !== undefined && (!Array.isArray(fixed[field]) || (fixed[field] as unknown[]).length !== 0)) throw new Error('Task definition inert defaults changed');
+    }
+    const variables = array(fixed.environment, 'Definition environment').map(value => object(value, 'Environment value'));
+    const variable = (name: string) => {
+      const matches = variables.filter(entry => entry.name === name);
+      if (matches.length !== 1 || typeof matches[0].value !== 'string' || !matches[0].value) throw new Error('Task source environment is absent or duplicated');
+      return matches[0].value;
+    };
+    const command = array(fixed.command, 'Fixed command');
+    const verification = isDeepStrictEqual(command, ['node', 'dist/verify.js']);
+    if (!verification && !isDeepStrictEqual(command, ['node', 'dist/ops/beta-cleanup-operation.js'])) throw new Error('Task definition command is not the fixed cleanup capability');
+    const prefix = verification ? 'beta-anywear-cleanup-verify' : 'beta-anywear-cleanup';
+    const logs = object(fixed.logConfiguration, 'Task logs');
+    const logOptions = object(logs.options, 'Task log options');
+    if (DEFINITION_ARN.exec(task.taskDefinitionArn)?.[1] !== prefix
+      || variable('SERVICE_COMMIT_SHA') !== envelope.service_commit_sha || variable('IMAGE_DIGEST') !== envelope.service_image_digest
+      || logs.logDriver !== 'awslogs' || logOptions['awslogs-group'] !== LOG_GROUP || logOptions['awslogs-region'] !== 'ap-east-1'
+      || logOptions['awslogs-stream-prefix'] !== prefix) throw new Error('Task definition source/fixed log binding failed');
+    const overrides = exactObject(task.overrides, 'Task overrides', ['containerOverrides', 'inferenceAcceleratorOverrides', 'taskRoleArn', 'executionRoleArn', 'cpu', 'memory']);
+    const accelerator = optionalArray(overrides.inferenceAcceleratorOverrides, 'Inference accelerator overrides');
+    if (accelerator.length !== 0 || overrides.taskRoleArn !== undefined || overrides.executionRoleArn !== undefined
+      || overrides.cpu !== undefined || overrides.memory !== undefined) throw new Error('Cleanup executable role/cpu/memory was overridden');
+    const containerOverrides = optionalArray(overrides.containerOverrides, 'Container overrides');
+    if (containerOverrides.length > 1) throw new Error('Cleanup has multiple container overrides');
+    let envelopeHash: string | undefined;
+    if (verification) {
+      if (containerOverrides.length === 1) {
+        const override = exactObject(containerOverrides[0], 'Verifier container override', ['name', 'command', 'environment', 'environmentFiles', 'resourceRequirements']);
+        if (override.name !== 'OneShot' || override.environment !== undefined || override.environmentFiles !== undefined
+          || override.resourceRequirements !== undefined || override.command !== undefined) throw new Error('Verifier executable override changed');
+      }
+    } else {
+      if (containerOverrides.length !== 1) throw new Error('Cleanup command override is missing');
+      const override = exactObject(containerOverrides[0], 'Cleanup container override', ['name', 'command', 'environment', 'environmentFiles', 'resourceRequirements']);
+      const actual = array(override.command, 'Cleanup command');
+      if (override.name !== 'OneShot' || actual.length !== 3 || actual[0] !== 'node' || actual[1] !== 'dist/ops/beta-cleanup-operation.js'
+        || actual[2] !== JSON.stringify(envelope) || !isDeepStrictEqual(parseStrictJson(actual[2]), envelope)
+        || optionalArray(override.environment, 'Cleanup environment').length !== 0
+        || optionalArray(override.environmentFiles, 'Cleanup environment files').length !== 0
+        || optionalArray(override.resourceRequirements, 'Cleanup resource requirements').length !== 0) throw new Error('Cleanup task override does not bind the original envelope');
+      envelopeHash = hash(actual[2]);
+    }
+    return { task_arn: task.taskArn, task_definition_arn: task.taskDefinitionArn, kind: verification ? 'verification' : 'cleanup',
+      status: 'STOPPED', exit_code: container.exitCode, image_digest: container.imageDigest, service_commit_sha: variable('SERVICE_COMMIT_SHA'),
+      log_group: LOG_GROUP, log_stream: `${prefix}/OneShot/${TASK_ARN.exec(task.taskArn)![1]}`,
+      proof_origin: options.origin, snapshot_sha256: hash(options.snapshotText ?? JSON.stringify(task)), ...(options.eventIds ? { event_ids: options.eventIds } : {}),
+      ...(envelopeHash ? { envelope_sha256: envelopeHash } : {}) };
+  })();
 }
 
 export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env): CleanupOperationEnvelope {
@@ -169,63 +321,21 @@ function validateResult(value: unknown, envelope: CleanupOperationEnvelope): Cle
 }
 
 async function observeTask(io: CleanupOperationIo, envelope: CleanupOperationEnvelope, taskArn: string,
-  expectedDefinition?: string, requireSuccess = true): Promise<Record<string, unknown>> {
+  expectedDefinition?: string, requireSuccess = true, historical?: CanonicalTask, eventIds?: number[], snapshotText?: string): Promise<Record<string, unknown>> {
   if (!TASK_ARN.test(taskArn)) throw new Error('Cleanup task ARN is outside the fixed Beta cluster');
   const response = object(await io.aws(['ecs', 'describe-tasks', '--cluster', CLUSTER, '--tasks', taskArn]), 'Observed cleanup tasks');
-  if (array(response.failures, 'Task failures').length !== 0) throw new Error('Cleanup task cannot be observed');
+  const failures = array(response.failures, 'Task failures');
   const tasks = array(response.tasks, 'Tasks');
-  const task = object(tasks[0], 'Exact task');
-  if (tasks.length !== 1 || task.taskArn !== taskArn || task.clusterArn !== CLUSTER || task.lastStatus !== 'STOPPED'
-    || typeof task.taskDefinitionArn !== 'string' || !DEFINITION_ARN.test(task.taskDefinitionArn)
-    || (expectedDefinition && task.taskDefinitionArn !== expectedDefinition)) throw new Error('Cleanup task has not stopped under the exact definition');
-  const containers = array(task.containers, 'Task containers');
-  const container = object(containers[0], 'OneShot task');
-  if (containers.length !== 1 || container.name !== 'OneShot' || container.lastStatus !== 'STOPPED'
-    || !Number.isInteger(container.exitCode) || (requireSuccess && container.exitCode !== 0)
-    || container.imageDigest !== envelope.service_image_digest) throw new Error('OneShot task image/status/exit proof failed');
-  const definitionResponse = object(await io.aws(['ecs', 'describe-task-definition', '--task-definition', task.taskDefinitionArn]), 'Task definition response');
-  const definition = object(definitionResponse.taskDefinition, 'Task definition');
-  const definitions = array(definition.containerDefinitions, 'Definition containers');
-  const fixed = object(definitions[0], 'Fixed OneShot definition');
-  const variables = array(fixed.environment, 'Definition environment').map(value => object(value, 'Environment value'));
-  const variable = (name: string) => {
-    const matches = variables.filter(entry => entry.name === name);
-    if (matches.length !== 1) throw new Error('Task source environment is absent or duplicated');
-    return matches[0].value;
-  };
-  const command = array(fixed.command, 'Fixed command');
-  const verification = isDeepStrictEqual(command, ['node', 'dist/verify.js']);
-  if (!verification && !isDeepStrictEqual(command, ['node', 'dist/ops/beta-cleanup-operation.js'])) throw new Error('Task definition command is not the fixed cleanup capability');
-  const prefix = verification ? 'beta-anywear-cleanup-verify' : 'beta-anywear-cleanup';
-  const logs = object(fixed.logConfiguration, 'Task logs');
-  const options = object(logs.options, 'Task log options');
-  if (definition.taskDefinitionArn !== task.taskDefinitionArn || DEFINITION_ARN.exec(task.taskDefinitionArn)?.[1] !== prefix
-    || definitions.length !== 1 || fixed.name !== 'OneShot'
-    || typeof fixed.image !== 'string' || !fixed.image.startsWith('650880818323.dkr.ecr.ap-east-1.amazonaws.com/')
-    || fixed.image.split('@')[1] !== envelope.service_image_digest
-    || variable('SERVICE_COMMIT_SHA') !== envelope.service_commit_sha || variable('IMAGE_DIGEST') !== envelope.service_image_digest
-    || logs.logDriver !== 'awslogs' || options['awslogs-group'] !== LOG_GROUP || options['awslogs-region'] !== 'ap-east-1'
-    || options['awslogs-stream-prefix'] !== prefix) throw new Error('Task definition source/image/fixed log binding failed');
-  const overrides = object(task.overrides, 'Task overrides');
-  const overridden = array(overrides.containerOverrides, 'Container overrides');
-  if (overrides.taskRoleArn || overrides.executionRoleArn || overrides.inferenceAcceleratorOverrides
-    || (fixed.entryPoint !== undefined && !isDeepStrictEqual(fixed.entryPoint, []))) throw new Error('Cleanup executable role/entrypoint was overridden');
-  let envelopeHash: string | undefined;
-  if (verification) {
-    if (overridden.length !== 0 && !(overridden.length === 1 && isDeepStrictEqual(overridden[0], { name: 'OneShot' }))) {
-      throw new Error('Verification task must not override executable inputs');
-    }
-  } else {
-    const override = object(overridden[0], 'Cleanup override');
-    const actual = array(override.command, 'Cleanup command');
-    if (overridden.length !== 1 || Object.keys(override).sort().join(',') !== 'command,name' || override.name !== 'OneShot'
-      || actual.length !== 3 || actual[0] !== 'node' || actual[1] !== 'dist/ops/beta-cleanup-operation.js'
-      || typeof actual[2] !== 'string' || !isDeepStrictEqual(parseStrictJson(actual[2]), envelope)) throw new Error('Cleanup task override does not bind the original envelope');
-    envelopeHash = hash(actual[2]);
+  const missingFailure = failures.length === 1 ? exactObject(failures[0], 'Task failure', ['arn', 'reason']) : undefined;
+  const missing = tasks.length === 0 && failures.length === 1 && missingFailure?.arn === taskArn && missingFailure.reason === 'MISSING';
+  if (missing) {
+    if (!historical) throw new Error('Cleanup task history fallback is unavailable');
+    return validateCanonicalTask(historical, envelope, io, { expectedDefinition, requireSuccess, origin: 'history', eventIds, snapshotText });
   }
-  return { task_arn: taskArn, task_definition_arn: task.taskDefinitionArn, kind: verification ? 'verification' : 'cleanup',
-    status: 'STOPPED', exit_code: container.exitCode, image_digest: container.imageDigest, service_commit_sha: variable('SERVICE_COMMIT_SHA'),
-    log_group: LOG_GROUP, log_stream: `${prefix}/OneShot/${TASK_ARN.exec(taskArn)![1]}`, ...(envelopeHash ? { envelope_sha256: envelopeHash } : {}) };
+  if (failures.length !== 0 || tasks.length !== 1) throw new Error('Cleanup task cannot be observed');
+  const liveTask = mapLiveTask(tasks[0]);
+  if (liveTask.taskArn !== taskArn) throw new Error('Observed ECS task differs from the submitted task identity');
+  return validateCanonicalTask(liveTask, envelope, io, { expectedDefinition, requireSuccess, origin: 'live', snapshotText: JSON.stringify(tasks[0]) });
 }
 
 function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): Record<string, unknown> {
@@ -284,38 +394,92 @@ async function readCommitted(io: CleanupOperationIo, proof: Record<string, unkno
   throw new Error('Cleanup log completion marker was not observed within the bounded wait');
 }
 
-async function proveStoppedExecution(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope): Promise<string[]> {
+interface HistoricalTaskProof { taskArn: string; task: CanonicalTask; eventIds: number[]; snapshotText: string }
+
+function historyEvent(events: Record<string, unknown>[], id: number, type: string, previous?: number): Record<string, unknown> {
+  const event = events.find(value => value.id === id);
+  if (!event || event.type !== type || (previous !== undefined && event.previousEventId !== previous)) throw new Error('Prior execution event linkage is invalid');
+  return event;
+}
+
+function scheduledTask(event: Record<string, unknown>, taskDefinition: string, command?: string[]): void {
+  const details = exactObject(event.taskScheduledEventDetails, 'Scheduled task details', ['resourceType', 'resource', 'region', 'parameters', 'timeoutInSeconds']);
+  if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync' || details.region !== 'ap-east-1' || typeof details.parameters !== 'string') throw new Error('Prior scheduled task is outside the fixed capability');
+  const parameters = exactObject(parseStrictJson(details.parameters), 'Scheduled task parameters', ['Cluster', 'TaskDefinition', 'LaunchType', 'NetworkConfiguration', 'Overrides', 'ClientToken']);
+  if (parameters.Cluster !== CLUSTER || parameters.TaskDefinition !== taskDefinition || parameters.LaunchType !== 'FARGATE'
+    || typeof parameters.ClientToken !== 'string' || !/^[a-f0-9]{64}$/.test(parameters.ClientToken)) throw new Error('Prior scheduled task binding is invalid');
+  const network = exactObject(parameters.NetworkConfiguration, 'Scheduled network configuration', ['AwsvpcConfiguration']);
+  const awsvpc = exactObject(network.AwsvpcConfiguration, 'Scheduled awsvpc configuration', ['Subnets', 'SecurityGroups', 'AssignPublicIp']);
+  if (!Array.isArray(awsvpc.Subnets) || awsvpc.Subnets.length < 1 || !Array.isArray(awsvpc.SecurityGroups) || awsvpc.SecurityGroups.length !== 1 || awsvpc.AssignPublicIp !== 'DISABLED') throw new Error('Prior scheduled network binding is invalid');
+  if (command) {
+    const overrides = exactObject(parameters.Overrides, 'Scheduled cleanup overrides', ['ContainerOverrides']);
+    const rows = array(overrides.ContainerOverrides, 'Scheduled container overrides');
+    if (rows.length !== 1) throw new Error('Prior scheduled cleanup override is invalid');
+    const row = exactObject(rows[0], 'Scheduled cleanup override', ['Name', 'Command']);
+    if (row.Name !== 'OneShot' || !isDeepStrictEqual(row.Command, command)) throw new Error('Prior scheduled cleanup command is invalid');
+  } else if (parameters.Overrides !== undefined && !isDeepStrictEqual(parameters.Overrides, {})) {
+    throw new Error('Prior verifier executable override is invalid');
+  }
+}
+
+async function proveStoppedExecution(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope): Promise<HistoricalTaskProof[]> {
   const history = object(await io.aws(['stepfunctions', 'get-execution-history', '--execution-arn', arn, '--max-results', '1000', '--no-paginate']), 'Execution history');
   if (history.nextToken) throw new Error('Prior execution history is incomplete; retry refused');
   const events = array(history.events, 'Execution events').map(value => object(value, 'Execution event'));
+  if (events.length !== 19 || new Set(events.map(event => event.id)).size !== 19 || events.some(event => !Number.isInteger(event.id) || Number(event.id) < 1 || Number(event.id) > 19)) throw new Error('Prior execution history is not the exact complete event set');
   const begun = events.filter(event => event.type === 'ExecutionStarted');
   const begunDetails = object(begun[0]?.executionStartedEventDetails, 'Prior execution input');
   if (begun.length !== 1 || begunDetails.input !== JSON.stringify(envelope)
     || object(begunDetails.inputDetails, 'Prior input completeness').truncated !== false
     || !events.some(event => ['ExecutionFailed', 'ExecutionTimedOut', 'ExecutionAborted'].includes(String(event.type)))
     || events.some(event => event.type === 'ExecutionRedriven')) throw new Error('Prior terminal execution history does not bind the exact request');
-  const scheduled = events.filter(event => event.type === 'TaskScheduled');
-  const submitted = events.filter(event => event.type === 'TaskSubmitted');
-  if (scheduled.length !== submitted.length || scheduled.length > 2) throw new Error('Prior task launch/cessation is unknown; retry refused');
-  for (const event of scheduled) {
-    const details = object(event.taskScheduledEventDetails, 'Scheduled task details');
-    if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync') throw new Error('Prior scheduled task is outside the fixed capability');
+  historyEvent(events, 1, 'ExecutionStarted');
+  historyEvent(events, 2, 'PassStateEntered', 1);
+  historyEvent(events, 3, 'PassStateExited', 2);
+  historyEvent(events, 4, 'PassStateEntered', 3);
+  historyEvent(events, 5, 'PassStateExited', 4);
+  historyEvent(events, 6, 'TaskStateEntered', 5);
+  historyEvent(events, 12, 'PassStateEntered', 11);
+  historyEvent(events, 13, 'PassStateExited', 12);
+  historyEvent(events, 14, 'TaskStateEntered', 13);
+  const chains = [{ entered: 6, scheduled: 7, started: 8, submitted: 9, terminal: 10, exited: 11, name: 'Verify', success: true },
+    { entered: 14, scheduled: 15, started: 16, submitted: 17, terminal: 18, name: 'Cleanup', success: false }];
+  const proofs: HistoricalTaskProof[] = [];
+  for (const chain of chains) {
+    const entered = historyEvent(events, chain.entered, 'TaskStateEntered', chain.entered - 1);
+    if (object(entered.taskStateEnteredEventDetails, 'Task state').name !== chain.name) throw new Error('Prior task state name changed');
+    const submittedEvent = historyEvent(events, chain.submitted, 'TaskSubmitted', chain.started);
+    historyEvent(events, chain.scheduled, 'TaskScheduled', chain.entered);
+    historyEvent(events, chain.started, 'TaskStarted', chain.scheduled);
+    if (chain.exited) historyEvent(events, chain.exited, 'TaskStateExited', chain.terminal);
+    const scheduledDetails = object(events.find(event => event.id === chain.scheduled)?.taskScheduledEventDetails, 'Scheduled task details');
+    const scheduledParameters = object(parseStrictJson(String(scheduledDetails.parameters)), 'Scheduled parameters');
+    const definition = String(scheduledParameters.TaskDefinition);
+    if (!DEFINITION_ARN.test(definition)) throw new Error('Prior task definition is not fixed');
+    scheduledTask(events.find(event => event.id === chain.scheduled)!, definition,
+      chain.success ? undefined : ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)]);
+    const details = exactObject(submittedEvent.taskSubmittedEventDetails, 'Submitted task details', ['resourceType', 'resource', 'output', 'outputDetails']);
+    if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync' || object(details.outputDetails, 'Submitted output completeness').truncated !== false) throw new Error('Prior task launch data is truncated; retry refused');
+    const output = exactObject(parseStrictJson(String(details.output)), 'Submitted task output', ['Failures', 'Tasks', 'SdkHttpMetadata', 'SdkResponseMetadata']);
+    const rows = array(output.Tasks, 'Submitted ECS tasks');
+    if (rows.length !== 1 || array(output.Failures, 'Submitted ECS failures').length !== 0) throw new Error('Prior task launch proof is not the fixed ECS capability');
+    const submittedTask = exactObject(rows[0], 'Submitted ECS task', ['TaskArn', 'ClusterArn']);
+    const taskArn = submittedTask.TaskArn;
+    if (typeof taskArn !== 'string' || !TASK_ARN.test(taskArn) || submittedTask.ClusterArn !== CLUSTER) throw new Error('Prior submitted task identity unavailable');
+    const terminal = historyEvent(events, chain.terminal, chain.success ? 'TaskSucceeded' : 'TaskFailed', chain.submitted);
+    const terminalDetails = object(terminal[chain.success ? 'taskSucceededEventDetails' : 'taskFailedEventDetails'], 'Terminal task details');
+    if (chain.success && object(terminalDetails.outputDetails, 'Verifier output completeness').truncated !== false) throw new Error('Verifier output is incomplete');
+    if (!chain.success && terminalDetails.causeDetails !== undefined
+      && object(terminalDetails.causeDetails, 'Cleanup cause completeness').truncated !== false) throw new Error('Cleanup cause is incomplete');
+    const snapshotText = String(terminalDetails[chain.success ? 'output' : 'cause']);
+    const snapshot = mapHistoryTask(parseStrictJson(snapshotText));
+    if (snapshot.taskArn !== taskArn || snapshot.clusterArn !== CLUSTER || snapshot.taskDefinitionArn !== definition) throw new Error('Prior terminal task does not link submitted identity');
+    proofs.push({ taskArn, task: snapshot, eventIds: [chain.entered, chain.scheduled, chain.started, chain.submitted, chain.terminal, ...(chain.exited ? [chain.exited] : [])], snapshotText });
   }
-  const arns = submitted.map(event => {
-    const details = object(event.taskSubmittedEventDetails, 'Submitted task details');
-    if (object(details.outputDetails, 'Submitted output completeness').truncated !== false) throw new Error('Prior task launch data is truncated; retry refused');
-    const output = object(parseStrictJson(String(details.output)), 'Submitted task output');
-    const tasks = array(output.Tasks, 'Submitted ECS tasks');
-    const task = object(tasks[0], 'Submitted ECS task');
-    if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync' || tasks.length !== 1
-      || array(output.Failures, 'Submitted task failures').length !== 0 || typeof task.TaskArn !== 'string') {
-      throw new Error('Prior task launch proof is not the fixed ECS capability');
-    }
-    return task.TaskArn;
-  });
-  if (new Set(arns).size !== arns.length) throw new Error('Prior task launch identities are duplicated');
-  for (const taskArn of arns) await observeTask(io, envelope, taskArn, undefined, false);
-  return arns;
+  const failed = historyEvent(events, 19, 'ExecutionFailed', 18);
+  if (!failed) throw new Error('Prior execution failure is missing');
+  if (new Set(proofs.map(value => value.taskArn)).size !== 2) throw new Error('Prior task launch identities are duplicated');
+  return proofs;
 }
 
 function defaultIo(versionArn: string): CleanupOperationIo {
@@ -351,8 +515,8 @@ export async function observeFailedCleanupOperation(inputs: ServiceCleanupInputs
   const description = await transport.describe(arn);
   validateDescription(description, envelope, versionArn, name);
   if (description.status !== 'FAILED' || !description.startDate || !description.stopDate) throw new Error('Expected refusal lacks exact terminal failure');
-  const arns = await proveStoppedExecution(transport, arn, envelope);
-  const tasks = await Promise.all(arns.map(task => observeTask(transport, envelope, task, undefined, false)));
+  const proofs = await proveStoppedExecution(transport, arn, envelope);
+  const tasks = await Promise.all(proofs.map(proof => observeTask(transport, envelope, proof.taskArn, undefined, false, proof.task, proof.eventIds, proof.snapshotText)));
   const verification = tasks.filter(task => task.kind === 'verification');
   const cleanup = tasks.filter(task => task.kind === 'cleanup');
   if (tasks.length !== 2 || verification.length !== 1 || cleanup.length !== 1
