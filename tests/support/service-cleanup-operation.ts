@@ -19,6 +19,12 @@ const MARKER = 'ANYWEAR_BETA_CLEANUP_RESULT=';
 const TERMINAL_FAILURE = ['FAILED', 'TIMED_OUT', 'ABORTED'];
 const execute = promisify(execFile);
 
+type CleanupRefusalPhase = 'operation_start' | 'execution_observation' | 'retry_eligibility' | 'retry_proof'
+  | 'result_proof' | 'task_proof' | 'completion_proof';
+type CleanupRefusalCategory = 'operation_start_unavailable' | 'execution_observation_unavailable' | 'retry_not_authorized'
+  | 'retry_proof_unavailable' | 'execution_not_succeeded' | 'result_proof_unavailable' | 'task_proof_unavailable'
+  | 'completion_proof_unavailable';
+
 export interface CleanupOperationEnvelope {
   schema_version: 1;
   operation_id: string;
@@ -69,6 +75,8 @@ export interface CleanupOperationEvidence {
     committed_result?: Record<string, unknown>;
     preceding_execution?: { execution_arn: string; status: string; stopped_tasks: string[]; task_proofs?: Record<string, unknown>[]; log_snapshot_sha256?: string };
     failure?: string;
+    refusal_phase?: CleanupRefusalPhase;
+    refusal_category?: CleanupRefusalCategory;
   };
 }
 
@@ -491,6 +499,8 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
   const evidence: CleanupOperationEvidence = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation',
     operation: { state_machine_version_arn: versionArn, execution_arn: cleanupExecutionArn(versionArn, name), execution_name: name,
       status: 'PENDING', proof_status: 'pending', input_sha256: hash(JSON.stringify(envelope)), input: envelope } };
+  let refusalPhase: CleanupRefusalPhase = 'operation_start';
+  let refusalCategory: CleanupRefusalCategory = 'operation_start_unavailable';
   const start = async () => {
     await writeEvidence(path, evidence);
     try {
@@ -503,6 +513,8 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
   };
   try {
     await start();
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_observation_unavailable';
     let description: DescribeExecutionOutput | undefined;
     for (let poll = 0; poll < 900; poll += 1) {
       description = await transport.describe(evidence.operation.execution_arn);
@@ -513,7 +525,11 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       await writeEvidence(path, evidence);
       if (description.status === 'SUCCEEDED') break;
       if (TERMINAL_FAILURE.includes(description.status!)) {
+        refusalPhase = 'retry_eligibility';
+        refusalCategory = 'retry_not_authorized';
         if (environment.E2E_CLEANUP_RETRY_FAILED !== 'true' || name.endsWith('-retry1')) throw new Error('Cleanup terminated without success; identities retained and retry requires explicit task-cessation proof');
+        refusalPhase = 'retry_proof';
+        refusalCategory = 'retry_proof_unavailable';
         const proof = await observeFailedCleanupOperation(inputs, environment, transport);
         if (proof.execution_arn !== evidence.operation.execution_arn || proof.status !== 'FAILED'
           || proof.input_sha256 !== evidence.operation.input_sha256 || proof.committed_marker_observed !== false
@@ -530,18 +546,30 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
         evidence.operation.execution_arn = cleanupExecutionArn(versionArn, name);
         evidence.operation.status = 'PENDING';
         description = undefined;
+        refusalPhase = 'operation_start';
+        refusalCategory = 'operation_start_unavailable';
         await start();
+        refusalPhase = 'execution_observation';
+        refusalCategory = 'execution_observation_unavailable';
       } else await transport.sleep(2_000);
     }
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_not_succeeded';
     if (description?.status !== 'SUCCEEDED' || !description.output || description.outputDetails?.included !== true) throw new Error('Cleanup did not expose complete terminal success');
+    refusalPhase = 'result_proof';
+    refusalCategory = 'result_proof_unavailable';
     const output = validateResult(parseStrictJson(description.output), envelope);
     evidence.operation.output = output;
     await writeEvidence(path, evidence);
+    refusalPhase = 'task_proof';
+    refusalCategory = 'task_proof_unavailable';
     const verification = await observeTask(transport, envelope, output.verification_task_arn, output.verification_task_definition_arn);
     const cleanup = await observeTask(transport, envelope, output.cleanup_task_arn, output.cleanup_task_definition_arn);
     if (verification.kind !== 'verification' || cleanup.kind !== 'cleanup') throw new Error('Cleanup tasks exchanged their fixed purposes');
     evidence.operation.tasks = [verification, cleanup];
     await writeEvidence(path, evidence);
+    refusalPhase = 'completion_proof';
+    refusalCategory = 'completion_proof_unavailable';
     evidence.operation.committed_result = await readCommitted(transport, cleanup, envelope);
     evidence.operation.proof_status = 'verified';
     await writeEvidence(path, evidence);
@@ -549,6 +577,8 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
   } catch {
     evidence.operation.proof_status = 'refused';
     evidence.operation.failure = 'Exact execution/task/committed-result proof unavailable; Cognito identities retained';
+    evidence.operation.refusal_phase = refusalPhase;
+    evidence.operation.refusal_category = refusalCategory;
     await writeEvidence(path, evidence);
     throw new Error(evidence.operation.failure);
   }

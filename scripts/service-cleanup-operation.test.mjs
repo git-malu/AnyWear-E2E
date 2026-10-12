@@ -189,8 +189,34 @@ test('failure evidence survives and retry is never automatic', async () => {
     const record = JSON.parse(await readFile(path, 'utf8'));
     assert.equal(record.operation.status, 'FAILED');
     assert.equal(record.operation.execution_arn, arn);
+    assert.equal(record.operation.refusal_phase, 'retry_eligibility');
+    assert.equal(record.operation.refusal_category, 'retry_not_authorized');
     assert.equal(io.calls.filter(call => call.start).length, 1);
   } });
+});
+
+test('cleanup refusal diagnostics use only finite phase/category values', async () => {
+  const refused = async (options, environmentPatch = {}) => run({ ...options, verify: async (execute, _io, path) => {
+    await assert.rejects(execute(), /identities retained/);
+    return JSON.parse(await readFile(path, 'utf8')).operation;
+  } }, environmentPatch);
+  const cases = [
+    [{ startError: 'AccessDeniedException' }, {}, 'operation_start', 'operation_start_unavailable'],
+    [{ description: () => ({ input: '{}' }) }, {}, 'execution_observation', 'execution_observation_unavailable'],
+    [{ description: () => ({ status: 'FAILED' }) }, {}, 'retry_eligibility', 'retry_not_authorized'],
+    [{ description: () => ({ status: 'FAILED' }), history: { events: [] } }, { E2E_CLEANUP_RETRY_FAILED: 'true' }, 'retry_proof', 'retry_proof_unavailable'],
+    [{ description: () => ({ status: 'RUNNING' }) }, {}, 'execution_observation', 'execution_not_succeeded'],
+    [{ description: () => ({ output: '{}' }) }, {}, 'result_proof', 'result_proof_unavailable'],
+    [{ task: value => ({ ...value, lastStatus: 'RUNNING' }) }, {}, 'task_proof', 'task_proof_unavailable'],
+    [{ logs: token => ({ events: token ? [] : [], nextForwardToken: 'end' }) }, {}, 'completion_proof', 'completion_proof_unavailable'],
+  ];
+  for (const [options, environmentPatch, phase, category] of cases) {
+    const operation = await refused(options, environmentPatch);
+    assert.equal(operation.proof_status, 'refused');
+    assert.equal(operation.refusal_phase, phase);
+    assert.equal(operation.refusal_category, category);
+    assert.equal(operation.failure, 'Exact execution/task/committed-result proof unavailable; Cognito identities retained');
+  }
 });
 
 function history(events = []) {
