@@ -761,7 +761,6 @@ async function cessationSnapshot(io: CleanupOperationIo, description: DescribeEx
   const submitted = events.filter(event => event.type === 'TaskSubmitted');
   if (scheduled.length > 2 || scheduled.length !== submitted.length
     || events.some(event => /(?:Activity|LambdaFunction|Map|Parallel).*Started/.test(String(event.type)))) throw new Error('Recovery history has an unaccounted launch');
-  const taskProofs: Record<string, unknown>[] = [];
   const submittedArns = new Set<string>();
   const scheduledIds = new Set<number>();
   for (const event of submitted) {
@@ -786,8 +785,6 @@ async function cessationSnapshot(io: CleanupOperationIo, description: DescribeEx
     submittedArns.add(task.TaskArn);
     const ended = events.filter(value => value.previousEventId === event.id && ['TaskSucceeded', 'TaskFailed'].includes(String(value.type)));
     if (ended.length > 1) throw new Error('Recovery terminal task inventory is duplicated');
-    // Cessation needs a current STOPPED observation; an expired MISSING task is insufficient.
-    taskProofs.push(await observeTask(io, input, task.TaskArn, definition, false, undefined, [Number(schedule.id), Number(event.id)]));
   }
   const inventory: Record<string, unknown>[] = [];
   const listed = new Set<string>();
@@ -808,7 +805,7 @@ async function cessationSnapshot(io: CleanupOperationIo, description: DescribeEx
       }
     }
   }
-  return { history_sha256: hash(JSON.stringify(events)), task_proofs: taskProofs,
+  return { history_sha256: hash(JSON.stringify(events)), historical_submitted_task_arns: [...submittedArns].sort(),
     inventory: inventory.sort((a, b) => String(a.task_arn).localeCompare(String(b.task_arn))) };
 }
 

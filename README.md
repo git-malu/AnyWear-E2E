@@ -374,11 +374,12 @@ own run ID and attempt. These inputs are checked before AWS credentials.
 Recovery execution names bind the original run scope and attempt alone. Resuming
 the latest attempt preserves its exact source, image, version and input, including
 after a lost success response. Repair requires explicit latest+1 after the prior
-execution failed, timed out or was aborted. Full bounded execution/history and ECS
-inventories must account for every launch and prove current stopped tasks in two
-stable scans. Missing tasks, incomplete pages, stale artifacts, changed captured
-subjects or active work retain the accounts. Recovery does not enter the legacy
-normal retry/no-commit path. Partial Cognito reconciliation never shrinks the
+execution failed, timed out or was aborted. Full bounded execution/history records
+bind the predecessor and every submitted task. Two stable current ECS inventory
+scans must prove no active work; expired historical task descriptions do not block
+a new attempt. Unavailable listed current tasks, incomplete pages, stale artifacts,
+changed captured subjects or active work retain the accounts. Recovery does not
+enter the legacy normal retry/no-commit path. Partial Cognito reconciliation never shrinks the
 canonical cleanup request. Shared account-pool concurrency does not establish a
 cross-repository writer allocation; that remains an operational preflight gate.
 

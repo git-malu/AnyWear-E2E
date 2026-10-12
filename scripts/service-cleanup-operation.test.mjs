@@ -640,7 +640,7 @@ function statefulRecoveryIo(options = {}) {
     definition: value => ({ ...value, containerDefinitions: value.containerDefinitions.map(container => ({ ...container,
       image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/anywear@${currentInput.service_image_digest}`,
       environment: [{ name: 'SERVICE_COMMIT_SHA', value: currentInput.service_commit_sha }, { name: 'IMAGE_DIGEST', value: currentInput.service_image_digest }] })) }),
-    logs: token => ({ events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({}, currentInput))}` }], nextForwardToken: 'end' }),
+    logs: token => ({ events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ users: JSON.parse(currentInput.cleanup_request).users.length }, currentInput))}` }], nextForwardToken: 'end' }),
   });
   const io = { calls, executions, insert,
     async start(input, executionName) {
@@ -676,6 +676,9 @@ function statefulRecoveryIo(options = {}) {
         return options.history?.(value, args) ?? value;
       }
       if (args[0] === 'ecs' && args[1] === 'list-tasks') return options.inventory?.(args, calls) ?? { taskArns: [] };
+      if (args[0] === 'ecs' && args[1] === 'describe-tasks' && options.expiredHistorical && currentStatus === 'FAILED') {
+        return { tasks: [], failures: [{ arn: args[args.indexOf('--tasks') + 1], reason: 'MISSING' }] };
+      }
       return base.aws(args);
     },
     async sleep() {
@@ -697,7 +700,7 @@ async function recoveryCase(options, verify) {
   const io = statefulRecoveryIo(options);
   const env = { ...environment, E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: originalPath, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: path,
     E2E_CLEANUP_RECOVERY_ATTEMPT: '1' };
-  try { await verify({ io, env, path, priorPath, originalPath, run: patch => runRecoveryCleanupOperation(inputs, { ...env, ...patch }, io) }); }
+  try { await verify({ io, env, path, priorPath, originalPath, run: patch => runRecoveryCleanupOperation(options.inputs ?? inputs, { ...env, ...patch }, io) }); }
   finally { await rm(directory, { recursive: true, force: true }); }
 }
 
@@ -756,8 +759,9 @@ test('stale artifacts, gaps, unknown status, incomplete pages and active or unst
     { list: rows => ({ executions: rows, nextToken: '' }) },
     { history: value => ({ ...value, events: value.events.filter(event => event.id !== 8) }) },
     { history: value => ({ ...value, nextToken: 'loop' }) },
-    { activeTask: true },
     { inventory: args => ({ taskArns: args.includes('RUNNING') ? [task('cleanup')] : [] }), activeTask: true },
+    { inventory: args => ({ taskArns: args.includes('STOPPED') ? [task('cleanup')] : [] }), expiredHistorical: true },
+    { inventory: () => ({ taskArns: [], nextToken: 'loop' }) },
     { inventory: (_args, calls) => ({ taskArns: calls.filter(call => call.aws?.[1] === 'list-tasks').length > 6 ? [task('cleanup')] : [] }) },
   ];
   for (const options of cases) await recoveryCase(options, async ({ io, run, path, priorPath }) => {
@@ -798,6 +802,38 @@ test('legacy schema3 missing-mode owner is only a canonical predecessor source',
     await recoveryCase({ original: bad }, async ({ io, run }) => {
       await assert.rejects(run(), /identities retained/);
       assert.equal(io.calls.filter(call => call.start).length, 0);
+    });
+  }
+});
+
+test('new recovery attempt uses stable current inventory when legacy or recovery predecessor tasks expired', async () => {
+  const captured = { ...inputs, cleanup_json: JSON.stringify({ runScope: scope, users: [2, 3].map(slot => ({
+    sub: `10000000-0000-4000-8000-00000000000${slot}`, email: `e2e-beta-worker-${slot}-chromium@anywear.local`,
+  })) }) };
+  const legacy = Object.fromEntries(Object.entries(createCleanupOperationEnvelope(captured, environment)).filter(([key]) => key !== 'operation_mode'));
+  const first = createCleanupOperationEnvelope(captured, environment, 'recovery', 1);
+  for (const latest of [legacy, first]) {
+    const subsequent = latest.operation_mode === 'recovery';
+    await recoveryCase({ inputs: captured, original: legacy, expiredHistorical: true, ...(subsequent ? { existing: [[first, 'FAILED']] } : {}) }, async ({ io, run, priorPath }) => {
+      // The AWS-like mock really reports expired historical ECS identities as MISSING.
+      assert.deepEqual(await io.aws(['ecs', 'describe-tasks', '--cluster', cluster, '--tasks', task('cleanup')]), {
+        tasks: [], failures: [{ arn: task('cleanup'), reason: 'MISSING' }],
+      });
+      io.calls.length = 0;
+      if (subsequent) await writeFile(priorPath, JSON.stringify(operationEvidence(first)));
+      const result = await run({ E2E_CLEANUP_RECOVERY_ATTEMPT: subsequent ? '2' : '1',
+        ...(subsequent ? { E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH: priorPath } : {}) });
+      const startedAt = io.calls.findIndex(call => call.start);
+      const preflight = io.calls.slice(0, startedAt);
+      assert.equal(io.calls.filter(call => call.start).length, 1);
+      assert.equal(preflight.filter(call => call.aws?.[1] === 'list-tasks').length, 12);
+      assert.equal(preflight.filter(call => call.aws?.[1] === 'describe-tasks').length, 0);
+      assert.equal(preflight.filter(call => call.aws?.[0] === 'logs').length, 0);
+      assert.deepEqual(result.operation.recovery_preflight.cessation.inventory, []);
+      assert.deepEqual(result.operation.recovery_preflight.cessation.historical_submitted_task_arns, [task('verification'), task('cleanup')]);
+      assert.equal(result.operation.proof_status, 'verified');
+      assert.equal(result.operation.input.cleanup_request, legacy.cleanup_request);
+      assert.equal(result.operation.input.recovery_attempt, subsequent ? 2 : 1);
     });
   }
 });
