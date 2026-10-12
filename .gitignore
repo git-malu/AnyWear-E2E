@@ -160,3 +160,4 @@ deployment-evidence*.json
 qualification-record.json
 github-cli-version.txt
 recovery/
+.worktree/
