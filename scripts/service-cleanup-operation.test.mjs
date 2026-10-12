@@ -60,14 +60,17 @@ function fixture(options = {}) {
       if (args[0] === 'stepfunctions') return options.history;
       if (args[0] === 'ecs' && args[1] === 'describe-tasks') {
         const kind = args.at(-1) === task('verification') ? 'verification' : 'cleanup';
+        if (options.missing?.includes(kind)) return { failures: [{ arn: task(kind), reason: 'MISSING' }], tasks: [] };
+        if (options.missingMalformed?.includes(kind)) return { failures: [{ arn: task(kind), reason: 'MISSING', detail: 'unexpected' }], tasks: [] };
         const value = { taskArn: task(kind), clusterArn: cluster, taskDefinitionArn: definition(kind), lastStatus: 'STOPPED',
+          desiredStatus: 'STOPPED', startedBy: 'AWS Step Functions',
           containers: [{ name: 'OneShot', lastStatus: 'STOPPED', exitCode: 0, imageDigest: envelope.service_image_digest }],
-          overrides: { containerOverrides: kind === 'verification' ? [] : [{ name: 'OneShot', command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)] }] } };
+          overrides: { containerOverrides: kind === 'verification' ? [] : [{ name: 'OneShot', command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)] }], inferenceAcceleratorOverrides: [] } };
         return { failures: [], tasks: [options.task?.(value, kind, currentName) ?? value] };
       }
       if (args[0] === 'ecs') {
         const kind = args.at(-1) === definition('verification') ? 'verification' : 'cleanup';
-        const value = { taskDefinitionArn: definition(kind), containerDefinitions: [{ name: 'OneShot',
+        const value = { taskDefinitionArn: definition(kind), cpu: '512', memory: '1024', networkMode: 'awsvpc', requiresCompatibilities: ['FARGATE'], containerDefinitions: [{ name: 'OneShot',
           image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/anywear@${envelope.service_image_digest}`,
           command: kind === 'verification' ? ['node', 'dist/verify.js'] : ['node', 'dist/ops/beta-cleanup-operation.js'],
           environment: [{ name: 'SERVICE_COMMIT_SHA', value: envelope.service_commit_sha }, { name: 'IMAGE_DIGEST', value: envelope.service_image_digest }],
@@ -154,6 +157,8 @@ test('actual nonterminal, failed, foreign image, task definition and command obs
   }
   await run({ definition: value => ({ ...value, containerDefinitions: [{ ...value.containerDefinitions[0], environment: [] }] }),
     verify: async execute => { await assert.rejects(execute(), /identities retained/); } });
+  await run({ task: (value, kind) => kind === 'cleanup' ? { ...value, taskArn: task('verification') } : value,
+    verify: async execute => { await assert.rejects(execute(), /identities retained/); } });
 });
 
 test('duplicate, truncated, foreign, and unassigned diagnostic message markers fail closed', async () => {
@@ -220,7 +225,143 @@ test('cleanup refusal diagnostics use only finite phase/category values', async 
 });
 
 function history(events = []) {
-  return { events: [{ type: 'ExecutionStarted', executionStartedEventDetails: { input: JSON.stringify(envelope), inputDetails: { truncated: false } } }, ...events, { type: 'ExecutionFailed' }] };
+  if (events.length !== 4) {
+    return {
+      events: [
+        { id: 1, type: 'ExecutionStarted', executionStartedEventDetails: { input: JSON.stringify(envelope), inputDetails: { truncated: false } } },
+        ...events,
+        { id: 19, previousEventId: 18, type: 'ExecutionFailed' },
+      ],
+    };
+  }
+
+  const taskEvent = (id, type, previousEventId, kind, terminal) => {
+    const verify = kind === 'verification';
+    const taskArn = task(kind);
+    const taskSnapshot = {
+      TaskArn: taskArn,
+      ClusterArn: cluster,
+      TaskDefinitionArn: definition(kind),
+      LastStatus: 'STOPPED',
+      DesiredStatus: 'STOPPED',
+      StartedBy: 'AWS Step Functions',
+      Containers: [{
+        Name: 'OneShot',
+        LastStatus: 'STOPPED',
+        ExitCode: terminal === 'failed' ? 1 : 0,
+        ImageDigest: envelope.service_image_digest,
+      }],
+      Overrides: {
+        ContainerOverrides: verify ? [] : [{
+          Name: 'OneShot',
+          Command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)],
+        }],
+        InferenceAcceleratorOverrides: [],
+      },
+    };
+    if (type === 'TaskStateEntered' || type === 'TaskStateExited') {
+      return {
+        id,
+        previousEventId,
+        type,
+        taskStateEnteredEventDetails: type === 'TaskStateEntered'
+          ? { name: verify ? 'Verify' : 'Cleanup' }
+          : undefined,
+        taskStateExitedEventDetails: type === 'TaskStateExited' ? {} : undefined,
+      };
+    }
+    if (type === 'TaskScheduled') {
+      const parameters = {
+        Cluster: cluster,
+        TaskDefinition: definition(kind),
+        LaunchType: 'FARGATE',
+        NetworkConfiguration: {
+          AwsvpcConfiguration: {
+            Subnets: ['subnet'],
+            SecurityGroups: ['sg'],
+            AssignPublicIp: 'DISABLED',
+          },
+        },
+        ...(verify ? {} : {
+          Overrides: {
+            ContainerOverrides: [{
+              Name: 'OneShot',
+              Command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)],
+            }],
+          },
+        }),
+        ClientToken: 'a'.repeat(64),
+      };
+      return {
+        id,
+        previousEventId,
+        type,
+        taskScheduledEventDetails: {
+          resourceType: 'ecs',
+          resource: 'runTask.sync',
+          region: 'ap-east-1',
+          parameters: JSON.stringify(parameters),
+        },
+      };
+    }
+    if (type === 'TaskStarted') {
+      return { id, previousEventId, type, taskStartedEventDetails: { resourceType: 'ecs', resource: 'runTask.sync' } };
+    }
+    if (type === 'TaskSubmitted') {
+      return {
+        id,
+        previousEventId,
+        type,
+        taskSubmittedEventDetails: {
+          resourceType: 'ecs',
+          resource: 'runTask.sync',
+          output: JSON.stringify({ Failures: [], Tasks: [{ TaskArn: taskArn, ClusterArn: cluster }], SdkHttpMetadata: {}, SdkResponseMetadata: {} }),
+          outputDetails: { truncated: false },
+        },
+      };
+    }
+    if (type === 'TaskSucceeded') {
+      return {
+        id,
+        previousEventId,
+        type,
+        taskSucceededEventDetails: { output: JSON.stringify(taskSnapshot), outputDetails: { truncated: false } },
+      };
+    }
+    if (type === 'TaskFailed') {
+      return {
+        id,
+        previousEventId,
+        type,
+        taskFailedEventDetails: { cause: JSON.stringify(taskSnapshot), causeDetails: { truncated: false } },
+      };
+    }
+    throw new Error(`Unsupported history fixture event ${type}`);
+  };
+
+  return {
+    events: [
+      { id: 1, type: 'ExecutionStarted', executionStartedEventDetails: { input: JSON.stringify(envelope), inputDetails: { truncated: false } } },
+      { id: 2, previousEventId: 1, type: 'PassStateEntered' },
+      { id: 3, previousEventId: 2, type: 'PassStateExited' },
+      { id: 4, previousEventId: 3, type: 'PassStateEntered' },
+      { id: 5, previousEventId: 4, type: 'PassStateExited' },
+      taskEvent(6, 'TaskStateEntered', 5, 'verification'),
+      taskEvent(7, 'TaskScheduled', 6, 'verification'),
+      taskEvent(8, 'TaskStarted', 7, 'verification'),
+      taskEvent(9, 'TaskSubmitted', 8, 'verification'),
+      taskEvent(10, 'TaskSucceeded', 9, 'verification'),
+      taskEvent(11, 'TaskStateExited', 10, 'verification'),
+      { id: 12, previousEventId: 11, type: 'PassStateEntered' },
+      { id: 13, previousEventId: 12, type: 'PassStateExited' },
+      taskEvent(14, 'TaskStateEntered', 13, 'cleanup', 'failed'),
+      taskEvent(15, 'TaskScheduled', 14, 'cleanup', 'failed'),
+      taskEvent(16, 'TaskStarted', 15, 'cleanup', 'failed'),
+      taskEvent(17, 'TaskSubmitted', 16, 'cleanup', 'failed'),
+      taskEvent(18, 'TaskFailed', 17, 'cleanup', 'failed'),
+      { id: 19, previousEventId: 18, type: 'ExecutionFailed' },
+    ],
+  };
 }
 const scheduled = { type: 'TaskScheduled', taskScheduledEventDetails: { resourceType: 'ecs', resource: 'runTask.sync' } };
 const submitted = { type: 'TaskSubmitted', taskSubmittedEventDetails: { resourceType: 'ecs', resource: 'runTask.sync', output: JSON.stringify({ Failures: [], Tasks: [{ TaskArn: task('verification') }] }), outputDetails: { truncated: false } } };
@@ -355,6 +496,47 @@ test('refusal requires exact failed stopped cleanup, successful verifier, comple
     { logs: () => ({ events: [{ message: 'x'.repeat(262145) }], nextForwardToken: 'end' }) },
     { logs: (token, count) => ({ events: token ? [] : [{ message: `unstable-${count}` }], nextForwardToken: 'end' }) }]) {
     await assert.rejects(() => observeFailedCleanupOperation(inputs, environment, refusalIo(patch)));
+  }
+});
+
+test('exact MISSING task responses may use the committed historical terminal snapshot', async () => {
+  const proof = await observeFailedCleanupOperation(inputs, environment, refusalIo({ missing: ['verification', 'cleanup'] }));
+  assert.deepEqual(proof.tasks.map(taskProof => taskProof.proof_origin), ['history', 'history']);
+  assert.deepEqual(proof.tasks.map(taskProof => taskProof.event_ids), [[6, 7, 8, 9, 10, 11], [14, 15, 16, 17, 18]]);
+  const mixed = await observeFailedCleanupOperation(inputs, environment, refusalIo({ missing: ['verification'] }));
+  assert.deepEqual(mixed.tasks.map(taskProof => taskProof.proof_origin), ['history', 'live']);
+  await assert.rejects(() => observeFailedCleanupOperation(inputs, environment, refusalIo({ missingMalformed: ['cleanup'] })));
+  await run({ missing: ['verification'], verify: async execute => { await assert.rejects(execute(), /identities retained/); } });
+});
+
+test('historical fallback rejects malformed snapshots, unknown overrides, redrive and byte-drifted schedules', async () => {
+  const malformedSnapshot = retryRefusalOptions().history;
+  const verifier = malformedSnapshot.events.find(event => event.id === 10);
+  const snapshot = JSON.parse(verifier.taskSucceededEventDetails.output);
+  delete snapshot.StartedBy;
+  verifier.taskSucceededEventDetails.output = JSON.stringify(snapshot);
+
+  const unknownOverride = retryRefusalOptions().history;
+  const overrideVerifier = unknownOverride.events.find(event => event.id === 10);
+  const overrideSnapshot = JSON.parse(overrideVerifier.taskSucceededEventDetails.output);
+  overrideSnapshot.Overrides.UnexpectedOverride = true;
+  overrideVerifier.taskSucceededEventDetails.output = JSON.stringify(overrideSnapshot);
+
+  const byteDriftedSchedule = retryRefusalOptions().history;
+  const cleanupSchedule = byteDriftedSchedule.events.find(event => event.id === 15);
+  const parameters = JSON.parse(cleanupSchedule.taskScheduledEventDetails.parameters);
+  parameters.Overrides.ContainerOverrides[0].Command[2] = ` ${JSON.stringify(envelope)}`;
+  cleanupSchedule.taskScheduledEventDetails.parameters = JSON.stringify(parameters);
+
+  for (const evidence of [
+    malformedSnapshot,
+    unknownOverride,
+    { ...retryRefusalOptions().history, events: [...retryRefusalOptions().history.events, { id: 20, previousEventId: 19, type: 'ExecutionRedriven' }] },
+    { ...retryRefusalOptions().history, events: retryRefusalOptions().history.events.map(event => event.id === 2 ? { ...event, id: 3 } : event) },
+    byteDriftedSchedule,
+  ]) {
+    await assert.rejects(() => observeFailedCleanupOperation(inputs, environment,
+      refusalIo({ missing: ['verification', 'cleanup'], history: evidence })));
   }
 });
 
