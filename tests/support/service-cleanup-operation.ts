@@ -67,7 +67,7 @@ export interface CleanupOperationEvidence {
     output?: CleanupOperationResult;
     tasks?: Record<string, unknown>[];
     committed_result?: Record<string, unknown>;
-    preceding_execution?: { execution_arn: string; status: string; stopped_tasks: string[]; task_proofs?: Record<string, unknown>[] };
+    preceding_execution?: { execution_arn: string; status: string; stopped_tasks: string[]; task_proofs?: Record<string, unknown>[]; log_snapshot_sha256?: string };
     failure?: string;
   };
 }
@@ -394,6 +394,7 @@ export async function prepareCleanupRetryIntent(inputs: ServiceCleanupInputs, or
     state_machine_version_arn: versionArn, execution_name: retryName, execution_arn: cleanupExecutionArn(versionArn, retryName),
     input: envelope, input_sha256: hash(JSON.stringify(envelope)), status: 'PENDING', proof_status: 'pending',
     preceding_execution: { execution_arn: String(proof.execution_arn), status: 'FAILED', task_proofs: proof.tasks as Record<string, unknown>[],
+      log_snapshot_sha256: String(proof.log_snapshot_sha256),
       stopped_tasks: (proof.tasks as Record<string, unknown>[]).map(task => String(task.task_arn)) },
   } };
 }
@@ -513,8 +514,17 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       if (description.status === 'SUCCEEDED') break;
       if (TERMINAL_FAILURE.includes(description.status!)) {
         if (environment.E2E_CLEANUP_RETRY_FAILED !== 'true' || name.endsWith('-retry1')) throw new Error('Cleanup terminated without success; identities retained and retry requires explicit task-cessation proof');
-        const stopped = await proveStoppedExecution(transport, evidence.operation.execution_arn, envelope);
-        evidence.operation.preceding_execution = { execution_arn: evidence.operation.execution_arn, status: description.status!, stopped_tasks: stopped };
+        const proof = await observeFailedCleanupOperation(inputs, environment, transport);
+        if (proof.execution_arn !== evidence.operation.execution_arn || proof.status !== 'FAILED'
+          || proof.input_sha256 !== evidence.operation.input_sha256 || proof.committed_marker_observed !== false
+          || typeof proof.log_snapshot_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(proof.log_snapshot_sha256)
+          || !Array.isArray(proof.tasks) || proof.tasks.length !== 2) {
+          throw new Error('Cleanup retry requires the exact stable no-commit refusal proof');
+        }
+        const taskProofs = proof.tasks as Record<string, unknown>[];
+        evidence.operation.preceding_execution = { execution_arn: proof.execution_arn, status: 'FAILED',
+          stopped_tasks: taskProofs.map(task => String(task.task_arn)), task_proofs: taskProofs,
+          log_snapshot_sha256: proof.log_snapshot_sha256 };
         name = `${name.slice(0, 72)}-retry1`;
         evidence.operation.execution_name = name;
         evidence.operation.execution_arn = cleanupExecutionArn(versionArn, name);

@@ -220,9 +220,9 @@ export function assertAcceptanceOperation(evidence, bootstrap, request, result, 
   const proof = { intent: 'pending', refused: 'refused', verified: 'verified' };
   if (operation.status !== status[result] || operation.proof_status !== proof[result]) throw new Error('Cleanup proof status mismatch');
   if (result === 'intent') {
-    exactKeys(operation.preceding_execution, ['execution_arn', 'status', 'stopped_tasks', 'task_proofs'], 'Prior cessation');
+    exactKeys(operation.preceding_execution, ['execution_arn', 'status', 'stopped_tasks', 'task_proofs', 'log_snapshot_sha256'], 'Prior cessation');
     if (operation.preceding_execution.execution_arn !== `arn:aws:states:ap-east-1:650880818323:execution:beta-anywear-tester-cleanup:${base}`
-      || operation.preceding_execution.status !== 'FAILED') throw new Error('Intent prior execution changed');
+      || operation.preceding_execution.status !== 'FAILED' || !/^[a-f0-9]{64}$/.test(operation.preceding_execution.log_snapshot_sha256)) throw new Error('Intent prior execution changed');
     assertTaskProofs(operation.preceding_execution.task_proofs, bootstrap, input, false);
     assertEqual(operation.preceding_execution.stopped_tasks, operation.preceding_execution.task_proofs.map(task => task.task_arn), 'Stopped task identity inventory');
   }

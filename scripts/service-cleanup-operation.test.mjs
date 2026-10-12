@@ -63,7 +63,7 @@ function fixture(options = {}) {
         const value = { taskArn: task(kind), clusterArn: cluster, taskDefinitionArn: definition(kind), lastStatus: 'STOPPED',
           containers: [{ name: 'OneShot', lastStatus: 'STOPPED', exitCode: 0, imageDigest: envelope.service_image_digest }],
           overrides: { containerOverrides: kind === 'verification' ? [] : [{ name: 'OneShot', command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)] }] } };
-        return { failures: [], tasks: [options.task?.(value, kind) ?? value] };
+        return { failures: [], tasks: [options.task?.(value, kind, currentName) ?? value] };
       }
       if (args[0] === 'ecs') {
         const kind = args.at(-1) === definition('verification') ? 'verification' : 'cleanup';
@@ -76,7 +76,7 @@ function fixture(options = {}) {
       }
       logCount += 1;
       const token = args.includes('--next-token') ? args.at(-1) : undefined;
-      return options.logs?.(token, logCount) ?? { events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}` }], nextForwardToken: 'end' };
+      return options.logs?.(token, logCount, currentName) ?? { events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}` }], nextForwardToken: 'end' };
     },
     async sleep(ms) { calls.push({ sleep: ms }); },
   };
@@ -200,22 +200,66 @@ const scheduled = { type: 'TaskScheduled', taskScheduledEventDetails: { resource
 const submitted = { type: 'TaskSubmitted', taskSubmittedEventDetails: { resourceType: 'ecs', resource: 'runTask.sync', output: JSON.stringify({ Failures: [], Tasks: [{ TaskArn: task('verification') }] }), outputDetails: { truncated: false } } };
 
 test('explicit one-time retry requires complete history and actual stopped task proof', async () => {
-  await run({ description: current => current.endsWith('-retry1') ? {} : { status: 'FAILED' }, history: history([scheduled, submitted]),
-    verify: async (execute, io) => {
+  await run({ ...retryRefusalOptions(), verify: async (execute, io, path) => {
+      const originalStart = io.start;
+      const initialLogReads = io.calls.filter(call => call.aws?.[0] === 'logs').length;
+      io.start = async (input, executionName) => {
+        if (executionName.endsWith('-retry1')) {
+          const evidence = JSON.parse(await readFile(path, 'utf8')).operation;
+          assert.equal(evidence.preceding_execution.status, 'FAILED');
+          assert.equal(evidence.preceding_execution.log_snapshot_sha256.length, 64);
+          assert.deepEqual(evidence.preceding_execution.stopped_tasks, [task('verification'), task('cleanup')]);
+          assert.equal(io.calls.filter(call => call.aws?.[0] === 'logs').length, initialLogReads + 4);
+        }
+        return originalStart(input, executionName);
+      };
       const result = await execute();
       assert.equal(result.operation.execution_name, `${name.slice(0, 72)}-retry1`);
-      assert.deepEqual(result.operation.preceding_execution.stopped_tasks, [task('verification')]);
+      assert.deepEqual(result.operation.preceding_execution.stopped_tasks, [task('verification'), task('cleanup')]);
       assert.equal(io.calls.filter(call => call.start).length, 2);
     } }, { E2E_CLEANUP_RETRY_FAILED: 'true' });
 });
+
+function retryRefusalOptions(patch = {}) {
+  const cleanupSubmitted = { ...submitted, taskSubmittedEventDetails: { ...submitted.taskSubmittedEventDetails,
+    output: JSON.stringify({ Failures: [], Tasks: [{ TaskArn: task('cleanup') }] }) } };
+  return { description: current => current.endsWith('-retry1') ? {} : { status: 'FAILED' },
+    history: history([scheduled, submitted, scheduled, cleanupSubmitted]),
+    task: (value, kind, current) => ({ ...value, containers: value.containers.map(container => ({ ...container,
+      exitCode: current.endsWith('-retry1') || kind === 'verification' ? 0 : 1 })) }),
+    logs: (token, count, current) => ({ events: token ? [] : [{ message: current.endsWith('-retry1')
+      ? `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}` : 'Beta cleanup operation failed; captured identities retained' }], nextForwardToken: 'end' }),
+    ...patch };
+}
 
 test('unknown launches, truncated history, active tasks and a second failed execution refuse retry', async () => {
   for (const options of [{ history: history([scheduled]) }, { history: { ...history(), nextToken: 'more' } },
     { history: history([scheduled, { ...submitted, taskSubmittedEventDetails: { ...submitted.taskSubmittedEventDetails, outputDetails: { truncated: true } } }]) },
     { history: history([scheduled, submitted]), task: value => ({ ...value, lastStatus: 'RUNNING' }) },
-    { history: history(), description: () => ({ status: 'FAILED' }) }]) {
-    await run({ description: current => current.endsWith('-retry1') ? {} : { status: 'FAILED' }, ...options,
-      verify: async (execute, io) => { await assert.rejects(execute(), /identities retained/); assert.ok(io.calls.filter(call => call.start).length <= 2); } }, { E2E_CLEANUP_RETRY_FAILED: 'true' });
+    { ...retryRefusalOptions(), history: history(), description: () => ({ status: 'FAILED' }) }]) {
+    await run({ ...retryRefusalOptions(), ...options,
+      verify: async (execute, io) => { await assert.rejects(execute(), /identities retained/); assert.equal(io.calls.filter(call => call.start).length, 1); } }, { E2E_CLEANUP_RETRY_FAILED: 'true' });
+  }
+});
+
+test('retry is not started unless exact failed tasks and stable complete no-commit logs are proved', async () => {
+  const mismatchedInput = history([scheduled, submitted, scheduled,
+    { ...submitted, taskSubmittedEventDetails: { ...submitted.taskSubmittedEventDetails,
+      output: JSON.stringify({ Failures: [], Tasks: [{ TaskArn: task('cleanup') }] }) } } ]);
+  mismatchedInput.events[0].executionStartedEventDetails.input = '{}';
+  const cases = [
+    { logs: token => ({ events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}` }], nextForwardToken: 'end' }) },
+    { logs: (token, count) => ({ events: token ? [] : [{ message: count === 1 ? 'first snapshot' : 'changed snapshot' }], nextForwardToken: 'end' }) },
+    { logs: (_token, count) => ({ events: [], nextForwardToken: String(count) }) },
+    { history: mismatchedInput },
+    { task: (value, kind, current) => kind === 'cleanup' && !current.endsWith('-retry1')
+      ? { ...value, taskDefinitionArn: definition('cleanup').replace(':7', ':8') } : value },
+  ];
+  for (const options of cases) {
+    await run({ ...retryRefusalOptions(), ...options, verify: async (execute, io) => {
+      await assert.rejects(execute(), /identities retained/);
+      assert.equal(io.calls.filter(call => call.start).length, 1);
+    } }, { E2E_CLEANUP_RETRY_FAILED: 'true' });
   }
 });
 
@@ -296,6 +340,7 @@ test('retry preparation proves actual prior cessation without any start and subm
   const intent = await prepareCleanupRetryIntent(inputs, original, environment, io);
   assert.equal(io.calls.filter(call => call.start).length, 0);
   assert.equal(intent.operation.status, 'PENDING'); assert.equal(intent.operation.preceding_execution.task_proofs.length, 2);
+  assert.match(intent.operation.preceding_execution.log_snapshot_sha256, /^[a-f0-9]{64}$/);
   let starts = 0;
   const submission = await submitCleanupRetryIntent(intent, environment, async (input, executionName) => {
     starts++; assert.deepEqual(input, envelope); assert.equal(executionName, `${name.slice(0, 72)}-retry1`);
