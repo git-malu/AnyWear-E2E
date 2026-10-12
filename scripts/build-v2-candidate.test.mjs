@@ -70,7 +70,7 @@ test('candidate builder workflow is read-only and labels its uploaded artifact',
 function deploymentFixture() {
   const deployment = qualificationFixture().deployment;
   const clientSha = '380643a8a6e0261a0c24760ae66356314123f194';
-  const serviceSha = '2c9e6582a04e587ad627e2e96191b68069dab876';
+  const serviceSha = '9164ef40df648d6bd2f092f951ab2d5688fa60da';
   deployment.infra.sha = candidateBuilderTarget.infraSha;
   deployment.infra.run_id = candidateBuilderTarget.infraRunId;
   deployment.infra.run_attempt = candidateBuilderTarget.infraRunAttempt;
@@ -133,7 +133,7 @@ test('candidate build authenticates only the fixed Infra attempt and passes all 
   try {
     const committed = parseStrictJson(committedCompatibilityBytes);
     assert.equal(committed.version, 2);
-    assert.equal(byteHash(committedCompatibilityBytes), '899f5ba65c1ab81c2da821523556b15b16f71e8d4e3d4f1d6b276c66c5ba2228');
+    assert.equal(byteHash(committedCompatibilityBytes), '8682d103cc7d84a44548dba0c1c6e09faa37c613600f00815f8551268906648b');
     // Candidate generation intentionally migrates from a v1 baseline. Keep that
     // legacy input local to this migration test while the repository pins v2.
     const migrationBaseline = {
