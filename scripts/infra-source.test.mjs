@@ -56,7 +56,8 @@ const argument = name => process.argv[process.argv.indexOf(name) + 1];
 function requireScopedReader() {
   assert.equal(process.env.GH_TOKEN, 'service-read-fixture');
   for (const name of ['GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
-    'SERVICE_ARTIFACT_READ_TOKEN', 'CLIENT_CONTENTS_READ_TOKEN']) assert.equal(process.env[name], undefined);
+    'E2E_EVIDENCE_READ_TOKEN', 'INFRA_EVIDENCE_READ_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN',
+    'CLIENT_CONTENTS_READ_TOKEN']) assert.equal(process.env[name], undefined);
   assert.equal(argument('--trusted-infra-root'), process.env.QUALIFICATION_INFRA_DIR);
   if (process.env.TEST_NATIVE_PERMISSION_DENIED === 'true') throw new Error('Native release verification denied');
 }
@@ -64,7 +65,8 @@ function requireScopedReader() {
 
 function readerEnvironment(directory) {
   return { ...process.env, GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
-    CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture', GITHUB_TOKEN: 'cleanup-write-fixture',
+    CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture', E2E_EVIDENCE_READ_TOKEN: 'e2e-read-fixture',
+    INFRA_EVIDENCE_READ_TOKEN: 'infra-evidence-fixture', GITHUB_TOKEN: 'cleanup-write-fixture',
     GH_ENTERPRISE_TOKEN: 'other-host-fixture', GITHUB_ENTERPRISE_TOKEN: 'other-host-fixture',
     QUALIFICATION_INFRA_DIR: directory };
 }

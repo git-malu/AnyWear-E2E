@@ -123,6 +123,7 @@ export async function prepareRecoveryFiles(environment = process.env, {
   extract = readAccountArchive,
   loadDiagnostic = loadDiagnosticEvidence,
 } = {}) {
+  if (!environment.INFRA_EVIDENCE_READ_TOKEN?.trim()) throw new Error('INFRA_EVIDENCE_READ_TOKEN required for diagnostic evidence');
   const selection = validateAccountRecoverySelection(environment);
   const { sourceRunId: id, sourceAttempt: attempt } = selection;
   const path = environment.E2E_ACCOUNT_BUDGET_PATH;
@@ -152,7 +153,7 @@ export async function prepareRecoveryFiles(environment = process.env, {
   const diagnostic = await loadDiagnostic({
     directory: resolve(dirname(diagnosticPath), '.diagnostic-cache'),
     api,
-    environment: { ...environment, GH_TOKEN: environment.INFRA_EVIDENCE_READ_TOKEN ?? environment.GH_TOKEN },
+    environment: { ...environment, GH_TOKEN: environment.INFRA_EVIDENCE_READ_TOKEN },
   });
   const diagnosticRecord = diagnostic?.record ?? diagnostic;
   if (!diagnosticRecord || typeof diagnosticRecord !== 'object' || Array.isArray(diagnosticRecord)) throw new Error('Validated Beta cleanup diagnostic record is unavailable');

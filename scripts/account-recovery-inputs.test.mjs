@@ -8,7 +8,7 @@ import { byteHash } from './evidence-contract.mjs';
 import { runCapturedWorkerCleanup } from './cleanup-worker-accounts.mjs';
 import { cleanupExecutionArn, createCleanupOperationEnvelope, deterministicCleanupExecutionName } from '../tests/support/service-cleanup-operation.ts';
 
-const base = { E2E_CLEANUP_OPERATION_MODE: 'recovery', E2E_CLEANUP_RECOVERY_ATTEMPT: '1', RECOVERY_SOURCE_RUN_ID: '123', RECOVERY_SOURCE_RUN_ATTEMPT: '1' };
+const base = { E2E_CLEANUP_OPERATION_MODE: 'recovery', E2E_CLEANUP_RECOVERY_ATTEMPT: '1', RECOVERY_SOURCE_RUN_ID: '123', RECOVERY_SOURCE_RUN_ATTEMPT: '1', INFRA_EVIDENCE_READ_TOKEN: 'infra-reader' };
 const manifest = { version: 1, runScope: '123-1-0000000000000000', config: { maxActiveAccounts: 2, maxNewAccountsPerRun: 4, maxQuarantinedAccounts: 2 },
   accounts: [0, 1].map(slot => ({ mode: 'worker', status: 'cleanup_pending', email: `e2e-beta-worker-${slot}-chromium@anywear.local`,
     subject: `00000000-0000-0000-0000-00000000000${slot + 1}`, leaseId: `lease-${slot}`, leaseGeneration: 'owner', createdAt: 'created', updatedAt: 'created' })) };
@@ -101,6 +101,35 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
     await assert.rejects(prepareRecoveryFiles(env, { api: badApi, extract: () => { throw new Error('Digest must fail before extraction'); }, loadDiagnostic: async () => diagnostic }), /digest mismatch/);
     const legacyWrongHash = operation(legacy); legacyWrongHash.operation.input_sha256 = 'f'.repeat(64);
     await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }), loadDiagnostic: async () => diagnostic }), /binding/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('diagnostic preparation requires the dedicated Infra reader and never falls back to ambient GH_TOKEN', async () => {
+  const environment = { ...base, GH_TOKEN: 'ambient-workflow-token', INFRA_EVIDENCE_READ_TOKEN: '' };
+  await assert.rejects(prepareRecoveryFiles(environment, { api: () => { throw new Error('must refuse before API access'); } }), /INFRA_EVIDENCE_READ_TOKEN/);
+});
+
+test('diagnostic preparation routes the dedicated Infra reader explicitly', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'account-recovery-token-scope-'));
+  const archive = Buffer.from('authenticated archive bytes');
+  const artifact = { id: 55, name: 'beta-account-lifecycle-123-1', digest: `sha256:${byteHash(archive)}`, expired: false,
+    created_at: '2026-10-08T00:10:00Z', expires_at: '2099-01-01T00:00:00Z', workflow_run: { id: run.id, head_sha: run.head_sha } };
+  const files = { 'account-budget.json': encode(manifest), 'service-cleanup-operation.json': encode(operation(legacy)) };
+  let diagnosticEnvironment;
+  const api = path => {
+    if (path.endsWith('/attempts/1')) return JSON.stringify(run);
+    if (path.includes('/artifacts?')) return JSON.stringify({ total_count: 1, artifacts: [artifact] });
+    if (path.endsWith('/zip')) return archive;
+    throw new Error('Unexpected API read');
+  };
+  try {
+    await prepareRecoveryFiles({ ...base, GH_TOKEN: 'ambient-workflow-token', E2E_EVIDENCE_READ_TOKEN: 'e2e-reader', SERVICE_ARTIFACT_READ_TOKEN: 'service-reader',
+      E2E_ACCOUNT_BUDGET_PATH: join(directory, 'account-budget.json'), GITHUB_OUTPUT: join(directory, 'outputs') }, {
+      api, extract: () => files, loadDiagnostic: async ({ environment }) => { diagnosticEnvironment = environment; return diagnostic; },
+    });
+    assert.equal(diagnosticEnvironment.GH_TOKEN, 'infra-reader');
+    assert.equal(diagnosticEnvironment.INFRA_EVIDENCE_READ_TOKEN, 'infra-reader');
+    assert.equal(diagnosticEnvironment.E2E_EVIDENCE_READ_TOKEN, 'e2e-reader');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
