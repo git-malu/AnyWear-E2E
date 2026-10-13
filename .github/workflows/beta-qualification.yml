@@ -43,6 +43,7 @@ jobs:
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
+      CLEANUP_MACHINE_AUTH_SECRET: ${{ secrets.CLEANUP_MACHINE_AUTH_SECRET }}
       E2E_WORKERS: 2
       E2E_WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
       E2E_MAX_ACTIVE_ACCOUNTS: 2
@@ -162,6 +163,12 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
           echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+
+      - name: Set unique cleanup run scope
+        shell: bash
+        run: |
+          run_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 8)"
+          echo "E2E_CLEANUP_RUN_SCOPE=$run_scope" >> "$GITHUB_ENV"
 
       - name: Install Chromium
         run: pnpm exec playwright install chromium --with-deps

@@ -310,6 +310,7 @@ export class DirectTeardown {
       product_result: productResult,
       teardown_result: teardownResult,
       scope_state: scopeState,
+      resource_refs: this.refs,
       quarantine_reason: quarantineReason ?? null,
     });
     if (status !== 200) throw new Error('Cleanup acknowledgement refused with ' + status);
