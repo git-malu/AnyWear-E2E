@@ -70,7 +70,7 @@ test('candidate builder workflow is read-only and labels its uploaded artifact',
 function deploymentFixture() {
   const deployment = qualificationFixture().deployment;
   const clientSha = '380643a8a6e0261a0c24760ae66356314123f194';
-  const serviceSha = '9164ef40df648d6bd2f092f951ab2d5688fa60da';
+  const serviceSha = '09476a1f8dcf0404fb7bba5a0693ff62ad2bb09f';
   deployment.infra.sha = candidateBuilderTarget.infraSha;
   deployment.infra.run_id = candidateBuilderTarget.infraRunId;
   deployment.infra.run_attempt = candidateBuilderTarget.infraRunAttempt;
