@@ -90,8 +90,8 @@ test('owner binding refuses a malformed subject before any request', async () =>
   assert.equal(calls.length, before);
 });
 
-test('exact created resource refs are captured once each and deleted through user routes', async () => {
-  const { teardown, deletes } = harness();
+test('exact created resource refs are captured once each, sent in the acknowledgement, and deleted through user routes', async () => {
+  const { teardown, calls, deletes } = harness();
   await teardown.register();
   teardown.capture('wardrobe_item', 'item-1');
   teardown.capture('wardrobe_item', 'item-1');
@@ -107,6 +107,42 @@ test('exact created resource refs are captured once each and deleted through use
     'https://service.invalid/outfits/outfit-1',
   ]);
   assert.ok(deletes.every((entry) => entry.authorization === 'Bearer token'));
+  const acknowledge = calls.at(-1);
+  assert.ok(acknowledge);
+  assert.deepEqual(JSON.parse(acknowledge.data).resource_refs, [
+    { kind: 'wardrobe_item', id: 'item-1' },
+    { kind: 'outfit_generation', id: 'gen-1' },
+    { kind: 'base_photo', id: 'photo-1' },
+    { kind: 'outfit', id: 'outfit-1' },
+  ]);
+});
+
+test('terminal acknowledgement sends an empty resource ref list when no resources were captured', async () => {
+  const { teardown, calls } = harness();
+  await teardown.register();
+  await teardown.finalize('passed', 'Bearer token');
+  const acknowledge = calls.at(-1);
+  assert.ok(acknowledge);
+  assert.deepEqual(JSON.parse(acknowledge.data).resource_refs, []);
+});
+
+test('malformed resource refs fail closed without changing the captured set', async () => {
+  const { teardown, calls } = harness();
+  await teardown.register();
+  teardown.capture('wardrobe_item', 'item-1');
+  for (const ref of [
+    { kind: 'unknown', id: 'bad-kind' },
+    { kind: 'wardrobe_item', id: '' },
+    { kind: 'wardrobe_item', id: 'a'.repeat(129) },
+    { kind: 'wardrobe_item', id: 42 },
+  ]) {
+    assert.throws(() => teardown.capture(ref.kind, ref.id), /Cleanup resource/);
+  }
+  assert.deepEqual(teardown.captured, [{ kind: 'wardrobe_item', id: 'item-1' }]);
+  await teardown.finalize('passed', 'Bearer token');
+  const acknowledge = calls.at(-1);
+  assert.ok(acknowledge);
+  assert.deepEqual(JSON.parse(acknowledge.data).resource_refs, [{ kind: 'wardrobe_item', id: 'item-1' }]);
 });
 
 test('404 is a successful teardown', async () => {
