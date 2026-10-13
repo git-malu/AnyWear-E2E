@@ -61,6 +61,7 @@ jobs:
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
+      E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: recovery/beta-cleanup-diagnostic.json
       E2E_CLEANUP_OPERATION_MODE: ${{ inputs.operation_mode }}
       E2E_CLEANUP_RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
       E2E_CLEANUP_RETRY_FAILED: ${{ inputs.retry_failed_execution && 'true' || 'false' }}
@@ -94,6 +95,29 @@ jobs:
       - name: Install E2E dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Infra evidence read token
+        id: infra-evidence-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+
       - name: Require reviewed compatibility and protected recovery execution
         run: |
           node scripts/account-recovery-inputs.mjs --validate-inputs
@@ -104,6 +128,8 @@ jobs:
         id: recovery-scope
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INFRA_EVIDENCE_READ_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
         run: node scripts/account-recovery-inputs.mjs
 
       - name: Configure Beta AWS credentials
@@ -133,6 +159,8 @@ jobs:
         env:
           E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.original_operation_path }}
           E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.previous_operation_path }}
+          E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: ${{ steps.recovery-scope.outputs.diagnostic_path }}
+          E2E_BETA_CLEANUP_DIAGNOSTIC_SHA256: ${{ steps.recovery-scope.outputs.diagnostic_sha256 }}
           E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
           E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
           E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
@@ -162,6 +190,7 @@ jobs:
             recovery/original-service-cleanup-operation.json
             recovery/original-service-cleanup-run.json
             recovery/original-owner.json
+            recovery/beta-cleanup-diagnostic.json
             recovery/previous-recovery-operation.json
             recovery/previous-recovery-owner.json
             recovery/recovery-selection.json

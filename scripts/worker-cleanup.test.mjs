@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { cleanupWorkerAccounts, createServiceCleanupInputs, releaseWorkerLease } from '../tests/support/worker-cleanup.ts';
+import { bindCleanupEnvironment } from './cleanup-worker-accounts.mjs';
 
 const runScope = `123456789-1-${'a'.repeat(16)}`;
 const workerEmail = 'e2e-beta-worker-0-chromium@anywear.local';
@@ -52,4 +53,13 @@ test('changed Cognito subject is retained after successful application cleanup',
 
 test('worker lease release is limited to provisioned accounts', async () => {
   const released = []; await releaseWorkerLease(workerEmail, true, true, async (email) => released.push(email)); await releaseWorkerLease(workerEmail, true, false, async (email) => released.push(email)); assert.deepEqual(released, [workerEmail]);
+});
+
+test('validated diagnostic tuple is copied to the operation environment and mismatches refuse', () => {
+  const diagnostic = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } };
+  const bound = bindCleanupEnvironment({}, diagnostic);
+  assert.equal(bound.E2E_CLEANUP_SERVICE_SOURCE_SHA, diagnostic.service.source_sha);
+  assert.equal(bound.E2E_CLEANUP_SERVICE_IMAGE_DIGEST, diagnostic.service.image_digest);
+  assert.equal(bound.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, diagnostic.capability.state_machine_version_arn);
+  assert.throws(() => bindCleanupEnvironment({ E2E_CLEANUP_SERVICE_IMAGE_DIGEST: 'sha256:' + 'c'.repeat(64) }, diagnostic), /differs/);
 });

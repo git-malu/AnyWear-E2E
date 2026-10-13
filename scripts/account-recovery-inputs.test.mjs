@@ -35,6 +35,7 @@ const priorSelection = { mode: 'recovery', sourceRunId: 123, sourceAttempt: 1, r
 const originalFiles = { 'original-account-budget.json': encode(manifest), 'original-service-cleanup-operation.json': encode(operation(legacy)), 'original-owner.json': encode({ run }) };
 const priorFiles = { ...originalFiles, 'account-budget.json': encode(manifest), 'service-cleanup-operation.json': encode(operation(recovery)), 'recovery-selection.json': encode(priorSelection) };
 const selection = { ...priorSelection, recoveryAttempt: 2, previousRunId: 456, previousRunAttempt: 1 };
+const diagnostic = { record: { schema_version: 1, record_type: 'anywear_beta_cleanup_diagnostic', service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } } };
 
 test('formal recovery selection rejects invalid combinations before credentials', () => {
   assert.equal(validateAccountRecoverySelection(base).recoveryAttempt, 1);
@@ -76,10 +77,14 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
   };
   const env = { ...base, E2E_ACCOUNT_BUDGET_PATH: join(directory, 'account-budget.json'), GITHUB_OUTPUT: join(directory, 'outputs') };
   try {
-    await prepareRecoveryFiles(env, { api, extract: () => { extracted++; return files; } });
+    await prepareRecoveryFiles(env, { api, extract: () => { extracted++; return files; }, loadDiagnostic: async () => diagnostic });
     assert.equal(extracted, 1);
     assert.equal(JSON.parse(await readFile(join(directory, 'original-service-cleanup-operation.json'), 'utf8')).operation.input.operation_mode, undefined);
     assert.equal(JSON.parse(await readFile(env.E2E_ACCOUNT_BUDGET_PATH, 'utf8')).accounts.length, 2);
+    assert.equal(JSON.parse(await readFile(join(directory, 'beta-cleanup-diagnostic.json'), 'utf8')).record_type, 'anywear_beta_cleanup_diagnostic');
+    const output = await readFile(env.GITHUB_OUTPUT, 'utf8');
+    assert.match(output, /diagnostic_path=.*beta-cleanup-diagnostic\.json/);
+    assert.match(output, /diagnostic_sha256=[a-f0-9]{64}/);
     const persistedOriginal = { ...priorFiles };
     for (const name of Object.keys(originalFiles)) persistedOriginal[name] = (await readFile(join(directory, name))).toString('base64');
     const priorApi = path => {
@@ -88,14 +93,14 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
       return api(path);
     };
     const envNext = { ...env, E2E_CLEANUP_RECOVERY_ATTEMPT: '2', RECOVERY_PREVIOUS_RUN_ID: '456', RECOVERY_PREVIOUS_RUN_ATTEMPT: '1' };
-    await prepareRecoveryFiles(envNext, { api: priorApi, extract: path => path.endsWith('previous-recovery-artifact.zip') ? persistedOriginal : files });
+    await prepareRecoveryFiles(envNext, { api: priorApi, extract: path => path.endsWith('previous-recovery-artifact.zip') ? persistedOriginal : files, loadDiagnostic: async () => diagnostic });
     assert.equal(JSON.parse(await readFile(join(directory, 'previous-recovery-operation.json'), 'utf8')).operation.input.recovery_attempt, 1);
     await assert.rejects(prepareRecoveryFiles(envNext, { api: path => path.includes('/artifacts/66/zip') ? Buffer.from('wrong previous bytes') : priorApi(path),
-      extract: path => path.endsWith('previous-recovery-artifact.zip') ? persistedOriginal : files }), /digest mismatch/);
+      extract: path => path.endsWith('previous-recovery-artifact.zip') ? persistedOriginal : files, loadDiagnostic: async () => diagnostic }), /digest mismatch/);
     const badApi = path => path.endsWith('/zip') ? Buffer.from('tampered') : api(path);
-    await assert.rejects(prepareRecoveryFiles(env, { api: badApi, extract: () => { throw new Error('Digest must fail before extraction'); } }), /digest mismatch/);
+    await assert.rejects(prepareRecoveryFiles(env, { api: badApi, extract: () => { throw new Error('Digest must fail before extraction'); }, loadDiagnostic: async () => diagnostic }), /digest mismatch/);
     const legacyWrongHash = operation(legacy); legacyWrongHash.operation.input_sha256 = 'f'.repeat(64);
-    await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }) }), /binding/);
+    await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }), loadDiagnostic: async () => diagnostic }), /binding/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -109,20 +114,30 @@ test('formal cleanup caller reaches recovery mode and never shrinks request afte
     deleteUser: async () => { calls.push('delete'); } };
   const partial = structuredClone(manifest); partial.accounts[0].status = 'deleted';
   let proved = false;
+  let bound;
   try {
     const count = await runCapturedWorkerCleanup(partial, env, io, {
       normal: () => { throw new Error('Wrong caller mode'); },
-      recovery: async inputs => { assert.equal(inputs.cleanup_json, request); calls.push('service-proof'); proved = true; return { operation: { proof_status: 'verified' } }; },
-    });
+      recovery: async (inputs, operationEnvironment) => { assert.equal(inputs.cleanup_json, request); bound = operationEnvironment; calls.push('service-proof'); proved = true; return { operation: { proof_status: 'verified' } }; },
+    }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } }));
     assert.equal(count, 2); assert.equal(proved, true); assert.equal(calls[0], 'service-proof');
+    assert.equal(bound.E2E_CLEANUP_SERVICE_SOURCE_SHA, 'a'.repeat(40));
+    assert.equal(bound.E2E_CLEANUP_SERVICE_IMAGE_DIGEST, `sha256:${'b'.repeat(64)}`);
+    assert.equal(bound.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.endsWith(':3'), true);
     assert.equal(calls.filter(call => call === 'delete').length, 2);
     calls.length = 0;
-    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => { throw new Error('Marker proof unavailable'); } }), /Marker/);
+    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => { throw new Error('Marker proof unavailable'); } }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } })), /Marker/);
     assert.equal(calls.length, 0);
-    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => ({ operation: { proof_status: 'pending' } }) }), /committed result/);
+    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => ({ operation: { proof_status: 'pending' } }) }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } })), /committed result/);
     assert.equal(calls.length, 0);
     const unknown = structuredClone(partial); unknown.accounts[0].subject = 'foreign';
-    await assert.rejects(runCapturedWorkerCleanup(unknown, env, io, { recovery: () => { throw new Error('Must reject before Service'); } }), /captured worker/);
+    await assert.rejects(runCapturedWorkerCleanup(unknown, env, io, { recovery: () => { throw new Error('Must reject before Service'); } }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } })), /captured worker/);
+    assert.equal(calls.length, 0);
+    await assert.rejects(runCapturedWorkerCleanup(partial, { ...env, E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: 'missing.json' }, io, { recovery: async () => { throw new Error('must not start'); } }), /ENOENT|diagnostic/);
+    assert.equal(calls.length, 0);
+    const mismatched = join(directory, 'mismatched-diagnostic.json');
+    await writeFile(mismatched, '{}');
+    await assert.rejects(runCapturedWorkerCleanup(partial, { ...env, E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: mismatched, E2E_BETA_CLEANUP_DIAGNOSTIC_SHA256: '0'.repeat(64) }, io, { recovery: async () => { throw new Error('must not start'); } }), /binding/);
     assert.equal(calls.length, 0);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
