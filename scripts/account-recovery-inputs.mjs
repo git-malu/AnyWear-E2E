@@ -154,8 +154,9 @@ export async function prepareRecoveryFiles(environment = process.env, {
     api,
     environment: { ...environment, GH_TOKEN: environment.INFRA_EVIDENCE_READ_TOKEN ?? environment.GH_TOKEN },
   });
-  if (!diagnostic?.record || typeof diagnostic.record !== 'object' || Array.isArray(diagnostic.record)) throw new Error('Validated Beta cleanup diagnostic record is unavailable');
-  const diagnosticBytes = Buffer.from(`${JSON.stringify(diagnostic.record, null, 2)}\n`);
+  const diagnosticRecord = diagnostic?.record ?? diagnostic;
+  if (!diagnosticRecord || typeof diagnosticRecord !== 'object' || Array.isArray(diagnosticRecord)) throw new Error('Validated Beta cleanup diagnostic record is unavailable');
+  const diagnosticBytes = Buffer.from(`${JSON.stringify(diagnosticRecord, null, 2)}\n`);
   await mkdir(dirname(diagnosticPath), { recursive: true });
   await writeFile(resolve(dirname(path), 'original-account-budget.json'), bytes, { mode: 0o600 });
   if (files['service-cleanup-run.json']) await writeFile(resolve(dirname(path), 'original-service-cleanup-run.json'), Buffer.from(files['service-cleanup-run.json'], 'base64'), { mode: 0o600 });
