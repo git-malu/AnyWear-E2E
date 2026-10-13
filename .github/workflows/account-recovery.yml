@@ -70,10 +70,6 @@ jobs:
       RECOVERY_PREVIOUS_RUN_ID: ${{ inputs.previous_recovery_run_id }}
       RECOVERY_PREVIOUS_RUN_ATTEMPT: ${{ inputs.previous_recovery_run_attempt }}
       ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
-      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
-      E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SOURCE_SHA }}
-      E2E_CLEANUP_SERVICE_IMAGE_DIGEST: ${{ vars.E2E_CLEANUP_SERVICE_IMAGE_DIGEST }}
-      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
 
     steps:
       - name: Checkout E2E recovery tools
@@ -122,7 +118,6 @@ jobs:
         run: |
           node scripts/account-recovery-inputs.mjs --validate-inputs
           node scripts/check-compatibility.mjs --require-infra
-          node scripts/execution-guard.mjs --source-only
 
       - name: Verify exact original E2E owner and previous recovery artifact
         id: recovery-scope
@@ -166,6 +161,10 @@ jobs:
           E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
           E2E_MAX_NEW_ACCOUNTS_PER_RUN: ${{ steps.recovery-scope.outputs.max_new }}
           E2E_MAX_QUARANTINED_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_quarantined }}
+          E2E_CLEANUP_SERVICE_SHA: ${{ steps.recovery-scope.outputs.diagnostic_service_source_sha }}
+          E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ steps.recovery-scope.outputs.diagnostic_service_source_sha }}
+          E2E_CLEANUP_SERVICE_IMAGE_DIGEST: ${{ steps.recovery-scope.outputs.diagnostic_service_image_digest }}
+          BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ steps.recovery-scope.outputs.diagnostic_state_machine_version_arn }}
         run: |
           node scripts/execution-guard.mjs
           pnpm accounts:cleanup-workers

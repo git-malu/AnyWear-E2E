@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ghApi } from './trusted-deployment-inputs.mjs';
-import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, repositories } from './evidence-contract.mjs';
+import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, requireImageDigest, requireMatch, repositories } from './evidence-contract.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { createServiceCleanupInputs } from '../tests/support/worker-cleanup.ts';
 import { assertCleanupOwnerEvidence, assertRecoveryOperationEvidence } from '../tests/support/service-cleanup-operation.ts';
@@ -157,6 +157,10 @@ export async function prepareRecoveryFiles(environment = process.env, {
   });
   const diagnosticRecord = diagnostic?.record ?? diagnostic;
   if (!diagnosticRecord || typeof diagnosticRecord !== 'object' || Array.isArray(diagnosticRecord)) throw new Error('Validated Beta cleanup diagnostic record is unavailable');
+  const diagnosticServiceSourceSha = requireCommit(diagnosticRecord.service?.source_sha, 'Validated diagnostic Service source');
+  const diagnosticServiceImageDigest = requireImageDigest(diagnosticRecord.service?.image_digest);
+  const diagnosticStateMachineVersionArn = requireMatch(diagnosticRecord.capability?.state_machine_version_arn,
+    /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3$/, 'Validated diagnostic cleanup state machine version');
   const diagnosticBytes = Buffer.from(`${JSON.stringify(diagnosticRecord, null, 2)}\n`);
   await mkdir(dirname(diagnosticPath), { recursive: true });
   await writeFile(resolve(dirname(path), 'original-account-budget.json'), bytes, { mode: 0o600 });
@@ -196,6 +200,8 @@ export async function prepareRecoveryFiles(environment = process.env, {
     `original_operation_path=${files['service-cleanup-operation.json'] ? resolve(dirname(path), 'original-service-cleanup-operation.json') : ''}`, '',
     `previous_operation_path=${selection.previousRunId ? resolve(dirname(path), 'previous-recovery-operation.json') : ''}`, '',
     `diagnostic_path=${diagnosticPath}`, `diagnostic_sha256=${byteHash(diagnosticBytes)}`, '',
+    `diagnostic_service_source_sha=${diagnosticServiceSourceSha}`, `diagnostic_service_image_digest=${diagnosticServiceImageDigest}`,
+    `diagnostic_state_machine_version_arn=${diagnosticStateMachineVersionArn}`, '',
   ].join('\n'));
   console.log('Prepared only captured original worker identities for subject-bound Service cleanup.');
 }
