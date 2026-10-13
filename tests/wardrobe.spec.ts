@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import {
   requireEnvironment,
 } from './support/account.js';
-import { isTerminalTaggingStatus } from './support/wardrobe-lifecycle.js';
+import { DirectTeardown, quarantinesScope, type ProductResult } from './support/cleanup-operation.js';
+import { createHash, randomUUID } from 'node:crypto';
 
 const uploadFixture = fileURLToPath(new URL('./fixtures/dummy.png', import.meta.url));
 
@@ -25,24 +26,65 @@ test.describe('Wardrobe Management @full-stack', () => {
 
   let createdItemId: string | undefined;
   let authorization: string | undefined;
-  let observedTerminalState = false;
+  let teardown: DirectTeardown | undefined;
+  let productResult: ProductResult = 'skipped';
 
-  test.beforeEach(async ({ page, workerAccount }) => {
+  // A stable numeric lease generation per attempt keeps every retry on a fresh
+  // lease fence while staying reproducible within one attempt.
+  const leaseGenerationFor = (seed: string) => (parseInt(createHash('sha256').update(seed).digest('hex').slice(0, 6), 16) % 2_000_000) + 1;
+
+  test.beforeEach(async ({ page, workerAccount }, testInfo) => {
     requireEnvironment('USER_POOL_ID');
     requireEnvironment('VITE_COGNITO_CLIENT_ID');
     createdItemId = undefined;
     authorization = undefined;
-    observedTerminalState = false;
+    productResult = 'skipped';
+    // Register before the first business side effect, on a scope unique to this
+    // attempt so a retry always allocates a fresh operation and lease generation.
+    teardown = new DirectTeardown({
+      runScope: requireEnvironment('E2E_CLEANUP_RUN_SCOPE'),
+      testScope: 'wardrobe.spec.ts::recovers-an-idempotent-auto-tag-request',
+      retryIndex: testInfo.retry,
+      leaseId: randomUUID(),
+      leaseGeneration: leaseGenerationFor(`${workerAccount.email}:${testInfo.retry}:${randomUUID()}`),
+      expectedUsername: workerAccount.email,
+      expectedEmail: workerAccount.email,
+      serviceUrl: requireEnvironment('E2E_SERVICE_URL'),
+      request: page.request,
+    });
+    await teardown.register();
     await login(page, workerAccount);
+    // The owner binds only after Cognito confirmation, and only to this subject.
+    if (!workerAccount.subject) throw new Error('Login did not capture the confirmed Cognito subject');
+    await teardown.bindOwner(workerAccount.subject);
   });
 
-  test.afterEach(async ({ page }) => {
-    if (createdItemId && authorization && observedTerminalState) {
-      const response = await page.request.delete(
-        `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
-        { headers: { Authorization: authorization } },
-      );
-      expect([200, 404]).toContain(response.status());
+  test.afterEach(async ({ page }, testInfo) => {
+    if (!teardown) return;
+    // A failed product assertion is reported as `failed`; an unrun body is `skipped`.
+    if (productResult === 'skipped') {
+      productResult = testInfo.status === testInfo.expectedStatus ? 'skipped' : 'failed';
+    }
+    if (!createdItemId || !authorization) {
+      // Nothing was created, so the attempt still acknowledges its own scope.
+      await teardown.acknowledge(productResult, 'passed');
+      return;
+    }
+    teardown.capture('wardrobe_item', createdItemId);
+    const result = await teardown.finalize(productResult, authorization);
+
+    // Exact absence readback after teardown, independent of the product assertion.
+    const readback = await page.request.get(
+      `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
+      { headers: { Authorization: authorization } },
+    );
+    expect(readback.status()).toBe(404);
+
+    // A teardown failure fails the separate teardown gate without rewriting the
+    // product outcome, and quarantines the scope so the next attempt is fresh.
+    if (quarantinesScope(result.teardown_result)) {
+      expect(result.scope_state, result.quarantine_reason ?? 'teardown quarantined its scope').toBe('quarantined');
+      throw new Error(`Teardown gate failed (${result.teardown_result}): ${result.quarantine_reason ?? 'unknown'}`);
     }
   });
 
@@ -117,7 +159,6 @@ test.describe('Wardrobe Management @full-stack', () => {
       expect(latest.id).toBe(createdItemId);
       expect(latest.taggingStateVersion).toBeGreaterThanOrEqual(lastVersion);
       lastVersion = latest.taggingStateVersion;
-      observedTerminalState = isTerminalTaggingStatus(latest.taggingStatus);
       return latest.taggingStatus;
     }, { timeout: 600_000, intervals: [1_000, 2_000, 5_000] }).toBe('ready');
 
@@ -204,5 +245,7 @@ test.describe('Wardrobe Management @full-stack', () => {
         name: baselineItem.name,
       });
     }
+    // The product assertion stands on its own; teardown runs separately in afterEach.
+    productResult = 'passed';
   });
 });
