@@ -10,9 +10,49 @@ import { markAccountDeleted } from '../tests/support/account-budget.ts';
 import { runCleanupOperation, runRecoveryCleanupOperation } from '../tests/support/service-cleanup-operation.ts';
 import { cleanupWorkerAccounts } from '../tests/support/worker-cleanup.ts';
 import { assertE2EExecution } from './execution-guard.mjs';
-import { parseStrictJson } from './evidence-contract.mjs';
+import { byteHash, parseStrictJson } from './evidence-contract.mjs';
+import { validateDiagnosticRecord } from './beta-cleanup-diagnostic.mjs';
 import { validateAccountRecoverySelection } from './account-recovery-inputs.mjs';
 const manifestPath = process.env.E2E_ACCOUNT_BUDGET_PATH ?? 'test-results/account-budget.json';
+const SHA = /^[a-f0-9]{40}$/;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const VERSION_ARN = /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3$/;
+
+export async function readCleanupDiagnostic(environment) {
+  const path = environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH;
+  if (!path) throw new Error('Validated Beta cleanup diagnostic path is required; identities were retained');
+  const bytes = await readFile(path);
+  const expectedHash = environment.E2E_BETA_CLEANUP_DIAGNOSTIC_SHA256;
+  if (!/^[a-f0-9]{64}$/.test(expectedHash ?? '') || byteHash(bytes) !== expectedHash) {
+    throw new Error('Validated Beta cleanup diagnostic path/hash binding failed; identities were retained');
+  }
+  const record = parseStrictJson(bytes);
+  validateDiagnosticRecord(record);
+  return record;
+}
+
+export function bindCleanupEnvironment(environment, diagnostic) {
+  const source = diagnostic?.service?.source_sha;
+  const image = diagnostic?.service?.image_digest;
+  const versionArn = diagnostic?.capability?.state_machine_version_arn;
+  if (!SHA.test(source ?? '') || !DIGEST.test(image ?? '') || !VERSION_ARN.test(versionArn ?? '')) {
+    throw new Error('Validated Beta cleanup diagnostic tuple is incomplete; identities were retained');
+  }
+  for (const [key, expected] of [
+    ['E2E_CLEANUP_SERVICE_SHA', source],
+    ['E2E_CLEANUP_SERVICE_SOURCE_SHA', source],
+    ['E2E_CLEANUP_SERVICE_IMAGE_DIGEST', image],
+    ['BETA_CLEANUP_STATE_MACHINE_VERSION_ARN', versionArn],
+  ]) {
+    if (environment[key] && environment[key] !== expected) throw new Error(`Cleanup ${key} differs from validated diagnostic tuple; identities were retained`);
+  }
+  return { ...environment,
+    E2E_CLEANUP_SERVICE_SHA: source,
+    E2E_CLEANUP_SERVICE_SOURCE_SHA: source,
+    E2E_CLEANUP_SERVICE_IMAGE_DIGEST: image,
+    BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: versionArn,
+  };
+}
 
 async function cognitoIo() {
   const userPoolId = process.env.USER_POOL_ID;
@@ -31,8 +71,13 @@ async function cognitoIo() {
   };
 }
 
-export async function runCapturedWorkerCleanup(manifest, environment, io, operations = { normal: runCleanupOperation, recovery: runRecoveryCleanupOperation }) {
+export async function runCapturedWorkerCleanup(manifest, environment, io,
+  operations = { normal: runCleanupOperation, recovery: runRecoveryCleanupOperation },
+  diagnosticLoader = readCleanupDiagnostic) {
   const mode = environment.E2E_CLEANUP_OPERATION_MODE ?? 'normal';
+  const requiresDiagnostic = mode === 'recovery' || Boolean(environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH);
+  const diagnostic = requiresDiagnostic ? await diagnosticLoader(environment) : undefined;
+  const cleanupEnvironment = diagnostic ? bindCleanupEnvironment(environment, diagnostic) : environment;
   let captured = manifest;
   let canonicalRequest;
   if (mode === 'recovery') {
@@ -52,7 +97,7 @@ export async function runCapturedWorkerCleanup(manifest, environment, io, operat
   } else if (mode !== 'normal' || environment.E2E_CLEANUP_RECOVERY_ATTEMPT) throw new Error('Cleanup mode/attempt is invalid');
   return cleanupWorkerAccounts(captured, { ...io, runServiceCleanup: async inputs => {
     if (canonicalRequest !== undefined && inputs.cleanup_json !== canonicalRequest) throw new Error('Recovery changes canonical captured request bytes');
-    const result = await operations[mode](inputs, environment);
+    const result = await operations[mode](inputs, cleanupEnvironment);
     if (result === undefined) return false;
     if (result.operation?.proof_status !== 'verified') throw new Error('Service cleanup did not prove the committed result; identities retained');
     return true;

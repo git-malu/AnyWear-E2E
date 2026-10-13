@@ -97,7 +97,8 @@ export function repositoryReadEnvironment(repository, environment = process.env)
   if (!environment[input]?.trim()) throw new Error(`${input} required for ${repository} read access`);
   const scoped = { ...environment, GH_TOKEN: environment[input] };
   for (const key of ['GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
-    'SERVICE_ARTIFACT_READ_TOKEN', 'CLIENT_CONTENTS_READ_TOKEN']) delete scoped[key];
+    'E2E_EVIDENCE_READ_TOKEN', 'INFRA_EVIDENCE_READ_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN',
+    'CLIENT_CONTENTS_READ_TOKEN']) delete scoped[key];
   return scoped;
 }
 

@@ -7,6 +7,7 @@ import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, reposit
 import { isDeepStrictEqual } from 'node:util';
 import { createServiceCleanupInputs } from '../tests/support/worker-cleanup.ts';
 import { assertCleanupOwnerEvidence, assertRecoveryOperationEvidence } from '../tests/support/service-cleanup-operation.ts';
+import { loadDiagnosticEvidence } from './beta-cleanup-diagnostic.mjs';
 
 const CAPTURED_SUBJECT = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const WORKER_EMAIL = /^e2e-beta-worker-[0-7]-chromium@anywear\.local$/;
@@ -117,7 +118,12 @@ export function prepareAccountRecovery(manifest, run, sourceRunId, sourceAttempt
   return manifest;
 }
 
-export async function prepareRecoveryFiles(environment = process.env, { api = ghApi, extract = readAccountArchive } = {}) {
+export async function prepareRecoveryFiles(environment = process.env, {
+  api = ghApi,
+  extract = readAccountArchive,
+  loadDiagnostic = loadDiagnosticEvidence,
+} = {}) {
+  if (!environment.INFRA_EVIDENCE_READ_TOKEN?.trim()) throw new Error('INFRA_EVIDENCE_READ_TOKEN required for diagnostic evidence');
   const selection = validateAccountRecoverySelection(environment);
   const { sourceRunId: id, sourceAttempt: attempt } = selection;
   const path = environment.E2E_ACCOUNT_BUDGET_PATH;
@@ -141,6 +147,18 @@ export async function prepareRecoveryFiles(environment = process.env, { api = gh
   if (!files['service-cleanup-operation.json']) throw new Error('Original cleanup operation evidence is required');
   const originalOperation = parseStrictJson(Buffer.from(files['service-cleanup-operation.json'], 'base64'));
   assertCleanupOwnerEvidence(originalOperation, inputs.cleanup_json);
+  const diagnosticPath = environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH
+    ? resolve(environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH)
+    : resolve(dirname(path), 'beta-cleanup-diagnostic.json');
+  const diagnostic = await loadDiagnostic({
+    directory: resolve(dirname(diagnosticPath), '.diagnostic-cache'),
+    api,
+    environment: { ...environment, GH_TOKEN: environment.INFRA_EVIDENCE_READ_TOKEN },
+  });
+  const diagnosticRecord = diagnostic?.record ?? diagnostic;
+  if (!diagnosticRecord || typeof diagnosticRecord !== 'object' || Array.isArray(diagnosticRecord)) throw new Error('Validated Beta cleanup diagnostic record is unavailable');
+  const diagnosticBytes = Buffer.from(`${JSON.stringify(diagnosticRecord, null, 2)}\n`);
+  await mkdir(dirname(diagnosticPath), { recursive: true });
   await writeFile(resolve(dirname(path), 'original-account-budget.json'), bytes, { mode: 0o600 });
   if (files['service-cleanup-run.json']) await writeFile(resolve(dirname(path), 'original-service-cleanup-run.json'), Buffer.from(files['service-cleanup-run.json'], 'base64'), { mode: 0o600 });
   if (files['service-cleanup-operation.json']) await writeFile(resolve(dirname(path), 'original-service-cleanup-operation.json'), Buffer.from(files['service-cleanup-operation.json'], 'base64'), { mode: 0o600 });
@@ -169,6 +187,7 @@ export async function prepareRecoveryFiles(environment = process.env, { api = gh
     await writeFile(resolve(dirname(path), 'previous-recovery-operation.json'), Buffer.from(priorFiles['service-cleanup-operation.json'], 'base64'), { mode: 0o600 });
     await writeFile(resolve(dirname(path), 'previous-recovery-owner.json'), `${JSON.stringify({ run: priorRun, artifact: priorArtifact, archive_sha256: byteHash(priorArchive) }, null, 2)}\n`, { mode: 0o600 });
   }
+  await writeFile(diagnosticPath, diagnosticBytes, { mode: 0o600 });
   await writeFile(resolve(dirname(path), 'recovery-selection.json'), `${JSON.stringify(selection, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path, `${JSON.stringify(currentManifest, null, 2)}\n`, { mode: 0o600 });
   await appendFile(environment.GITHUB_OUTPUT, [
@@ -176,6 +195,7 @@ export async function prepareRecoveryFiles(environment = process.env, { api = gh
     `max_new=${manifest.config.maxNewAccountsPerRun}`, `max_quarantined=${manifest.config.maxQuarantinedAccounts}`, '',
     `original_operation_path=${files['service-cleanup-operation.json'] ? resolve(dirname(path), 'original-service-cleanup-operation.json') : ''}`, '',
     `previous_operation_path=${selection.previousRunId ? resolve(dirname(path), 'previous-recovery-operation.json') : ''}`, '',
+    `diagnostic_path=${diagnosticPath}`, `diagnostic_sha256=${byteHash(diagnosticBytes)}`, '',
   ].join('\n'));
   console.log('Prepared only captured original worker identities for subject-bound Service cleanup.');
 }

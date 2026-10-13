@@ -86,7 +86,8 @@ function inputHarness({ baseline = false, alterManifest, alterRun, alterArtifact
   return { compatibility: f.compatibility, manifest, manifestBytes, selector, release, publisher, attestations, requests,
     io: {
       environment: { GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
-        GITHUB_TOKEN: 'unrelated-write-fixture', CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture' },
+        GITHUB_TOKEN: 'unrelated-write-fixture', E2E_EVIDENCE_READ_TOKEN: 'e2e-read-fixture',
+        INFRA_EVIDENCE_READ_TOKEN: 'infra-evidence-fixture', CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture' },
       api: async (path, binary, environment, options) => {
         requests.push({ path, binary, environment, options });
         if (binary && path.endsWith('/zip')) return Buffer.from('archive-fixture');
@@ -176,7 +177,8 @@ test('mixed trusted inputs route each API to its own reader without forwarding o
   assert.ok(h.requests.some(request => request.path.includes('/AnyWear-Service/')));
   for (const { path, environment } of h.requests) {
     assert.equal(environment.GH_TOKEN, path.includes('/AnyWear-Infra/') ? 'infra-read-fixture' : 'service-read-fixture');
-    for (const key of ['GITHUB_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN', 'CLIENT_CONTENTS_READ_TOKEN']) {
+    for (const key of ['GITHUB_TOKEN', 'E2E_EVIDENCE_READ_TOKEN', 'INFRA_EVIDENCE_READ_TOKEN',
+      'SERVICE_ARTIFACT_READ_TOKEN', 'CLIENT_CONTENTS_READ_TOKEN']) {
       assert.equal(environment[key], undefined);
     }
   }
@@ -192,7 +194,8 @@ test('missing explicit readers fail before API requests and cannot fall back to 
     assert.equal(h.attestations.length, 0);
   }
   const environment = { GH_TOKEN: 'infra-read-fixture', SERVICE_ARTIFACT_READ_TOKEN: 'service-read-fixture',
-    CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture', GITHUB_TOKEN: 'unrelated-write-fixture' };
+    CLIENT_CONTENTS_READ_TOKEN: 'client-read-fixture', E2E_EVIDENCE_READ_TOKEN: 'e2e-read-fixture',
+    INFRA_EVIDENCE_READ_TOKEN: 'infra-evidence-fixture', GITHUB_TOKEN: 'unrelated-write-fixture' };
   assert.equal(repositoryReadEnvironment('git-malu/AnyWear-Client', environment).GH_TOKEN, 'client-read-fixture');
   assert.equal(repositoryReadEnvironment('git-malu/AnyWear-Service', environment).GH_TOKEN, 'service-read-fixture');
   assert.equal(repositoryReadEnvironment('git-malu/AnyWear-Infra', environment).GH_TOKEN, 'infra-read-fixture');
