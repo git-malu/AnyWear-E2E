@@ -85,6 +85,9 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
     const output = await readFile(env.GITHUB_OUTPUT, 'utf8');
     assert.match(output, /diagnostic_path=.*beta-cleanup-diagnostic\.json/);
     assert.match(output, /diagnostic_sha256=[a-f0-9]{64}/);
+    assert.match(output, new RegExp(`diagnostic_service_source_sha=${tuple.E2E_CLEANUP_SERVICE_SHA}`));
+    assert.match(output, new RegExp(`diagnostic_service_image_digest=${tuple.E2E_CLEANUP_SERVICE_IMAGE_DIGEST}`));
+    assert.match(output, /diagnostic_state_machine_version_arn=arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3/);
     const persistedOriginal = { ...priorFiles };
     for (const name of Object.keys(originalFiles)) persistedOriginal[name] = (await readFile(join(directory, name))).toString('base64');
     const priorApi = path => {
@@ -102,6 +105,22 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
     const legacyWrongHash = operation(legacy); legacyWrongHash.operation.input_sha256 = 'f'.repeat(64);
     await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }), loadDiagnostic: async () => diagnostic }), /binding/);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('recovery workflow binds cleanup execution to validated diagnostic outputs', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/account-recovery.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /node scripts\/execution-guard\.mjs --source-only/);
+  assert.doesNotMatch(workflow, /vars\.E2E_CLEANUP_SERVICE_(?:SHA|SOURCE_SHA|IMAGE_DIGEST)/);
+  for (const [name, output] of [
+    ['E2E_CLEANUP_SERVICE_SHA', 'diagnostic_service_source_sha'],
+    ['E2E_CLEANUP_SERVICE_SOURCE_SHA', 'diagnostic_service_source_sha'],
+    ['E2E_CLEANUP_SERVICE_IMAGE_DIGEST', 'diagnostic_service_image_digest'],
+    ['BETA_CLEANUP_STATE_MACHINE_VERSION_ARN', 'diagnostic_state_machine_version_arn'],
+  ]) assert.ok(workflow.includes(name + ': ${{ steps.recovery-scope.outputs.' + output + ' }}'));
+  const scopeOutput = workflow.indexOf('id: recovery-scope');
+  const cleanupStep = workflow.indexOf('name: Recover exact worker data and identities');
+  assert.ok(scopeOutput >= 0 && cleanupStep > scopeOutput);
+  assert.ok(workflow.indexOf('node scripts/execution-guard.mjs', cleanupStep) > cleanupStep);
 });
 
 test('diagnostic preparation requires the dedicated Infra reader and never falls back to ambient GH_TOKEN', async () => {
