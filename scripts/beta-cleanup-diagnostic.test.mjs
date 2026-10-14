@@ -107,13 +107,14 @@ function operationFixture(expected, observation) {
   const selection = observation.selection;
   const taskArn = observation.schema.verification.task_arn;
   return {
-    schema_version: 2, record_type: 'anywear_infra_operation', family: 'beta-deploy', operation: 'deploy-workload', result: 'succeeded', recovery: 'not-required', final_observation: 'success',
+    schema_version: 3, record_type: 'anywear_infra_operation', family: 'beta-deploy', operation: 'deploy-workload', result: 'succeeded', recovery: 'not-required', final_observation: 'success',
     context: { account: expected.account_id, identity_phase: 'retired', region: expected.region, retention_protection: true },
     executor: { repository: expected.infra.repository, run_attempt: expected.infra.run_attempt, run_id: expected.infra.run_id, sha: expected.infra.sha, workflow_path: expected.infra.workflow_path },
     lifecycle_implementation_origin: { path: '.github/scripts/beta-lifecycle.mjs', repository: 'git-malu/AnyWear-Service', sha: sha('1') },
     original_runtime: { image_digest: `sha256:${'1'.repeat(64)}`, service_sha: sha('2') },
     original_stack_templates: observation.stacks.map(({ region, stack_name, template_sha256 }) => ({ region, stack_name, template_sha256 })),
-    reviewed_stack_sources: observation.stacks.map(({ region, source_repository, source_sha, stack_name }) => ({ region, source_repository, source_sha, stack_name })),
+    stack_manifest: observation.stacks.map(({ region, source_repository, source_sha, stack_name }) => ({ region, source_repository, source_sha, stack_name })),
+    changed_stack_names: ['AnyWearWorkloadStack-beta'],
     selection,
     events: [
       { platform_active: true, type: 'observed-beta-activity', workload_active: true },

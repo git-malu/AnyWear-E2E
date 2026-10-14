@@ -119,7 +119,7 @@ function fixtureRecord(f) {
     task_definition_arn: tuple.fixture_task_definition_arn, action: 'inspect', run_scope: f.bootstrap.run_scope,
     request_sha256: f.bootstrap.fixture_request_sha256, selection: { file: 'selections/fixture.json', sha256: tuple.selection_sha256,
       service_sha: tuple.service_source_sha, image_digest: tuple.service_image_digest }, stack_sources: { file: 'stack-sources/fixture.json', sha256: tuple.stack_sources_sha256 },
-    reviewed_stack_sources: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearFoundationStack', 'AnyWearBillingStack-beta'].map(stack_name => ({
+    stack_manifest: ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearFoundationStack', 'AnyWearBillingStack-beta'].map(stack_name => ({
       stack_name, region: stack_name.includes('Billing') ? 'us-east-1' : 'ap-east-1', source_repository: 'git-malu/AnyWear-Infra', source_sha: tuple.fixture_source_sha })),
     bootstrap: { origin: f.origin, manifest: f.bootstrap }, original: environment, launch_attempted: true, launch_input_sha256: '8'.repeat(64),
     launch_response: { task_arns: [taskArn], task_count: 1, failure_count: 0, unidentified_task_count: 0, identities_truncated: false }, task_arn: taskArn,
@@ -135,13 +135,24 @@ function fixtureRecord(f) {
 test('fixture records bind raw stack source hash, all explicit producers and actual stopped launch/command/image proof', () => {
   const f = cleanupAcceptanceFixture(), { origin, record } = fixtureRecord(f);
   assertFixtureRecord(record, origin, f.bootstrap, f.origin, 'inspect');
+  // Dual run: the historical v2 carrier stays interpretable alongside stack_manifest.
+  const historical = structuredClone(record);
+  historical.reviewed_stack_sources = structuredClone(record.stack_manifest);
+  delete historical.stack_manifest;
+  assertFixtureRecord(historical, origin, f.bootstrap, f.origin, 'inspect');
+  const both = structuredClone(record);
+  both.reviewed_stack_sources = structuredClone(record.stack_manifest);
+  assert.throws(() => assertFixtureRecord(both, origin, f.bootstrap, f.origin, 'inspect'));
+  const dropped = structuredClone(record);
+  delete dropped.stack_manifest;
+  assert.throws(() => assertFixtureRecord(dropped, origin, f.bootstrap, f.origin, 'inspect'));
   const inert = structuredClone(record);
   inert.task_observation.overrides.inferenceAcceleratorOverrides = [];
   assertFixtureRecord(inert, origin, f.bootstrap, f.origin, 'inspect');
   for (const change of [r => delete r.stack_sources, r => r.stack_sources.sha256 = '0'.repeat(64), r => r.stack_sources.file = '../fixture.json',
-    r => r.reviewed_stack_sources[1].source_sha = '0'.repeat(40), r => r.reviewed_stack_sources[1].source_repository = 'git-malu/AnyWear-Service',
-    r => r.reviewed_stack_sources[0] = r.reviewed_stack_sources[1], r => r.reviewed_stack_sources[3].region = 'ap-east-1',
-    r => r.reviewed_stack_sources[0].extra = true, r => r.launch_response.task_count = 2, r => r.launch_response.failure_count = 1,
+    r => r.stack_manifest[1].source_sha = '0'.repeat(40), r => r.stack_manifest[1].source_repository = 'git-malu/AnyWear-Service',
+    r => r.stack_manifest[0] = r.stack_manifest[1], r => r.stack_manifest[3].region = 'ap-east-1',
+    r => r.stack_manifest[0].extra = true, r => r.launch_response.task_count = 2, r => r.launch_response.failure_count = 1,
     r => r.launch_response.unidentified_task_count = 1, r => r.launch_response.identities_truncated = true,
     r => r.task_observation.status = 'RUNNING', r => r.task_observation.task_definition_arn = r.task_observation.task_definition_arn.replace(':7', ':8'),
     r => r.task_observation.container.image_digest = `sha256:${'0'.repeat(64)}`, r => r.task_observation.container.exit_code = 1,

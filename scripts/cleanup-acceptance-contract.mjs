@@ -1,5 +1,6 @@
 import { assertEqual, byteHash, exactKeys, parseStrictJson, repositories, requireCommit,
   requireHash, requireId, requireImageDigest } from './evidence-contract.mjs';
+import { configuredStack, configuredStackNames } from './vendor/operation-stacks.mjs';
 
 export const ACCEPTANCE_WORKFLOW = '.github/workflows/beta-cleanup-acceptance.yml';
 export const PHASES = ['bootstrap', 'refusals', 'qualification', 'recovery', 'teardown'];
@@ -258,8 +259,11 @@ function assertTaskProofs(tasks, bootstrap, input, success) {
 }
 
 export function assertFixtureRecord(record, origin, bootstrap, bootstrapOrigin, action) {
+  // Schema v3 fixture records carry `stack_manifest`; historical dual-run records
+  // carry `reviewed_stack_sources`. Exactly one provenance carrier is accepted.
+  const provenance = 'stack_manifest' in record ? 'stack_manifest' : 'reviewed_stack_sources' in record ? 'reviewed_stack_sources' : null;
   exactKeys(record, ['schema_version', 'record_type', 'result', 'executor', 'fixture_source_sha', 'task_definition_arn', 'action',
-    'run_scope', 'request_sha256', 'selection', 'stack_sources', 'reviewed_stack_sources', 'bootstrap', 'original', 'launch_attempted',
+    'run_scope', 'request_sha256', 'selection', 'stack_sources', provenance ?? 'stack_manifest', 'bootstrap', 'original', 'launch_attempted',
     'launch_input_sha256', 'launch_response', 'task_arn', 'task_observation', 'service_result', 'final'], 'Fixture operation');
   const tuple = bootstrap.frozen_tuple;
   if (record.schema_version !== 1 || record.record_type !== 'anywear_beta_cleanup_acceptance_operation'
@@ -279,13 +283,13 @@ export function assertFixtureRecord(record, origin, bootstrap, bootstrapOrigin, 
     || !/^stack-sources\/[a-z0-9][a-z0-9._-]{0,127}\.json$/.test(record.stack_sources.file)
     || record.selection.sha256 !== tuple.selection_sha256 || record.selection.service_sha !== tuple.service_source_sha
     || record.selection.image_digest !== tuple.service_image_digest || record.stack_sources.sha256 !== tuple.stack_sources_sha256) throw new Error('Fixture selected tuple changed');
-  const names = ['AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearFoundationStack', 'AnyWearBillingStack-beta'];
-  const sources = record.reviewed_stack_sources;
-  if (!Array.isArray(sources) || sources.length !== 4 || new Set(sources.map(row => row?.stack_name)).size !== 4) throw new Error('Four distinct fixture stack producers required');
+  const names = configuredStackNames();
+  const sources = record[provenance];
+  if (!provenance || !Array.isArray(sources) || sources.length !== names.length || new Set(sources.map(row => row?.stack_name)).size !== names.length) throw new Error('Every configured stack producer required');
   for (const row of sources) {
     exactKeys(row, ['stack_name', 'region', 'source_repository', 'source_sha'], 'Fixture stack producer');
     requireCommit(row.source_sha, 'Fixture stack source');
-    if (!names.includes(row.stack_name) || row.region !== (row.stack_name.includes('Billing') ? 'us-east-1' : 'ap-east-1')
+    if (!names.includes(row.stack_name) || row.region !== configuredStack(row.stack_name).region
       || ![repositories.infra, repositories.service].includes(row.source_repository)) throw new Error('Unexpected fixture stack producer');
   }
   const workload = sources.find(row => row.stack_name === 'AnyWearWorkloadStack-beta');

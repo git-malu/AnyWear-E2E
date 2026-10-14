@@ -4,17 +4,24 @@ These files are exact copies of public Infra/Service interfaces. E2E consumes pu
 
 ## Direct selection source
 
-The staged source integration consumes immutable [Infra `5815bfb39010d356bde44c070c53d9aceccb9504`](https://github.com/git-malu/AnyWear-Infra/commit/5815bfb39010d356bde44c070c53d9aceccb9504) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
+The staged source integration consumes immutable [Infra `0416fcb5fc0fa228b2cfd0a0ebf781a216aae113`](https://github.com/git-malu/AnyWear-Infra/commit/0416fcb5fc0fa228b2cfd0a0ebf781a216aae113) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
 
-All five contract files match the exact Infra source bytes:
+All contract files match the exact Infra source bytes:
 
 | E2E file | Producer path in Infra | Raw SHA-256 |
 | --- | --- | --- |
-| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `933d04088f1b65a58718657299028610ab1cc28e208ca8544e49ba7f46301df8` |
+| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `13bb804e854ff9389e0eca472c839f5594307b8b84acba88329df7391af72a8d` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
 | `artifact-consumer.mjs` | `scripts/artifact-consumer.mjs` | `83f4ba2be6325a96178687f24443460c6509c000556d6804acf294620fc0b499` |
 | `vendor/service-artifact-contract.mjs` | `scripts/vendor/service-artifact-contract.mjs` | `57fbd454b90fae6de856d05bb612a8c9b5b8d9e130e0521093fee0bf7e9422de` |
 | `vendor/service-release-attestation.mjs` | `scripts/vendor/service-release-attestation.mjs` | `c02c1691ad12203b6d2bd55bbaf58b25feead3ad2bd76ed8240c3c7369d38c65` |
+| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `f015d7879d231843f3f4208ad49132b9c6d6671d709130cc947969c65f194c7c` |
+
+`deployment-contract.mjs` is re-pinned to `13bb804e854ff9389e0eca472c839f5594307b8b84acba88329df7391af72a8d`
+because that revision imports the shared `configuredStacks` manifest table from
+`operation-stacks.mjs` instead of restating stack names, regions and the stack count.
+`json-contract.mjs` and `artifact-consumer.mjs` are byte-identical to the previous
+pin.
 
 Both Service helpers remain byte-identical to authoritative [Service `6a0551b3ea83937d3ac350ee78608784bc2d9dc6`](https://github.com/git-malu/AnyWear-Service/commit/6a0551b3ea83937d3ac350ee78608784bc2d9dc6), paths `.github/scripts/{service-artifact-contract,service-release-attestation}.mjs`. The native parser retains both strict v0.1 and v0.2 predicates, the original signed statement and complete owner/repository/release/tag/target/asset bindings. Receipt-only `publication-acceptance.mjs` is retired from the executable consumer closure. Historical records below retain their original meaning.
 
@@ -22,7 +29,7 @@ The genuine [v0.2 fixture](../fixtures/github-native-release-verification-v0.2.j
 
 ## Runtime trust boundary
 
-Selector, deployment and operation runtime records use Infra schema v2. Historical receipt-bearing v1 records are rejected as runtime inputs, never converted into a new accepted record. The actual selection must be a regular tracked canonical `selections/*.json` blob, bound to its raw SHA-256 and the explicit full `compatibility.infra.sha`. The reviewed origin, root, commit, clean tracked/untracked state, replacement refs and hidden index flags are checked by the pinned loader before and after verification.
+Selector and deployment observation records keep Infra schema v2. Operation records are schema v3: provenance travels in a complete stack_manifest covering every configured stack plus the operation's changed_stack_names, and no longer in hand-authored eviewed_stack_sources. Historical v2 operation records stay readable during the dual run, and the v2 carrier is accepted only when it is the sole provenance field. Unknown versions are rejected with no permissive fallback. Historical receipt-bearing v1 records are rejected as runtime inputs, never converted into a new accepted record. The actual selection must be a regular tracked canonical `selections/*.json` blob, bound to its raw SHA-256 and the explicit full `compatibility.infra.sha`. The reviewed origin, root, commit, clean tracked/untracked state, replacement refs and hidden index flags are checked by the pinned loader before and after verification.
 
 E2E executes the separately checked-out, compatibility-pinned Infra consumer with `--selection <repository-relative file> --selection-sha256 <raw hash> --trusted-infra-root <absolute checkout> --infra-sha <full compatibility pin> --output-dir <external output>`. It loads the committed selector and compares its complete release/components against the deployment record. A temporary reconstructed JSON object is a comparison value only. The vendored validator is not the runtime trust source.
 
