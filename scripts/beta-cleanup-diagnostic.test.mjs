@@ -3,11 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { byteHash, canonicalJson, parseStrictJson } from './evidence-contract.mjs';
+import { byteHash, canonicalJson, owner, parseStrictJson, repositories, repositoryIds, requireOwnedRepository } from './evidence-contract.mjs';
 import { assertDeploymentBinding } from './trusted-deployment-inputs.mjs';
 import { validateDeploymentRecord } from './vendor/deployment-contract.mjs';
 import {
   DIAGNOSTIC_EXPECTED,
+  assertDiagnosticRun,
   loadDiagnosticEvidence,
   validateDiagnosticRecord,
 } from './beta-cleanup-diagnostic.mjs';
@@ -15,6 +16,44 @@ import {
 const sha = letter => letter.repeat(40);
 const hash = letter => letter.repeat(64);
 const image = DIAGNOSTIC_EXPECTED.service.image_digest;
+
+function diagnosticRun() {
+  const repository = { id: repositoryIds[repositories.infra], full_name: repositories.infra, fork: false, owner: { ...owner } };
+  return { id: DIAGNOSTIC_EXPECTED.infra.run_id, run_attempt: DIAGNOSTIC_EXPECTED.infra.run_attempt,
+    head_sha: DIAGNOSTIC_EXPECTED.infra.sha, head_branch: 'main', path: DIAGNOSTIC_EXPECTED.infra.workflow_path,
+    event: 'workflow_dispatch', status: 'completed', conclusion: 'success',
+    repository, head_repository: structuredClone(repository) };
+}
+
+test('run owner identity comes from the repository owner field and never from an environment value', () => {
+  const run = diagnosticRun();
+  assert.strictEqual(assertDiagnosticRun(run, expectedFixture()), run);
+  // An unset owner field is refused rather than defaulted or inferred.
+  for (const change of [r => { delete r.repository.owner; }, r => { r.repository.owner = undefined; },
+    r => { r.repository.owner.login = 'other'; }, r => { r.repository.owner.id = 1; },
+    r => { r.repository.full_name = 'other/AnyWear-Infra'; }, r => { r.repository.id = 1; },
+    r => { r.head_repository = { ...r.repository, owner: { ...r.repository.owner, login: 'other' } }; },
+    r => { r.head_repository = { ...r.repository, owner: { ...r.repository.owner, id: 1 } }; }]) {
+    const candidate = diagnosticRun(); change(candidate);
+    assert.throws(() => assertDiagnosticRun(candidate, expectedFixture()));
+  }
+});
+
+test('owned repository identity is declared once for every AnyWear repository', () => {
+  for (const [repository, id] of Object.entries(repositoryIds)) {
+    const value = { id, full_name: repository, fork: false, owner: { ...owner } };
+    assert.strictEqual(requireOwnedRepository(value, repository, 'Owned repository'), value);
+    assert.throws(() => requireOwnedRepository({ id, full_name: repository }, repository, 'Owned repository'), /owner is required/);
+    assert.throws(() => requireOwnedRepository({ ...value, fork: true }, repository, 'Owned repository'), /not the protected/);
+  }
+  assert.throws(() => requireOwnedRepository({ id: 1, full_name: 'other/AnyWear-Infra', fork: false, owner: { ...owner } }, 'other/AnyWear-Infra', 'Foreign repository'), /not a known AnyWear repository/);
+});
+
+test('owner identity tolerates the unrelated fields the GitHub API returns', () => {
+  const value = { id: repositoryIds[repositories.infra], full_name: repositories.infra, node_id: 'R_1', fork: false,
+    owner: { id: owner.id, login: owner.login, type: 'User', node_id: 'U_1', avatar_url: 'https://example.invalid/a' } };
+  assert.strictEqual(requireOwnedRepository(value, repositories.infra, 'Owned repository'), value);
+});
 
 function expectedFixture() {
   const expected = structuredClone(DIAGNOSTIC_EXPECTED);
@@ -137,7 +176,8 @@ test('loader reads only pinned bytes, release metadata and HTTP health', async (
   const operationBytes = Buffer.from(JSON.stringify(fixture.operation));
   fixture.expected.artifacts.deployment.record_sha256 = byteHash(deploymentBytes);
   fixture.expected.artifacts.operation.record_sha256 = byteHash(operationBytes);
-  const run = { id: fixture.expected.infra.run_id, name: 'Beta deploy-workload', head_branch: 'main', head_sha: fixture.expected.infra.sha, path: fixture.expected.infra.workflow_path, event: 'workflow_dispatch', status: 'completed', conclusion: 'success', run_attempt: 1, run_started_at: '2026-10-12T22:41:19Z', updated_at: '2026-10-12T22:52:17Z', repository: { id: 1409047265, full_name: 'git-malu/AnyWear-Infra', owner: { id: 11473072, login: 'git-malu' } }, head_repository: { id: 1409047265, full_name: 'git-malu/AnyWear-Infra', owner: { id: 11473072, login: 'git-malu' } } };
+  const run = { ...diagnosticRun(), name: 'Beta deploy-workload', run_attempt: 1, run_started_at: '2026-10-12T22:41:19Z', updated_at: '2026-10-12T22:52:17Z' };
+  run.id = fixture.expected.infra.run_id; run.head_sha = fixture.expected.infra.sha;
   const metadata = (id, name, zip) => ({ id, node_id: `node-${id}`, name, size_in_bytes: zip.length, url: 'https://api.github.com', archive_download_url: 'https://api.github.com', expired: false, digest: `sha256:${byteHash(zip)}`, created_at: '2026-10-12T22:52:13Z', updated_at: '2026-10-12T22:52:13Z', expires_at: '2027-01-10T22:41:20Z', workflow_run: { id: run.id, repository_id: 1409047265, head_repository_id: 1409047265, head_branch: 'main', head_sha: run.head_sha } });
   const api = async (path, binary = false) => {
     if (path.includes('/actions/runs/')) return JSON.stringify(run);

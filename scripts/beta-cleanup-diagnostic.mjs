@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   assertEqual, byteHash, exactKeys, parseStrictJson, repositories, requireCommit,
-  requireHash, requireImageDigest,
+  requireHash, requireImageDigest, requireOwnedRepository, repositoryIds,
 } from './evidence-contract.mjs';
 import { ghApi, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
 import { assertSelectionManifest, validateSelection } from './vendor/artifact-consumer.mjs';
@@ -95,7 +95,8 @@ function assertArtifactMetadata(artifact, expected, run, now = Date.now()) {
   const dates = [artifact.created_at, artifact.updated_at, artifact.expires_at].map(Date.parse);
   if (artifact.id !== expected.id || artifact.name !== expected.name || artifact.expired !== false
     || artifact.digest !== `sha256:${expected.zip_sha256}` || artifact.workflow_run.id !== run.id
-    || artifact.workflow_run.repository_id !== 1409047265 || artifact.workflow_run.head_repository_id !== 1409047265
+    || artifact.workflow_run.repository_id !== repositoryIds[repositories.infra]
+    || artifact.workflow_run.head_repository_id !== repositoryIds[repositories.infra]
     || artifact.workflow_run.head_branch !== 'main' || artifact.workflow_run.head_sha !== expectedRunSha(run)
     || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1
     || !dates.every(Number.isFinite) || dates[0] > dates[1] || dates[1] > dates[2] || dates[2] <= now) {
@@ -110,13 +111,10 @@ function expectedRunSha(run) {
 }
 
 export function assertDiagnosticRun(run, expected = DIAGNOSTIC_EXPECTED) {
+  for (const repository of [run.repository, run.head_repository]) requireOwnedRepository(repository, repositories.infra, 'Diagnostic run repository');
   if (run.id !== expected.infra.run_id || run.run_attempt !== expected.infra.run_attempt || run.head_sha !== expected.infra.sha
     || run.head_branch !== 'main' || run.path !== expected.infra.workflow_path || run.event !== 'workflow_dispatch'
-    || run.status !== 'completed' || run.conclusion !== 'success'
-    || run.repository.id !== 1409047265 || run.repository.full_name !== repositories.infra
-    || run.repository.owner.id !== 11473072 || run.repository.owner.login !== 'git-malu'
-    || run.head_repository.id !== 1409047265 || run.head_repository.full_name !== repositories.infra
-    || run.head_repository.owner.id !== 11473072 || run.head_repository.owner.login !== 'git-malu') {
+    || run.status !== 'completed' || run.conclusion !== 'success') {
     throw new Error('Diagnostic workflow run/source/owner/attempt binding mismatch');
   }
   return run;
