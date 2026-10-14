@@ -76,7 +76,7 @@ function selectionFixture(expected) {
       post_confirmation: { asset_id: 11, service_sha: expected.service.source_sha, file: 'post-confirmation.zip', sha256: hash('3'), code_sha256: Buffer.from(hash('3'), 'hex').toString('base64'), handler: 'index.handler', runtime: 'nodejs24.x', source_lock_sha256: hash('2'), bundler_version: 'esbuild@0.28.0', build_options: { bundle: true, external: [], format: 'cjs', minify: true, packages: 'bundle', platform: 'node', sourcemap: 'external', target: 'node24' } },
     },
     runtime_policy: { asset_id: 12, service_sha: expected.service.source_sha, file: 'runtime-policy.json', sha256: hash('4'), content_sha256: hash('5') },
-    schema: { asset_id: 13, service_sha: expected.service.source_sha, file: 'service-schema.json', sha256: hash('6'), journal_sha256: hash('7'), current_version: 16, minimum_version: 16 },
+    schema: { asset_id: 13, service_sha: expected.service.source_sha, file: 'service-schema.json', sha256: hash('6'), journal_sha256: hash('7'), current_version: expected.service.schema_version, minimum_version: expected.service.schema_version },
   };
   return { schema_version: 2, record_type: 'anywear_infra_selection', release: expected.selection.release, ...components };
 }
@@ -97,8 +97,8 @@ function observationFixture(expected, selector) {
     stacks,
     observed: { client_sha: expected.runtime.client_sha, ecs: { api: task('api', expected.runtime.api_task_definition), worker: task('worker', expected.runtime.worker_task_definition) }, endpoints: { api: expected.runtime.api_endpoint, client: expected.runtime.client_endpoint }, image_digest: image,
       lambdas: { 'post-confirmation': { code_sha256: selector.lambdas.post_confirmation.code_sha256, configuration_sha256: hash('9') }, 'pre-sign-up': { code_sha256: selector.lambdas.pre_sign_up.code_sha256, configuration_sha256: hash('0') } }, policy_content_sha256: selector.runtime_policy.content_sha256, queue_config_sha256: hash('1'), service_sha: expected.service.source_sha },
-    schema: { applied_migration_ids: [{ created_at: 1, id: hash('1') }], applied_schema_version: 16, compatibility_result: 'compatible', minimum_migration_count: 1, minimum_schema_version: 16, observed_applied_journal_sha256: hash('2'), selected_current_version: 16, selected_journal_sha256: selector.schema.journal_sha256, selected_migration_ids: [{ created_at: 1, id: hash('1') }], verification: {
-      command_sha256: hash('3'), executor: { repository: expected.infra.repository, run_attempt: expected.infra.run_attempt, run_id: expected.infra.run_id, sha: expected.infra.sha, workflow_path: expected.infra.workflow_path }, image_digest: image, service_sha: expected.service.source_sha, source_repository: expected.infra.repository, source_sha: expected.infra.sha, task_arn: `${taskArn}`, task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:41',
+    schema: { applied_migration_ids: [{ created_at: 1, id: hash('1') }], applied_schema_version: expected.service.schema_version, compatibility_result: 'compatible', minimum_migration_count: 1, minimum_schema_version: expected.service.schema_version, observed_applied_journal_sha256: hash('2'), selected_current_version: expected.service.schema_version, selected_journal_sha256: selector.schema.journal_sha256, selected_migration_ids: [{ created_at: 1, id: hash('1') }], verification: {
+      command_sha256: hash('3'), executor: { repository: expected.infra.repository, run_attempt: expected.infra.run_attempt, run_id: expected.infra.run_id, sha: expected.infra.sha, workflow_path: expected.infra.workflow_path }, image_digest: image, service_sha: expected.service.source_sha, source_repository: expected.infra.repository, source_sha: expected.infra.sha, task_arn: `${taskArn}`, task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:52',
     } },
   };
 }
@@ -118,13 +118,13 @@ function operationFixture(expected, observation) {
     selection,
     events: [
       { platform_active: true, type: 'observed-beta-activity', workload_active: true },
-      { task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:40', type: 'runtime-task-definition' },
+      { task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:51', type: 'runtime-task-definition' },
       { result: 'observed', task_arns: [expected.runtime.prior_verify_task], type: 'runtime-task-started' },
-      { cleanup_task_count: 0, execution_count: 2, inventory_sha256: hash('4'), machine_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup', manager_result_reconciliation_required: true, terminal_failed_execution_arns: ['one', 'two'], type: 'cleanup-capability-cessation' },
+      { cleanup_task_count: 0, execution_count: 3, inventory_sha256: hash('4'), machine_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup', manager_result_reconciliation_required: true, terminal_failed_execution_arns: ['one', 'two'], type: 'cleanup-capability-cessation' },
       { beta_api_sizing_profile: 's1', beta_sizing_telemetry: 'false', image_digest: image, service_sha: expected.service.source_sha, stack_name: 'AnyWearWorkloadStack-beta', stack_status: 'UPDATE_COMPLETE', type: 'workload-parameter-readback' },
       { action: expected.runtime.api_endpoint, command_sha256: hash('5'), image_digest: image, result: 'stopped-success', role: 'verify', service_sha: expected.service.source_sha, task_arn: expected.runtime.verify_task, task_definition_arn: expected.runtime.verify_task_definition, type: 'one-shot' },
       { platform_active: 'true', platform_status: 'UPDATE_COMPLETE', type: 'final-beta-activity', workload_active: 'true', workload_status: 'UPDATE_COMPLETE' },
-      { task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:41', type: 'runtime-task-definition' },
+      { task_definition_arn: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:52', type: 'runtime-task-definition' },
       { result: 'observed', task_arns: [taskArn], type: 'runtime-task-started' },
       { beta_api_sizing_profile: 's1', beta_sizing_telemetry: 'false', ecs: { api: { beta_sizing_telemetry: 'false', cpu: '512', memory: '1024', task_definition_arn: expected.runtime.api_task_definition }, worker: { beta_sizing_telemetry: 'false', cpu: '1024', memory: '2048', task_definition_arn: expected.runtime.worker_task_definition } }, type: 'beta-sizing-state' },
     ],
@@ -135,7 +135,7 @@ function diagnosticFixture(expected = expectedFixture()) {
   const selector = selectionFixture(expected);
   const observation = observationFixture(expected, selector);
   const operation = operationFixture(expected, observation);
-  const health = { client: { schema_version: 1, component: 'AnyWear-Client', source_commit: expected.runtime.client_sha, built_at: '2026-10-12T22:00:00.000Z' }, service: { status: 'ok', service_commit: expected.service.source_sha, image_digest: image, minimum_schema_version: 16 } };
+  const health = { client: { schema_version: 1, component: 'AnyWear-Client', source_commit: expected.runtime.client_sha, built_at: '2026-10-12T22:00:00.000Z' }, service: { status: 'ok', service_commit: expected.service.source_sha, image_digest: image, minimum_schema_version: expected.service.schema_version } };
   const record = { schema_version: 1, record_type: 'anywear_beta_cleanup_diagnostic', producer: { account_id: expected.account_id, region: expected.region, ...expected.infra, operation: 'deploy-workload' }, artifacts: expected.artifacts,
     selection: { file: expected.selection.file, blob_sha256: expected.selection.blob_sha256, raw_sha256: expected.selection.raw_sha256, stack_map_file: expected.selection.stack_map_file, stack_map_sha256: expected.selection.stack_map_sha256 },
     service: { source_sha: expected.service.source_sha, release: expected.selection.release.id, manifest_sha256: expected.selection.release.manifest_sha256, image_digest: expected.service.image_digest },
