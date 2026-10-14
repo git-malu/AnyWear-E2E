@@ -4,7 +4,7 @@ These files are exact copies of public Infra/Service interfaces. E2E consumes pu
 
 ## Direct selection source
 
-The staged source integration consumes immutable [Infra `0416fcb5fc0fa228b2cfd0a0ebf781a216aae113`](https://github.com/git-malu/AnyWear-Infra/commit/0416fcb5fc0fa228b2cfd0a0ebf781a216aae113) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
+The staged source integration consumes immutable [Infra `e6a08de5d6eebdeb13097094d91fb2d7589c6496`](https://github.com/git-malu/AnyWear-Infra/commit/e6a08de5d6eebdeb13097094d91fb2d7589c6496) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
 
 All contract files match the exact Infra source bytes:
 
@@ -22,6 +22,9 @@ because that revision imports the shared `configuredStacks` manifest table from
 `operation-stacks.mjs` instead of restating stack names, regions and the stack count.
 `json-contract.mjs` and `artifact-consumer.mjs` are byte-identical to the previous
 pin.
+
+The `e6a08de5` re-pin re-read every hash at the merged revision; all six files
+remain byte-identical to the `0416fcb5` pin.
 
 Both Service helpers remain byte-identical to authoritative [Service `6a0551b3ea83937d3ac350ee78608784bc2d9dc6`](https://github.com/git-malu/AnyWear-Service/commit/6a0551b3ea83937d3ac350ee78608784bc2d9dc6), paths `.github/scripts/{service-artifact-contract,service-release-attestation}.mjs`. The native parser retains both strict v0.1 and v0.2 predicates, the original signed statement and complete owner/repository/release/tag/target/asset bindings. Receipt-only `publication-acceptance.mjs` is retired from the executable consumer closure. Historical records below retain their original meaning.
 

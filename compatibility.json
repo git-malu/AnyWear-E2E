@@ -6,24 +6,24 @@
   },
   "service": {
     "repository": "git-malu/AnyWear-Service",
-    "sha": "09476a1f8dcf0404fb7bba5a0693ff62ad2bb09f"
+    "sha": "31604bbf311e05dd76f980c3356177beb1f0cfa0"
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "9a07e80cc7500e67e9fc310efcbc7e55b85d9f66"
+    "sha": "e6a08de5d6eebdeb13097094d91fb2d7589c6496"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
-    "release_id": 411906316,
-    "manifest_asset_id": 637661921,
-    "manifest_sha256": "97fd8aea6c200b93567c385807bc2319d56d4a2147f94c70ff16ce81ed72891f"
+    "release_id": 412299829,
+    "manifest_asset_id": 639040701,
+    "manifest_sha256": "847e3f5aeff933c003e26b325ff880704247ef02200153693ecfd6317088d339"
   },
   "deployment": {
     "repository": "git-malu/AnyWear-Infra",
     "workflow_path": ".github/workflows/runtime.yml",
-    "run_id": 38447226085,
+    "run_id": 38529946780,
     "run_attempt": 1,
-    "artifact_id": 11839196369,
-    "record_sha256": "5c4a972947d07939e4bc76c4b055bf73d0e87c466d53625d19683cb4257ae7b8"
+    "artifact_id": 11877521523,
+    "record_sha256": "adeb076af0564ac17c91a7f6a337fc6febed3bc6f9c782b580c17b69ef668af3"
   }
 }
