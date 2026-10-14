@@ -7,6 +7,39 @@ export const repositories = Object.freeze({
   e2e: 'git-malu/AnyWear-E2E',
 });
 
+// Declared identity for the owning account and its repositories. Workflow-run
+// and artifact checks read the owner identity from the API response and compare
+// it with these values; nothing here is inferred from a filesystem path or
+// supplied by an unowned environment secret.
+export const owner = Object.freeze({ login: 'git-malu', id: 11473072 });
+export const repositoryIds = Object.freeze({
+  [repositories.client]: 1176104200,
+  [repositories.service]: 1158460323,
+  [repositories.infra]: 1409047265,
+  [repositories.e2e]: 1317091305,
+});
+
+export function requireRepository(repository, label) {
+  if (!Object.hasOwn(repositoryIds, repository)) throw new Error(`${label} is not a known AnyWear repository`);
+  return repository;
+}
+
+// The GitHub API exposes the owning account only as the `owner` object on
+// the repository itself, alongside many unrelated repository and owner fields.
+// Read the identity fields this contract depends on so a renamed, forked or
+// foreign owner is rejected instead of silently compared or dereferenced.
+export function requireOwnedRepository(value, repository, label) {
+  requireRepository(repository, label);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} is missing`);
+  if (!value.owner || typeof value.owner !== 'object' || Array.isArray(value.owner)) throw new Error(`${label} owner is required`);
+  if (value.full_name !== repository || value.id !== repositoryIds[repository]
+    || value.owner.login !== owner.login || value.owner.id !== owner.id
+    || value.fork !== false) {
+    throw new Error(`${label} is not the protected ${owner.login} repository`);
+  }
+  return value;
+}
+
 export function requireString(value, label) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} is required`);
   return value;

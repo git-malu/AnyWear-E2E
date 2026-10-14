@@ -1,17 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { assertEqual, byteHash, parseStrictJson, repositories } from './evidence-contract.mjs';
+import { assertEqual, byteHash, parseStrictJson, repositories, repositoryIds, requireOwnedRepository } from './evidence-contract.mjs';
 import { assertOrigin } from './cleanup-acceptance-contract.mjs';
 import { ghApi } from './trusted-deployment-inputs.mjs';
 
 export function assertAcceptanceArtifact(origin, run, artifact, name, { inProgress = false, now = Date.now() } = {}) {
   assertOrigin(origin, origin.repository);
-  const repositoryId = { [repositories.e2e]: 1317091305, [repositories.infra]: 1409047265 }[origin.repository];
-  for (const repository of [run.repository, run.head_repository]) {
-    if (repository?.full_name !== origin.repository || repository.id !== repositoryId
-      || repository.owner?.id !== 11473072 || repository.owner?.login !== 'git-malu') throw new Error('Acceptance repository/owner numeric identity mismatch');
-  }
+  const repositoryId = repositoryIds[origin.repository];
+  for (const repository of [run.repository, run.head_repository]) requireOwnedRepository(repository, origin.repository, 'Acceptance run repository');
   if (![repositories.e2e, repositories.infra].includes(origin.repository) || run.id !== origin.run_id || run.run_attempt !== origin.run_attempt
     || run.repository?.full_name !== origin.repository || run.path !== origin.workflow_path || run.head_sha !== origin.source_sha
     || run.head_branch !== 'main' || run.event !== 'workflow_dispatch'

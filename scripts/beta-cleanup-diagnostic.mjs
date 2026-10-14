@@ -3,11 +3,12 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   assertEqual, byteHash, exactKeys, parseStrictJson, repositories, requireCommit,
-  requireHash, requireImageDigest,
+  requireHash, requireImageDigest, requireOwnedRepository, repositoryIds,
 } from './evidence-contract.mjs';
 import { ghApi, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
 import { assertSelectionManifest, validateSelection } from './vendor/artifact-consumer.mjs';
 import { validateManifest } from './vendor/vendor/service-artifact-contract.mjs';
+import { configuredStackNames, validateStackManifest } from './vendor/operation-stacks.mjs';
 
 export const DIAGNOSTIC_WORKFLOW = '.github/workflows/beta-deploy.yml';
 export const DIAGNOSTIC_OPERATION = 'deploy-workload';
@@ -95,7 +96,8 @@ function assertArtifactMetadata(artifact, expected, run, now = Date.now()) {
   const dates = [artifact.created_at, artifact.updated_at, artifact.expires_at].map(Date.parse);
   if (artifact.id !== expected.id || artifact.name !== expected.name || artifact.expired !== false
     || artifact.digest !== `sha256:${expected.zip_sha256}` || artifact.workflow_run.id !== run.id
-    || artifact.workflow_run.repository_id !== 1409047265 || artifact.workflow_run.head_repository_id !== 1409047265
+    || artifact.workflow_run.repository_id !== repositoryIds[repositories.infra]
+    || artifact.workflow_run.head_repository_id !== repositoryIds[repositories.infra]
     || artifact.workflow_run.head_branch !== 'main' || artifact.workflow_run.head_sha !== expectedRunSha(run)
     || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1
     || !dates.every(Number.isFinite) || dates[0] > dates[1] || dates[1] > dates[2] || dates[2] <= now) {
@@ -110,13 +112,10 @@ function expectedRunSha(run) {
 }
 
 export function assertDiagnosticRun(run, expected = DIAGNOSTIC_EXPECTED) {
+  for (const repository of [run.repository, run.head_repository]) requireOwnedRepository(repository, repositories.infra, 'Diagnostic run repository');
   if (run.id !== expected.infra.run_id || run.run_attempt !== expected.infra.run_attempt || run.head_sha !== expected.infra.sha
     || run.head_branch !== 'main' || run.path !== expected.infra.workflow_path || run.event !== 'workflow_dispatch'
-    || run.status !== 'completed' || run.conclusion !== 'success'
-    || run.repository.id !== 1409047265 || run.repository.full_name !== repositories.infra
-    || run.repository.owner.id !== 11473072 || run.repository.owner.login !== 'git-malu'
-    || run.head_repository.id !== 1409047265 || run.head_repository.full_name !== repositories.infra
-    || run.head_repository.owner.id !== 11473072 || run.head_repository.owner.login !== 'git-malu') {
+    || run.status !== 'completed' || run.conclusion !== 'success') {
     throw new Error('Diagnostic workflow run/source/owner/attempt binding mismatch');
   }
   return run;
@@ -181,8 +180,8 @@ function eventByType(events, type) {
 }
 
 function validateOperation(operation, expected, observation) {
-  exactKeys(operation, ['context', 'events', 'executor', 'family', 'final_observation', 'lifecycle_implementation_origin', 'operation', 'original_runtime', 'original_stack_templates', 'record_type', 'recovery', 'result', 'reviewed_stack_sources', 'schema_version', 'selection'], 'Diagnostic operation record');
-  if (operation.schema_version !== 2 || operation.record_type !== 'anywear_infra_operation' || operation.family !== 'beta-deploy'
+  exactKeys(operation, ['changed_stack_names', 'context', 'events', 'executor', 'family', 'final_observation', 'lifecycle_implementation_origin', 'operation', 'original_runtime', 'original_stack_templates', 'record_type', 'recovery', 'result', 'stack_manifest', 'schema_version', 'selection'], 'Diagnostic operation record');
+  if (operation.schema_version !== 3 || operation.record_type !== 'anywear_infra_operation' || operation.family !== 'beta-deploy'
     || operation.operation !== DIAGNOSTIC_OPERATION || operation.result !== 'succeeded' || operation.recovery !== 'not-required' || operation.final_observation !== 'success') throw new Error('Diagnostic operation result/schema mismatch');
   exactKeys(operation.context, ['account', 'identity_phase', 'region', 'retention_protection'], 'Diagnostic operation context');
   if (operation.context.account !== expected.account_id || operation.context.region !== expected.region || operation.context.identity_phase !== 'retired' || operation.context.retention_protection !== true) throw new Error('Diagnostic operation account/region/capability context mismatch');
@@ -194,9 +193,13 @@ function validateOperation(operation, expected, observation) {
   if (operation.original_runtime.image_digest === expected.service.image_digest || operation.original_runtime.service_sha === expected.service.source_sha) throw new Error('Diagnostic operation lost original runtime boundary');
   exactKeys(operation.selection, ['file', 'sha256', 'release', 'components'], 'Diagnostic operation selection');
   equal(operation.selection, observation.selection, 'Diagnostic operation selection');
-  if (!Array.isArray(operation.original_stack_templates) || !Array.isArray(operation.reviewed_stack_sources) || operation.original_stack_templates.length !== 4 || operation.reviewed_stack_sources.length !== 4) throw new Error('Diagnostic operation stack maps are incomplete');
+  const configured = configuredStackNames();
+  if (!Array.isArray(operation.original_stack_templates) || operation.original_stack_templates.length !== configured.length) throw new Error('Diagnostic operation stack maps are incomplete');
   for (const row of operation.original_stack_templates) exactKeys(row, ['region', 'stack_name', 'template_sha256'], 'Diagnostic original stack');
-  for (const row of operation.reviewed_stack_sources) exactKeys(row, ['region', 'source_repository', 'source_sha', 'stack_name'], 'Diagnostic reviewed stack source');
+  validateStackManifest(operation.stack_manifest, 'diagnostic operation stack manifest');
+  for (const row of operation.stack_manifest) exactKeys(row, ['region', 'source_repository', 'source_sha', 'stack_name'], 'Diagnostic stack manifest row');
+  if (!Array.isArray(operation.changed_stack_names) || !operation.changed_stack_names.length
+    || operation.changed_stack_names.some(name => !configured.includes(name))) throw new Error('Diagnostic changed stack names are outside the configured set');
   const final = eventByType(operation.events, 'final-beta-activity');
   exactKeys(final, ['platform_active', 'platform_status', 'type', 'workload_active', 'workload_status'], 'Diagnostic final activity');
   if (final.platform_active !== 'true' || final.workload_active !== 'true' || final.platform_status !== expected.runtime.rollout_state || final.workload_status !== expected.runtime.rollout_state) throw new Error('Diagnostic workload rollout is incomplete');
