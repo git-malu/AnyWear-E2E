@@ -35,7 +35,7 @@ const priorSelection = { mode: 'recovery', sourceRunId: 123, sourceAttempt: 1, r
 const originalFiles = { 'original-account-budget.json': encode(manifest), 'original-service-cleanup-operation.json': encode(operation(legacy)), 'original-owner.json': encode({ run }) };
 const priorFiles = { ...originalFiles, 'account-budget.json': encode(manifest), 'service-cleanup-operation.json': encode(operation(recovery)), 'recovery-selection.json': encode(priorSelection) };
 const selection = { ...priorSelection, recoveryAttempt: 2, previousRunId: 456, previousRunAttempt: 1 };
-const diagnostic = { record: { schema_version: 1, record_type: 'anywear_beta_cleanup_diagnostic', service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } } };
+const diagnostic = { record: { schema_version: 1, record_type: 'anywear_beta_cleanup_diagnostic', service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5' } } };
 
 test('formal recovery selection rejects invalid combinations before credentials', () => {
   assert.equal(validateAccountRecoverySelection(base).recoveryAttempt, 1);
@@ -87,7 +87,7 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
     assert.match(output, /diagnostic_sha256=[a-f0-9]{64}/);
     assert.match(output, new RegExp(`diagnostic_service_source_sha=${tuple.E2E_CLEANUP_SERVICE_SHA}`));
     assert.match(output, new RegExp(`diagnostic_service_image_digest=${tuple.E2E_CLEANUP_SERVICE_IMAGE_DIGEST}`));
-    assert.match(output, /diagnostic_state_machine_version_arn=arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3/);
+    assert.match(output, /diagnostic_state_machine_version_arn=arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5/);
     const persistedOriginal = { ...priorFiles };
     for (const name of Object.keys(originalFiles)) persistedOriginal[name] = (await readFile(join(directory, name))).toString('base64');
     const priorApi = path => {
@@ -167,19 +167,19 @@ test('formal cleanup caller reaches recovery mode and never shrinks request afte
     const count = await runCapturedWorkerCleanup(partial, env, io, {
       normal: () => { throw new Error('Wrong caller mode'); },
       recovery: async (inputs, operationEnvironment) => { assert.equal(inputs.cleanup_json, request); bound = operationEnvironment; calls.push('service-proof'); proved = true; return { operation: { proof_status: 'verified' } }; },
-    }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } }));
+    }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5' } }));
     assert.equal(count, 2); assert.equal(proved, true); assert.equal(calls[0], 'service-proof');
     assert.equal(bound.E2E_CLEANUP_SERVICE_SOURCE_SHA, 'a'.repeat(40));
     assert.equal(bound.E2E_CLEANUP_SERVICE_IMAGE_DIGEST, `sha256:${'b'.repeat(64)}`);
-    assert.equal(bound.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.endsWith(':3'), true);
+    assert.equal(bound.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.endsWith(':5'), true);
     assert.equal(calls.filter(call => call === 'delete').length, 2);
     calls.length = 0;
-    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => { throw new Error('Marker proof unavailable'); } }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } })), /Marker/);
+    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => { throw new Error('Marker proof unavailable'); } }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5' } })), /Marker/);
     assert.equal(calls.length, 0);
-    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => ({ operation: { proof_status: 'pending' } }) }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } })), /committed result/);
+    await assert.rejects(runCapturedWorkerCleanup(partial, env, io, { recovery: async () => ({ operation: { proof_status: 'pending' } }) }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5' } })), /committed result/);
     assert.equal(calls.length, 0);
     const unknown = structuredClone(partial); unknown.accounts[0].subject = 'foreign';
-    await assert.rejects(runCapturedWorkerCleanup(unknown, env, io, { recovery: () => { throw new Error('Must reject before Service'); } }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } })), /captured worker/);
+    await assert.rejects(runCapturedWorkerCleanup(unknown, env, io, { recovery: () => { throw new Error('Must reject before Service'); } }, async () => ({ service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5' } })), /captured worker/);
     assert.equal(calls.length, 0);
     await assert.rejects(runCapturedWorkerCleanup(partial, { ...env, E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: 'missing.json' }, io, { recovery: async () => { throw new Error('must not start'); } }), /ENOENT|diagnostic/);
     assert.equal(calls.length, 0);

@@ -56,7 +56,7 @@ test('worker lease release is limited to provisioned accounts', async () => {
 });
 
 test('validated diagnostic tuple is copied to the operation environment and mismatches refuse', () => {
-  const diagnostic = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } };
+  const diagnostic = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5' } };
   const bound = bindCleanupEnvironment({}, diagnostic);
   assert.equal(bound.E2E_CLEANUP_SERVICE_SOURCE_SHA, diagnostic.service.source_sha);
   assert.equal(bound.E2E_CLEANUP_SERVICE_IMAGE_DIGEST, diagnostic.service.image_digest);

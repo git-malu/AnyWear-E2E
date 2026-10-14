@@ -16,7 +16,7 @@ import { validateAccountRecoverySelection } from './account-recovery-inputs.mjs'
 const manifestPath = process.env.E2E_ACCOUNT_BUDGET_PATH ?? 'test-results/account-budget.json';
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
-const VERSION_ARN = /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3$/;
+const VERSION_ARN = /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5$/;
 
 export async function readCleanupDiagnostic(environment) {
   const path = environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH;
