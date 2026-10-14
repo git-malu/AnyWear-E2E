@@ -1,4 +1,4 @@
-import { byteHash, repositories } from '../evidence-contract.mjs';
+import { byteHash, owner, repositories, repositoryIds } from '../evidence-contract.mjs';
 import { ACCEPTANCE_WORKFLOW, BUDGET, acceptanceRequests } from '../cleanup-acceptance-contract.mjs';
 
 export function cleanupAcceptanceFixture() {
@@ -24,12 +24,12 @@ export function cleanupAcceptanceFixture() {
     createdAt: '2026-10-10T00:00:10.000Z', updatedAt: '2026-10-10T00:00:10.000Z' })) };
   const budget = structuredClone(intentBudget);
   budget.accounts.forEach((row, index) => { row.subject = identities[index].sub; row.status = 'cleanup_pending'; });
-  const repository = { full_name: repositories.e2e, id: 1317091305, owner: { id: 11473072, login: 'git-malu' } };
+  const repository = { full_name: repositories.e2e, id: repositoryIds[repositories.e2e], fork: false, owner: { ...owner } };
   const metadataRun = { id: run, run_attempt: attempt, repository, head_repository: repository, path: ACCEPTANCE_WORKFLOW,
     head_sha: source, head_branch: 'main', event: 'workflow_dispatch', status: 'completed', conclusion: 'success',
     created_at: '2026-10-10T00:00:00.000Z', run_started_at: '2026-10-10T00:00:00.000Z', updated_at: '2026-10-10T00:02:00.000Z' };
   const metadataArtifact = { id: 200, name: 'beta-cleanup-acceptance-bootstrap-42-1', digest: `sha256:${origin.artifact_sha256}`,
     expired: false, size_in_bytes: 1000, expires_at: '2027-01-01T00:00:00Z', created_at: '2026-10-10T00:01:00.000Z',
-    workflow_run: { id: run, head_sha: source, head_branch: 'main', repository_id: 1317091305, head_repository_id: 1317091305 } };
+    workflow_run: { id: run, head_sha: source, head_branch: 'main', repository_id: repositoryIds[repositories.e2e], head_repository_id: repositoryIds[repositories.e2e] } };
   return { origin, intentOrigin, intent, bootstrap, intentBudget, budget, metadataRun, metadataArtifact };
 }

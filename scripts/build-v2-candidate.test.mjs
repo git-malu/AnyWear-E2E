@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -69,8 +70,11 @@ test('candidate builder workflow is read-only and labels its uploaded artifact',
 
 function deploymentFixture() {
   const deployment = qualificationFixture().deployment;
-  const clientSha = '380643a8a6e0261a0c24760ae66356314123f194';
-  const serviceSha = '9164ef40df648d6bd2f092f951ab2d5688fa60da';
+  // The migration baseline is built from the committed pins, so the synthetic
+  // deployment record must observe those same revisions.
+  const committed = parseStrictJson(readFileSync(resolve(process.cwd(), 'compatibility.json')));
+  const clientSha = committed.client.sha;
+  const serviceSha = committed.service.sha;
   deployment.infra.sha = candidateBuilderTarget.infraSha;
   deployment.infra.run_id = candidateBuilderTarget.infraRunId;
   deployment.infra.run_attempt = candidateBuilderTarget.infraRunAttempt;
@@ -133,7 +137,7 @@ test('candidate build authenticates only the fixed Infra attempt and passes all 
   try {
     const committed = parseStrictJson(committedCompatibilityBytes);
     assert.equal(committed.version, 2);
-    assert.equal(byteHash(committedCompatibilityBytes), '8682d103cc7d84a44548dba0c1c6e09faa37c613600f00815f8551268906648b');
+    assert.equal(byteHash(committedCompatibilityBytes), '6f1035f0dd8bab257c65951f144eaec45a631f93db2da2304754b7af4a545be1');
     // Candidate generation intentionally migrates from a v1 baseline. Keep that
     // legacy input local to this migration test while the repository pins v2.
     const migrationBaseline = {
