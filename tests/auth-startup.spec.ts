@@ -2,6 +2,7 @@ import type { Page, Request, Response } from '@playwright/test';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
 import { recordForActiveStep, recordPathForActiveStep } from './support/auth-startup-attribution.mjs';
+import { isServiceJsonResponse } from './support/service-json-response.mjs';
 
 interface UiEvidence {
   loginHeading: boolean;
@@ -145,7 +146,13 @@ test.describe('Session startup @smoke @full-stack', () => {
       const url = new URL(request.url());
       return request.method() === 'GET' && url.origin === serviceOrigin && url.pathname === '/users/me';
     };
-    const isProfileResponse = (response: Response) => isProfileRequest(response.request());
+    // Origin scoping alone still admits the Client SPA's document shell, which
+    // the SPA distribution answers at status 200 for an unknown path. Require a
+    // non-document Service JSON response, the same contract every other Service
+    // waiter uses.
+    const isProfileResponse = (response: Response) => (
+      isProfileRequest(response.request()) && isServiceJsonResponse(response, serviceOrigin)
+    );
 
     function watch(viewer: Page): void {
       viewer.on('request', (request) => {

@@ -5,6 +5,11 @@ import {
 } from './support/account.js';
 import { DirectTeardown, quarantinesScope, type ProductResult } from './support/cleanup-operation.js';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  readServiceJson,
+  serviceOriginOf,
+  serviceResponseMatcher,
+} from './support/service-json-response.mjs';
 
 const uploadFixture = fileURLToPath(new URL('./fixtures/dummy.png', import.meta.url));
 
@@ -97,45 +102,43 @@ test.describe('Wardrobe Management @full-stack', () => {
       await dialog.accept();
     });
 
-    const initialWardrobe = page.waitForResponse((response) => (
-      new URL(response.url()).pathname === '/wardrobe'
-      && response.request().method() === 'GET'
-    ));
+    const serviceUrl = requireEnvironment('E2E_SERVICE_URL');
+    const serviceOrigin = serviceOriginOf(serviceUrl);
+    const serviceJson = (criteria: { method: string; path?: string }) => serviceResponseMatcher(serviceOrigin, criteria);
+
+    // Every Service response waiter is scoped to the Service origin and to a
+    // JSON content type. The Client SPA origin answers the same path with the
+    // document shell at status 200, so an unscoped predicate would let
+    // `page.goto('/wardrobe')` win the race and fail the later `.json()` parse.
+    const initialWardrobe = page.waitForResponse(serviceJson({ method: 'GET', path: '/wardrobe' }));
     await page.goto('/wardrobe');
     await expect(page.getByRole('heading', { name: 'Wardrobe' })).toBeVisible();
     const initialWardrobeResponse = await initialWardrobe;
     expect(initialWardrobeResponse.status()).toBe(200);
-    const baselineItems = await initialWardrobeResponse.json() as WardrobeItem[];
+    const baselineItems = await readServiceJson<WardrobeItem[]>(initialWardrobeResponse);
 
     await page.getByRole('button', { name: 'Add Item' }).click();
     await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).toBeVisible();
 
     await page.locator('input[type="file"]').setInputFiles(uploadFixture);
-    const uploaded = page.waitForResponse((response) => (
-      new URL(response.url()).pathname === '/wardrobe/upload-url'
-      && response.request().method() === 'POST'
-    ));
-    const confirmed = page.waitForResponse((response) => (
-      new URL(response.url()).pathname === '/wardrobe/upload'
-      && response.request().method() === 'POST'
-    ));
+    const uploaded = page.waitForResponse(serviceJson({ method: 'POST', path: '/wardrobe/upload-url' }));
+    const confirmed = page.waitForResponse(serviceJson({ method: 'POST', path: '/wardrobe/upload' }));
     await page.getByRole('button', { name: 'Upload & Auto-Tag' }).click();
 
     const uploadedResponse = await uploaded;
     expect(uploadedResponse.status()).toBe(200);
-    createdItemId = ((await uploadedResponse.json()) as { itemId: string }).itemId;
+    createdItemId = (await readServiceJson<{ itemId: string }>(uploadedResponse)).itemId;
     authorization = await uploadedResponse.request().headerValue('authorization') ?? undefined;
     expect(createdItemId).toBeTruthy();
     expect(authorization).toBeTruthy();
 
     const confirmedResponse = await confirmed;
     expect(confirmedResponse.status()).toBe(202);
-    const accepted = await confirmedResponse.json();
+    const accepted = await readServiceJson(confirmedResponse);
     expect(accepted).toEqual({ itemId: createdItemId, taggingStatus: 'processing' });
     const idempotencyKey = await confirmedResponse.request().headerValue('idempotency-key');
     expect(idempotencyKey).toBeTruthy();
     const headers = { Authorization: authorization!, 'Idempotency-Key': idempotencyKey! };
-    const serviceUrl = requireEnvironment('E2E_SERVICE_URL');
     const ownedItemUrl = `${serviceUrl}/wardrobe/items/${createdItemId}`;
 
     const replay = await page.request.post(`${serviceUrl}/wardrobe/upload`, {
@@ -143,7 +146,7 @@ test.describe('Wardrobe Management @full-stack', () => {
       data: { itemId: createdItemId },
     });
     expect(replay.status()).toBe(202);
-    expect(await replay.json()).toEqual(accepted);
+    expect(await readServiceJson(replay)).toEqual(accepted);
 
     await expect(page.getByRole('heading', { name: 'Add Wardrobe Item' })).not.toBeVisible();
     const observer = await context.newPage();
@@ -155,7 +158,7 @@ test.describe('Wardrobe Management @full-stack', () => {
     await expect.poll(async () => {
       const response = await page.request.get(ownedItemUrl, { headers });
       expect(response.status()).toBe(200);
-      latest = await response.json() as WardrobeStatus;
+      latest = await readServiceJson<WardrobeStatus>(response);
       expect(latest.id).toBe(createdItemId);
       expect(latest.taggingStateVersion).toBeGreaterThanOrEqual(lastVersion);
       lastVersion = latest.taggingStateVersion;
@@ -167,10 +170,10 @@ test.describe('Wardrobe Management @full-stack', () => {
       data: { itemId: createdItemId },
     });
     expect(terminalReplay.status()).toBe(202);
-    expect(await terminalReplay.json()).toEqual(accepted);
+    expect(await readServiceJson(terminalReplay)).toEqual(accepted);
     const afterReplay = await observer.request.get(ownedItemUrl, { headers });
     expect(afterReplay.status()).toBe(200);
-    const ownedItem = await afterReplay.json() as WardrobeItem;
+    const ownedItem = await readServiceJson<WardrobeItem>(afterReplay);
     expect(ownedItem).toMatchObject({
       id: createdItemId,
       taggingStatus: 'ready',
@@ -181,7 +184,7 @@ test.describe('Wardrobe Management @full-stack', () => {
     const ownedCardName = `View ${ownedItemLabel} details`;
     const wardrobeBeforeEdit = await page.request.get(`${serviceUrl}/wardrobe`, { headers });
     expect(wardrobeBeforeEdit.status()).toBe(200);
-    const itemsBeforeEdit = await wardrobeBeforeEdit.json() as WardrobeItem[];
+    const itemsBeforeEdit = await readServiceJson<WardrobeItem[]>(wardrobeBeforeEdit);
     // The UI exposes a label rather than an ID. Fail before mutation if that
     // label cannot identify exactly the item created by this scenario.
     expect(itemsBeforeEdit.filter((item) => (
@@ -209,13 +212,11 @@ test.describe('Wardrobe Management @full-stack', () => {
     await details.getByPlaceholder('e.g. Top').fill('Jacket');
     await details.getByPlaceholder('e.g. Black, White').fill('Red');
     await details.getByPlaceholder('e.g. Cotton').fill('Cotton');
-    const saved = page.waitForResponse((response) => (
-      response.url() === ownedItemUrl && response.request().method() === 'PATCH'
-    ));
+    const saved = page.waitForResponse(serviceJson({ method: 'PATCH', path: new URL(ownedItemUrl).pathname }));
     await details.getByRole('button', { name: 'Save Changes', exact: true }).click();
     const savedResponse = await saved;
     expect(savedResponse.status()).toBe(200);
-    expect(await savedResponse.json()).toMatchObject({ id: createdItemId, name: editedItemName });
+    expect(await readServiceJson(savedResponse)).toMatchObject({ id: createdItemId, name: editedItemName });
     await expect(details).not.toBeVisible();
 
     const editedCard = page.getByRole('button', { name: `View ${editedItemName} details`, exact: true });
@@ -225,9 +226,7 @@ test.describe('Wardrobe Management @full-stack', () => {
 
     await editedCard.click();
     await expect(details).toBeVisible();
-    const deleted = page.waitForResponse((response) => (
-      response.url() === ownedItemUrl && response.request().method() === 'DELETE'
-    ));
+    const deleted = page.waitForResponse(serviceJson({ method: 'DELETE', path: new URL(ownedItemUrl).pathname }));
     await details.getByRole('button', { name: 'Delete', exact: true }).click();
     expect((await deleted).status()).toBe(200);
     await expect(details).not.toBeVisible();
@@ -237,7 +236,7 @@ test.describe('Wardrobe Management @full-stack', () => {
 
     const finalWardrobe = await page.request.get(`${serviceUrl}/wardrobe`, { headers });
     expect(finalWardrobe.status()).toBe(200);
-    const finalItems = await finalWardrobe.json() as WardrobeItem[];
+    const finalItems = await readServiceJson<WardrobeItem[]>(finalWardrobe);
     expect(finalItems.map((item) => item.id)).not.toContain(createdItemId);
     for (const baselineItem of baselineItems) {
       expect(finalItems.find((item) => item.id === baselineItem.id)).toMatchObject({
