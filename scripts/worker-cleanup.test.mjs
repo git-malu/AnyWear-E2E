@@ -63,3 +63,16 @@ test('validated diagnostic tuple is copied to the operation environment and mism
   assert.equal(bound.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, diagnostic.capability.state_machine_version_arn);
   assert.throws(() => bindCleanupEnvironment({ E2E_CLEANUP_SERVICE_IMAGE_DIGEST: 'sha256:' + 'c'.repeat(64) }, diagnostic), /differs/);
 });
+
+test('cleanup state machine version is validated by shape, not pinned to one revision', () => {
+  for (const version of [3, 4, 5, 12]) {
+    const candidate = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: `arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:${version}` } };
+    assert.equal(bindCleanupEnvironment({}, candidate).BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, candidate.capability.state_machine_version_arn);
+  }
+  for (const invalid of ['0', '01', 'x', '', '3-extra']) {
+    const candidate = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: `arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:${invalid}` } };
+    assert.throws(() => bindCleanupEnvironment({}, candidate), /diagnostic|tuple/);
+  }
+  const foreign = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:us-east-1:650880818323:stateMachine:other-machine:5' } };
+  assert.throws(() => bindCleanupEnvironment({}, foreign), /diagnostic|tuple/);
+});

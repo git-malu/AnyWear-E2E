@@ -160,7 +160,7 @@ export async function prepareRecoveryFiles(environment = process.env, {
   const diagnosticServiceSourceSha = requireCommit(diagnosticRecord.service?.source_sha, 'Validated diagnostic Service source');
   const diagnosticServiceImageDigest = requireImageDigest(diagnosticRecord.service?.image_digest);
   const diagnosticStateMachineVersionArn = requireMatch(diagnosticRecord.capability?.state_machine_version_arn,
-    /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3$/, 'Validated diagnostic cleanup state machine version');
+    /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:([1-9][0-9]*)$/, 'Validated diagnostic cleanup state machine version');
   const diagnosticBytes = Buffer.from(`${JSON.stringify(diagnosticRecord, null, 2)}\n`);
   await mkdir(dirname(diagnosticPath), { recursive: true });
   await writeFile(resolve(dirname(path), 'original-account-budget.json'), bytes, { mode: 0o600 });
