@@ -3,6 +3,7 @@ import {
   type CapturedIdentity,
   type CognitoCleanupIo,
 } from './cognito-cleanup.ts';
+import { isBetaWorkerEmailForScope } from './beta-address.ts';
 import type { AttemptBusinessCleanupOutcome } from './attempt-cleanup-registry.ts';
 
 interface WorkerAccountRecord {
@@ -248,7 +249,6 @@ export function workerLeaseGateError(disposition: WorkerLeaseDisposition): Error
 
 const RUN_SCOPE_PATTERN = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 const SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const WORKER_EMAIL_PATTERN = /^e2e-beta-worker-[0-7]-chromium@anywear\.local$/;
 
 export function createServiceCleanupInputs(manifest: WorkerAccountManifest): ServiceCleanupInputs | undefined {
   if (manifest.version !== 1 || !RUN_SCOPE_PATTERN.test(manifest.runScope) || !Array.isArray(manifest.accounts)) {
@@ -256,9 +256,12 @@ export function createServiceCleanupInputs(manifest: WorkerAccountManifest): Ser
   }
 
   const activeWorkers = manifest.accounts.filter((account) => account.mode === 'worker' && account.status === 'cleanup_pending');
-  if (activeWorkers.some((account) => !WORKER_EMAIL_PATTERN.test(account.email)
+  // This run's scoped addresses, or the stable rows a pre-#129 manifest still
+  // names. Either way the address must belong to this manifest's own run scope,
+  // so a captured identity can never be cleaned up under another run's request.
+  if (activeWorkers.some((account) => !isBetaWorkerEmailForScope(account.email, manifest.runScope)
     || typeof account.subject !== 'string' || !SUBJECT_PATTERN.test(account.subject))) {
-    throw new Error('E2E worker cleanup requires captured stable worker emails and subjects');
+    throw new Error('E2E worker cleanup requires captured Beta worker emails and subjects');
   }
   if (activeWorkers.length > 8
     || new Set(activeWorkers.map((account) => account.email)).size !== activeWorkers.length

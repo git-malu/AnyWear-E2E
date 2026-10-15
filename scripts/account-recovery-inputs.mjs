@@ -7,10 +7,10 @@ import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, require
 import { isDeepStrictEqual } from 'node:util';
 import { createServiceCleanupInputs } from '../tests/support/worker-cleanup.ts';
 import { assertCleanupOwnerEvidence, assertRecoveryOperationEvidence } from '../tests/support/service-cleanup-operation.ts';
+import { isBetaWorkerEmailForScope } from '../tests/support/beta-address.ts';
 import { loadDiagnosticEvidence } from './beta-cleanup-diagnostic.mjs';
 
 const CAPTURED_SUBJECT = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const WORKER_EMAIL = /^e2e-beta-worker-[0-7]-chromium@anywear\.local$/;
 const RECOVERABLE_STATUSES = new Set(['reserved', 'provisioning', 'in_use', 'cleanup_pending']);
 
 export function assertRecoveryArtifact(artifact, run, recovery = false) {
@@ -101,11 +101,14 @@ export function prepareAccountRecovery(manifest, run, sourceRunId, sourceAttempt
     || run.status !== 'completed' || !['success', 'failure', 'cancelled', 'timed_out'].includes(run.conclusion)) throw new Error('Original E2E run is not a completed trusted account owner');
   if (manifest.version !== 1 || !new RegExp(`^${sourceRunId}-${sourceAttempt}-[a-f0-9]{16}$`).test(manifest.runScope)
     || !Array.isArray(manifest.accounts) || manifest.accounts.length > 50) throw new Error('Account manifest does not belong to the exact original run/attempt');
+  // Only this manifest's own run scope: the scoped worker family for the scope
+  // the original run/attempt proves, or a stable allowlist row that a pre-#129
+  // artifact captured. A captured identity is never re-scoped to another run.
   for (const account of manifest.accounts) {
     if (!['worker', 'ephemeral'].includes(account.mode) || !['reserved', 'provisioning', 'in_use', 'cleanup_pending', 'deleted', 'quarantined'].includes(account.status)) throw new Error('Unknown account recovery state');
     if (account.mode === 'worker' && RECOVERABLE_STATUSES.has(account.status)
       && typeof account.subject === 'string' && CAPTURED_SUBJECT.test(account.subject)
-      && typeof account.email === 'string' && WORKER_EMAIL.test(account.email)) account.status = 'cleanup_pending';
+      && typeof account.email === 'string' && isBetaWorkerEmailForScope(account.email, manifest.runScope)) account.status = 'cleanup_pending';
   }
   const budgetFields = ['maxActiveAccounts', 'maxNewAccountsPerRun', 'maxQuarantinedAccounts'];
   exactKeys(manifest.config, budgetFields, 'Original account budget');

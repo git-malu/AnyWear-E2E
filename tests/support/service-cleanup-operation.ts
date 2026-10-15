@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { parseStrictJson } from '../../scripts/evidence-contract.mjs';
+import { isBetaWorkerEmailForScope } from './beta-address.ts';
 import type { ServiceCleanupInputs } from './worker-cleanup.js';
 
 const SHA = /^[a-f0-9]{40}$/;
@@ -271,10 +272,16 @@ export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, env
     || typeof request.runScope !== 'string' || !RUN_SCOPE.test(request.runScope) || users.length < 1 || users.length > 8) {
     throw new Error('Cleanup request run scope or worker bound is invalid');
   }
+  // Captured once, because the identity check below runs inside a callback and
+  // the address must be bound to this request's own scope.
+  const runScope = request.runScope;
   const identities = users.map(value => {
     const user = object(value, 'Captured worker');
+    // This run's scoped Beta worker address, or a stable allowlist row a
+    // pre-#129 manifest still captures. The Service's parser accepts the same
+    // two families, so the reviewed request and the capability agree.
     if (Object.keys(user).sort().join(',') !== 'email,sub'
-      || typeof user.email !== 'string' || !/^e2e-beta-worker-[0-7]-chromium@anywear\.local$/.test(user.email)
+      || typeof user.email !== 'string' || !isBetaWorkerEmailForScope(user.email, runScope)
       || typeof user.sub !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(user.sub)) {
       throw new Error('Cleanup request requires exact captured worker subjects');
     }
