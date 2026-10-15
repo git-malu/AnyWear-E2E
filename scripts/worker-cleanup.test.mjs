@@ -12,7 +12,24 @@ const runScope = `123456789-1-${'a'.repeat(16)}`;
 const workerEmail = 'e2e-beta-worker-0-chromium@anywear.local';
 const subject = '10000000-0000-4000-8000-000000000001';
 const immutableUsername = 'cognito-immutable-username';
-const attempt = (overrides = {}) => ({ email: workerEmail, subject, reserved: true, provisioned: true, ...overrides });
+const attempt = (overrides = {}) => ({
+  email: workerEmail,
+  subject,
+  reserved: true,
+  provisioned: true,
+  // A committed business cleanup, so the routing cases below isolate the
+  // identity/absence behaviour they are named for. `undeclared` is modelled
+  // explicitly where it is under test.
+  businessCleanup: { state: 'closed', teardownResult: 'passed' },
+  ...overrides,
+});
+
+/** The same attempt with no business-cleanup declaration at all. */
+const undeclaredAttempt = (overrides = {}) => {
+  const declared = attempt(overrides);
+  delete declared.businessCleanup;
+  return declared;
+};
 
 function userNotFound() {
   return Object.assign(new Error('User does not exist.'), { name: 'UserNotFoundException' });
@@ -116,6 +133,65 @@ test('one attempt verifies the captured identity, deletes it, reads absence back
   assert.equal(workerLeaseGateError(disposition), undefined);
 });
 
+test('a business cleanup that failed or was partial quarantines the attempt with its identity retained', async () => {
+  const scenarios = [
+    { outcome: { state: 'closed', teardownResult: 'failed', reason: 'teardown failed; undeleted wardrobe_item:item-1' }, teardownResult: 'failed', reason: /^teardown: business cleanup failed; teardown failed; undeleted wardrobe_item:item-1$/ },
+    { outcome: { state: 'closed', teardownResult: 'failed' }, teardownResult: 'failed', reason: /^teardown: business cleanup failed$/ },
+    { outcome: { state: 'closed', teardownResult: 'partial', reason: 'teardown partial; undeleted outfit:outfit-1' }, teardownResult: 'partial', reason: /^teardown: business cleanup partial; teardown partial; undeleted outfit:outfit-1$/ },
+  ];
+  for (const scenario of scenarios) {
+    const io = attemptIo();
+    const disposition = await releaseWorkerLease(attempt({ businessCleanup: scenario.outcome }), io);
+    assert.equal(disposition.scope, 'quarantined');
+    assert.equal(disposition.teardownResult, scenario.teardownResult);
+    assert.match(disposition.reason, scenario.reason);
+    // The identity is retained: no verification, no delete, no readback, no
+    // release. Only the one quarantine record is written.
+    assert.deepEqual(io.calls, [{ quarantine: workerEmail, reason: disposition.reason }]);
+    assert.match(workerLeaseGateError(disposition).message, new RegExp(`teardown gate failed \\(${scenario.teardownResult}, quarantined\\)`));
+  }
+});
+
+test('an attempt whose business cleanup is still open quarantines as partial with no Cognito call', async () => {
+  const io = attemptIo({ present: false });
+  const disposition = await releaseWorkerLease(attempt({ businessCleanup: { state: 'open' } }), io);
+  assert.equal(disposition.scope, 'quarantined');
+  assert.equal(disposition.teardownResult, 'partial');
+  assert.match(disposition.reason, /the attempt's business cleanup did not commit/);
+  assert.deepEqual(io.calls, [{ quarantine: workerEmail, reason: disposition.reason }]);
+});
+
+test('an undeclared attempt fails closed and quarantines without touching Cognito', async () => {
+  const io = attemptIo({ present: false });
+  const disposition = await releaseWorkerLease(undeclaredAttempt(), io);
+  assert.equal(disposition.scope, 'quarantined');
+  assert.equal(disposition.teardownResult, 'partial');
+  assert.match(disposition.reason, /declared no business-cleanup outcome/);
+  assert.deepEqual(io.calls, [{ quarantine: workerEmail, reason: disposition.reason }]);
+});
+
+test('an unreadable declaration read is undeclared, and an explicit none is not', async () => {
+  const unreadable = attemptIo();
+  unreadable.readAttemptBusinessCleanup = () => { throw new Error('registry unavailable'); };
+  const blocked = await releaseWorkerLease(undeclaredAttempt(), unreadable);
+  assert.equal(blocked.scope, 'quarantined');
+  assert.match(blocked.reason, /declared no business-cleanup outcome/);
+  assert.deepEqual(unreadable.calls, [{ quarantine: workerEmail, reason: blocked.reason }]);
+
+  // The injected reader is the fixture wiring: it releases only on a committed
+  // declaration, through the unchanged verify -> delete -> absence -> release path.
+  const wired = attemptIo();
+  wired.readAttemptBusinessCleanup = () => ({ state: 'none', teardownResult: 'passed', reason: 'no business resources' });
+  const released = await releaseWorkerLease(undeclaredAttempt(), wired);
+  assert.deepEqual(released, { email: workerEmail, scope: 'released', teardownResult: 'passed' });
+  assert.deepEqual(wired.calls, [
+    { get: workerEmail },
+    { delete: immutableUsername },
+    { get: workerEmail },
+    { release: workerEmail },
+  ]);
+});
+
 test('an attempt whose identity is already absent releases the address after the absence readback', async () => {
   const io = attemptIo({ present: false });
   const disposition = await releaseWorkerLease(attempt(), io);
@@ -166,7 +242,7 @@ test('an attempt that never confirmed ownership quarantines without touching Cog
 
 test('an attempt that never held the lease writes nothing', async () => {
   const io = attemptIo();
-  const disposition = await releaseWorkerLease(attempt({ reserved: false, provisioned: false }), io);
+  const disposition = await releaseWorkerLease(undeclaredAttempt({ reserved: false, provisioned: false }), io);
   assert.deepEqual(disposition, { email: workerEmail, scope: 'none', teardownResult: 'passed' });
   assert.deepEqual(io.calls, []);
   assert.equal(workerLeaseGateError(disposition), undefined);

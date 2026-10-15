@@ -56,6 +56,9 @@ test.describe('Wardrobe Management @full-stack', () => {
       expectedEmail: workerAccount.email,
       serviceUrl: requireEnvironment('E2E_SERVICE_URL'),
       request: page.request,
+      // This attempt's own key: the worker-lease teardown that runs after
+      // `afterEach` reads this attempt's business-cleanup outcome from it.
+      testInfo,
     });
     await teardown.register();
     await login(page, workerAccount);

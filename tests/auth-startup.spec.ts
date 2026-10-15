@@ -2,6 +2,7 @@ import type { Page, Request, Response } from '@playwright/test';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
 import { recordForActiveStep, recordPathForActiveStep } from './support/auth-startup-attribution.mjs';
+import { declareNoBusinessCleanup } from './support/attempt-cleanup-registry.js';
 import { isServiceJsonResponse } from './support/service-json-response.mjs';
 
 interface UiEvidence {
@@ -137,6 +138,7 @@ function observeAuthUi(): void {
 
 test.describe('Session startup @smoke @full-stack', () => {
   test('restores the real session across documents and clears it after logout', async ({ page, context, workerAccount }, testInfo) => {
+    declareNoBusinessCleanup(testInfo, { teardownResult: 'passed', reason: 'this attempt creates no business resources' });
     test.setTimeout(120_000);
     const serviceOrigin = new URL(requireEnvironment('E2E_SERVICE_URL')).origin;
     const steps: StepEvidence[] = [];

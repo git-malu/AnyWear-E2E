@@ -18,7 +18,9 @@ function configuredWorkers(): number | undefined {
 function validateAccountBudget(workers: number | undefined): void {
   if (workers === undefined) return;
   const maxActiveAccounts = Number(process.env.E2E_MAX_ACTIVE_ACCOUNTS ?? workers);
-  const raw = process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN ?? String(workers * 2);
+  // Same attempt arithmetic as `accountBudgetConfig` in tests/support/account-budget.ts:
+  // `workers` parallel attempts plus Playwright's two CI retries per slot.
+  const raw = process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN ?? String(workers * 3);
   const maxNewAccounts = Number(raw);
   const maxQuarantinedAccounts = Number(process.env.E2E_MAX_QUARANTINED_ACCOUNTS ?? workers);
   if (!Number.isInteger(maxActiveAccounts) || maxActiveAccounts < workers) {
