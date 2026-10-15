@@ -196,6 +196,25 @@ test.describe('Session startup @smoke @full-stack', () => {
       }
     }
 
+    // Amplify persists the Cognito session in `CognitoIdentityServiceProvider` keyed
+    // storage (localStorage by default, sessionStorage when configured) as
+    // `<prefix>.<clientId>.<username>.<tokenType>`. Those token entries are what a later
+    // document restores, and `/users/me` idleness is not a sign-out completion signal, so
+    // the logout step observes this storage instead of the in-memory UI mirror.
+    function persistedTokenKeys(viewer: Page): Promise<string[]> {
+      return viewer.evaluate(() => {
+        const tokenKey = /^CognitoIdentityServiceProvider\..+\.(accessToken|idToken|refreshToken)$/;
+        const keys: string[] = [];
+        for (const storage of [localStorage, sessionStorage]) {
+          for (let index = 0; index < storage.length; index += 1) {
+            const key = storage.key(index);
+            if (key !== null && tokenKey.test(key)) keys.push(key);
+          }
+        }
+        return keys.sort();
+      });
+    }
+
     async function authenticated(
       viewer: Page, step: string, action: () => Promise<unknown>,
       path: string, heading: string, observed = true, directLogin = false,
@@ -261,9 +280,18 @@ test.describe('Session startup @smoke @full-stack', () => {
       await authenticated(page, 'authenticated direct login', () => page.goto('/login'), '/dashboard', 'Today', true, true);
 
       begin(page, 'explicit logout');
+      // The persisted blob must be observable first, or the destruction check below
+      // could pass without observing anything.
+      expect(await persistedTokenKeys(page), 'explicit logout: the signed-in session must be persisted').not.toEqual([]);
       await page.getByRole('button', { name: 'Logout', exact: true }).click();
       await expect(page).toHaveURL((url) => url.pathname === '/login');
       await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+      // Sign-out completes only once Amplify has cleared those tokens; the reload below
+      // would otherwise re-authenticate from the surviving blob.
+      await expect.poll(() => persistedTokenKeys(page), {
+        message: 'explicit logout: the persisted Amplify session must be destroyed before the next document',
+        timeout: 15_000,
+      }).toEqual([]);
       await settle(page);
       await unauthenticated('unauthenticated refresh', () => page.reload());
       await unauthenticated('unauthenticated protected navigation', () => page.goto('/wardrobe'));

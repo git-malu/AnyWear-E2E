@@ -137,7 +137,7 @@ test('candidate build authenticates only the fixed Infra attempt and passes all 
   try {
     const committed = parseStrictJson(committedCompatibilityBytes);
     assert.equal(committed.version, 2);
-    assert.equal(byteHash(committedCompatibilityBytes), '6f1035f0dd8bab257c65951f144eaec45a631f93db2da2304754b7af4a545be1');
+    assert.equal(byteHash(committedCompatibilityBytes), '663f83d165b982db4903c6ed1c13b08b8aeb74a277016286c2feb9c2a122a754');
     // Candidate generation intentionally migrates from a v1 baseline. Keep that
     // legacy input local to this migration test while the repository pins v2.
     const migrationBaseline = {
