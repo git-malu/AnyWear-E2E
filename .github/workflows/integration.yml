@@ -41,7 +41,8 @@ jobs:
       E2E_WORKERS: 2
       E2E_WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
       E2E_MAX_ACTIVE_ACCOUNTS: 2
-      E2E_MAX_NEW_ACCOUNTS_PER_RUN: 4
+      # One lease per attempt: 2 workers x 3 attempts (initial + two CI retries).
+      E2E_MAX_NEW_ACCOUNTS_PER_RUN: 6
       E2E_MAX_QUARANTINED_ACCOUNTS: 2
 
     steps:

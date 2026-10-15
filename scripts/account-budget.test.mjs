@@ -5,10 +5,12 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createWorkerAccount } from '../tests/support/account.ts';
 import {
+  accountBudgetConfig,
   markAccountDeleted,
   markAccountInUse,
   quarantineAccount,
   recordAccountSubject,
+  releaseWorkerAccount,
   reserveAccount,
 } from '../tests/support/account-budget.ts';
 
@@ -121,4 +123,66 @@ test('quarantine applies to the latest lease of a re-created stable address', as
 
   const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
   assert.deepEqual(manifest.accounts.map(({ status }) => status), ['deleted', 'quarantined']);
+});
+
+test('a released attempt returns its address to the pool for a fresh lease generation', async () => {
+  await configureBudget();
+  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+
+  await reserveAccount(email, 'worker', 'lease-1');
+  await recordAccountSubject(email, 'subject-1');
+  await markAccountInUse(email);
+  await releaseWorkerAccount(email);
+  await reserveAccount(email, 'worker', 'lease-2');
+  await recordAccountSubject(email, 'subject-2');
+  await markAccountInUse(email);
+
+  const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
+  assert.deepEqual(manifest.accounts.map(({ status, leaseGeneration, reason }) => ({ status, leaseGeneration, reason })), [
+    { status: 'deleted', leaseGeneration: 'lease-1', reason: 'released after verified identity absence' },
+    { status: 'in_use', leaseGeneration: 'lease-2', reason: undefined },
+  ]);
+  assert.notEqual(manifest.accounts[0].leaseId, manifest.accounts[1].leaseId);
+});
+
+test('a quarantined attempt is never silently reused and never released', async () => {
+  await configureBudget();
+  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+
+  await reserveAccount(email, 'worker', 'lease-1');
+  await quarantineAccount(email, 'teardown: identity is still present');
+  await assert.rejects(reserveAccount(email, 'worker', 'lease-2'), /already has an active lease/);
+  await assert.rejects(releaseWorkerAccount(email), /quarantined and cannot be released/);
+
+  const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
+  assert.deepEqual(manifest.accounts.map(({ status, leaseGeneration }) => ({ status, leaseGeneration })), [
+    { status: 'quarantined', leaseGeneration: 'lease-1' },
+  ]);
+});
+
+test('attempt-scoped reservations cover every retry of the configured workers', () => {
+  // Two workers run in parallel and Playwright may add two retries, so the
+  // per-run creation cap has to cover 2 x 3 attempts.
+  delete process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN;
+  delete process.env.E2E_MAX_ACTIVE_ACCOUNTS;
+  delete process.env.E2E_MAX_QUARANTINED_ACCOUNTS;
+  assert.deepEqual(accountBudgetConfig(2), { maxActiveAccounts: 2, maxNewAccountsPerRun: 6, maxQuarantinedAccounts: 2 });
+});
+
+test('six attempt reservations of two worker addresses fit the per-run cap and the seventh still refuses', async () => {
+  await configureBudget(6);
+  process.env.E2E_MAX_ACTIVE_ACCOUNTS = '2';
+  const emails = [0, 1].map((slot) => `e2e-beta-worker-${slot}-chromium@anywear.local`);
+
+  for (let retry = 1; retry <= 3; retry += 1) {
+    for (const email of emails) {
+      await reserveAccount(email, 'worker', `lease-${retry}`);
+      await releaseWorkerAccount(email);
+    }
+  }
+
+  await assert.rejects(reserveAccount(emails[0], 'worker', 'lease-overflow'), /new-account budget exhausted/);
+  const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
+  assert.equal(manifest.accounts.length, 6);
+  assert.deepEqual(manifest.accounts.map(({ status }) => status), Array(6).fill('deleted'));
 });

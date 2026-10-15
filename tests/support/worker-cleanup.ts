@@ -29,13 +29,147 @@ export interface WorkerCleanupIo extends CognitoCleanupIo {
   runServiceCleanup(inputs: ServiceCleanupInputs): Promise<boolean | void>;
 }
 
-export async function releaseWorkerLease(
+/** Attempt teardown outcome, using the ordinary cleanup operation vocabulary. */
+export type WorkerTeardownResult = 'passed' | 'failed' | 'partial';
+
+/**
+ * Scope state of one test attempt.
+ *
+ * `released` is the only state that returns the allowlisted address to the pool;
+ * `none` means the attempt never held the lease, so it owns no scope to dispose
+ * of and must not touch a record written by another attempt.
+ */
+export type WorkerAttemptScope = 'none' | 'released' | 'quarantined';
+
+export interface WorkerAttemptTeardown {
+  email: string;
+  /** Confirmed Cognito subject this attempt captured, when it reached confirmation. */
+  subject?: string;
+  /** This attempt actually held the ledger lease. */
+  reserved: boolean;
+  /** Provisioning completed: the attempt's identity is confirmed and owned. */
+  provisioned: boolean;
+}
+
+export interface WorkerLeaseDisposition {
+  email: string;
+  scope: WorkerAttemptScope;
+  teardownResult: WorkerTeardownResult;
+  reason?: string;
+}
+
+export interface WorkerLeaseIo extends CognitoCleanupIo {
+  /** Terminal ledger transition; only a verified absence may reach it. */
+  releaseWorkerAccount(email: string): Promise<void>;
+  /** Keeps the address out of the pool with a sanitized reason. */
+  quarantineWorkerAccount(email: string, reason: string): Promise<void>;
+}
+
+const MAX_REASON_LENGTH = 300;
+
+function sanitizedReason(reason: string): string {
+  return reason.replace(/\s+/g, ' ').trim().slice(0, MAX_REASON_LENGTH);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isUserNotFound(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'UserNotFoundException' || /UserNotFoundException/.test(error.message));
+}
+
+async function quarantineAttempt(
   email: string,
-  reserved: boolean,
-  provisioned: boolean,
-  markCleanupPending: (accountEmail: string) => Promise<void>,
-): Promise<void> {
-  if (reserved && provisioned) await markCleanupPending(email);
+  io: WorkerLeaseIo,
+  reason: string,
+  teardownResult: Exclude<WorkerTeardownResult, 'passed'>,
+): Promise<WorkerLeaseDisposition> {
+  const sanitized = sanitizedReason(reason);
+  try {
+    await io.quarantineWorkerAccount(email, sanitized);
+  } catch (error) {
+    // Fail closed either way: the record keeps an active status (so the address
+    // stays out of the pool) and the refusal is reported on the teardown gate.
+    return {
+      email,
+      scope: 'quarantined',
+      teardownResult,
+      reason: sanitizedReason(`${sanitized}; quarantine record refused: ${errorMessage(error)}`),
+    };
+  }
+  return { email, scope: 'quarantined', teardownResult, reason: sanitized };
+}
+
+/**
+ * Ordinary per-attempt teardown of one worker lease.
+ *
+ * The attempt's exact confirmed identity is verified against the captured
+ * email/subject, deleted through the reviewed captured-identity path, and its
+ * absence is then read back. Only a proven absence releases the address, and
+ * only a released address may be re-reserved with a fresh lease generation.
+ * Every other outcome — refused ownership, deletion failure, an unverified
+ * absence, or provisioning that never confirmed ownership — quarantines this
+ * attempt's scope and keeps the address out of the pool. No live identity is
+ * ever reported terminal, and this never deletes or releases a record that
+ * belongs to another attempt.
+ */
+export async function releaseWorkerLease(
+  attempt: WorkerAttemptTeardown,
+  io: WorkerLeaseIo,
+): Promise<WorkerLeaseDisposition> {
+  if (!attempt.reserved) {
+    return { email: attempt.email, scope: 'none', teardownResult: 'passed' };
+  }
+  const identity: CapturedIdentity | undefined = attempt.provisioned && attempt.subject
+    ? { email: attempt.email, sub: attempt.subject }
+    : undefined;
+  if (!identity) {
+    return quarantineAttempt(attempt.email, io, attempt.provisioned
+      ? 'teardown: confirmed Cognito subject was not captured; identity ownership is unverified'
+      : 'teardown: provisioning did not complete; identity ownership is unverified', 'failed');
+  }
+
+  try {
+    await deleteCapturedCognitoIdentity(identity, io);
+  } catch (error) {
+    return quarantineAttempt(attempt.email, io, `teardown: captured identity verification or deletion refused: ${errorMessage(error)}`, 'failed');
+  }
+
+  // Absence readback: a returned user (the same or a foreign identity) keeps the
+  // address out of the pool, and an unreadable state is reported as partial.
+  try {
+    await io.getUser(identity.email);
+    return quarantineAttempt(attempt.email, io, 'teardown: Cognito identity is still present after deletion', 'failed');
+  } catch (error) {
+    if (!isUserNotFound(error)) {
+      return quarantineAttempt(attempt.email, io, `teardown: absence readback was uncertain: ${errorMessage(error)}`, 'partial');
+    }
+  }
+
+  try {
+    await io.releaseWorkerAccount(attempt.email);
+  } catch (error) {
+    return {
+      email: attempt.email,
+      scope: 'quarantined',
+      teardownResult: 'failed',
+      reason: sanitizedReason(`teardown: verified absence could not be released: ${errorMessage(error)}`),
+    };
+  }
+  return { email: attempt.email, scope: 'released', teardownResult: 'passed' };
+}
+
+/**
+ * Separate attempt teardown gate.
+ *
+ * The worker fixture raises this after the attempt so a failed teardown fails
+ * the run on its own gate. It carries only teardown vocabulary: the product
+ * result the attempt already recorded is independent and is never rewritten.
+ */
+export function workerLeaseGateError(disposition: WorkerLeaseDisposition): Error | undefined {
+  if (disposition.scope === 'released' || disposition.scope === 'none') return undefined;
+  return new Error(`Worker lease teardown gate failed (${disposition.teardownResult}, ${disposition.scope}): ${disposition.reason ?? 'unknown reason'}`);
 }
 
 const RUN_SCOPE_PATTERN = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
