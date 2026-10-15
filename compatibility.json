@@ -10,7 +10,7 @@
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "9ce903d78c748bdd1ddb595e9a9414317e8e11ba"
+    "sha": "fdaff2b63886ebc81c85e685fb231fce673bc219"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
@@ -21,9 +21,9 @@
   "deployment": {
     "repository": "git-malu/AnyWear-Infra",
     "workflow_path": ".github/workflows/runtime.yml",
-    "run_id": 38753619671,
+    "run_id": 38766202465,
     "run_attempt": 1,
-    "artifact_id": 11981454552,
-    "record_sha256": "278341598b264e22dfcf32a4deba644353419d40532bdd9e3e1defadfad2a1e5"
+    "artifact_id": 11988288083,
+    "record_sha256": "502f78bc7941be9696a7fe78ec60afde9f21e4b3f912b85288bed19d7d465f51"
   }
 }
