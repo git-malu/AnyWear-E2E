@@ -1,3 +1,5 @@
+import { isCapturedBetaWorkerEmail } from './beta-address.ts';
+
 export interface CapturedIdentity { email: string; sub: string }
 interface CognitoUser { Username?: string; UserAttributes?: { Name?: string; Value?: string }[] }
 export interface CognitoCleanupIo {
@@ -6,7 +8,11 @@ export interface CognitoCleanupIo {
 }
 
 export async function verifyCapturedCognitoIdentity(identity: CapturedIdentity, io: CognitoCleanupIo): Promise<string | undefined> {
-  if (!(/^e2e-beta-worker-[0-7]-chromium@anywear\.local$/.test(identity.email))
+  // The scoped Beta worker family and the retained stable allowlist rows. This
+  // path has no run scope to bind to: it deletes the attempt's own captured
+  // identity and replayed historical ones, so accepting the stable family is
+  // deliberate — a pre-#129 identity still has to be deletable.
+  if (!isCapturedBetaWorkerEmail(identity.email)
     || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(identity.sub)) {
     throw new Error('Cognito cleanup requires a captured synthetic email and subject');
   }

@@ -49,3 +49,20 @@ export async function readServiceJson(response) {
   }
   return response.json();
 }
+
+// A Service error body is `{ error: <CODE>, message, requestId }`. The code is
+// the only field that can be copied into a test result: it is a fixed vocabulary
+// identifier, never a value derived from the request. Anything else — a missing
+// field, a message, an HTML body, an unreadable body — reports `undefined`
+// rather than being echoed, so a diagnostic can never leak a body or a token.
+const SERVICE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+export async function sanitizedServiceErrorCode(response) {
+  try {
+    const body = await response.json();
+    const code = body?.error;
+    return typeof code === 'string' && SERVICE_ERROR_CODE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}

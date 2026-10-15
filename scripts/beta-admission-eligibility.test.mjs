@@ -127,6 +127,28 @@ test('both stable Chromium worker emails must be members; another slot or browse
   })));
 });
 
+test('the retained stable allowlist rows stay required and scoped attempt addresses cannot replace them', () => {
+  // Issue #129: the per-attempt worker addresses are now run/attempt-scoped, but
+  // the Infra tester producer is exact-membership and rejects wildcards, so the
+  // two stable rows stay in the allowlist and stay required. A scoped address is
+  // a valid tester email, yet it never satisfies that membership.
+  const scoped = [
+    'e2e-beta-123456789-1-0123456789abcdef-0-a1b2c3d4@anywear.local',
+    'e2e-beta-123456789-1-0123456789abcdef-1-b1c2d3e4@anywear.local',
+  ];
+  assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(scoped) })),
+    /both configured stable Chromium/);
+  assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify([workers[0], scoped[0]]) })),
+    /both configured stable Chromium/);
+  assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify([scoped[0], workers[1]]) })),
+    /both configured stable Chromium/);
+  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(workers) })));
+  // The rows are literal membership, never a pattern: a near-miss row refuses.
+  assert.throws(() => validateBetaAdmissionPolicy(response({
+    tester_allowlist: JSON.stringify(['e2e-beta-worker-0-chromium@anywear.local', 'e2e-beta-worker-1-chromium@anywear.local.evil.example']),
+  })), /both configured stable Chromium/);
+});
+
 test('incomplete, duplicate, unexpected or malformed parameter entries never supply a permissive default', () => {
   const valid = response();
   for (const invalid of [null, {}, { Parameters: null }, { Parameters: [] },

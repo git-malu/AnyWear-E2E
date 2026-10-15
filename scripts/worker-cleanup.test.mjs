@@ -9,7 +9,9 @@ import {
 import { bindCleanupEnvironment } from './cleanup-worker-accounts.mjs';
 
 const runScope = `123456789-1-${'a'.repeat(16)}`;
-const workerEmail = 'e2e-beta-worker-0-chromium@anywear.local';
+const workerEmail = `e2e-beta-${runScope}-0-a1b2c3d4@anywear.local`;
+// The stable allowlist row a pre-#129 artifact still captures.
+const stableWorkerEmail = 'e2e-beta-worker-0-chromium@anywear.local';
 const subject = '10000000-0000-4000-8000-000000000001';
 const immutableUsername = 'cognito-immutable-username';
 const attempt = (overrides = {}) => ({
@@ -86,12 +88,29 @@ function cleanupIo({ serviceCleanup = async () => {}, currentEmail = workerEmail
   };
 }
 
-test('stable worker cleanup transmits exact runScope and subject/email before Cognito deletion', async () => {
+test('scoped worker cleanup transmits exact runScope and subject/email before Cognito deletion', async () => {
   const io = cleanupIo();
   const count = await cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'cleanup_pending' }, { email: 'e2e-beta-123456789-1-a1b2c3d4@example.invalid', subject, mode: 'ephemeral', status: 'cleanup_pending' }]), io);
   const cleanupJson = JSON.stringify({ runScope, users: [{ sub: subject, email: workerEmail }] });
   assert.equal(count, 1); assert.deepEqual(io.calls, [{ service: { action: 'cleanup', emails: '[]', cleanup_json: cleanupJson } }, { get: workerEmail }, { delete: subject }]);
   assert.deepEqual(createServiceCleanupInputs(manifest()).cleanup_json, cleanupJson);
+});
+
+test('a pre-#129 stable allowlist row is still cleanable, but only for its own scope', async () => {
+  // Historical artifacts name the retained rows and their identities are still
+  // in Cognito, so recovery has to keep accepting them.
+  assert.deepEqual(createServiceCleanupInputs(manifest([{ email: stableWorkerEmail, subject, mode: 'worker', status: 'cleanup_pending' }])).cleanup_json,
+    JSON.stringify({ runScope, users: [{ sub: subject, email: stableWorkerEmail }] }));
+  // A scoped address from another run is not this manifest's captured identity.
+  for (const foreign of [
+    `e2e-beta-123456790-1-${'a'.repeat(16)}-0-a1b2c3d4@anywear.local`,
+    `e2e-beta-${runScope}-0-A1B2C3D4@anywear.local`,
+    `e2e-beta-${runScope}-0-a1b2c3d4e@anywear.local`,
+    `e2e-beta-${runScope}-0-a1b2c3d4@example.com`,
+  ]) {
+    assert.throws(() => createServiceCleanupInputs(manifest([{ email: foreign, subject, mode: 'worker', status: 'cleanup_pending' }])),
+      /captured Beta worker emails and subjects/, foreign);
+  }
 });
 
 test('failed subject-bound cleanup never reads or deletes a Cognito identity', async () => {
@@ -106,7 +125,7 @@ test('capability initiation failure defers cleanup without Cognito access', asyn
 
 test('malformed or subject-less worker identity fails closed before capability or Cognito calls', async () => {
   const io = cleanupIo();
-  await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, mode: 'worker', status: 'cleanup_pending' }]), io), /captured stable worker emails and subjects/); assert.deepEqual(io.calls, []);
+  await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, mode: 'worker', status: 'cleanup_pending' }]), io), /captured Beta worker emails and subjects/); assert.deepEqual(io.calls, []);
 });
 
 test('quarantined and deleted worker sets remain untouched', async () => {

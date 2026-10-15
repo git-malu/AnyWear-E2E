@@ -284,3 +284,15 @@ jobs:
             AnyWear-E2E/test-results/service-cleanup-operation.json
             AnyWear-E2E/test-results/service-cleanup-run.json
           if-no-files-found: ignore
+
+      - name: Upload failed-test screenshots and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-failure-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            AnyWear-E2E/test-results/**/test-failed-*.png
+            AnyWear-E2E/test-results/**/trace.zip
+            AnyWear-E2E/test-results/**/worker-profile-binding.json
+          retention-days: 7
+          if-no-files-found: ignore

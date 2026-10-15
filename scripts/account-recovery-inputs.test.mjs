@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertPreviousRecovery, assertRecoveryArtifact, prepareRecoveryFiles, validateAccountRecoverySelection } from './account-recovery-inputs.mjs';
+import { assertPreviousRecovery, assertRecoveryArtifact, prepareAccountRecovery, prepareRecoveryFiles, validateAccountRecoverySelection } from './account-recovery-inputs.mjs';
 import { byteHash } from './evidence-contract.mjs';
 import { runCapturedWorkerCleanup } from './cleanup-worker-accounts.mjs';
 import { cleanupExecutionArn, createCleanupOperationEnvelope, deterministicCleanupExecutionName } from '../tests/support/service-cleanup-operation.ts';
@@ -43,6 +43,25 @@ test('formal recovery selection rejects invalid combinations before credentials'
   for (const patch of [{ E2E_CLEANUP_OPERATION_MODE: undefined }, { E2E_CLEANUP_RECOVERY_ATTEMPT: '0' }, { E2E_CLEANUP_RECOVERY_ATTEMPT: '01' },
     { E2E_CLEANUP_RECOVERY_ATTEMPT: '1000000' }, { E2E_CLEANUP_OPERATION_MODE: 'normal' }, { E2E_CLEANUP_RETRY_FAILED: 'true' },
     { RECOVERY_SOURCE_RUN_ID: '1e2' }, { RECOVERY_PREVIOUS_RUN_ID: '456' }, { E2E_CLEANUP_RECOVERY_ATTEMPT: '2' }]) assert.throws(() => validateAccountRecoverySelection({ ...base, ...patch }));
+});
+
+test('recovery captures this run scope\u2019s scoped worker addresses and refuses a foreign scope', () => {
+  const scoped = (scope, slot, suffix) => ({ mode: 'worker', status: 'in_use',
+    email: `e2e-beta-${scope}-${slot}-${suffix}@anywear.local`, subject: `00000000-0000-0000-0000-00000000000${slot + 1}`,
+    leaseId: `lease-${slot}`, leaseGeneration: 'owner', createdAt: 'created', updatedAt: 'created' });
+  const forScope = (emailScope) => ({ ...structuredClone(manifest),
+    accounts: [scoped(emailScope, 0, 'a1b2c3d4'), scoped(emailScope, 1, 'b1c2d3e4')] });
+
+  // The scoped family for the manifest's own scope is a captured identity.
+  const own = prepareAccountRecovery(forScope(manifest.runScope), run, 123, 1);
+  assert.deepEqual(own.accounts.map(account => account.status), ['cleanup_pending', 'cleanup_pending']);
+  // The same shape carrying another run's scope is not: a captured identity is
+  // never re-scoped to a request that is not its own.
+  const foreign = prepareAccountRecovery(forScope('456-1-0000000000000000'), run, 123, 1);
+  assert.deepEqual(foreign.accounts.map(account => account.status), ['in_use', 'in_use']);
+  // The retained stable rows a pre-#129 artifact captured stay recoverable.
+  assert.deepEqual(prepareAccountRecovery(structuredClone(manifest), run, 123, 1).accounts.map(account => account.status),
+    ['cleanup_pending', 'cleanup_pending']);
 });
 
 test('previous recovery provenance binds source run/attempt and exact canonical original owner files', () => {

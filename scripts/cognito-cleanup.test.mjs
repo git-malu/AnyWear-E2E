@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { deleteCapturedCognitoIdentity, verifyCapturedCognitoIdentity } from '../tests/support/cognito-cleanup.ts';
 
+const runScope = '123456789-1-0123456789abcdef';
+// The scoped address this suite now mints per attempt...
 const identity = {
-  email: 'e2e-beta-worker-0-chromium@anywear.local',
+  email: `e2e-beta-${runScope}-0-a1b2c3d4@anywear.local`,
   sub: '7442ec8e-5051-709b-e2ec-f1b3118f45a0',
 };
+// ...and the retained stable allowlist row a pre-#129 artifact still captures.
+const stableIdentity = { ...identity, email: 'e2e-beta-worker-0-chromium@anywear.local' };
 
 function fixture({ email = identity.email, sub = identity.sub, username = identity.sub } = {}) {
   const calls = [];
@@ -23,6 +27,12 @@ test('Cognito deletion uses its returned immutable username after validating cap
   assert.deepEqual(boundary.calls, [{ get: identity.email }, { delete: 'immutable-cognito-user' }]);
 });
 
+test('a retained stable allowlist row from a pre-#129 artifact is still deletable', async () => {
+  const boundary = fixture({ email: stableIdentity.email });
+  await deleteCapturedCognitoIdentity(stableIdentity, boundary);
+  assert.deepEqual(boundary.calls, [{ get: stableIdentity.email }, { delete: stableIdentity.sub }]);
+});
+
 test('changed Cognito subject or email refuses deletion', async () => {
   for (const options of [{ sub: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, { email: 'other@example.com' }]) {
     const boundary = fixture(options);
@@ -31,10 +41,13 @@ test('changed Cognito subject or email refuses deletion', async () => {
   }
 });
 
-test('missing captured subject, malformed subject, or retired/non-worker email cannot initiate Cognito cleanup', async () => {
+test('missing captured subject, malformed subject, or a non-worker family cannot initiate Cognito cleanup', async () => {
   for (const value of [{ email: identity.email }, { ...identity, sub: 'malformed' },
     { ...identity, email: 'e2e-beta-allowlist-1-1-abcdef0123456789-primary@anywear.local' },
-    { ...identity, email: 'actual-tester@example.com' }]) {
+    { ...identity, email: 'actual-tester@example.com' },
+    { ...identity, email: `e2e-beta-${runScope}-0-a1b2c3d4e@anywear.local` },
+    { ...identity, email: `e2e-beta-${runScope}-0-A1B2C3D4@anywear.local` },
+    { ...identity, email: `e2e-beta-${runScope}-0-a1b2c3d4@example.com` }]) {
     const boundary = fixture();
     await assert.rejects(deleteCapturedCognitoIdentity(value, boundary), /captured synthetic email and subject/);
     assert.deepEqual(boundary.calls, []);

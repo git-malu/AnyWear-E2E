@@ -1,5 +1,16 @@
 import { expect, login, test } from './support/fixtures.js';
 import { declareNoBusinessCleanup } from './support/attempt-cleanup-registry.js';
+import { requireEnvironment } from './support/account.js';
+import { isServiceJsonResponse, sanitizedServiceErrorCode } from './support/service-json-response.mjs';
+
+// Issue #129 could only be read from CloudWatch because a failing first attempt
+// left no trace: the global configuration records one on the first retry, which
+// is the second attempt. The profile binding is what this test exists to
+// observe, so this file records a trace for every attempt and keeps the failed
+// one. `test.use` is file-scoped and top-level because it forces its own worker,
+// and the scope is deliberately this file only so the sizing workload's route
+// measurements stay untraced.
+test.use({ trace: 'retain-on-failure' });
 
 test.describe('Worker account smoke @smoke @full-stack', () => {
   test('signs in and reaches the dashboard and wardrobe', async ({ page, workerAccount }, testInfo) => {
@@ -7,7 +18,33 @@ test.describe('Worker account smoke @smoke @full-stack', () => {
     // the worker-lease teardown then releases the address on a committed
     // declaration instead of quarantining an undeclared attempt.
     declareNoBusinessCleanup(testInfo, { teardownResult: 'passed', reason: 'this attempt creates no business resources' });
+
+    // Observe the first profile read of this attempt's own synthetic identity.
+    // The listener is registered before sign-in, because the binding is decided
+    // by that first `GET /users/me`: it is the request that syncs the Cognito
+    // subject to its profile row, and the one that answered 409 while a fixed
+    // worker address was still owned by an earlier attempt's subject.
+    const serviceOrigin = new URL(requireEnvironment('E2E_SERVICE_URL')).origin;
+    const profile = page.waitForResponse((response) => (
+      response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/users/me'
+      && isServiceJsonResponse(response, serviceOrigin)
+    ));
+
     await login(page, workerAccount);
+    const response = await profile;
+    const status = response.status();
+    const error = status === 200 ? undefined : await sanitizedServiceErrorCode(response);
+    await testInfo.attach('worker-profile-binding', {
+      body: JSON.stringify({
+        email: workerAccount.email,
+        // The first status of the profile-binding request, and its Service error
+        // vocabulary when it was refused. No body, message or token is recorded.
+        profile: { status, ...(error ? { error } : {}) },
+      }, null, 2),
+      contentType: 'application/json',
+    });
+    expect(status, `the first profile read of ${workerAccount.email} must bind it`).toBe(200);
 
     await expect(page.getByRole('heading', { name: 'Today', exact: true })).toBeVisible({
       timeout: 10_000,

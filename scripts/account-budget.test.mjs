@@ -28,6 +28,12 @@ const environment = [
 const originalEnvironment = new Map(environment.map((name) => [name, process.env[name]]));
 const temporaryDirectories = [];
 
+// The scoped Beta worker address (issue #129) embeds the run scope verbatim,
+// because the Service's cleanup parser matches exactly this grammar.
+const RUN_SCOPE = '123456789-1-0123456789abcdef';
+const workerAddress = (slot = 0, suffix = 'a1b2c3d4') => `e2e-beta-${RUN_SCOPE}-${slot}-${suffix}@anywear.local`;
+const workerAddressPattern = (slot) => new RegExp(`^e2e-beta-${RUN_SCOPE}-${slot}-[a-f0-9]{8}@anywear\\.local$`);
+
 function restoreEnvironment() {
   for (const name of environment) {
     const originalValue = originalEnvironment.get(name);
@@ -44,14 +50,50 @@ afterEach(async () => {
 test('worker slot allocation defaults to zero and an allocated offset preserves other captured slots', () => {
   process.env.E2E_STAGE = 'beta';
   process.env.E2E_WORKERS = '2';
+  process.env.E2E_ACCOUNT_RUN_SCOPE = RUN_SCOPE;
   delete process.env.E2E_WORKER_SLOT_OFFSET;
-  assert.equal(createWorkerAccount({ parallelIndex: 0 }, 'chromium').email, 'e2e-beta-worker-0-chromium@anywear.local');
-  assert.equal(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, 'e2e-beta-worker-1-chromium@anywear.local');
+  const first = createWorkerAccount({ parallelIndex: 0 }, 'chromium').email;
+  const second = createWorkerAccount({ parallelIndex: 1 }, 'chromium').email;
+  assert.match(first, workerAddressPattern(0));
+  assert.match(second, workerAddressPattern(1));
+  // Two attempts of the same slot never share an address, which is the whole
+  // point of the scoped shape: a re-bound address reproduces issue #129's 409.
+  assert.notEqual(first, createWorkerAccount({ parallelIndex: 0 }, 'chromium').email);
   process.env.E2E_WORKER_SLOT_OFFSET = '2';
-  assert.equal(createWorkerAccount({ parallelIndex: 0 }, 'chromium').email, 'e2e-beta-worker-2-chromium@anywear.local');
-  assert.equal(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, 'e2e-beta-worker-3-chromium@anywear.local');
+  assert.match(createWorkerAccount({ parallelIndex: 0 }, 'chromium').email, workerAddressPattern(2));
+  assert.match(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, workerAddressPattern(3));
   process.env.E2E_WORKER_SLOT_OFFSET = '6';
-  assert.equal(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, 'e2e-beta-worker-7-chromium@anywear.local');
+  assert.match(createWorkerAccount({ parallelIndex: 1 }, 'chromium').email, workerAddressPattern(7));
+});
+
+test('the Beta worker address is a Service-cleanable scoped address and never the retained stable row', () => {
+  process.env.E2E_STAGE = 'beta';
+  process.env.E2E_WORKERS = '2';
+  delete process.env.E2E_WORKER_SLOT_OFFSET;
+  process.env.E2E_ACCOUNT_RUN_SCOPE = RUN_SCOPE;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const address = createWorkerAccount({ parallelIndex: attempt % 2 }, 'chromium').email;
+    // The Service matches `^e2e-beta-${runScope}-[0-9]+-[a-f0-9]{8}@anywear\.local$`
+    // and refuses a local part longer than 64 characters.
+    assert.match(address, /^e2e-beta-[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}-[0-7]-[a-f0-9]{8}@anywear\.local$/);
+    assert.equal(address, address.toLowerCase());
+    assert.doesNotMatch(address, /\+/);
+    assert.ok(address.split('@')[0].length <= 64);
+    assert.doesNotMatch(address, /^e2e-beta-worker-[0-7]-chromium@anywear\.local$/);
+  }
+  // A scope the Service cleanup capability could never address is refused here
+  // rather than minting an identity no captured-subject deletion can reach.
+  process.env.E2E_ACCOUNT_RUN_SCOPE = 'local-4242';
+  assert.throws(() => createWorkerAccount({ parallelIndex: 0 }, 'chromium'), /Service-cleanable run scope/);
+});
+
+test('non-Beta stages keep their sanitized run-unique worker address', () => {
+  process.env.E2E_STAGE = 'prod';
+  process.env.E2E_WORKERS = '1';
+  delete process.env.E2E_WORKER_SLOT_OFFSET;
+  process.env.E2E_ACCOUNT_RUN_SCOPE = 'test-scope';
+  assert.match(createWorkerAccount({ parallelIndex: 0 }, 'chromium').email,
+    /^e2e-prod-test-scope-0-chromium-[a-f0-9]{8}@anywear\.local$/);
 });
 
 test('invalid offset, pool overflow and invalid parallel index refuse account allocation', () => {
@@ -79,9 +121,9 @@ async function configureBudget(maxNewAccountsPerRun = 2) {
   process.env.E2E_MAX_QUARANTINED_ACCOUNTS = '1';
 }
 
-test('a deleted stable worker email can be re-reserved with a fresh lease and subject', async () => {
+test('a deleted worker address can be re-reserved with a fresh lease and subject', async () => {
   await configureBudget();
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+  const email = workerAddress();
 
   await reserveAccount(email, 'worker', 'lease-1');
   await recordAccountSubject(email, 'subject-1');
@@ -99,23 +141,22 @@ test('a deleted stable worker email can be re-reserved with a fresh lease and su
   await assert.rejects(reserveAccount(email, 'worker', 'lease-3'), /already has an active lease/);
 });
 
-test('retries using one stable address still consume the per-run creation budget', async () => {
+test('every attempt reservation consumes the per-run creation budget', async () => {
   await configureBudget(2);
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
 
-  await reserveAccount(email, 'worker', 'lease-1');
-  await markAccountDeleted(email);
-  await reserveAccount(email, 'worker', 'lease-2');
-  await markAccountDeleted(email);
+  await reserveAccount(workerAddress(0, 'aaaaaaaa'), 'worker', 'lease-1');
+  await markAccountDeleted(workerAddress(0, 'aaaaaaaa'));
+  await reserveAccount(workerAddress(1, 'bbbbbbbb'), 'worker', 'lease-2');
+  await markAccountDeleted(workerAddress(1, 'bbbbbbbb'));
 
-  await assert.rejects(reserveAccount(email, 'worker', 'lease-3'), /new-account budget exhausted/);
+  await assert.rejects(reserveAccount(workerAddress(0, 'cccccccc'), 'worker', 'lease-3'), /new-account budget exhausted/);
   const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
   assert.equal(manifest.accounts.length, 2);
 });
 
-test('quarantine applies to the latest lease of a re-created stable address', async () => {
+test('quarantine applies to the latest lease of a re-created worker address', async () => {
   await configureBudget();
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+  const email = workerAddress();
 
   await reserveAccount(email, 'worker', 'lease-1');
   await markAccountDeleted(email);
@@ -128,7 +169,7 @@ test('quarantine applies to the latest lease of a re-created stable address', as
 
 test('a released attempt returns its address to the pool for a fresh lease generation', async () => {
   await configureBudget();
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+  const email = workerAddress();
 
   await reserveAccount(email, 'worker', 'lease-1');
   await recordAccountSubject(email, 'subject-1');
@@ -148,7 +189,7 @@ test('a released attempt returns its address to the pool for a fresh lease gener
 
 test('a quarantined attempt is never silently reused and never released', async () => {
   await configureBudget();
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+  const email = workerAddress();
 
   await reserveAccount(email, 'worker', 'lease-1');
   await quarantineAccount(email, 'teardown: identity is still present');
@@ -168,7 +209,7 @@ test('a quarantined attempt is never silently reused and never released', async 
 
 test('a refused re-reservation is diagnosed, keeps its exact message, and writes nothing', async () => {
   await configureBudget();
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+  const email = workerAddress();
 
   await reserveAccount(email, 'worker', 'lease-1');
   await quarantineAccount(email, 'teardown: identity is still present');
@@ -193,7 +234,7 @@ test('a refused re-reservation is diagnosed, keeps its exact message, and writes
 
 test('a refusal inside the same run scope is still an ordinary guard, not a reuse', async () => {
   await configureBudget();
-  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+  const email = workerAddress();
 
   await reserveAccount(email, 'worker', 'lease-1');
   await markAccountInUse(email);
@@ -215,19 +256,18 @@ test('attempt-scoped reservations cover every retry of the configured workers', 
   assert.deepEqual(accountBudgetConfig(2), { maxActiveAccounts: 2, maxNewAccountsPerRun: 6, maxQuarantinedAccounts: 2 });
 });
 
-test('six attempt reservations of two worker addresses fit the per-run cap and the seventh still refuses', async () => {
+test('six attempt reservations of two worker slots fit the per-run cap and the seventh still refuses', async () => {
   await configureBudget(6);
   process.env.E2E_MAX_ACTIVE_ACCOUNTS = '2';
-  const emails = [0, 1].map((slot) => `e2e-beta-worker-${slot}-chromium@anywear.local`);
+  // Two slots, three attempts each, and a fresh address per attempt.
+  const addresses = [0, 1].flatMap((slot) => [1, 2, 3].map((retry) => workerAddress(slot, String(retry).repeat(8))));
 
-  for (let retry = 1; retry <= 3; retry += 1) {
-    for (const email of emails) {
-      await reserveAccount(email, 'worker', `lease-${retry}`);
-      await releaseWorkerAccount(email);
-    }
+  for (const [index, address] of addresses.entries()) {
+    await reserveAccount(address, 'worker', `lease-${index}`);
+    await releaseWorkerAccount(address);
   }
 
-  await assert.rejects(reserveAccount(emails[0], 'worker', 'lease-overflow'), /new-account budget exhausted/);
+  await assert.rejects(reserveAccount(workerAddress(0, 'ffffffff'), 'worker', 'lease-overflow'), /new-account budget exhausted/);
   const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
   assert.equal(manifest.accounts.length, 6);
   assert.deepEqual(manifest.accounts.map(({ status }) => status), Array(6).fill('deleted'));

@@ -11,6 +11,8 @@ import { readAttemptBusinessCleanup } from '../tests/support/attempt-cleanup-reg
 const SECRET = { CLEANUP_MACHINE_AUTH_SECRET: 'test-secret' };
 const OWNER_SUB = '11111111-2222-3333-4444-555555555555';
 const RUN_SCOPE = '12345-1-abcdef0123456789';
+// The scoped Beta worker address this suite mints per attempt (issue #129).
+const scopedWorkerEmail = `e2e-beta-${RUN_SCOPE}-0-a1b2c3d4@anywear.local`;
 
 // The registry key is the attempt identity and is never inspected, so a fresh
 // object per attempt is an exact stand-in for the Playwright `TestInfo`.
@@ -23,14 +25,15 @@ function fakeTestInfo() {
 function harness(options = {}) {
   const calls = [];
   const deletes = [];
+  const expectedEmail = options.expectedEmail ?? scopedWorkerEmail;
   const teardown = new DirectTeardown({
     runScope: RUN_SCOPE,
     testScope: 'wardrobe.spec.ts::scenario',
     retryIndex: 0,
     leaseId: 'lease-1',
     leaseGeneration: 7,
-    expectedUsername: 'e2e-beta-worker-0-chromium@anywear.local',
-    expectedEmail: 'e2e-beta-worker-0-chromium@anywear.local',
+    expectedUsername: options.expectedUsername ?? expectedEmail,
+    expectedEmail,
     serviceUrl: 'https://service.invalid',
     environment: SECRET,
     request: {},
@@ -85,6 +88,19 @@ test('registration must precede binding and acknowledgement', async () => {
   const { teardown } = harness();
   await assert.rejects(() => teardown.bindOwner(OWNER_SUB), /registered before this step/);
   await assert.rejects(() => teardown.finalize('passed', 'Bearer t'), /registered before this step/);
+});
+
+test('a scoped Beta worker address is transmitted verbatim to the operation surface', async () => {
+  // The attempt's own scoped address is what the Service registers and what the
+  // lease declaration is keyed by, so the identity the teardown later deletes is
+  // exactly the identity this attempt created.
+  const scoped = scopedWorkerEmail;
+  const testInfo = fakeTestInfo();
+  const { teardown, calls } = harness({ testInfo, expectedEmail: scoped });
+  await teardown.register();
+  assert.equal(JSON.parse(calls[0].data).expected_email, scoped);
+  assert.equal(JSON.parse(calls[0].data).expected_username, scoped);
+  assert.deepEqual(readAttemptBusinessCleanup(testInfo), { email: scoped, state: 'open' });
 });
 
 test('registration refusal aborts the attempt without claiming a scope', async () => {
@@ -232,7 +248,7 @@ test('an attempt declares nothing until it registers, and registration opens the
 
   await teardown.register();
   assert.deepEqual(readAttemptBusinessCleanup(testInfo), {
-    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    email: scopedWorkerEmail,
     state: 'open',
   });
   // An attempt that never registered still waits for its own outcome.
@@ -255,7 +271,7 @@ test('finalize closes the declaration with the teardown outcome it recorded', as
   const result = await teardown.finalize('passed', 'Bearer token');
   assert.equal(result.teardown_result, 'passed');
   assert.deepEqual(readAttemptBusinessCleanup(declared), {
-    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    email: scopedWorkerEmail,
     state: 'closed',
     teardownResult: 'passed',
   });
@@ -289,7 +305,7 @@ test('the direct acknowledgement path closes the declaration too', async () => {
   await teardown.register();
   await teardown.acknowledge('skipped', 'passed');
   assert.deepEqual(readAttemptBusinessCleanup(testInfo), {
-    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    email: scopedWorkerEmail,
     state: 'closed',
     teardownResult: 'passed',
   });
@@ -301,7 +317,7 @@ test('a refused acknowledgement leaves the declaration open, so the lease cannot
   await teardown.register();
   await assert.rejects(() => teardown.finalize('passed', 'Bearer token'), /acknowledgement refused with 409/);
   assert.deepEqual(readAttemptBusinessCleanup(testInfo), {
-    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    email: scopedWorkerEmail,
     state: 'open',
   });
 });
@@ -320,12 +336,12 @@ test('the declaration key is the attempt, not the leased address', async () => {
   assert.equal(firstResult.teardown_result, 'passed');
 
   assert.deepEqual(readAttemptBusinessCleanup(firstAttempt), {
-    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    email: scopedWorkerEmail,
     state: 'closed',
     teardownResult: 'passed',
   });
   assert.deepEqual(readAttemptBusinessCleanup(secondAttempt), {
-    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    email: scopedWorkerEmail,
     state: 'open',
   });
 });

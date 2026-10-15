@@ -4,6 +4,7 @@ import {
   isJsonContentType,
   isServiceJsonResponse,
   readServiceJson,
+  sanitizedServiceErrorCode,
   serviceOriginOf,
   serviceResponseMatcher,
 } from '../tests/support/service-json-response.mjs';
@@ -80,4 +81,24 @@ test('readServiceJson parses a JSON body and names the offending content type', 
     () => readServiceJson(spaFallbackDocument()),
     /Expected a Service JSON response .*content-type text\/html/,
   );
+});
+
+test('sanitizedServiceErrorCode reports only the Service error vocabulary code', async () => {
+  const errorBody = (body) => response({ url: `${SERVICE_ORIGIN}/users/me`, contentType: 'application/json', body });
+  // The shape the Service returns for a refused profile sync (issue #129).
+  assert.equal(await sanitizedServiceErrorCode(errorBody(
+    JSON.stringify({ error: 'CONFLICT', message: 'Email is already provisioned to a different Cognito user', requestId: 'r' }),
+  )), 'CONFLICT');
+  assert.equal(await sanitizedServiceErrorCode(errorBody('{"error":"DATABASE_ERROR"}')), 'DATABASE_ERROR');
+  // Anything that is not that vocabulary is omitted rather than echoed.
+  for (const body of ['{}', '{"error":42}', '{"error":""}', '{"error":"a lower case code"}',
+    '{"error":"<script>"}', '{"message":"Conflict"}', 'null', '[]', `{"error":"${'A'.repeat(65)}"}`]) {
+    assert.equal(await sanitizedServiceErrorCode(errorBody(body)), undefined, body);
+  }
+  // An unreadable or non-JSON body is omitted too, never surfaced as a message.
+  const html = response({ url: `${SERVICE_ORIGIN}/users/me`, contentType: 'text/html', body: '<!doctype html>' });
+  assert.equal(await sanitizedServiceErrorCode(html), undefined);
+  const unreadable = response({ url: `${SERVICE_ORIGIN}/users/me`, contentType: 'application/json' });
+  unreadable.json = async () => { throw new Error('body unavailable'); };
+  assert.equal(await sanitizedServiceErrorCode(unreadable), undefined);
 });

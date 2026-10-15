@@ -23,3 +23,7 @@ export function serviceResponseMatcher(
 ): (response: ServiceJsonBrowserResponseLike) => boolean;
 
 export function readServiceJson<T = unknown>(response: ServiceJsonResponseLike): Promise<T>;
+
+// The Service error vocabulary code from a JSON error body, or `undefined` when
+// the body is absent, unreadable or not that shape. Never the message.
+export function sanitizedServiceErrorCode(response: ServiceJsonResponseLike): Promise<string | undefined>;

@@ -20,6 +20,7 @@ import {
   accountRunScope,
   type AccountMode,
 } from './account-budget.ts';
+import { betaWorkerAddress } from './beta-address.ts';
 
 export interface TestAccount {
   email: string;
@@ -29,33 +30,6 @@ export interface TestAccount {
 }
 
 const DEFAULT_TEST_PASSWORD = 'TestPassword123!';
-const STABLE_WORKER_EMAIL_PATTERN = /^e2e-beta-worker-[0-7]-chromium@anywear\.local$/;
-const COGNITO_SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-
-export interface CognitoAccountUser {
-  Username?: string;
-  UserAttributes?: { Name?: string; Value?: string }[];
-}
-
-export function isReusableStableWorkerEmail(email: string): boolean {
-  return STABLE_WORKER_EMAIL_PATTERN.test(email);
-}
-
-export function reusableStableWorkerSubject(user: CognitoAccountUser, expectedEmail: string): string {
-  const email = userAttribute(user.UserAttributes, 'email');
-  const subject = userAttribute(user.UserAttributes, 'sub');
-  const emailVerified = userAttribute(user.UserAttributes, 'email_verified');
-  const bootstrapMarker = userAttribute(user.UserAttributes, 'custom:e2e_bootstrap');
-  if (!isReusableStableWorkerEmail(expectedEmail)
-    || email !== expectedEmail
-    || !subject
-    || !COGNITO_SUBJECT_PATTERN.test(subject)
-    || emailVerified !== 'true'
-    || bootstrapMarker !== 'true') {
-    throw new Error(`Existing Cognito identity is not an eligible stable E2E worker: ${expectedEmail}`);
-  }
-  return subject;
-}
 
 export function requireEnvironment(name: string): string {
   const value = process.env[name];
@@ -98,12 +72,17 @@ export function createWorkerAccount(workerInfo: WorkerInfo, browserName: string)
   }
 
   const stage = accountScopeSegment(process.env.E2E_STAGE ?? 'test', 'test', 8);
-  const run = accountScopeSegment(accountRunScope(), `local-${process.pid}`, 33);
   const slot = String(workerInfo.parallelIndex + workerSlotOffset(process.env, workers));
   const browser = accountScopeSegment(browserName, 'browser', 12);
+  const attemptSuffix = randomUUID().replaceAll('-', '').slice(0, 8);
+  // A Beta worker address is a captured-subject Service cleanup input, so its
+  // scope has to survive verbatim: `betaWorkerAddress` keeps the full run scope
+  // and refuses one the Service cleanup capability could never address. Any
+  // other stage only needs a run-unique address, and keeps its sanitized,
+  // length-bounded scope segment.
   const email = stage === 'beta'
-    ? `e2e-${stage}-worker-${slot}-${browser}@anywear.local`
-    : `e2e-${stage}-${run}-${slot}-${browser}-${randomUUID().replaceAll('-', '').slice(0, 8)}@anywear.local`;
+    ? betaWorkerAddress(accountRunScope(), slot, attemptSuffix)
+    : `e2e-${stage}-${accountScopeSegment(accountRunScope(), `local-${process.pid}`, 33)}-${slot}-${browser}-${attemptSuffix}@anywear.local`;
 
   return {
     email,
@@ -153,27 +132,22 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
   const client = cognitoClient();
   try {
     assertE2EExecution();
-    try {
-      await client.send(new AdminCreateUserCommand({
-        UserPoolId: userPoolId,
-        Username: account.email,
-        MessageAction: 'SUPPRESS',
-        UserAttributes: [
-          { Name: 'email', Value: account.email },
-          { Name: 'email_verified', Value: 'true' },
-          { Name: 'custom:e2e_bootstrap', Value: 'true' },
-        ],
-      }));
-    } catch (error: unknown) {
-      const usernameExists = error instanceof Error && error.name === 'UsernameExistsException';
-      if (!usernameExists || !isReusableStableWorkerEmail(account.email)) throw error;
-      assertE2EExecution();
-      const existing = await client.send(new AdminGetUserCommand({
-        UserPoolId: userPoolId,
-        Username: account.email,
-      }));
-      reusableStableWorkerSubject(existing, account.email);
-    }
+    // Every attempt address is scope-bound and never re-bound, so a pre-existing
+    // Cognito binding for it is always a defect rather than a reusable identity:
+    // adopting that subject is what produced issue #129's 409 on the first
+    // profile sync. `UsernameExistsException` is therefore fatal — the outer
+    // catch quarantines this scope with whatever is bound there, and no later
+    // attempt is handed the same address.
+    await client.send(new AdminCreateUserCommand({
+      UserPoolId: userPoolId,
+      Username: account.email,
+      MessageAction: 'SUPPRESS',
+      UserAttributes: [
+        { Name: 'email', Value: account.email },
+        { Name: 'email_verified', Value: 'true' },
+        { Name: 'custom:e2e_bootstrap', Value: 'true' },
+      ],
+    }));
     await getAccountSubject(client, userPoolId, account);
     assertE2EExecution();
     await client.send(new AdminSetUserPasswordCommand({

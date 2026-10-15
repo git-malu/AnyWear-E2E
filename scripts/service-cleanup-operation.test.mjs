@@ -107,6 +107,27 @@ test('bounded canonical worker envelope and execution identity reject malformed 
   assert.throws(() => createCleanupOperationEnvelope(inputs, { ...environment, E2E_CLEANUP_SERVICE_IMAGE_DIGEST: 'latest' }));
 });
 
+test('the scoped Beta worker address is accepted for its own run scope and never for another', () => {
+  // Issue #129: attempt addresses are `e2e-beta-{runScope}-{slot}-{8hex}`, which
+  // is the family the Service's own cleanup parser matches. This run's address
+  // is a valid envelope input; a foreign, malformed or stable-row address is
+  // either re-scoped (refused) or kept only as a historical capture.
+  const scoped = `e2e-beta-${scope}-0-a1b2c3d4@anywear.local`;
+  const withUser = (email) => ({ ...inputs, cleanup_json: JSON.stringify({ runScope: scope, users: [{ sub: '10000000-0000-4000-8000-000000000001', email }] }) });
+  assert.equal(JSON.parse(createCleanupOperationEnvelope(withUser(scoped), environment).cleanup_request).users[0].email, scoped);
+  // The retained stable row a pre-#129 manifest captured stays cleanable.
+  const stable = withUser('e2e-beta-worker-0-chromium@anywear.local');
+  assert.equal(JSON.parse(createCleanupOperationEnvelope(stable, environment).cleanup_request).users[0].email,
+    'e2e-beta-worker-0-chromium@anywear.local');
+  for (const foreign of [
+    `e2e-beta-123456790-1-${'a'.repeat(16)}-0-a1b2c3d4@anywear.local`,
+    `e2e-beta-${scope}-0-a1b2c3d4e@anywear.local`,
+    `e2e-beta-${scope}-0-A1B2C3D4@anywear.local`,
+    `e2e-beta-${scope}-0-a1b2c3d4@example.com`,
+    `e2e-beta-allowlist-${scope}-primary@anywear.local`,
+  ]) assert.throws(() => createCleanupOperationEnvelope(withUser(foreign), environment), /exact captured worker subjects/, foreign);
+});
+
 test('normal cleanup persists pending evidence and requires actual tasks and unique committed marker', async () => {
   await run({ verify: async (execute, io, path) => {
     const originalStart = io.start;
