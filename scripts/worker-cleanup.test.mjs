@@ -1,11 +1,63 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cleanupWorkerAccounts, createServiceCleanupInputs, releaseWorkerLease } from '../tests/support/worker-cleanup.ts';
+import {
+  cleanupWorkerAccounts,
+  createServiceCleanupInputs,
+  releaseWorkerLease,
+  workerLeaseGateError,
+} from '../tests/support/worker-cleanup.ts';
 import { bindCleanupEnvironment } from './cleanup-worker-accounts.mjs';
 
 const runScope = `123456789-1-${'a'.repeat(16)}`;
 const workerEmail = 'e2e-beta-worker-0-chromium@anywear.local';
 const subject = '10000000-0000-4000-8000-000000000001';
+const immutableUsername = 'cognito-immutable-username';
+const attempt = (overrides = {}) => ({ email: workerEmail, subject, reserved: true, provisioned: true, ...overrides });
+
+function userNotFound() {
+  return Object.assign(new Error('User does not exist.'), { name: 'UserNotFoundException' });
+}
+
+/**
+ * Injected attempt transport. The first read is the ownership verification, the
+ * second one is the absence readback; `retainedAfterDelete` models a delete that
+ * was accepted while the identity is still readable.
+ */
+function attemptIo({
+  present = true,
+  identityEmail = workerEmail,
+  identitySubject = subject,
+  deleteError,
+  retainedAfterDelete = false,
+  readbackError,
+} = {}) {
+  const calls = [];
+  let live = present;
+  let reads = 0;
+  return {
+    calls,
+    async getUser(username) {
+      calls.push({ get: username });
+      reads += 1;
+      if (reads > 1 && readbackError) throw readbackError;
+      if (reads > 1) live = retainedAfterDelete;
+      if (!live) throw userNotFound();
+      return { Username: immutableUsername, UserAttributes: [{ Name: 'email', Value: identityEmail }, { Name: 'sub', Value: identitySubject }] };
+    },
+    async deleteUser(username) {
+      calls.push({ delete: username });
+      if (deleteError) throw deleteError;
+      live = false;
+    },
+    async releaseWorkerAccount(email) {
+      calls.push({ release: email });
+    },
+    async quarantineWorkerAccount(email, reason) {
+      calls.push({ quarantine: email, reason });
+    },
+  };
+}
+
 
 function manifest(accounts = [{ email: workerEmail, subject, mode: 'worker', status: 'cleanup_pending' }]) { return { version: 1, runScope, accounts }; }
 function cleanupIo({ serviceCleanup = async () => {}, currentEmail = workerEmail, currentSubject = subject } = {}) {
@@ -51,8 +103,95 @@ test('changed Cognito subject is retained after successful application cleanup',
   await assert.rejects(cleanupWorkerAccounts(manifest(), io), /different Cognito identity/); assert.equal(io.calls.filter((call) => call.service).length, 1); assert.equal(io.calls.some((call) => call.delete), false);
 });
 
-test('worker lease release is limited to provisioned accounts', async () => {
-  const released = []; await releaseWorkerLease(workerEmail, true, true, async (email) => released.push(email)); await releaseWorkerLease(workerEmail, true, false, async (email) => released.push(email)); assert.deepEqual(released, [workerEmail]);
+test('one attempt verifies the captured identity, deletes it, reads absence back, and only then releases', async () => {
+  const io = attemptIo();
+  const disposition = await releaseWorkerLease(attempt(), io);
+  assert.deepEqual(disposition, { email: workerEmail, scope: 'released', teardownResult: 'passed' });
+  assert.deepEqual(io.calls, [
+    { get: workerEmail },
+    { delete: immutableUsername },
+    { get: workerEmail },
+    { release: workerEmail },
+  ]);
+  assert.equal(workerLeaseGateError(disposition), undefined);
+});
+
+test('an attempt whose identity is already absent releases the address after the absence readback', async () => {
+  const io = attemptIo({ present: false });
+  const disposition = await releaseWorkerLease(attempt(), io);
+  assert.equal(disposition.scope, 'released');
+  assert.deepEqual(io.calls, [{ get: workerEmail }, { get: workerEmail }, { release: workerEmail }]);
+});
+
+test('refused ownership, failed deletion, a retained identity and an uncertain readback quarantine instead of releasing', async () => {
+  const scenarios = [
+    { name: 'ownership mismatch', options: { identitySubject: '20000000-0000-4000-8000-000000000002' }, teardownResult: 'failed', reason: /refused/ },
+    { name: 'deletion failure', options: { deleteError: Object.assign(new Error('AccessDeniedException'), { name: 'AccessDeniedException' }) }, teardownResult: 'failed', reason: /refused/ },
+    { name: 'identity retained after deletion', options: { retainedAfterDelete: true }, teardownResult: 'failed', reason: /still present/ },
+    { name: 'uncertain absence readback', options: { readbackError: new Error('AccessDeniedException') }, teardownResult: 'partial', reason: /uncertain/ },
+  ];
+  for (const scenario of scenarios) {
+    const io = attemptIo(scenario.options);
+    const disposition = await releaseWorkerLease(attempt(), io);
+    assert.equal(disposition.scope, 'quarantined', scenario.name);
+    assert.equal(disposition.teardownResult, scenario.teardownResult, scenario.name);
+    assert.match(disposition.reason, scenario.reason, scenario.name);
+    assert.equal(io.calls.some((call) => call.release), false, scenario.name);
+    assert.equal(io.calls.filter((call) => call.quarantine).length, 1, scenario.name);
+    assert.equal(io.calls.find((call) => call.quarantine).quarantine, workerEmail, scenario.name);
+    assert.equal(/[\r\n]/.test(disposition.reason), false, `${scenario.name}: sanitized reason`);
+    assert.ok(disposition.reason.length <= 300, `${scenario.name}: bounded reason`);
+    assert.match(workerLeaseGateError(disposition).message, /teardown gate failed \((failed|partial), quarantined\)/, scenario.name);
+  }
+});
+
+test('a live identity is never reported terminal even when the address was leased again', async () => {
+  const io = attemptIo({ identitySubject: '20000000-0000-4000-8000-000000000002', retainedAfterDelete: true });
+  const disposition = await releaseWorkerLease(attempt(), io);
+  assert.equal(disposition.scope, 'quarantined');
+  assert.equal(io.calls.some((call) => call.delete), false, 'a foreign identity is never deleted');
+  assert.equal(io.calls.some((call) => call.release), false, 'a live identity is never released');
+});
+
+test('an attempt that never confirmed ownership quarantines without touching Cognito', async () => {
+  for (const overrides of [{ provisioned: false }, { subject: undefined }]) {
+    const io = attemptIo();
+    const disposition = await releaseWorkerLease(attempt(overrides), io);
+    assert.equal(disposition.scope, 'quarantined');
+    assert.equal(disposition.teardownResult, 'failed');
+    assert.match(disposition.reason, /ownership is unverified/);
+    assert.deepEqual(io.calls.map((call) => Object.keys(call)[0]), ['quarantine']);
+  }
+});
+
+test('an attempt that never held the lease writes nothing', async () => {
+  const io = attemptIo();
+  const disposition = await releaseWorkerLease(attempt({ reserved: false, provisioned: false }), io);
+  assert.deepEqual(disposition, { email: workerEmail, scope: 'none', teardownResult: 'passed' });
+  assert.deepEqual(io.calls, []);
+  assert.equal(workerLeaseGateError(disposition), undefined);
+});
+
+test('a refused quarantine record or a refused release write still reports the attempt quarantined', async () => {
+  const refusedQuarantine = attemptIo({ retainedAfterDelete: true });
+  refusedQuarantine.quarantineWorkerAccount = async (email, reason) => {
+    refusedQuarantine.calls.push({ quarantine: email, reason });
+    throw new Error('E2E quarantine budget exhausted; operator recovery is required');
+  };
+  const quarantined = await releaseWorkerLease(attempt(), refusedQuarantine);
+  assert.equal(quarantined.scope, 'quarantined');
+  assert.match(quarantined.reason, /quarantine record refused/);
+  assert.equal(refusedQuarantine.calls.some((call) => call.release), false);
+
+  const refusedRelease = attemptIo();
+  refusedRelease.releaseWorkerAccount = async (email) => {
+    refusedRelease.calls.push({ release: email });
+    throw new Error('Account scope is quarantined and cannot be released');
+  };
+  const released = await releaseWorkerLease(attempt(), refusedRelease);
+  assert.equal(released.scope, 'quarantined');
+  assert.match(released.reason, /could not be released/);
+  assert.deepEqual(refusedRelease.calls.at(-1), { release: workerEmail });
 });
 
 test('validated diagnostic tuple is copied to the operation environment and mismatches refuse', () => {

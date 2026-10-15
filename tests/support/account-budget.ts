@@ -51,9 +51,13 @@ function positiveInteger(name: string, fallback: number): number {
 }
 
 export function accountBudgetConfig(workers: number): AccountBudgetConfig {
+  // Every attempt of every worker reserves its own lease, so the per-run cap has
+  // to cover the retries Playwright may schedule for one test: the suite runs
+  // `workers` attempts in parallel and up to three attempts (initial + two
+  // retries) per test slot.
   const config = {
     maxActiveAccounts: positiveInteger('E2E_MAX_ACTIVE_ACCOUNTS', workers),
-    maxNewAccountsPerRun: positiveInteger('E2E_MAX_NEW_ACCOUNTS_PER_RUN', workers * 2),
+    maxNewAccountsPerRun: positiveInteger('E2E_MAX_NEW_ACCOUNTS_PER_RUN', workers * 3),
     maxQuarantinedAccounts: positiveInteger('E2E_MAX_QUARANTINED_ACCOUNTS', workers),
   };
   if (config.maxActiveAccounts < workers) {
@@ -229,6 +233,32 @@ export async function markAccountDeleted(email: string): Promise<void> {
     const account = latestAccountRecord(state, email);
     if (!account) return;
     account.status = 'deleted';
+    account.updatedAt = now();
+  });
+}
+
+/**
+ * Terminal transition for one verified worker attempt.
+ *
+ * `deleted` is the only status `reserveAccount` may supersede, so this write —
+ * and only this write — returns an allowlisted address to the pool for the next
+ * attempt's fresh lease generation. It is reachable only after the attempt's
+ * exact identity was deleted and its absence was read back, and it refuses to
+ * supersede a quarantined scope: a quarantined address stays out of the pool
+ * until an operator decides otherwise.
+ */
+export async function releaseWorkerAccount(
+  email: string,
+  reason = 'released after verified identity absence',
+): Promise<void> {
+  await withLockedState(async (state) => {
+    const account = latestAccountRecord(state, email);
+    if (!account) return;
+    if (account.status === 'quarantined') {
+      throw new Error(`Account scope is quarantined and cannot be released: ${email}`);
+    }
+    account.status = 'deleted';
+    account.reason = reason;
     account.updatedAt = now();
   });
 }
