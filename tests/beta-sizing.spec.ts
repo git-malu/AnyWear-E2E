@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { APIResponse, Page } from '@playwright/test';
 import { assertE2EExecution } from '../scripts/execution-guard.mjs';
 import { captureSizingSource, validateSizingSource } from '../scripts/beta-sizing-source.mjs';
@@ -7,16 +7,114 @@ import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases,
   SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
+import { DirectTeardown, deleteRouteFor, quarantinesScope, type ProductResult } from './support/cleanup-operation.js';
 
 interface Observation {
   case_id: string; resource_id?: string; terminal_state?: string; [key: string]: unknown;
+}
+
+interface SizingWorkloadRecord {
+  schema_version: 1;
+  issue: 95;
+  stage: string | undefined;
+  run_id: string | undefined;
+  run_attempt: string | undefined;
+  e2e_sha: string | undefined;
+  source_proof: ReturnType<typeof captureSizingSource>;
+  source_proof_after: ReturnType<typeof captureSizingSource> | null;
+  fixture_manifest_sha256: string;
+  supported_input_envelope_sha256: string;
+  provider_envelope: typeof SIZING_PROVIDER_ENVELOPE;
+  deployment_evidence_sha256: string;
+  deployment: unknown;
+  runtime_before_sha256: string;
+  started_at: string;
+  finished_at: string;
+  result: string;
+  workload: { uploads: Observation[]; vto: Observation[]; overlap_intent: { upload_resource_ids: string[]; vto_resource_id: string }[] };
+  route_samples_ms: Record<string, number[]>;
 }
 
 test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
   test.describe.configure({ retries: 0 });
   test.skip(!['S1', 'S2', 'S3'].includes(process.env.BETA_SIZING_STAGE ?? ''), 'Manager-selected sizing workload is disabled');
 
-  test('runs the frozen 24 uploads and 10 VTO cases once', async ({ page, workerAccount }) => {
+  let teardown: DirectTeardown | undefined;
+  // The bearer header this attempt authenticated with; never persisted.
+  let authorization: string | undefined;
+  let productResult: ProductResult = 'skipped';
+  const created = { refs: [] as { kind: Parameters<DirectTeardown['capture']>[0]; id: string }[], streams: new Map<string, Promise<{ frames?: Record<string, unknown>[]; error?: string }>>() };
+
+  // A stable numeric lease generation per attempt keeps every retry on a fresh
+  // lease fence while staying reproducible within one attempt.
+  const leaseGenerationFor = (seed: string) => (parseInt(createHash('sha256').update(seed).digest('hex').slice(0, 6), 16) % 2_000_000) + 1;
+
+  test.beforeEach(async ({ page, workerAccount }, testInfo) => {
+    authorization = undefined;
+    productResult = 'skipped';
+    created.refs = [];
+    created.streams = new Map();
+    // Register before the first business side effect, on a scope unique to this
+    // attempt so a retry always allocates a fresh operation and lease generation.
+    teardown = new DirectTeardown({
+      runScope: requireEnvironment('E2E_CLEANUP_RUN_SCOPE'),
+      testScope: 'beta-sizing.spec.ts::runs-the-frozen-24-uploads-and-10-vto-cases-once',
+      retryIndex: testInfo.retry,
+      leaseId: randomUUID(),
+      leaseGeneration: leaseGenerationFor(`${workerAccount.email}:${testInfo.retry}:${randomUUID()}`),
+      expectedUsername: workerAccount.email,
+      expectedEmail: workerAccount.email,
+      serviceUrl: requireEnvironment('E2E_SERVICE_URL'),
+      request: page.request,
+      // This attempt's own key: the worker-lease teardown that runs after
+      // `afterEach` reads this attempt's business-cleanup outcome from it.
+      testInfo,
+    });
+    await teardown.register();
+    // Obtain the real Client's bearer header without persisting a token or
+    // browser state. Fixture leasing and protected account cleanup remain owners.
+    const authorized = page.waitForRequest(request => new URL(request.url()).pathname === '/users/me'
+      && request.headers().authorization !== undefined);
+    await login(page, workerAccount);
+    authorization = (await authorized).headers().authorization;
+    // The owner binds only after Cognito confirmation, and only to this subject.
+    if (!workerAccount.subject) throw new Error('Login did not capture the confirmed Cognito subject');
+    await teardown.bindOwner(workerAccount.subject);
+  });
+
+  test.afterEach(async ({ page }, testInfo) => {
+    if (!teardown) return;
+    // The attempt's own evidence decides the product outcome; an attempt that
+    // never reached a terminal record is derived from how it actually settled.
+    if (productResult === 'skipped') productResult = testInfo.status === testInfo.expectedStatus ? 'skipped' : 'failed';
+    if (!created.refs.length || !authorization) {
+      // Nothing was created — or nothing could be deleted without the attempt's
+      // own authorization — so the attempt still declares its own scope.
+      await teardown.acknowledge(productResult, 'passed');
+      return;
+    }
+    for (const { kind, id } of created.refs) teardown.capture(kind, id);
+    const result = await teardown.finalize(productResult, authorization);
+
+    // Exact absence readback after teardown, independent of the product assertion.
+    for (const { kind, id } of created.refs) {
+      const route = deleteRouteFor({ kind, id });
+      if (!route) throw new Error(`No ordinary user-facing absence readback exists for ${kind}`);
+      const readback = await page.request.get(`${requireEnvironment('E2E_SERVICE_URL')}${route}`, {
+        headers: { Authorization: authorization },
+      });
+      expect(readback.status()).toBe(404);
+    }
+
+    // A teardown failure fails the separate teardown gate without rewriting the
+    // product outcome, and quarantines the scope so the next attempt is fresh.
+    if (quarantinesScope(result.teardown_result)) {
+      expect(result.scope_state, result.quarantine_reason ?? 'teardown quarantined its scope').toBe('quarantined');
+      throw new Error(`Teardown gate failed (${result.teardown_result}): ${result.quarantine_reason ?? 'unknown'}`);
+    }
+  });
+
+  test('runs the frozen 24 uploads and 10 VTO cases once', async ({ page }) => {
     test.setTimeout(2_700_000);
     assertE2EExecution();
     if (process.env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main') {
@@ -38,10 +136,10 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     const routeSamples: Record<string, number[]> = Object.fromEntries(
       ['/users/me', '/wardrobe', '/vto/base-photos', '/vto/generations'].map(route => [route, []]),
     );
-    const record = { schema_version: 1, issue: 95, stage: process.env.BETA_SIZING_STAGE,
+    const record: SizingWorkloadRecord = { schema_version: 1, issue: 95, stage: process.env.BETA_SIZING_STAGE,
       run_id: process.env.GITHUB_RUN_ID, run_attempt: process.env.GITHUB_RUN_ATTEMPT,
       e2e_sha: process.env.GITHUB_SHA, source_proof: sourceProof,
-      source_proof_after: null as typeof sourceProof | null, fixture_manifest_sha256: frozen.manifestSha256,
+      source_proof_after: null, fixture_manifest_sha256: frozen.manifestSha256,
       supported_input_envelope_sha256: frozen.envelopeSha256, provider_envelope: SIZING_PROVIDER_ENVELOPE,
       deployment_evidence_sha256: hashBytes(deploymentBytes), deployment,
       runtime_before_sha256: hashBytes(runtimeBytes),
@@ -57,14 +155,14 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     };
     await preserve();
 
-    // Obtain the real Client's bearer header without persisting a token or
-    // browser state. Fixture leasing and protected account cleanup remain owners.
-    const authorized = page.waitForRequest(request => new URL(request.url()).pathname === '/users/me'
-      && request.headers().authorization !== undefined);
-    await login(page, workerAccount);
-    const authorization = (await authorized).headers().authorization;
-    const headers = { Authorization: authorization };
-    const streams = new Map<string, Promise<{ frames?: Record<string, unknown>[]; error?: string }>>();
+    const headers = { Authorization: authorization! };
+    // The transport stays synchronous on purpose: a created id and its stream
+    // observation are recorded in the same statement that creates them.
+    const captureCreated = (kind: 'base_photo' | 'wardrobe_item' | 'outfit_generation', id: string, stream?: Promise<{ frames?: Record<string, unknown>[]; error?: string }>) => {
+      created.refs.push({ kind, id });
+      if (stream) created.streams.set(id, stream);
+      return Promise.resolve();
+    };
     const observeStream = async (path: string) => {
       try {
         const response = await page.request.get(`${serviceUrl}${path}/stream`, { headers, timeout: 600_000 });
@@ -141,13 +239,13 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
         headers, data: { contentType: image.mime, extension: image.file.split('.').at(-1) },
       }), 200);
       item.resource_id = String(presign.itemId);
+      await captureCreated('wardrobe_item', item.resource_id, observeStream(`/wardrobe/items/${item.resource_id}`));
       await preserve();
       await putImage(String(presign.url), image);
       const acceptedHeaders = { ...headers, 'Idempotency-Key': randomUUID() };
       const accepted = await check(await page.request.post(`${serviceUrl}/wardrobe/upload`, {
         headers: acceptedHeaders, data: { itemId: item.resource_id },
       }), 202);
-      streams.set(item.resource_id!, observeStream(`/wardrobe/items/${item.resource_id}`));
       const replay = await check(await page.request.post(`${serviceUrl}/wardrobe/upload`, {
         headers: acceptedHeaders, data: { itemId: item.resource_id },
       }), 202);
@@ -162,7 +260,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
         const state = await check(await page.request.get(`${serviceUrl}${path}`, { headers }), 200);
         expect(Number(kind === 'tagging' ? state.taggingStateVersion : state.state_version)).toBeGreaterThanOrEqual(Number(item.last_state_version));
         expect(kind === 'tagging' ? state.taggingStatus : state.status).toBe(kind === 'tagging' ? 'ready' : 'Complete');
-        const live = await streams.get(item.resource_id!);
+        const live = await created.streams.get(item.resource_id!);
         const reconnected = await observeStream(path);
         item.stream_observations = { live, reconnected };
         expect(live?.error).toBeUndefined();
@@ -189,6 +287,8 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
           headers, data: { contentType: image.mime, extension: 'jpg' },
         }), 201);
         basePhotos.set(name, String(response.id));
+        // Captured as created: the lease's cleanup deletes this exact base photo.
+        await captureCreated('base_photo', String(response.id));
         await putImage(String(response.uploadUrl), image);
       }
       for (const entry of sizingUploadCases().filter(item => item.submission === 'sequential')) {
@@ -217,7 +317,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
           headers: acceptedHeaders, data: requestBody,
         }), 202);
         item.resource_id = String(accepted.generation_id);
-        streams.set(item.resource_id, observeStream(`/vto/generations/${item.resource_id}`));
+        await captureCreated('outfit_generation', item.resource_id, observeStream(`/vto/generations/${item.resource_id}`));
         await preserve();
         const pairedPromise = index < 2
           ? Promise.all(burst.slice(index * 6, index * 6 + 6).map(submitUpload))
