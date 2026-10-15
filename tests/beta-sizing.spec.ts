@@ -84,9 +84,10 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
 
   test.afterEach(async ({ page }, testInfo) => {
     if (!teardown) return;
-    // The attempt's own evidence decides the product outcome; an attempt that
-    // never reached a terminal record is derived from how it actually settled.
-    if (productResult === 'skipped') productResult = testInfo.status === testInfo.expectedStatus ? 'skipped' : 'failed';
+    // The attempt's own evidence decides the product outcome: the body records
+    // `passed` only from a passing terminal record and `failed` otherwise, so
+    // only an attempt whose body never ran is still `skipped` here.
+    if (productResult === 'skipped' && testInfo.status !== 'skipped') productResult = 'failed';
     if (!created.refs.length || !authorization) {
       // Nothing was created — or nothing could be deleted without the attempt's
       // own authorization — so the attempt still declares its own scope.
@@ -96,14 +97,27 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     for (const { kind, id } of created.refs) teardown.capture(kind, id);
     const result = await teardown.finalize(productResult, authorization);
 
-    // Exact absence readback after teardown, independent of the product assertion.
+    // Exact absence readback after teardown, independent of the product
+    // assertion. `wardrobe_item` and `outfit_generation` have a routed
+    // single-resource GET; a base photo has none, so its absence is proven by
+    // the exact captured id being absent from the authenticated list route.
+    const basePhotoIds = created.refs.filter(({ kind }) => kind === 'base_photo').map(({ id }) => id);
     for (const { kind, id } of created.refs) {
+      if (kind === 'base_photo') continue;
       const route = deleteRouteFor({ kind, id });
       if (!route) throw new Error(`No ordinary user-facing absence readback exists for ${kind}`);
       const readback = await page.request.get(`${requireEnvironment('E2E_SERVICE_URL')}${route}`, {
         headers: { Authorization: authorization },
       });
       expect(readback.status()).toBe(404);
+    }
+    if (basePhotoIds.length) {
+      const listed = await page.request.get(`${requireEnvironment('E2E_SERVICE_URL')}/vto/base-photos`, {
+        headers: { Authorization: authorization },
+      });
+      expect(listed.status()).toBe(200);
+      const remaining = (await listed.json() as { id: string }[]).map(photo => photo.id);
+      for (const id of basePhotoIds) expect(remaining).not.toContain(id);
     }
 
     // A teardown failure fails the separate teardown gate without rewriting the
@@ -363,6 +377,9 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       catch (error) { record.result = 'failed-or-incomplete'; sourceError = error; }
       record.finished_at = new Date().toISOString();
       if (record.result !== 'passed') record.result = 'failed-or-incomplete';
+      // The body's own terminal record decides the product outcome: a completed
+      // sizing workload is `passed`, anything else is `failed`.
+      productResult = record.result === 'passed' ? 'passed' : 'failed';
       await preserve();
       // No ad hoc deletion: protected application cleanup receives the exact
       // leased subjects even after a partial/provider failure.
