@@ -6,10 +6,19 @@ import {
   machineAuthHeaders,
   quarantinesScope,
 } from '../tests/support/cleanup-operation.ts';
+import { readAttemptBusinessCleanup } from '../tests/support/attempt-cleanup-registry.ts';
 
 const SECRET = { CLEANUP_MACHINE_AUTH_SECRET: 'test-secret' };
 const OWNER_SUB = '11111111-2222-3333-4444-555555555555';
 const RUN_SCOPE = '12345-1-abcdef0123456789';
+
+// The registry key is the attempt identity and is never inspected, so a fresh
+// object per attempt is an exact stand-in for the Playwright `TestInfo`.
+let attemptCounter = 0;
+function fakeTestInfo() {
+  attemptCounter += 1;
+  return { attempt: 'attempt-' + attemptCounter };
+}
 
 function harness(options = {}) {
   const calls = [];
@@ -25,6 +34,7 @@ function harness(options = {}) {
     serviceUrl: 'https://service.invalid',
     environment: SECRET,
     request: {},
+    testInfo: options.testInfo ?? fakeTestInfo(),
     io: async (path, init) => {
       calls.push({ path, ...init });
       if (path.endsWith('/register')) {
@@ -43,12 +53,13 @@ function harness(options = {}) {
   return { teardown, calls, deletes };
 }
 
-function attempt(retryIndex, leaseGeneration, payloads) {
+function attempt(retryIndex, leaseGeneration, payloads, testInfo = fakeTestInfo()) {
   return new DirectTeardown({
     runScope: RUN_SCOPE, testScope: 'wardrobe.spec.ts::scenario', retryIndex,
     leaseId: 'lease-1', leaseGeneration,
     expectedUsername: 'u', expectedEmail: 'u@anywear.local',
     serviceUrl: 'https://service.invalid', request: {}, environment: SECRET,
+    testInfo,
     io: async (_path, init) => {
       payloads.push(JSON.parse(init.data));
       return { status: 201, body: { operation_id: 'op-' + retryIndex, state_version: 1, phase: 'registered', intent_hash: 'hash', replayed: false } };
@@ -212,6 +223,111 @@ test('a retry allocates a distinct scope index and a fresh lease generation', as
   assert.equal(payloads[0].lease_generation, 1);
   assert.equal(payloads[1].retry_index, 1);
   assert.equal(payloads[1].lease_generation, 2);
+});
+
+test('an attempt declares nothing until it registers, and registration opens the declaration', async () => {
+  const testInfo = fakeTestInfo();
+  const { teardown } = harness({ testInfo });
+  assert.deepEqual(readAttemptBusinessCleanup(testInfo), { email: '', state: 'undeclared' });
+
+  await teardown.register();
+  assert.deepEqual(readAttemptBusinessCleanup(testInfo), {
+    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    state: 'open',
+  });
+  // An attempt that never registered still waits for its own outcome.
+  const unregistered = fakeTestInfo();
+  assert.deepEqual(readAttemptBusinessCleanup(unregistered), { email: '', state: 'undeclared' });
+});
+
+test('a refused registration never claims a lease declaration', async () => {
+  const testInfo = fakeTestInfo();
+  const { teardown } = harness({ testInfo, register: { status: 400, body: { error: 'VALIDATION_ERROR' } } });
+  await assert.rejects(() => teardown.register(), /refused with 400/);
+  assert.deepEqual(readAttemptBusinessCleanup(testInfo), { email: '', state: 'undeclared' });
+});
+
+test('finalize closes the declaration with the teardown outcome it recorded', async () => {
+  const declared = fakeTestInfo();
+  const { teardown } = harness({ testInfo: declared });
+  await teardown.register();
+  teardown.capture('wardrobe_item', 'item-1');
+  const result = await teardown.finalize('passed', 'Bearer token');
+  assert.equal(result.teardown_result, 'passed');
+  assert.deepEqual(readAttemptBusinessCleanup(declared), {
+    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    state: 'closed',
+    teardownResult: 'passed',
+  });
+
+  const partialInfo = fakeTestInfo();
+  const partial = harness({ testInfo: partialInfo, deleteStatus: (url) => (url.includes('/outfits/') ? 500 : 200) });
+  await partial.teardown.register();
+  partial.teardown.capture('wardrobe_item', 'item-1');
+  partial.teardown.capture('outfit', 'outfit-1');
+  const partialResult = await partial.teardown.finalize('passed', 'Bearer token');
+  assert.equal(partialResult.teardown_result, 'partial');
+  const partialDeclaration = readAttemptBusinessCleanup(partialInfo);
+  assert.equal(partialDeclaration.state, 'closed');
+  assert.equal(partialDeclaration.teardownResult, 'partial');
+  assert.match(partialDeclaration.reason, /^teardown partial; undeleted outfit:outfit-1$/);
+
+  const failedInfo = fakeTestInfo();
+  const failed = harness({ testInfo: failedInfo, deleteStatus: () => 500 });
+  await failed.teardown.register();
+  failed.teardown.capture('wardrobe_item', 'item-1');
+  const failedResult = await failed.teardown.finalize('failed', 'Bearer token');
+  assert.equal(failedResult.teardown_result, 'failed');
+  const failedDeclaration = readAttemptBusinessCleanup(failedInfo);
+  assert.equal(failedDeclaration.state, 'closed');
+  assert.equal(failedDeclaration.teardownResult, 'failed');
+});
+
+test('the direct acknowledgement path closes the declaration too', async () => {
+  const testInfo = fakeTestInfo();
+  const { teardown } = harness({ testInfo });
+  await teardown.register();
+  await teardown.acknowledge('skipped', 'passed');
+  assert.deepEqual(readAttemptBusinessCleanup(testInfo), {
+    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    state: 'closed',
+    teardownResult: 'passed',
+  });
+});
+
+test('a refused acknowledgement leaves the declaration open, so the lease cannot release', async () => {
+  const testInfo = fakeTestInfo();
+  const { teardown } = harness({ testInfo, acknowledge: { status: 409, body: { error: 'LEASE_FENCED' } } });
+  await teardown.register();
+  await assert.rejects(() => teardown.finalize('passed', 'Bearer token'), /acknowledgement refused with 409/);
+  assert.deepEqual(readAttemptBusinessCleanup(testInfo), {
+    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    state: 'open',
+  });
+});
+
+test('the declaration key is the attempt, not the leased address', async () => {
+  // Two attempts share one allowlisted address and one lease generation, which a
+  // string-keyed registry would conflate.
+  const firstAttempt = fakeTestInfo();
+  const secondAttempt = fakeTestInfo();
+  const first = harness({ testInfo: firstAttempt });
+  const second = harness({ testInfo: secondAttempt });
+  await first.teardown.register();
+  await second.teardown.register();
+  first.teardown.capture('wardrobe_item', 'item-1');
+  const firstResult = await first.teardown.finalize('passed', 'Bearer token');
+  assert.equal(firstResult.teardown_result, 'passed');
+
+  assert.deepEqual(readAttemptBusinessCleanup(firstAttempt), {
+    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    state: 'closed',
+    teardownResult: 'passed',
+  });
+  assert.deepEqual(readAttemptBusinessCleanup(secondAttempt), {
+    email: 'e2e-beta-worker-0-chromium@anywear.local',
+    state: 'open',
+  });
 });
 
 test('an unregistered operation is never acknowledged', async () => {

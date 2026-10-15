@@ -3,6 +3,7 @@ import {
   type CapturedIdentity,
   type CognitoCleanupIo,
 } from './cognito-cleanup.ts';
+import type { AttemptBusinessCleanupOutcome } from './attempt-cleanup-registry.ts';
 
 interface WorkerAccountRecord {
   email: string;
@@ -49,6 +50,13 @@ export interface WorkerAttemptTeardown {
   reserved: boolean;
   /** Provisioning completed: the attempt's identity is confirmed and owned. */
   provisioned: boolean;
+  /**
+   * The attempt's own business-cleanup declaration, read from the attempt-keyed
+   * registry. Omitted or unreadable means `undeclared`, which fails closed: the
+   * attempt's scope is quarantined with its identity retained rather than
+   * released on an assumption.
+   */
+  businessCleanup?: AttemptBusinessCleanupOutcome;
 }
 
 export interface WorkerLeaseDisposition {
@@ -63,6 +71,13 @@ export interface WorkerLeaseIo extends CognitoCleanupIo {
   releaseWorkerAccount(email: string): Promise<void>;
   /** Keeps the address out of the pool with a sanitized reason. */
   quarantineWorkerAccount(email: string, reason: string): Promise<void>;
+  /**
+   * The attempt's business-cleanup declaration. `releaseWorkerLease` passes its
+   * own `businessCleanup` input when the caller has one; this reader is the
+   * attempt-keyed lookup the fixture wiring uses, and a read failure is reported
+   * as `undeclared` so the lease fails closed.
+   */
+  readAttemptBusinessCleanup?(): AttemptBusinessCleanupOutcome;
 }
 
 const MAX_REASON_LENGTH = 300;
@@ -102,13 +117,61 @@ async function quarantineAttempt(
 }
 
 /**
+ * Read the attempt's declaration through the injected reader, when the attempt
+ * itself did not supply one. An unreadable declaration is `undeclared`, never an
+ * implicit release.
+ */
+function readBusinessCleanup(io: WorkerLeaseIo): AttemptBusinessCleanupOutcome | undefined {
+  if (!io.readAttemptBusinessCleanup) return undefined;
+  try {
+    return io.readAttemptBusinessCleanup();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The attempt's business-cleanup decision, read before any identity work.
+ *
+ * A released lease claims that the attempt is finished with everything it
+ * created, so an attempt that cannot show a committed business cleanup is
+ * quarantined instead — with its identity retained. `undeclared` is deliberate:
+ * a missing declaration is an anomaly, not proof that the attempt created
+ * nothing.
+ */
+function businessCleanupBlock(
+  declaration: AttemptBusinessCleanupOutcome | undefined,
+): { reason: string; teardownResult: Exclude<WorkerTeardownResult, 'passed'> } | undefined {
+  if (declaration?.state === 'closed' || declaration?.state === 'none') {
+    if (declaration.teardownResult === 'passed') return undefined;
+    // `none` is the explicit opt-out, so a non-passed declaration is `closed`.
+    return {
+      reason: 'teardown: business cleanup ' + declaration.teardownResult
+        + (declaration.reason ? '; ' + declaration.reason : ''),
+      teardownResult: declaration.teardownResult ?? 'failed',
+    };
+  }
+  if (declaration?.state === 'open') {
+    return {
+      reason: 'teardown: the attempt\'s business cleanup did not commit',
+      teardownResult: 'partial',
+    };
+  }
+  return {
+    reason: 'teardown: the attempt declared no business-cleanup outcome',
+    teardownResult: 'partial',
+  };
+}
+
+/**
  * Ordinary per-attempt teardown of one worker lease.
  *
  * The attempt's exact confirmed identity is verified against the captured
  * email/subject, deleted through the reviewed captured-identity path, and its
  * absence is then read back. Only a proven absence releases the address, and
  * only a released address may be re-reserved with a fresh lease generation.
- * Every other outcome — refused ownership, deletion failure, an unverified
+ * Every other outcome — a business cleanup that did not commit, a missing or
+ * unreadable declaration, refused ownership, deletion failure, an unverified
  * absence, or provisioning that never confirmed ownership — quarantines this
  * attempt's scope and keeps the address out of the pool. No live identity is
  * ever reported terminal, and this never deletes or releases a record that
@@ -121,6 +184,17 @@ export async function releaseWorkerLease(
   if (!attempt.reserved) {
     return { email: attempt.email, scope: 'none', teardownResult: 'passed' };
   }
+
+  // Before any Cognito call: the attempt's own business cleanup decides whether
+  // its identity may be disposed of at all. A failure here can only remove a
+  // release and add a quarantine; it never authorizes a delete.
+  const businessCleanup = businessCleanupBlock(
+    attempt.businessCleanup ?? readBusinessCleanup(io),
+  );
+  if (businessCleanup) {
+    return quarantineAttempt(attempt.email, io, businessCleanup.reason, businessCleanup.teardownResult);
+  }
+
   const identity: CapturedIdentity | undefined = attempt.provisioned && attempt.subject
     ? { email: attempt.email, sub: attempt.subject }
     : undefined;

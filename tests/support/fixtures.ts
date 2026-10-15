@@ -3,7 +3,7 @@ import {
   AdminGetUserCommand,
   CognitoIdentityProviderClient,
 } from '@aws-sdk/client-cognito-identity-provider';
-import { test as base } from '@playwright/test';
+import { test as base, type TestInfo } from '@playwright/test';
 import {
   createWorkerAccount,
   provisionConfirmedTestAccount,
@@ -13,6 +13,7 @@ import {
 } from './account.js';
 import { quarantineAccount, releaseWorkerAccount } from './account-budget.js';
 import { assertE2EExecution } from '../../scripts/execution-guard.mjs';
+import { readAttemptBusinessCleanup } from './attempt-cleanup-registry.ts';
 import {
   releaseWorkerLease,
   workerLeaseGateError,
@@ -29,7 +30,7 @@ type TestFixtures = {
  * captured synthetic email, the captured immutable subject and the returned
  * immutable username before it deletes anything.
  */
-function workerLeaseIo(): { io: WorkerLeaseIo; destroy: () => void } {
+function workerLeaseIo(testInfo: TestInfo): { io: WorkerLeaseIo; destroy: () => void } {
   const userPoolId = requireEnvironment('USER_POOL_ID');
   const client = new CognitoIdentityProviderClient({
     region: process.env.AWS_REGION ?? 'us-east-1',
@@ -46,6 +47,9 @@ function workerLeaseIo(): { io: WorkerLeaseIo; destroy: () => void } {
       },
       releaseWorkerAccount,
       quarantineWorkerAccount: quarantineAccount,
+      // The attempt's own declaration, read with the attempt's own key. A
+      // missing record is `undeclared`, so the lease fails closed.
+      readAttemptBusinessCleanup: () => readAttemptBusinessCleanup(testInfo),
     },
     destroy: () => client.destroy(),
   };
@@ -58,12 +62,20 @@ function workerLeaseIo(): { io: WorkerLeaseIo; destroy: () => void } {
 async function teardownWorkerAttempt(
   account: TestAccount,
   state: { reserved: boolean; provisioned: boolean },
+  testInfo: TestInfo,
 ): Promise<Error | undefined> {
   try {
-    const transport = workerLeaseIo();
+    const transport = workerLeaseIo(testInfo);
     try {
+      const declaration = readAttemptBusinessCleanup(testInfo);
       const disposition = await releaseWorkerLease(
-        { email: account.email, subject: account.subject, reserved: state.reserved, provisioned: state.provisioned },
+        {
+          email: account.email,
+          subject: account.subject,
+          reserved: state.reserved,
+          provisioned: state.provisioned,
+          businessCleanup: declaration,
+        },
         transport.io,
       );
       return workerLeaseGateError(disposition);
@@ -101,7 +113,7 @@ export const test = base.extend<TestFixtures, Record<never, never>>({
       attemptThrew = true;
       throw error;
     } finally {
-      gateError = await teardownWorkerAttempt(account, { reserved, provisioned });
+      gateError = await teardownWorkerAttempt(account, { reserved, provisioned }, testInfo);
       if (gateError && attemptThrew) process.stderr.write(`${gateError.message}\n`);
     }
     // A failed teardown fails the attempt on its own gate without rewriting what

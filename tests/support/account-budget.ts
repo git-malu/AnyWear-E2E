@@ -166,6 +166,32 @@ function latestAccountRecord(state: AccountBudgetState, email: string): AccountR
   return undefined;
 }
 
+/**
+ * The generation guard's refusal, named so a retry of a held or quarantined slot
+ * reports what happened instead of a bare collision.
+ *
+ * The guard itself is unchanged: an active record with a foreign generation is
+ * still refused, nothing is written, and the message text is byte-for-byte the
+ * same so existing evidence, log comparisons and Beta-log reading stay
+ * comparable. The diagnosis lives in the error's identity and its structured
+ * fields; `reason` is the refused record's own recorded reason, already
+ * sanitized and bounded by `quarantineAccount`.
+ */
+export class AccountLeaseRefusalError extends Error {
+  readonly code = 'E2E_ACCOUNT_LEASE_REFUSED';
+  readonly email: string;
+  readonly leaseGeneration: string;
+  readonly reason?: string;
+
+  constructor(email: string, leaseGeneration: string, reason?: string) {
+    super(`Account already has an active lease: ${email}`);
+    this.name = 'AccountLeaseRefusalError';
+    this.email = email;
+    this.leaseGeneration = leaseGeneration;
+    if (reason) this.reason = reason;
+  }
+}
+
 export async function reserveAccount(
   email: string,
   mode: AccountMode,
@@ -175,7 +201,7 @@ export async function reserveAccount(
     const existing = latestAccountRecord(state, email);
     if (existing && existing.status !== 'deleted') {
       if (existing.leaseGeneration !== leaseGeneration) {
-        throw new Error(`Account already has an active lease: ${email}`);
+        throw new AccountLeaseRefusalError(email, existing.leaseGeneration, existing.reason);
       }
       return;
     }

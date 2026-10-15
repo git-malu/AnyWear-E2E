@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { createWorkerAccount } from '../tests/support/account.ts';
 import {
+  AccountLeaseRefusalError,
   accountBudgetConfig,
   markAccountDeleted,
   markAccountInUse,
@@ -151,13 +152,58 @@ test('a quarantined attempt is never silently reused and never released', async 
 
   await reserveAccount(email, 'worker', 'lease-1');
   await quarantineAccount(email, 'teardown: identity is still present');
-  await assert.rejects(reserveAccount(email, 'worker', 'lease-2'), /already has an active lease/);
+  const refusal = await reserveAccount(email, 'worker', 'lease-2').then(
+    () => assert.fail('a quarantined address must not be re-reserved'),
+    (thrown) => thrown,
+  );
+  assert.match(refusal.message, /already has an active lease/);
+  assert.equal(refusal.name, 'AccountLeaseRefusalError');
   await assert.rejects(releaseWorkerAccount(email), /quarantined and cannot be released/);
 
   const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
   assert.deepEqual(manifest.accounts.map(({ status, leaseGeneration }) => ({ status, leaseGeneration })), [
     { status: 'quarantined', leaseGeneration: 'lease-1' },
   ]);
+});
+
+test('a refused re-reservation is diagnosed, keeps its exact message, and writes nothing', async () => {
+  await configureBudget();
+  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+
+  await reserveAccount(email, 'worker', 'lease-1');
+  await quarantineAccount(email, 'teardown: identity is still present');
+  const before = await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8');
+
+  const error = await reserveAccount(email, 'worker', 'lease-2').then(
+    () => assert.fail('a quarantined address must not be re-reserved'),
+    (thrown) => thrown,
+  );
+  assert.ok(error instanceof AccountLeaseRefusalError);
+  // Byte-for-byte: the guard's message text is the original defect string, so
+  // existing evidence and log comparisons stay valid.
+  assert.equal(error.message, 'Account already has an active lease: ' + email);
+  assert.equal(error.name, 'AccountLeaseRefusalError');
+  assert.equal(error.code, 'E2E_ACCOUNT_LEASE_REFUSED');
+  assert.equal(error.email, email);
+  assert.equal(error.leaseGeneration, 'lease-1');
+  assert.equal(error.reason, 'teardown: identity is still present');
+  // The refusal is a read-only diagnosis: the manifest is unchanged.
+  assert.equal(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'), before);
+});
+
+test('a refusal inside the same run scope is still an ordinary guard, not a reuse', async () => {
+  await configureBudget();
+  const email = 'e2e-beta-worker-0-chromium@anywear.local';
+
+  await reserveAccount(email, 'worker', 'lease-1');
+  await markAccountInUse(email);
+  const error = await reserveAccount(email, 'worker', 'lease-2').then(
+    () => assert.fail('a held lease must not be re-reserved'),
+    (thrown) => thrown,
+  );
+  assert.equal(error.code, 'E2E_ACCOUNT_LEASE_REFUSED');
+  assert.equal(error.leaseGeneration, 'lease-1');
+  assert.equal(error.reason, undefined, 'a held lease carries no quarantine reason');
 });
 
 test('attempt-scoped reservations cover every retry of the configured workers', () => {

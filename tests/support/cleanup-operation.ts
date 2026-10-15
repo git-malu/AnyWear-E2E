@@ -1,5 +1,10 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
+import {
+  bindAttemptBusinessCleanup,
+  closeAttemptBusinessCleanup,
+  type AttemptKey,
+} from './attempt-cleanup-registry.ts';
 
 /**
  * Issue 86 ordinary-path direct teardown.
@@ -132,6 +137,13 @@ export interface DirectTeardownOptions {
   expectedEmail: string;
   serviceUrl: string;
   request: APIRequestContext;
+  /**
+   * The owning attempt, so this operation's business-cleanup outcome is
+   * addressable by the attempt teardown that runs after the spec's `afterEach`
+   * hooks. It is the Playwright `TestInfo` object and is never inspected here,
+   * only used as the per-attempt key.
+   */
+  testInfo: AttemptKey;
   environment?: NodeJS.ProcessEnv;
   /** Overrides for tests; the Playwright request context is used otherwise. */
   io?: DirectTeardownIo;
@@ -241,6 +253,9 @@ export class DirectTeardown {
       throw new Error('Cleanup operation registration response is malformed');
     }
     this.operationId = result.operation_id;
+    // The attempt now owns business cleanup for this scope, so its lease
+    // disposition waits for an outcome instead of assuming one.
+    bindAttemptBusinessCleanup(this.options.testInfo, this.options.expectedEmail);
     return result;
   }
 
@@ -300,7 +315,13 @@ export class DirectTeardown {
     return { outcomes, teardownResult };
   }
 
-  /** The product result is never rewritten by teardown; teardown alone picks the scope state. */
+  /**
+   * The product result is never rewritten by teardown; teardown alone picks the
+   * scope state. This is also the attempt's single business-cleanup declaration
+   * point: the declared outcome is recorded only once the Service has accepted
+   * it, so a refused acknowledgement leaves the attempt's declaration open and
+   * its lease fails closed.
+   */
   async acknowledge(productResult: ProductResult, teardownResult: TeardownResult, quarantineReason?: string): Promise<OperationState> {
     const operationId = this.requireOperation();
     const scopeState: ScopeState = teardownResult === 'passed' ? 'released' : 'quarantined';
@@ -314,6 +335,10 @@ export class DirectTeardown {
       quarantine_reason: quarantineReason ?? null,
     });
     if (status !== 200) throw new Error('Cleanup acknowledgement refused with ' + status);
+    closeAttemptBusinessCleanup(this.options.testInfo, {
+      teardownResult,
+      ...(quarantineReason ? { reason: quarantineReason } : {}),
+    });
     return body as OperationState;
   }
 
