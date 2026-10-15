@@ -17,63 +17,63 @@ export const DIAGNOSTIC_EXPECTED = Object.freeze({
   region: 'ap-east-1',
   infra: Object.freeze({
     repository: repositories.infra,
-    sha: 'e6a08de5d6eebdeb13097094d91fb2d7589c6496',
+    sha: '9ce903d78c748bdd1ddb595e9a9414317e8e11ba',
     workflow_path: DIAGNOSTIC_WORKFLOW,
     workflow_ref: `${repositories.infra}/${DIAGNOSTIC_WORKFLOW}@refs/heads/main`,
-    run_id: 38528599480,
+    run_id: 38731820076,
     run_attempt: 1,
   }),
   artifacts: Object.freeze({
     deployment: Object.freeze({
-      id: 11877885645,
-      name: 'infra-deployment-38528599480-1',
-      zip_sha256: 'd26b6d65da879186a79ecaacf7c4ac31a95245d4219716bdb44f369c853b1296',
-      record_sha256: 'c67e46e3cd7e22dba76c4e9f2a664cf677ccd046caa3d4625c0c27b64df43a14',
+      id: 11971572154,
+      name: 'infra-deployment-38731820076-1',
+      zip_sha256: 'ae8b5dbdb278ef4374f2f618be80b608494086bdce50c57d0a5816e0edd13840',
+      record_sha256: '0db49d7c5eb8c6bc1b5c01df71c6a6ce2293f2069309b13eefcbc66b6fb040dc',
       member: 'deployment-record.json',
     }),
     operation: Object.freeze({
-      id: 11877018579,
-      name: 'infra-operation-38528599480-1',
-      zip_sha256: 'fd8dd5f8f525fc73e5c86593de2797754467121678f87280e57a437a86909412',
-      record_sha256: '753dbda44db612f9400c1565da421de356293a555501f39e367d12b81a600c26',
+      id: 11970178366,
+      name: 'infra-operation-38731820076-1',
+      zip_sha256: 'b337db5573f9a108a5a1269337ee0bed4e0e59e1a98953253a18aaeff34d9499',
+      record_sha256: '459839ea786ff4e861dd6d3683841ed80619935dc5f184480fb855e7db5ec5c0',
       member: 'operation-record.json',
     }),
   }),
   selection: Object.freeze({
-    file: 'selections/beta-cleanup-86-31604bb.json',
-    blob_sha256: '14da40409c5529287d85aa645c6886f202636f05',
-    raw_sha256: 'ed4ffaf75277d7e5b89d940436b1dfcb3ecec5e733b715ca3a7cf444e070aee2',
-    stack_map_file: 'stack-sources/beta-workload-31604bb.json',
-    stack_map_sha256: '3c7da461b5ca69d8b5b2acc09a78fa14085c307c6b62fc09c7de845e5e9c50a2',
+    file: 'selections/beta-cleanup-129-1d9d869.json',
+    blob_sha256: '894f3bad941e2372651c63b24c5022b5f5c5b1da',
+    raw_sha256: 'e8b81166c7a2566cdfee4abd3594345a522905108100a2087bcd1aa05d6749b6',
+    stack_map_file: 'stack-sources/beta-cleanup-86-recovery.json',
+    stack_map_sha256: '592d911b56c3f200ce1d3c99e004712ae6bd291c31bad4b2202d0a33f6d1518b',
     release: Object.freeze({
       repository: repositories.service,
-      id: 412299829,
-      manifest_asset_id: 639040701,
-      manifest_sha256: '847e3f5aeff933c003e26b325ff880704247ef02200153693ecfd6317088d339',
+      id: 413731445,
+      manifest_asset_id: 643654187,
+      manifest_sha256: '061d9691ca8c86cd39f74b1c126e5bc69fce9e31526a72c59c74ebf3a08d8c31',
     }),
   }),
   service: Object.freeze({
-    source_sha: '31604bbf311e05dd76f980c3356177beb1f0cfa0',
-    image_digest: 'sha256:8608fbeb4dd75adcfd2794fcc6bc5861da20614024afbe01d1d084f3bfff28d4',
+    source_sha: '1d9d869fa753e0cabc60b3d7893bf17986e24406',
+    image_digest: 'sha256:128847603b3d7f115aa4a2d2e6e624cf4d34a478b0ad7eab23d657dc0915eeed',
     schema_version: 17,
   }),
   runtime: Object.freeze({
-    client_sha: '380643a8a6e0261a0c24760ae66356314123f194',
+    client_sha: '7b92ace1719b1ed53eb5a7cce2bfe32ef327410a',
     api_endpoint: 'https://d1pfqujqt29n11.cloudfront.net',
     client_endpoint: 'https://d2rztl7o0y7rf8.cloudfront.net',
-    api_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:57',
-    worker_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:56',
+    api_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:58',
+    worker_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:57',
     rollout_state: 'UPDATE_COMPLETE',
     schema_version: 17,
-    prior_verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/ace22a4301ae4be7bda09634f0654ab5',
-    verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/6a0d4547fa63428b97da5d86e6066845',
-    verify_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:141',
+    prior_verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/78660918c1534a84be0eefc678cc1697',
+    verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/fc0736ab0c6249d18074a8ed8b9321d5',
+    verify_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:149',
   }),
   capability: Object.freeze({
-    state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:5',
-    definition_sha256: 'a0b230533e1ce8de0131da3a3e62751180425c69ceb017aed0b51a0db804e02b',
-    verification_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-verify:5',
-    cleanup_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup:5',
+    state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:6',
+    definition_sha256: 'bf204191dc79822c030947c61d757b3c7c5bbe3e8ab17772b496de02665ed8a1',
+    verification_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup-verify:6',
+    cleanup_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-cleanup:6',
     cluster_arn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear',
     log_group: '/anywear/beta/one-shot',
     schema_version: 17,
@@ -169,7 +169,7 @@ function validateObservation(record, expected) {
     || record.schema.verification.executor.repository !== expected.infra.repository || record.schema.verification.executor.run_attempt !== expected.infra.run_attempt
     || record.schema.verification.executor.run_id !== expected.infra.run_id || record.schema.verification.executor.sha !== expected.infra.sha
     || record.schema.verification.executor.workflow_path !== DIAGNOSTIC_WORKFLOW || !TASK.test(record.schema.verification.task_arn)
-    || record.schema.verification.task_definition_arn !== 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:52') throw new Error('Diagnostic schema verification binding mismatch');
+    || record.schema.verification.task_definition_arn !== 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:80') throw new Error('Diagnostic schema verification binding mismatch');
   return { selector, record };
 }
 
@@ -219,7 +219,7 @@ function validateOperation(operation, expected, observation) {
   if (definitions.length !== 2) throw new Error('Diagnostic runtime task definitions are incomplete');
   definitions.forEach((definition, index) => {
     exactKeys(definition, ['task_definition_arn', 'type'], 'Diagnostic runtime task definition');
-    if (definition.task_definition_arn !== `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:${index === 0 ? 51 : 52}`) throw new Error('Diagnostic runtime task definition is foreign');
+    if (definition.task_definition_arn !== `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:${index === 0 ? 79 : 80}`) throw new Error('Diagnostic runtime task definition is foreign');
   });
   for (const [index, task] of started.entries()) {
     exactKeys(task, ['result', 'task_arns', 'type'], 'Diagnostic runtime task');
@@ -228,7 +228,7 @@ function validateOperation(operation, expected, observation) {
   }
   const cessation = eventByType(operation.events, 'cleanup-capability-cessation');
   exactKeys(cessation, ['cleanup_task_count', 'execution_count', 'inventory_sha256', 'machine_arn', 'manager_result_reconciliation_required', 'terminal_failed_execution_arns', 'type'], 'Diagnostic cleanup cessation');
-  if (cessation.cleanup_task_count !== 0 || cessation.execution_count !== 3 || cessation.machine_arn !== expected.capability.state_machine_version_arn.replace(/:[1-9][0-9]*$/, '') || cessation.manager_result_reconciliation_required !== true || !HASH.test(cessation.inventory_sha256) || cessation.terminal_failed_execution_arns.length !== 2) throw new Error('Diagnostic cleanup cessation binding mismatch');
+  if (cessation.cleanup_task_count !== 0 || cessation.execution_count !== 8 || cessation.machine_arn !== expected.capability.state_machine_version_arn.replace(/:[1-9][0-9]*$/, '') || cessation.manager_result_reconciliation_required !== true || !HASH.test(cessation.inventory_sha256) || cessation.terminal_failed_execution_arns.length !== 5) throw new Error('Diagnostic cleanup cessation binding mismatch');
   return operation;
 }
 
