@@ -21,9 +21,9 @@
   "deployment": {
     "repository": "git-malu/AnyWear-Infra",
     "workflow_path": ".github/workflows/runtime.yml",
-    "run_id": 38529946780,
+    "run_id": 38694743434,
     "run_attempt": 1,
-    "artifact_id": 11877521523,
-    "record_sha256": "adeb076af0564ac17c91a7f6a337fc6febed3bc6f9c782b580c17b69ef668af3"
+    "artifact_id": 11953752193,
+    "record_sha256": "ed3e555713da4e808ef8a6fb632ad455811c9ef80797746088d37ec9101413d1"
   }
 }
