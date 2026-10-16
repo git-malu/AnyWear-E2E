@@ -178,11 +178,26 @@ jobs:
         if: ${{ inputs.sizing_stage != 'disabled' }}
         run: node scripts/beta-sizing-runtime.mjs
 
+      # Captured immediately before the suite, for every qualification run and not
+      # only for the opt-in sizing stage: a deployment change cannot qualify a
+      # release, so which workers were serving Beta at suite start belongs in every
+      # run's evidence. A capture that cannot be taken fails here rather than
+      # letting the run proceed without the ability to attribute its own outcome.
+      - name: Capture Beta worker identity before the suite
+        run: node scripts/beta-sizing-environment.mjs capture --phase before
+
       - name: Run complete deployed Beta suite
         id: beta-suite
         run: |
           node scripts/execution-guard.mjs
           pnpm test
+
+      - name: Capture Beta worker identity after the suite
+        # Runs even when the suite failed: a run that was replaced underneath must
+        # still be able to say so. Placed before the worker cleanup so the window it
+        # brackets stays the suite itself.
+        if: ${{ always() }}
+        run: node scripts/beta-sizing-environment.mjs capture --phase after
 
       - name: Clean up exact Beta worker identities
         if: ${{ always() && steps.beta-suite.outcome != 'skipped' }}
@@ -190,9 +205,36 @@ jobs:
           node scripts/execution-guard.mjs
           pnpm accounts:cleanup-workers
 
+      - name: Attribute the suite outcome to the product or the Beta environment
+        # The verdict is evidence, not a gate: it attributes the run's outcome to the
+        # product or to the environment in its own artifact, and never turns a failed
+        # run green. The step below reports whatever it concluded. A cancelled or
+        # timed-out suite is `incomplete`, which asserts no product failure because
+        # none was established.
+        id: environment
+        if: ${{ always() }}
+        env:
+          SUITE_OUTCOME: ${{ steps.beta-suite.outcome == 'success' && 'success' || (steps.beta-suite.outcome == 'failure' && 'failure' || 'incomplete') }}
+        run: node scripts/beta-sizing-environment.mjs verdict --suite-outcome "$SUITE_OUTCOME"
+
       - name: Preserve Beta suite failure
         if: ${{ always() && steps.beta-suite.outcome == 'failure' }}
-        run: exit 1
+        env:
+          ENVIRONMENT_VERDICT: ${{ steps.environment.outputs.verdict }}
+          ENVIRONMENT_REASON: ${{ steps.environment.outputs.reason }}
+        run: |
+          if [[ "$ENVIRONMENT_VERDICT" == "environment-changed" ]]; then
+            echo "::error title=Environment changed during the suite::${ENVIRONMENT_REASON}"
+            {
+              echo "### Environment changed during the Beta suite"
+              echo
+              echo "${ENVIRONMENT_REASON}"
+              echo
+              echo "No product failure is asserted for this run. The qualification cannot"
+              echo "be issued from a window the platform was redeployed under; re-run it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 1
 
       - name: Confirm deployed identities remained stable
         env:
@@ -214,9 +256,12 @@ jobs:
           path: |
             .qualification-inputs/deployment-record.json
             .qualification-inputs/service-artifacts.json
+            .qualification-inputs/beta-environment-before.json
+            .qualification-inputs/beta-environment-after.json
             deployment-evidence-before.json
             deployment-evidence.json
             qualification-record.json
+            test-results/beta-environment-verdict.json
             github-cli-version.txt
           retention-days: 90
           include-hidden-files: true
@@ -230,8 +275,11 @@ jobs:
           path: |
             .qualification-inputs/deployment-record.json
             .qualification-inputs/service-artifacts.json
+            .qualification-inputs/beta-environment-before.json
+            .qualification-inputs/beta-environment-after.json
             deployment-evidence-before.json
             deployment-evidence.json
+            test-results/beta-environment-verdict.json
             github-cli-version.txt
             test-results/**/error-context.md
             .qualification-inputs/beta-sizing-runtime-before.json

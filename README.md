@@ -457,6 +457,81 @@ The reviewed provider PDF covers 5.0-lite, while deployed source uses 5.0; S1 fa
 must resolve this applicability gap before candidate measurements. Model/settings stay
 frozen after S1. The preflight requires ten existing daily credits; it changes no quota.
 
+### The VTO terminal wait is the platform's recovery floor
+
+The VTO terminal wait is a bound on the platform's own recovery floor, **not** a
+measurement of observed provider latency. `scripts/beta-sizing-environment.mjs` owns
+both numbers and the derivation between them. The floor is the larger of the two values
+AnyWear-Service publishes as the deployed task runtime policy
+(`src/tasks/runtime-policy.json`): the `vto` queue visibility of **900 s** and its
+**960 s** database lease, so work a worker replacement interrupted cannot be redelivered
+and claimed before 960 s. `SIZING_VTO_TERMINAL_WAIT_MS` is therefore **1,200,000 ms**,
+and `terminalWaitMs('vto')` refuses any budget that does not outlast that floor. The
+auto-tagging wait stays at **600,000 ms**: uploads already outlast their own, smaller
+floor (300 s visibility, 360 s lease), so raising it would change a budget that was
+never wrong.
+
+The old 600,000 ms budget sat below the floor, and that is the defect issue #147 records
+rather than a slow product. In qualification run
+[38864061777](https://github.com/git-malu/AnyWear-E2E/actions/runs/38864061777) a
+rotating Beta worker stopped the task holding the S1 `large-base-three-garments-0` case;
+its provider call was killed by `SIGTERM` 40.7 s in and wrote nothing, the case stayed in
+`Processing`, the queue redelivered the work exactly at its 900 s visibility floor, and
+the suite had stopped looking 300 s earlier. Nothing about the shape was slow: it
+completed in 46.8 s in an earlier run and 46.3 s in the other three-garment case of that
+same run, and no provider call in either run exceeded 62,819 ms. The budget was never
+tight on provider latency; it was set below the point at which the platform is allowed
+to retry.
+
+### Environment change during a suite
+
+A qualification can run across a deployment rotation, and the run now says so instead of
+reporting the platform's recovery as a product failure. The workflow records the
+identity of the worker(s) serving Beta immediately before and immediately after the
+suite - the worker service's task ARN set and the task definition those tasks run - and
+compares them. `scripts/beta-sizing-environment.mjs` reads that identity from the
+workflow, which holds the scoped AWS credentials; the Playwright spec reads no AWS and
+decides no environment change, so the sizing support code owns the record shape and the
+comparison rules while the spec keeps recording what it observed.
+
+- `.qualification-inputs/beta-environment-before.json` and
+  `.qualification-inputs/beta-environment-after.json` are the two captures; the
+  after-capture runs even when the suite failed.
+- `test-results/beta-environment-verdict.json` is the verdict: `environment-changed`,
+  `unchanged`, or `unavailable` when an input is missing or malformed, with
+  `product_failure_asserted` and the exact worker task ARNs that appeared and
+  disappeared.
+- `test-results/beta-sizing-workload.json` records the identity the workload started in
+  (`worker_identity_before_sha256`), and the verdict reports whether the two agree.
+
+A verdict of `environment-changed` **replaces the product-failure report**: the run
+states that the platform was redeployed under the suite and that no product failure is
+asserted. It does not turn the run green. When the suite failed, the job still ends
+non-success and no qualification record is created. The converse is equally strict: a
+case that fails while the worker identity is unchanged is still a product failure, and a
+check that could not be established is reported as `unavailable` so the failure keeps
+standing instead of being explained away. An `incomplete` suite - one that was cancelled
+or ended by the job timeout and so neither passed nor produced a product failure -
+asserts no product failure either, because none was established; its red run comes from
+the cancelled step. The verdict is a conservative label rather than per-case causation -
+the captures bracket the suite and cannot say when a rotation happened relative to the
+interrupted case - so a genuine product failure that coincides with a worker replacement
+is reported as an environment change and must be re-adjudicated by a re-run.
+
+The verdict annotates a run; it is not itself a qualification gate. A suite that **passed**
+while the workers were replaced still creates its qualification record, because what it
+observed was the product behaving correctly, and the deployed tuple it qualifies is
+rechecked independently by `Confirm deployed identities remained stable`. A rotation with
+an unchanged Client, Service and image is recorded as `environment-changed` evidence in
+the verdict rather than acted on; only a change to the deployed tuple fails that recheck.
+A redeployment that replaces the tuple therefore still cannot qualify the release.
+
+The capture is unconditional for every qualification run, not only for the opt-in sizing
+stage, because a deployment change cannot qualify release evidence of any kind. The
+frozen shape set is untouched by any of this: the four VTO shapes, the three-garment
+shapes included, still run twice each, and the environment record bounds no payload -
+the VTO aggregate stays the separate, unproven quantity recorded per observation.
+
 ### Measured S1 input envelope and its limits
 
 The sizing case set submits only inputs this deployment is demonstrated to serve. The
