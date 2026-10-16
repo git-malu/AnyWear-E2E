@@ -2,12 +2,121 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SIZING_WORKLOAD, sizingUploadCases } from './beta-sizing-benchmark.mjs';
 import { S1_INPUT_BYTES_MAX, S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_DEFERRED_VTO_SHAPE,
-  S1_VTO_GARMENT_ORDER, assertCaseInputsWithinEnvelope, assertSizingInputEnvelope,
+  S1_VTO_GARMENT_POOL, assertCaseInputsWithinEnvelope, assertSizingInputEnvelope,
   orderedSizingGarments } from './beta-sizing-envelope.mjs';
 export { sizingUploadCases } from './beta-sizing-benchmark.mjs';
-export { S1_INPUT_BYTES_MAX, S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_DEFERRED_VTO_SHAPE,
-  S1_VTO_GARMENT_ORDER, S1_VTO_SHAPE_NAMING, SIZING_VTO_AGGREGATE_LIMIT, orderedSizingGarments,
-  vtoAggregateSubmittedBytes } from './beta-sizing-envelope.mjs';
+// Pass-through of the frozen envelope this workload is built from, so a caller
+// reads the bound, the pool and the case set from one module.
+export * from './beta-sizing-envelope.mjs';
+
+// The constrained set submits every fixture this pool names in the SEQUENTIAL half,
+// which runs before the first VTO case, so each garment is resolved by the time a
+// VTO case needs it. A fixture only burst uploads carry is not in the pool: those
+// uploads launch inside the VTO loop, so they cannot resolve a garment before it is
+// needed - which is exactly how the previous five-id list broke. The pool is the
+// frozen, reviewed subset of those sequential fixtures, and
+// `S1_VTO_GARMENT_POOL` is the value this selection must reproduce; one that names
+// anything else, in any other order, is refused.
+const VTO_GARMENT_FIXTURES = Object.freeze(['trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary.png']);
+
+function sequentialGarmentUploads() {
+  const ordered = [];
+  for (const entry of sizingUploadCases()) {
+    if (entry.submission !== 'sequential' || !VTO_GARMENT_FIXTURES.includes(entry.fixture)) continue;
+    if (!ordered.includes(entry.fixture)) ordered.push(entry.fixture);
+  }
+  return ordered;
+}
+
+// The constraint that stops a VTO case naming a garment the submission plan cannot
+// resolve: it was a five-id list whose last entry, `sweater-ordinary.png`, is
+// submitted only by burst uploads that launch inside the VTO loop.
+export function assertVtoGarmentPoolIsSubmitted() {
+  const submitted = sequentialGarmentUploads();
+  if (submitted.join() !== S1_VTO_GARMENT_POOL.join()) {
+    throw new Error(`The VTO garment pool ${S1_VTO_GARMENT_POOL.join(', ')} must be the sequential uploads the `
+      + `submission plan resolves before the VTO cases, which are ${submitted.join(', ')}`);
+  }
+  return S1_VTO_GARMENT_POOL;
+}
+
+// The upload cases that submit the pool, in the pool's smallest-first order. They
+// run before the first VTO case, so every garment a VTO case names is a real
+// wardrobe item the API resolves and not merely a fixture the plan names. Derived
+// from the plan rather than hardcoded, so a plan that stops submitting a pool
+// garment fails here by name.
+export function sizingVtoGarmentUploadCases() {
+  const sequential = sizingUploadCases().filter(item => item.submission === 'sequential');
+  return assertVtoGarmentPoolIsSubmitted().map(fixture => {
+    const entry = sequential.find(item => item.fixture === fixture);
+    if (!entry) {
+      throw new Error(`VTO garment ${fixture} is submitted by no sequential upload case, so no VTO case can `
+        + `resolve its wardrobe item before the VTO loop starts`);
+    }
+    return entry;
+  });
+}
+
+// Route chosen for this defect: a VTO case resolves its garment ids from the
+// frozen case plan built once from the COMPLETE set of fixtures the run submits,
+// never from the uploads recorded so far. The plan names every fixture and the
+// upload case that produces its wardrobe item, so submission order and VTO order
+// are independent: reordering either half cannot make a garment unresolvable, and
+// a reference the plan cannot resolve fails here, naming the fixture and the case,
+// rather than surfacing as a `false`.
+export function createSizingVtoGarmentPlan() {
+  const caseIdsByFixture = new Map();
+  for (const entry of sizingUploadCases()) {
+    const cases = caseIdsByFixture.get(entry.fixture) ?? [];
+    cases.push(entry.case_id);
+    caseIdsByFixture.set(entry.fixture, cases);
+  }
+  const plan = {
+    schema_version: 1,
+    issue: 95,
+    pool: [...assertVtoGarmentPoolIsSubmitted()],
+    submitted_fixtures: [...caseIdsByFixture.keys()],
+    fixture_case_ids: Object.fromEntries(caseIdsByFixture),
+    // Fixture id -> the wardrobe item the plan's upload for that fixture creates,
+    // recorded as that upload is submitted. Mapped from the plan, never from the
+    // uploads observed so far.
+    item_resource_id: new Map(),
+    // Reports what is actually missing, so the next occurrence names it instead of
+    // surfacing as a bare `false`.
+    resolveGarmentId: (caseId, fixture) => {
+      const { fixture_case_ids: caseIds, item_resource_id: ids } = plan;
+      if (!caseIds[fixture]) {
+        throw new Error(`VTO case ${caseId} references garment ${fixture}, which the sizing submission plan does `
+          + `not submit; the plan submits ${plan.submitted_fixtures.join(', ')}`);
+      }
+      if (!ids.has(fixture)) {
+        throw new Error(`VTO case ${caseId} cannot resolve garment ${fixture}: its planned upload `
+          + `(${caseIds[fixture].join(', ')}) has not been submitted yet`);
+      }
+      return ids.get(fixture);
+    },
+  };
+  return assertVtoCasesResolvableInPlan(plan);
+}
+
+// The focused assertion. Without `requireResolved` it checks the plan itself:
+// every garment any VTO case can reference is a fixture the submission plan
+// submits. With it, run after the pool's uploads and before the first VTO case, it
+// also requires the wardrobe item the plan's upload allocated, so the VTO loop
+// never depends on how far the upload half has progressed or on the order it runs
+// in. Either way an unresolvable reference fails by name, not as a bare `false`.
+export function assertVtoCasesResolvableInPlan(plan, { requireResolved = false } = {}) {
+  for (const entry of sizingVtoCases()) {
+    for (const fixture of entry.garment_fixtures) {
+      if (!plan.pool.includes(fixture)) {
+        throw new Error(`VTO case ${entry.case_id} references garment ${fixture}, which the sizing submission plan `
+          + `does not submit; the plan submits ${plan.submitted_fixtures.join(', ')}`);
+      }
+      if (requireResolved) plan.resolveGarmentId(entry.case_id, fixture);
+    }
+  }
+  return plan;
+}
 
 const FIXTURE_FILE = /^[a-z-]+\.(jpg|png|webp)$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -99,6 +208,9 @@ export async function loadSizingFixtures(directory) {
     fixtures.set(fixture.id, { ...fixture, data });
   }
   assertCaseInputsWithinEnvelope(fixtures, [...sizingUploadCases(), ...sizingVtoCases()]);
+  // A garment reference outside the pool the submission plan resolves is dead on
+  // arrival: no case can name it and no upload yields an id for it.
+  assertVtoGarmentPoolIsSubmitted();
   // A VTO case submits the base photo plus its garment list; each input and the
   // canonical smallest-first order are checked here, where the frozen bytes are.
   for (const entry of sizingVtoCases()) {
@@ -121,6 +233,6 @@ export function sizingVtoCases() {
   return [0, 1].flatMap(repeat => SIZING_WORKLOAD.vto_shapes.map((shape, index) => {
     const garment_count = index < 2 ? 1 : 3;
     return { case_id: `${shape}-${repeat}`, shape, base_fixture: 'base-photo-ordinary.jpg',
-      garment_count, garment_fixtures: S1_VTO_GARMENT_ORDER.slice(0, garment_count) };
+      garment_count, garment_fixtures: S1_VTO_GARMENT_POOL.slice(0, garment_count) };
   }));
 }

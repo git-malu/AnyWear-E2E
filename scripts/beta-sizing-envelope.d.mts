@@ -24,7 +24,7 @@ export const S1_INPUT_ENVELOPE_REFERENCE: Record<string, string | number>;
 export const S1_INPUT_MEASURED_BASIS: string;
 export const S1_INPUT_MEASURED_CASES: readonly SizingInputCaseReference[];
 export const S1_INPUT_EXCLUDED_FIXTURES: readonly SizingExcludedFixture[];
-export const S1_VTO_GARMENT_ORDER: readonly string[];
+export const S1_VTO_GARMENT_POOL: readonly string[];
 export const S1_DEFERRED_VTO_SHAPE: SizingDeferredVtoShape;
 export const S1_VTO_SHAPE_NAMING: string;
 export const SIZING_VTO_AGGREGATE_LIMIT: string;

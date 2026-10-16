@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { correlateSizingTask } from './beta-sizing-telemetry.mjs';
 import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, orderedSizingGarments,
-  vtoAggregateSubmittedBytes } from './beta-sizing-workload.mjs';
+  vtoAggregateSubmittedBytes, createSizingVtoGarmentPlan, assertVtoCasesResolvableInPlan,
+  sizingVtoGarmentUploadCases, S1_VTO_GARMENT_POOL } from './beta-sizing-workload.mjs';
 import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
 import { S1_INPUT_BYTES_MAX, S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_DEFERRED_VTO_SHAPE,
   S1_VTO_SHAPE_NAMING, assertCaseInputsWithinEnvelope, assertSizingInputEnvelope } from './beta-sizing-envelope.mjs';
@@ -131,10 +132,64 @@ test('orders VTO garments smallest-first and reports the aggregate the per-input
     assert.ok(Number.isInteger(aggregate) && aggregate > S1_INPUT_BYTES_MAX);
     assert.ok(entry.garment_fixtures.every(id => frozen.fixtures.get(id).bytes <= S1_INPUT_BYTES_MAX));
   }
-  assert.equal(orderedSizingGarments(frozen.fixtures, 1)[0].id, 'bag-ordinary.jpg');
+  assert.equal(orderedSizingGarments(frozen.fixtures, 1)[0].id, 'trousers-ordinary.jpg');
   assert.equal(orderedSizingGarments(frozen.fixtures, 3).map(item => item.id).join(),
-    'bag-ordinary.jpg,shoes-ordinary.jpg,trousers-ordinary.jpg');
-  assert.throws(() => orderedSizingGarments(frozen.fixtures, 6), /between 1 and 5 garments/);
+    'trousers-ordinary.jpg,jacket-ordinary.jpg,sweater-ordinary.png');
+  assert.throws(() => orderedSizingGarments(frozen.fixtures, 4), /between 1 and 3 garments/);
+});
+
+// The defect this covers: a VTO case resolved its garment from the uploads recorded
+// when that case started, so a garment only burst uploads carry - or one no case
+// submits - was unresolvable and surfaced as a bare `false`. Every garment any VTO
+// case references must be a fixture the submission plan submits before the VTO
+// loop, and the plan must already hold the resource id for it.
+test('resolves every VTO garment from the submission plan, not from the uploads so far', async () => {
+  const frozen = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
+  const plan = createSizingVtoGarmentPlan();
+  const uploads = sizingUploadCases();
+  const sequential = uploads.filter(item => item.submission === 'sequential');
+  // The pool is exactly what the sequential half submits before the VTO loop, and
+  // no fixture only the burst half carries may be a garment.
+  const sequentialGarments = [...new Set(sequential.map(item => item.fixture))]
+    .filter(fixture => frozen.fixtures.get(fixture).mime !== 'image/webp');
+  assert.deepEqual([...S1_VTO_GARMENT_POOL], sequentialGarments);
+  assert.deepEqual([...S1_VTO_GARMENT_POOL], [...plan.pool]);
+  assert.ok(S1_VTO_GARMENT_POOL.every(fixture => uploads.some(item => item.fixture === fixture)));
+  for (const entry of sizingVtoCases()) {
+    for (const fixture of entry.garment_fixtures) {
+      assert.ok(plan.submitted_fixtures.includes(fixture),
+        `${entry.case_id} garment ${fixture} must be submitted by the sizing submission plan`);
+      assert.ok(S1_VTO_GARMENT_POOL.includes(fixture),
+        `${entry.case_id} garment ${fixture} must be inside the resolvable pool`);
+    }
+  }
+  // What runs first: the pool's upload cases, in the pool's smallest-first order,
+  // all sequential so they complete before the first VTO case is accepted.
+  const garmentUploads = sizingVtoGarmentUploadCases();
+  assert.deepEqual(garmentUploads.map(item => item.fixture), [...S1_VTO_GARMENT_POOL]);
+  assert.ok(garmentUploads.every(item => item.submission === 'sequential'));
+  assert.equal(new Set(garmentUploads.map(item => item.case_id)).size, S1_VTO_GARMENT_POOL.length);
+  // Unresolvable until those uploads run, resolvable for every case afterwards -
+  // including while the burst half has not started, which is when the first VTO
+  // cases run. The assertion names the fixture and the case either way.
+  assert.throws(() => assertVtoCasesResolvableInPlan(plan, { requireResolved: true }),
+    /cannot resolve garment trousers-ordinary\.jpg.*sequential-ordinary-jpg-0/);
+  for (const item of garmentUploads) plan.item_resource_id.set(item.fixture, `item-${item.fixture}`);
+  assertVtoCasesResolvableInPlan(plan, { requireResolved: true });
+  for (const entry of sizingVtoCases()) {
+    const ids = entry.garment_fixtures.map(fixture => plan.resolveGarmentId(entry.case_id, fixture));
+    assert.deepEqual(ids, entry.garment_fixtures.map(fixture => `item-${fixture}`));
+  }
+  // A case naming a garment outside the submission plan, and one whose planned
+  // upload has not run, both fail by name rather than as a bare `false`.
+  const bare = { schema_version: 1, issue: 95, pool: [], submitted_fixtures: [], item_resource_id: new Map(),
+    resolveGarmentId: (caseId, fixture) => {
+      throw new Error(`VTO case ${caseId} cannot resolve garment ${fixture}: the submission plan does not submit it`);
+    } };
+  assert.throws(() => assertVtoCasesResolvableInPlan(bare),
+    /VTO case ordinary-base-one-garment-0 references garment trousers-ordinary\.jpg, which the sizing submission plan does not submit/);
+  assert.throws(() => bare.resolveGarmentId('ordinary-base-one-garment-0', 'bag-ordinary.jpg'),
+    /VTO case ordinary-base-one-garment-0 cannot resolve garment bag-ordinary\.jpg/);
 });
 
 test('records the deferred five-garment 4K VTO shape rather than dropping it', () => {

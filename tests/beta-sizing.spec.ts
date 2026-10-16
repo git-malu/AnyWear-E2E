@@ -4,6 +4,7 @@ import type { APIResponse, Page } from '@playwright/test';
 import { assertE2EExecution } from '../scripts/execution-guard.mjs';
 import { captureSizingSource, validateSizingSource } from '../scripts/beta-sizing-source.mjs';
 import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, vtoAggregateSubmittedBytes,
+  createSizingVtoGarmentPlan, assertVtoCasesResolvableInPlan, sizingVtoGarmentUploadCases,
   SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
@@ -135,6 +136,10 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       throw new Error('Paid sizing workload requires the protected Beta Qualification workflow');
     }
     const frozen = await loadSizingFixtures(new URL('./fixtures/beta-sizing/', import.meta.url));
+    // The complete plan of what this run submits, built before any upload is sent.
+    // VTO garment ids resolve from here, so no VTO case depends on how far the
+    // upload half has progressed or on the order either half runs in.
+    const garmentPlan = createSizingVtoGarmentPlan();
     const deploymentBytes = await readFile('deployment-evidence-before.json');
     const runtimeBytes = await readFile('.qualification-inputs/beta-sizing-runtime-before.json');
     const deployment = JSON.parse(deploymentBytes.toString());
@@ -265,6 +270,9 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       }), 202);
       expect(replay).toEqual(accepted);
       item.replay_verified = true;
+      // The plan's own id is registered here, so a VTO case that references this
+      // fixture resolves it whether this upload runs before, during or after it.
+      garmentPlan.item_resource_id.set(entry.fixture, item.resource_id);
       return item;
     };
     const reloadCheck = async (items: Observation[], kind: 'tagging' | 'vto') => {
@@ -308,19 +316,42 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
         await captureCreated('base_photo', String(response.id));
         await putImage(String(response.uploadUrl), image);
       }
-      for (const entry of sizingUploadCases().filter(item => item.submission === 'sequential')) {
+      const sequential = sizingUploadCases().filter(item => item.submission === 'sequential');
+      // The garment fixtures are submitted FIRST, before any VTO is accepted: a VTO
+      // garment has to be a real wardrobe item the API can resolve, not merely a
+      // fixture the plan names. They are the plan's pool in its smallest-first
+      // order, so a future plan that moves one of them behind the VTO loop - or adds
+      // a garment no sequential upload case submits - fails here by name.
+      const garmentUploads = sizingVtoGarmentUploadCases();
+      const submittedCases = new Set(garmentUploads.map(item => item.case_id));
+      const orderedSequential = [...garmentUploads,
+        ...sequential.filter(item => !submittedCases.has(item.case_id))];
+      for (const entry of orderedSequential) {
         const item = await submitUpload(entry);
         await waitTerminal(`/wardrobe/items/${item.resource_id}`, 'tagging', item);
         await reloadCheck([item], 'tagging');
         await preserve();
       }
       const burst = sizingUploadCases().filter(item => item.submission === 'burst');
+      // Authoritative resolution: every garment id comes from the plan built over
+      // the COMPLETE fixture set, so no VTO case depends on how far the upload half
+      // has progressed. This fails before the first VTO is accepted if any garment
+      // is one the submission plan does not submit, or if its planned upload has
+      // not run - naming the fixture and the case instead of reporting `false`.
+      assertVtoCasesResolvableInPlan(garmentPlan, { requireResolved: true });
+      const garmentResourceId = (caseId: string, fixtureName: string) => {
+        try {
+          return garmentPlan.resolveGarmentId(caseId, fixtureName);
+        } catch (error) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)} `
+            + `(submitted so far: ${uploads.map(entry => entry.fixture).join(', ') || 'none'})`, { cause: error });
+        }
+      };
       for (const [index, entry] of cases.entries()) {
         // The garment list is the canonical smallest-first one, so the shape
         // carries the least payload it can.
         const garmentIds = entry.garment_fixtures
-          .map(fixture => uploads.find(item => item.fixture === fixture)?.resource_id);
-        expect(garmentIds.every(id => typeof id === 'string')).toBe(true);
+          .map(fixture => garmentResourceId(entry.case_id, fixture));
         const before = await credit();
         const base = fixture(entry.base_fixture);
         // The VTO payload aggregates the base photo and the garments; the recorded
