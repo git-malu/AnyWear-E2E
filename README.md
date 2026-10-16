@@ -128,7 +128,8 @@ already-deployed Beta environment. It reads the reviewed full SHAs from
 `compatibility.json`, verifies those identities against the deployed Client
 `build-metadata.json` and Service `/health`, runs the complete suite, rechecks both
 identities and the Service image digest, and uploads a checksummed qualification record.
-A failed, mismatched, or changed deployment cannot issue a passing record. The workflow
+A failed, mismatched, or changed deployment, or a worker task definition that changed during
+the suite, cannot issue a passing record. The workflow
 requests 90-day artifact retention, subject to GitHub's configured
 repository or organization ceiling; durable release-ledger storage remains
 out of scope for the initial Production launch. The finite GitHub retention window is an
@@ -506,7 +507,8 @@ comparison rules while the spec keeps recording what it observed.
 - `test-results/beta-environment-verdict.json` is the verdict: `environment-changed`,
   `unchanged`, or `unavailable` when an input is missing or malformed, with
   `product_failure_asserted` and the exact worker task ARNs that appeared and
-  disappeared.
+  disappeared. When the suite passed and `comparison.task_definition_changed` is true,
+  this same verdict is what refuses the qualification.
 - `test-results/beta-sizing-workload.json` records the identity the workload started in
   (`worker_identity_before_sha256`), and the verdict reports whether the two agree.
 
@@ -524,13 +526,21 @@ the captures bracket the suite and cannot say when a rotation happened relative 
 interrupted case - so a genuine product failure that coincides with a worker replacement
 is reported as an environment change and must be re-adjudicated by a re-run.
 
-The verdict annotates a run; it is not itself a qualification gate. A suite that **passed**
-while the workers were replaced still creates its qualification record, because what it
-observed was the product behaving correctly, and the deployed tuple it qualifies is
-rechecked independently by `Confirm deployed identities remained stable`. A rotation with
-an unchanged Client, Service and image is recorded as `environment-changed` evidence in
-the verdict rather than acted on; only a change to the deployed tuple fails that recheck.
-A redeployment that replaces the tuple therefore still cannot qualify the release.
+The verdict is a qualification gate on one branch only: the passing path. A suite that
+**passed** while the worker task definition serving Beta changed cannot issue a
+qualification - the record path refuses before it writes `qualification-record.json`, and
+the `Refuse a qualification measured across two worker definitions` step fails the run with
+the same sanitized sentence. The reason for the distinction is what the run measured: a
+suite that spanned two task definitions measured neither of them, while a rotation of task
+ARNs on one unchanged definition leaves the configuration under test intact. That rotation
+is recorded and does not block, so a passing suite on one unchanged definition is still
+qualified, and the reason line says which of the two happened: an added-only change reads as
+a scale-out, not as workers being replaced. Run
+[38879938899](https://github.com/git-malu/AnyWear-E2E/actions/runs/38879938899) is that
+rotation - its suite passed, the verdict recorded 2 worker task(s) appeared and none removed
+with the task definition unchanged, and the run still created its qualification record. A
+redeployment that replaces the deployed tuple is still caught separately by
+`Confirm deployed identities remained stable`.
 
 The capture is unconditional for every qualification run, not only for the opt-in sizing
 stage, because a deployment change cannot qualify release evidence of any kind. The
