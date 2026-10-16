@@ -6,6 +6,8 @@ import { captureSizingSource, validateSizingSource } from '../scripts/beta-sizin
 import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, vtoAggregateSubmittedBytes,
   createSizingVtoGarmentPlan, assertVtoCasesResolvableInPlan, sizingVtoGarmentUploadCases,
   SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
+import { ENVIRONMENT_IDENTITY_PATHS, terminalWaitMs, validateWorkerIdentity,
+  type WorkerIdentity } from '../scripts/beta-sizing-environment.mjs';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
 import { DirectTeardown, deleteRouteFor, quarantinesScope, structuralOwnerKind,
@@ -30,6 +32,12 @@ interface SizingWorkloadRecord {
   deployment_evidence_sha256: string;
   deployment: unknown;
   runtime_before_sha256: string;
+  // The worker identity serving Beta immediately before this attempt's window.
+  // It binds the measurement to the environment it started in; the qualification
+  // workflow compares it with the suite-end identity and decides whether the run
+  // was replaced underneath us.
+  worker_identity_before: WorkerIdentity;
+  worker_identity_before_sha256: string;
   started_at: string;
   finished_at: string;
   result: string;
@@ -154,6 +162,10 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     const garmentPlan = createSizingVtoGarmentPlan();
     const deploymentBytes = await readFile('deployment-evidence-before.json');
     const runtimeBytes = await readFile('.qualification-inputs/beta-sizing-runtime-before.json');
+    // Recorded before the first side effect: a run that cannot say which workers
+    // were serving Beta when it started cannot tell a rotation from a defect.
+    const workerIdentityBytes = await readFile(ENVIRONMENT_IDENTITY_PATHS.before);
+    const workerIdentity = validateWorkerIdentity(JSON.parse(workerIdentityBytes.toString()), { phase: 'before' });
     const deployment = JSON.parse(deploymentBytes.toString());
     const sourceProof = captureSizingSource();
     const runtime = JSON.parse(runtimeBytes.toString());
@@ -174,6 +186,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       supported_input_envelope_sha256: frozen.envelopeSha256, provider_envelope: SIZING_PROVIDER_ENVELOPE,
       deployment_evidence_sha256: hashBytes(deploymentBytes), deployment,
       runtime_before_sha256: hashBytes(runtimeBytes),
+      worker_identity_before: workerIdentity, worker_identity_before_sha256: workerIdentity.identity_sha256,
       started_at: new Date().toISOString(), finished_at: '', result: 'running',
       workload: { uploads, vto, overlap_intent: overlapIntent }, route_samples_ms: routeSamples };
     const output = 'test-results/beta-sizing-workload.json';
@@ -238,6 +251,11 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     };
     const waitTerminal = async (path: string, kind: 'tagging' | 'vto', item: Observation, observer: Page = page) => {
       let version = 0;
+      // The budget is the platform's own recovery floor, never a measurement of
+      // observed provider latency: a shorter wait gives up before the platform is
+      // allowed to redeliver work a worker replacement interrupted, and then reports
+      // that recovery as a product failure. `terminalWaitMs` owns the derivation and
+      // refuses a budget below the floor.
       await expect.poll(async () => {
         const state = await check(await observer.request.get(`${serviceUrl}${path}`, { headers }), 200);
         const next = Number(kind === 'tagging' ? state.taggingStateVersion : state.state_version);
@@ -261,7 +279,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
           }
         }
         return status;
-      }, { timeout: 600_000, intervals: [1_000, 2_000, 5_000] }).toBe(kind === 'tagging' ? 'ready' : 'Complete');
+      }, { timeout: terminalWaitMs(kind), intervals: [1_000, 2_000, 5_000] }).toBe(kind === 'tagging' ? 'ready' : 'Complete');
     };
     const submitUpload = async (entry: UploadCase) => {
       assertE2EExecution();
