@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   DirectTeardown,
+  RESOURCE_KINDS,
+  SCHEMA_DELETE_ORDER,
   deleteRouteFor,
   machineAuthHeaders,
   quarantinesScope,
+  schemaDeleteOrder,
+  structuralOwnerKind,
 } from '../tests/support/cleanup-operation.ts';
 import { readAttemptBusinessCleanup } from '../tests/support/attempt-cleanup-registry.ts';
 
@@ -117,7 +121,7 @@ test('owner binding refuses a malformed subject before any request', async () =>
   assert.equal(calls.length, before);
 });
 
-test('exact created resource refs are captured once each, sent in the acknowledgement, and deleted through user routes', async () => {
+test('exact created resource refs are captured once each, acknowledged in capture order, and deleted in schema order', async () => {
   const { teardown, calls, deletes } = harness();
   await teardown.register();
   teardown.capture('wardrobe_item', 'item-1');
@@ -127,11 +131,15 @@ test('exact created resource refs are captured once each, sent in the acknowledg
   teardown.capture('outfit', 'outfit-1');
   assert.equal(teardown.captured.length, 4);
   await teardown.finalize('passed', 'Bearer token');
+  // Capture order is base photo, item, generation, outfit. The deletes follow the
+  // schema contract instead: the generation first, because it references both the
+  // outfit and the base photo; then the outfit, whose cascade releases its
+  // joining rows; only then the item it held and the base photo it referenced.
   assert.deepEqual(deletes.map((entry) => entry.url), [
-    'https://service.invalid/wardrobe/items/item-1',
     'https://service.invalid/vto/generations/gen-1',
-    'https://service.invalid/vto/base-photos/photo-1',
     'https://service.invalid/outfits/outfit-1',
+    'https://service.invalid/wardrobe/items/item-1',
+    'https://service.invalid/vto/base-photos/photo-1',
   ]);
   assert.ok(deletes.every((entry) => entry.authorization === 'Bearer token'));
   const acknowledge = calls.at(-1);
@@ -364,6 +372,164 @@ test('scope quarantine follows teardown failure, not the product outcome', () =>
   assert.equal(quarantinesScope('passed'), false);
   assert.equal(quarantinesScope('partial'), true);
   assert.equal(quarantinesScope('failed'), true);
+});
+
+// The following three tests are the guard against a parent-before-child
+// deletion: the capture inventory and the deletion order are asserted together,
+// so a kind added to either list without the other fails here instead of at the
+// gate in a paid Beta run.
+
+// The schema edges between the captured kinds, as `[referencing kind, referenced
+// kind, delete action]`. They fix the order in two different directions, which
+// is why the order is a contract and not a preference:
+//
+// - `no action` refuses the parent delete while a referencing row survives, so
+//   the referencing kind must be deleted first.
+// - `cascade` releases the referencing row when the parent goes, so the
+//   referencing kind can only be deleted *after* it: `outfit_wearable_items ->
+//   outfits` is the row that holds a garment, and only the outfit delete removes
+//   it.
+const SCHEMA_EDGES = [
+  ['outfit_generation', 'outfit', 'no action'],
+  ['outfit_generation', 'base_photo', 'no action'],
+  ['outfit_wearable_items', 'outfit', 'cascade'],
+  ['outfit_wearable_items', 'wardrobe_item', 'no action'],
+];
+
+// `outfit_wearable_items` is not a captured kind: it is the joining row that
+// holds a garment for its outfit, so it stands for the captured `wardrobe_item`
+// whose release that row decides.
+const standsFor = (kind) => (kind === 'outfit_wearable_items' ? 'wardrobe_item' : kind);
+
+test('every resource kind has a delete order position and every reference is released before its parent', () => {
+  // A kind outside the order would silently sort to the front of it.
+  assert.deepEqual([...RESOURCE_KINDS].sort(), [...SCHEMA_DELETE_ORDER].sort());
+  assert.equal(new Set(SCHEMA_DELETE_ORDER).size, SCHEMA_DELETE_ORDER.length);
+  assert.deepEqual([...SCHEMA_DELETE_ORDER], [
+    'outfit_generation',
+    'outfit',
+    'wardrobe_item',
+    'base_photo',
+    'object_key',
+  ]);
+  const at = (kind) => SCHEMA_DELETE_ORDER.indexOf(kind);
+
+  for (const [referencing, referenced, action] of SCHEMA_EDGES) {
+    if (action === 'cascade') {
+      // The parent delete removes the referencing row, so the parent comes first
+      // and the kind the row held is free only after it.
+      assert.ok(at(referenced) < at(standsFor(referencing)),
+        `${standsFor(referencing)} is released by the ${referenced} cascade, so ${referenced} must be deleted first`);
+      continue;
+    }
+    // A `no action` reference refuses the parent delete while its own row
+    // survives. The row is gone either because its kind is deleted first, or
+    // because a cascade took the row with it — which is how the garment is
+    // released: its joining row dies with the outfit, not by its own delete.
+    const cascadedAwayBy = SCHEMA_EDGES.filter(([holder, target, edgeAction]) => (
+      holder === referencing && edgeAction === 'cascade' && at(target) < at(standsFor(referencing))));
+    assert.ok(at(standsFor(referencing)) < at(referenced) || cascadedAwayBy.length > 0,
+      `${referencing} must be released before ${referenced}: either it is deleted first, `
+      + `or a ${referenced} cascade takes it away first`);
+  }
+  // Structural ownership is the stricter relation: an outfit does not release a
+  // generation the way its cascade releases a joining item row, so a captured
+  // generation is unreleasable unless its outfit was captured with it.
+  assert.equal(structuralOwnerKind('outfit_generation'), 'outfit');
+  for (const kind of ['outfit', 'wardrobe_item', 'base_photo', 'object_key']) {
+    assert.equal(structuralOwnerKind(kind), undefined, `${kind} has no structural owner`);
+  }
+});
+
+test('the deletion order is the schema contract, not the capture order', async () => {
+  const { teardown, deletes } = harness();
+  await teardown.register();
+  for (const [kind, id] of [
+    ['base_photo', 'photo-1'],
+    ['wardrobe_item', 'item-1'],
+    ['outfit_generation', 'gen-1'],
+    ['outfit', 'outfit-1'],
+  ]) teardown.capture(kind, id);
+  await teardown.finalize('passed', 'Bearer token');
+  assert.deepEqual(deletes.map((entry) => new URL(entry.url).pathname), [
+    '/vto/generations/gen-1',
+    '/outfits/outfit-1',
+    '/wardrobe/items/item-1',
+    '/vto/base-photos/photo-1',
+  ]);
+  // Sorting is stable and never mutates the captured set, which the
+  // acknowledgement still reports in capture order.
+  const captured = [
+    { kind: 'outfit', id: 'outfit-1' },
+    { kind: 'outfit_generation', id: 'gen-1' },
+  ];
+  const ordered = schemaDeleteOrder(captured);
+  assert.notEqual(ordered, captured);
+  assert.deepEqual(ordered, [
+    { kind: 'outfit_generation', id: 'gen-1' },
+    { kind: 'outfit', id: 'outfit-1' },
+  ]);
+  assert.deepEqual(captured, [
+    { kind: 'outfit', id: 'outfit-1' },
+    { kind: 'outfit_generation', id: 'gen-1' },
+  ]);
+});
+
+test('a capture the order cannot release fails closed and names the undeleted resource', async () => {
+  const kindOf = { '/vto/generations/': 'outfit_generation', '/outfits/': 'outfit',
+    '/wardrobe/items/': 'wardrobe_item', '/vto/base-photos/': 'base_photo' };
+  const kindAt = (pathname) => kindOf[pathname.slice(0, pathname.lastIndexOf('/') + 1)];
+  // Live rows, not the capture list: a reference only refuses a delete while a
+  // row of the referencing kind still exists. This is what makes the order work
+  // at all, because the generation is gone before its outfit is deleted.
+  const refuses = (liveRows, referenced) => SCHEMA_EDGES.some(([referencing, target, action]) => (
+    target === referenced && action === 'no action' && liveRows.has(standsFor(referencing))));
+
+  // The order releases every reference: with the whole capture present each
+  // delete is accepted, one at a time. The generation is deletable because
+  // nothing references it, which is what frees its outfit; the outfit delete
+  // then cascade-releases the garment it held.
+  const live = new Set(['outfit_generation', 'outfit', 'wardrobe_item', 'base_photo']);
+  const { teardown, deletes } = harness({ deleteStatus: async (url) => {
+    const kind = kindAt(new URL(url).pathname);
+    const refusedDelete = refuses(live, kind);
+    if (kind === 'outfit') live.delete('wardrobe_item');
+    live.delete(kind);
+    return refusedDelete ? 503 : 204;
+  } });
+  await teardown.register();
+  teardown.capture('outfit', 'outfit-1');
+  teardown.capture('outfit_generation', 'gen-1');
+  teardown.capture('base_photo', 'photo-1');
+  const complete = await teardown.finalize('passed', 'Bearer token');
+  assert.deepEqual(deletes.map((entry) => new URL(entry.url).pathname), [
+    '/vto/generations/gen-1',
+    '/outfits/outfit-1',
+    '/vto/base-photos/photo-1',
+  ]);
+  assert.equal(complete.teardown_result, 'passed');
+  assert.equal(complete.scope_state, 'released');
+  assert.equal(quarantinesScope(complete.teardown_result), false);
+
+  // A genuinely incomplete capture, the shape this issue fixes: the generation's
+  // outfit was never captured, so its delete is refused, and the surviving
+  // generation then refuses the base photo it references. The gate quarantines.
+  const incomplete = harness({ deleteStatus: async (url) => {
+    const kind = kindAt(new URL(url).pathname);
+    const surviving = new Set(['outfit_generation', 'base_photo']);
+    return refuses(surviving, kind) ? 503 : 204;
+  } });
+  await incomplete.teardown.register();
+  incomplete.teardown.capture('outfit_generation', 'gen-1');
+  incomplete.teardown.capture('base_photo', 'photo-1');
+  const refused = await incomplete.teardown.finalize('passed', 'Bearer token');
+  assert.equal(refused.teardown_result, 'partial');
+  assert.equal(refused.scope_state, 'quarantined');
+  assert.equal(quarantinesScope(refused.teardown_result), true);
+  assert.match(refused.quarantine_reason, /base_photo:photo-1/);
+  const acknowledge = incomplete.calls.at(-1);
+  assert.ok(acknowledge);
+  assert.equal(JSON.parse(acknowledge.data).scope_state, 'quarantined');
 });
 
 test('machine auth refuses to sign without its secret', () => {

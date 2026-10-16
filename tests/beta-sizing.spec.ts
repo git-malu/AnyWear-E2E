@@ -8,7 +8,8 @@ import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, vtoAg
   SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
-import { DirectTeardown, deleteRouteFor, quarantinesScope, type ProductResult } from './support/cleanup-operation.js';
+import { DirectTeardown, deleteRouteFor, quarantinesScope, structuralOwnerKind,
+  type ProductResult, type ResourceKind } from './support/cleanup-operation.js';
 
 interface Observation {
   case_id: string; resource_id?: string; terminal_state?: string; [key: string]: unknown;
@@ -96,10 +97,21 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
       return;
     }
     for (const { kind, id } of created.refs) teardown.capture(kind, id);
+    // The capture inventory closes over ownership before anything is deleted: a
+    // generation whose outfit was not captured cannot be released by any order of
+    // deletes, so this attempt reports its own incomplete inventory instead of
+    // leaving the refusal to surface as a partial cleanup. An outfit may
+    // legitimately be absent when no generation was accepted.
+    const capturedKinds = new Set(created.refs.map(({ kind }) => kind));
+    for (const { kind, id } of created.refs) {
+      const owner = structuralOwnerKind(kind);
+      if (!owner || capturedKinds.has(owner)) continue;
+      throw new Error(`Teardown captured ${kind}:${id} without its owning ${owner}`);
+    }
     const result = await teardown.finalize(productResult, authorization);
 
     // Exact absence readback after teardown, independent of the product
-    // assertion. `wardrobe_item` and `outfit_generation` have a routed
+    // assertion. `wardrobe_item`, `outfit` and `outfit_generation` have a routed
     // single-resource GET; a base photo has none, so its absence is proven by
     // the exact captured id being absent from the authenticated list route.
     const basePhotoIds = created.refs.filter(({ kind }) => kind === 'base_photo').map(({ id }) => id);
@@ -176,8 +188,11 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
 
     const headers = { Authorization: authorization! };
     // The transport stays synchronous on purpose: a created id and its stream
-    // observation are recorded in the same statement that creates them.
-    const captureCreated = (kind: 'base_photo' | 'wardrobe_item' | 'outfit_generation', id: string, stream?: Promise<{ frames?: Record<string, unknown>[]; error?: string }>) => {
+    // observation are recorded in the same statement that creates them. The
+    // owning outfit is captured next to the generation that references it,
+    // because a generation delete leaves its outfit and that outfit's items in
+    // place, so `outfit` is the only route that releases them.
+    const captureCreated = (kind: ResourceKind, id: string, stream?: Promise<{ frames?: Record<string, unknown>[]; error?: string }>) => {
       created.refs.push({ kind, id });
       if (stream) created.streams.set(id, stream);
       return Promise.resolve();
@@ -372,6 +387,12 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
           headers: acceptedHeaders, data: requestBody,
         }), 202);
         item.resource_id = String(accepted.generation_id);
+        // The accept answer names the outfit this generation will be released
+        // through, so it is captured before anything else can reference it.
+        const outfitId = accepted.outfit_id;
+        expect(typeof outfitId).toBe('string');
+        item.outfit_id = outfitId;
+        await captureCreated('outfit', String(outfitId));
         await captureCreated('outfit_generation', item.resource_id, observeStream(`/vto/generations/${item.resource_id}`));
         await preserve();
         const pairedPromise = index < 2

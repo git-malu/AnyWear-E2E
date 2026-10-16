@@ -34,9 +34,69 @@ export const RESOURCE_KINDS: readonly ResourceKind[] = [
   'object_key',
 ];
 
+/**
+ * The schema contract this teardown deletes against.
+ *
+ * Of the references between these resources, Service's
+ * `outfit_wearable_items -> outfits` is the only one that cascades:
+ * `outfit_generations -> outfits`, `outfit_generations -> base_photos` and
+ * `outfit_wearable_items -> wearable_items` are all `no action`. So an outfit, a
+ * wearable item and a base photo each have rows that reference them, and
+ * deleting one of those parents while its referencing rows still exist is
+ * refused by the database rather than cascaded. A capturing attempt therefore
+ * deletes every referencing kind before the kind it references:
+ *
+ * 1. `outfit_generation` - references both its outfit and its base photo, so it
+ *    is deleted before either, and it is the only kind referencing them.
+ * 2. `outfit` - owns the joining `outfit_wearable_items` rows, which the cascade
+ *    releases along with the items they held, and no generation references it
+ *    any more.
+ * 3. `wardrobe_item` - referenced through those joining rows, which the outfit
+ *    delete released.
+ * 4. `base_photo` - referenced by generations, which are gone.
+ *
+ * `object_key` holds no position: it has no delete route and never reaches one.
+ */
+export const SCHEMA_DELETE_ORDER: readonly ResourceKind[] = [
+  'outfit_generation',
+  'outfit',
+  'wardrobe_item',
+  'base_photo',
+  'object_key',
+];
+
+const SCHEMA_DELETE_RANK = new Map(SCHEMA_DELETE_ORDER.map((kind, index) => [kind, index]));
+
 export interface ResourceRef {
   kind: ResourceKind;
   id: string;
+}
+
+/** The captured refs in the order the schema contract allows them to be deleted. */
+export function schemaDeleteOrder(refs: readonly ResourceRef[]): ResourceRef[] {
+  return [...refs].sort((left, right) => (SCHEMA_DELETE_RANK.get(left.kind) ?? 0) - (SCHEMA_DELETE_RANK.get(right.kind) ?? 0));
+}
+
+/**
+ * The kind of resource that structurally owns this one, when a single kind does.
+ *
+ * An outfit owns its generations outright: `outfit_generations.outfit_id`
+ * references `outfits.id` with `no action`, so deleting a generation does not
+ * release its outfit, and deleting an outfit is refused while a generation still
+ * references it. A spec that creates a generation must therefore capture its
+ * outfit too, or the attempt holds a row it can never release.
+ *
+ * `undefined` means the resource has no owning kind and can exist on its own: an
+ * outfit is user-owned, and a base photo or a wardrobe item is released by its
+ * own delete route whenever no outfit references it.
+ *
+ * A wardrobe item is deliberately not modelled as owned here. An outfit holds an
+ * item through the joining `outfit_wearable_items` rows, which makes the outfit a
+ * *reference* the item's delete must follow — that ordering is what
+ * `SCHEMA_DELETE_ORDER` states, and it is a different relation from ownership.
+ */
+export function structuralOwnerKind(kind: ResourceKind): ResourceKind | undefined {
+  return kind === 'outfit_generation' ? 'outfit' : undefined;
 }
 
 export interface OperationState {
@@ -286,10 +346,18 @@ export class DirectTeardown {
     return body as OperationState;
   }
 
-  /** Delete every captured reference through its user-facing DELETE route; 404 is success. */
+  /**
+   * Delete every captured reference through its user-facing DELETE route; 404 is
+   * success.
+   *
+   * The captured set is traversed in schema order, not capture order: the order
+   * is the contract described on `SCHEMA_DELETE_ORDER`, because a parent deleted
+   * before the rows that reference it is refused by the database and turns a
+   * complete cleanup into a partial one.
+   */
   async runDeletes(authorization: string): Promise<{ outcomes: DeleteOutcome[]; teardownResult: TeardownResult }> {
     const outcomes: DeleteOutcome[] = [];
-    for (const ref of this.refs) {
+    for (const ref of schemaDeleteOrder(this.refs)) {
       const route = deleteRouteFor(ref);
       if (!route) {
         outcomes.push({ ref, status: undefined, deleted: false, reason: 'no ordinary user-facing delete route' });
@@ -343,8 +411,10 @@ export class DirectTeardown {
   }
 
   /**
-   * Idempotent terminal step for one attempt: delete captured refs, acknowledge
-   * the independent triple, and report the scope disposition.
+   * Idempotent terminal step for one attempt: delete captured refs in schema
+   * order, acknowledge the independent triple, and report the scope disposition.
+   * The acknowledgement still carries the refs in capture order, because it
+   * reports what the attempt created rather than how teardown released it.
    */
   async finalize(productResult: ProductResult, authorization: string): Promise<DirectTeardownResult> {
     if (this.finalized) return this.finalized;
