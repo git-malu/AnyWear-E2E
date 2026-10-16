@@ -399,19 +399,22 @@ suite pass alone cannot qualify smaller tasks.
 
 Measured result schema version 2 requires exact application/deployment and fixture
 bindings, raw evidence URLs/hashes, initial configured desired/minimum/task sizes,
-24 completed upload/tagging cases, five representative VTO shapes twice, two distinct
+12 completed upload/tagging cases, four representative VTO shapes twice, two distinct
 same-Worker overlap cases, per-task container high-water readings, complete CPU minute
 coverage, at least 100 samples per ordinary route, and provider-separated local and
 publication/execution intervals for each accepted task. Record every actual task and
 scaling event in the evidence; configured desired count does not imply a constant
-replica count. The larger VTO shape is a justified representative case confirmed on S1,
-not an invented product maximum. Retain uncertain provider/model envelope limits.
+replica count. Each VTO observation must report the aggregate it submitted, which the
+per-input bound does not cover: the VTO payload aggregates the base photo and the
+garments and is a separate, unproven quantity. The five-garment 4K shape is deferred to
+#140, not asserted as an invented product maximum. Retain uncertain provider/model
+envelope limits.
 
 Missing metrics, unsupported peak sources, incomplete workloads, mismatched inputs or
 an unqualified fresh common S1 remain **unqualified**. Collector `evidence_gaps`
 must be an explicitly empty array for S1 and candidates. Each upload must match its
 unique canonical case ID, mode, format, size and frozen fixture hash/bytes/dimensions;
-totals or partial matrix presence do not establish the 24-case coverage.
+totals or partial matrix presence do not establish the 12-case coverage.
 Observed correctness, headroom or
 regression failures are **rejected**. S3 retains the smaller API headroom criterion.
 CPU rejection requires five consecutive valid one-minute samples at or above 90%.
@@ -437,22 +440,116 @@ merely to collect a new baseline.
 
 The `sizing_stage` input of protected Beta Qualification defaults to `disabled`.
 An explicitly reviewed S1/S2/S3 selection runs `tests/beta-sizing.spec.ts`
-once with no retries: 24 uploads/tagging tasks (three formats, ordinary/9-9.75 MB
-valid images, sequential/burst, two repeats), then five VTO shapes twice. Two
+once with no retries: 12 uploads/tagging tasks (three formats, JPEG/PNG/WebP,
+sequential/burst, two repeats), then four VTO shapes twice. Two
 bursts overlap VTO submissions; actual same-Worker overlap must still be shown by
-telemetry. VTO uses one/three/five garment references, ordinary/large base photos,
-default 2K or the representative larger 4K output. These are baseline-successful
-representative cases, not asserted product/provider maxima. The reviewed provider
-PDF covers 5.0-lite, while deployed source uses 5.0; S1 failure must resolve this
-applicability gap before candidate measurements. Model/settings stay frozen after
-S1. The preflight requires ten existing daily credits; it changes no quota.
+telemetry. VTO uses one/three garment references on the served ordinary base photo,
+submitted smallest-first so each shape carries the least payload it can, with the
+default 2K output. These are representative cases bounded by the measured envelope
+below, not asserted product/provider maxima. The five-garment shape that carried the
+representative larger 4K output is deferred to #140 with its aggregate recorded; see
+the envelope section.
+The reviewed provider PDF covers 5.0-lite, while deployed source uses 5.0; S1 failure
+must resolve this applicability gap before candidate measurements. Model/settings stay
+frozen after S1. The preflight requires ten existing daily credits; it changes no quota.
+
+### Measured S1 input envelope and its limits
+
+The sizing case set submits only inputs this deployment is demonstrated to serve. The
+bound is not a provider maximum and not a guess: it is the largest input a real S1 run
+served to a terminal `ready` state, taken from this run's own artifact
+`beta-qualification-diagnostics-38768690421-1`
+([run 38768690421](https://github.com/git-malu/AnyWear-E2E/actions/runs/38768690421))
+at E2E `2fb06bce239e483eae77f7095062dc06fc395891`, stage S1, as recorded in
+`test-results/beta-sizing-workload.json`. These are **historical run figures, not the
+committed fixture sizes**: the shipped fixtures were later re-encoded and are smaller,
+so the artifact's numbers and the repository's bytes must not be confused.
+
+| Case | Fixture | Input | Outcome |
+| --- | --- | --- | --- |
+| `sequential-ordinary-jpg-0` | `trousers-ordinary.jpg` | 441,913 B, 1200x960 | `ready` in 25.7 s |
+| `sequential-ordinary-jpg-1` | `jacket-ordinary.jpg` | 697,437 B, 900x1200 | `ready` in 85.0 s |
+| `sequential-ordinary-png-0` | `sweater-ordinary.png` | 3,742,711 B, 1200x1039 | `failed` |
+
+Therefore `S1_INPUT_BYTES_MAX` is **697,437 B**, the largest input demonstrated served.
+The basis is **one submitted input**: it was derived from single-image uploads, where
+one input is one provider payload. A VTO generation aggregates a base photo plus the
+garments and is a separate quantity, so it is not bounded by, and not proven by, this
+number.
+
+The bound is on what is submitted, never a relaxation of what must pass: a case above
+it is not made passable, it is not submitted. The constraint lives in
+`scripts/beta-sizing-envelope.mjs` as explicit constants, and every path that could
+exceed it fails loudly instead: `sizingUploadCases()` builds the matrix only from
+`SIZING_WORKLOAD.size_classes` and asserts the resulting count, `loadSizingFixtures`
+rejects any frozen fixture above the bound, any case input naming an excluded fixture
+and any garment list that is not the canonical smallest-first one, and `evidenceGap`
+marks a recorded upload, VTO base photo or VTO garment above the bound, or a VTO
+observation that does not report its aggregate, unqualified. The fixture manifest
+repeats the bound, its per-input basis, the measured inputs, the excluded fixtures, the
+historical VTO shape names and the deferred VTO shape, and the loader refuses a manifest
+whose declared envelope differs from these constants.
+
+The run aborted at that third case, so **no VTO generation has ever run in this
+workload** and every route sample count is 0. The VTO cases are therefore unobserved
+at every payload size. Each generated input is inside the bound - the base photo is the
+served ordinary photo and the garment references are frozen upload fixtures - and each
+observation reports the `aggregate_submitted_bytes` it actually sent, so the real
+payload is visible in the evidence instead of left to be added up. That aggregate stays
+**unproven**. The `large-base-*` shape identifiers are historical names retained for
+binding stability, not a description of the fixture: every submitted shape uses
+`base-photo-ordinary.jpg`, and the only shape that carried the large base photo is the
+deferred five-garment one.
+
+What this measurement covers, and what it does not:
+
+- **This envelope only.** A green sizing run states that the 12 uploads and 8 VTO cases
+  above passed, per submitted input, inside 697,437 B. It is not evidence for anything
+  larger, and it says nothing about the VTO aggregate.
+- **The large-input defect is unchanged.** The failed third case is the known defect
+  tracked as **#140** (the pipeline base64-encodes original bytes to the VLM, the fixed
+  60 s budget expires, three retries spend it again, and the case ends terminal).
+  Constraining the case set does not fix it, and the removed fixtures and the deferred
+  VTO shape stay recorded in the manifest and in `scripts/beta-sizing-envelope.mjs`
+  rather than disappearing.
+- **The VTO aggregate is deferred, not measured.** The five-garment shape that also
+  carried the representative larger 4K output is deferred to **#140** and recorded in
+  `s1_input_envelope.deferred_vto_shape`: 2,408,024 B of garments plus the 545,720-byte
+  base photo is a 2,953,744-byte aggregate, about 79% of the 3,742,711-byte single input
+  whose base64 payload exhausted the 60 s budget. Keeping it would stake the measurement
+  on the shape most likely to reproduce the failure this bound works around. It returns
+  when a run passes with it, with its aggregate recorded.
+- **Widening needs a passing run.** Re-adding an input above 697,437 B — the removed
+  `near-supported-limit` class, `base-photo-large.jpg`, or the deferred five-garment 4K
+  shape — requires a run that passes at those sizes, and that run's evidence must then
+  move the constant. A run inside the current envelope cannot qualify a wider one.
+- **Submitted bytes are not provider cost.** The bound is measured in input bytes
+  because that is what the evidence and the failure mechanism show; it is not a claim
+  about pixel count, decode time or provider latency at the bound.
 
 Frozen image bytes, dimensions, SHA-256 and source/license provenance live in
-`tests/fixtures/beta-sizing/fixture-manifest.json`. Valid codec encoding/resize
-creates the large fixtures; no padding or noise is added. The optional Pillow
-builder records its version and requires separately downloaded exact source
-bytes. The near-limit WebP uses a detailed jacket photo because lossless encoding
-of the sweater cannot reach that byte range inside the pixel envelope.
+`tests/fixtures/beta-sizing/fixture-manifest.json`. That manifest also records the
+`encoding` and `derivation` of every shipped fixture, so a rebuilt fixture cannot pass
+as the original. Every shipped fixture was rebuilt for this envelope:
+
+- The six JPEG fixtures - `sweater-ordinary.jpg`, `base-photo-ordinary.jpg`,
+  `trousers-ordinary.jpg`, `shoes-ordinary.jpg`, `bag-ordinary.jpg` and
+  `jacket-ordinary.jpg` - were re-encoded from the legacy 4:4:4 settings to quality 100
+  with 4:2:0 subsampling. Their pixel dimensions did not change, but **their chroma
+  did**, so this is a re-encode and not a byte-identical pass-through. Each manifest
+  `derivation` states that per fixture with its own byte delta.
+- `sweater-ordinary.png` was replaced by a lossless PNG transcode. Its uncompressed
+  3,742,711-byte form and the normally compressed form of the same pixels (1,126,570 B
+  at `compress_level: 9`) both exceed the bound, so its pixels were reduced to 879x761
+  with the aspect ratio retained, for 696,168 B. No pixel was re-encoded lossily.
+- `sweater-ordinary.webp` re-encodes to the reviewed lossless settings unchanged.
+
+The `near-supported-limit` fixtures are not part of the set: they are recorded at their
+original sizes and SHA-256 values in the manifest's `s1_input_envelope.excluded_fixtures`,
+with `#140` as the reason, and a later reader must not read them as passing cases.
+Valid codec encoding/resize creates the fixtures; no padding or noise is added. The
+Pillow builder enforces the bound itself: it copies an accepted fixture through
+byte-for-byte at the reviewed encoding and refuses to write anything above the bound.
 
 The workflow preserves `.qualification-inputs/beta-sizing-runtime-before.json`
 and `test-results/beta-sizing-workload.json` in qualification diagnostics, including
