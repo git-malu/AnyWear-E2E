@@ -28,14 +28,22 @@ boundaries. It uses TypeScript, Playwright Test, Node.js 24, and pnpm 11.18.0.
 - Type check: `pnpm typecheck`
 - Discover tests: `pnpm test:list`
 - Smoke tests: `pnpm test:smoke`
-- Full suite: `pnpm test`
+- Deployed suite: `pnpm test` (every collected deployed scenario; the protected
+  qualification step runs it as the release gate)
+- Scenario classification: [docs/scenario-inventory.md](docs/scenario-inventory.md)
 
 Run install and build commands from this repository.
 
 ## Test Design
 
-- Tag stable critical paths with `@smoke` and all cross-repository scenarios with
-  `@full-stack`.
+- Tag stable critical paths with `@smoke`, release-gating scenarios with
+  `@regression`, and all cross-repository scenarios with `@full-stack`. Tag a
+  measurement workload or drill with `@instrumentation`: it is admitted as
+  measurement and can neither satisfy nor fail release qualification.
+- Classify every scenario in the [scenario inventory](docs/scenario-inventory.md):
+  its policy class, intent, selecting invocation, evidence level, cleanup contract
+  and what a red result means. A new scenario is admitted only under the testing
+  policy's admission rule.
 - Generate unique users and records per test so parallel execution is safe.
 - Clean up every cloud resource created by a test in teardown, even after a
   failed assertion.
@@ -57,4 +65,7 @@ Run install and build commands from this repository.
   pinned source alone does not prove the deployed system ran it.
 - The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
   execution for beta and later stages; it must not target dev. The Beta Qualification
-  workflow owns the complete deployed suite and release evidence.
+  workflow owns the release-gating deployed suite and its release evidence. A
+  measurement or drill scenario it hosts runs as its own invocation and carries no
+  release verdict, and a measurement result is never substituted for qualification
+  evidence.

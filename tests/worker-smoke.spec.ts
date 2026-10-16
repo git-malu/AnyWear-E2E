@@ -12,7 +12,7 @@ import { isServiceJsonResponse, sanitizedServiceErrorCode } from './support/serv
 // measurements stay untraced.
 test.use({ trace: 'retain-on-failure' });
 
-test.describe('Worker account smoke @smoke @full-stack', () => {
+test.describe('Worker account smoke @smoke @regression @full-stack', () => {
   test('signs in and reaches the dashboard and wardrobe', async ({ page, workerAccount }, testInfo) => {
     // This attempt creates no business resources, so it declares that explicitly:
     // the worker-lease teardown then releases the address on a committed

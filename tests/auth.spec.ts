@@ -8,7 +8,7 @@ import {
   type TestAccount,
 } from './support/account.js';
 
-test.describe('Optional public registration @full-stack', () => {
+test.describe('Optional public registration @regression @full-stack', () => {
   test.skip(process.env.E2E_PUBLIC_REGISTRATION_OPEN !== 'true',
     'Public registration is normally closed in Beta; enable it explicitly to run this scenario');
   let account: TestAccount | undefined;
