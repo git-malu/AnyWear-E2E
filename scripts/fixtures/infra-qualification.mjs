@@ -1,4 +1,5 @@
 import { byteHash, payloadDigest } from '../evidence-contract.mjs';
+import { environmentVerdict } from '../beta-sizing-environment.mjs';
 
 export function qualificationFixture({ forwardSchema = false, imageAhead = false } = {}) {
   const sha = (letter) => letter.repeat(40);
@@ -73,5 +74,28 @@ export function qualificationFixture({ forwardSchema = false, imageAhead = false
   const after = structuredClone(before);
   after.collected_at = '2026-10-08T00:10:00.000Z';
   after.authenticated.schema.verification.task_arn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
-  return { compatibility, deployment, input, evidence: { before, after } };
+  // The environment gate every passing record must state. The comparison input is the
+  // unchanged window `compareWorkerIdentity` reports when one worker task definition
+  // serves both ends of the suite; the record itself is produced by `environmentVerdict`,
+  // which owns the verdict key set, so this fixture cannot drift from that shape.
+  const environment = {
+    record: environmentVerdict({
+      comparison: {
+        verdict: 'unchanged',
+        reason: 'The worker task set and the worker task definition are unchanged across the suite window',
+        before_observed_at: before.collected_at,
+        after_observed_at: after.collected_at,
+        before_identity_sha256: hash('a'),
+        after_identity_sha256: hash('a'),
+        before_task_arns: [],
+        after_task_arns: [],
+        added_task_arns: [],
+        removed_task_arns: [],
+        task_definition_changed: false,
+      },
+      suiteOutcome: 'success',
+    }),
+    problem: null,
+  };
+  return { compatibility, deployment, input, evidence: { before, after }, environment };
 }

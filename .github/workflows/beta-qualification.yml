@@ -206,16 +206,26 @@ jobs:
           pnpm accounts:cleanup-workers
 
       - name: Attribute the suite outcome to the product or the Beta environment
-        # The verdict is evidence, not a gate: it attributes the run's outcome to the
-        # product or to the environment in its own artifact, and never turns a failed
-        # run green. The step below reports whatever it concluded. A cancelled or
-        # timed-out suite is `incomplete`, which asserts no product failure because
-        # none was established.
+        # The verdict is evidence, and the step below reports whatever it concluded: it
+        # attributes the run's outcome to the product or to the environment in its own
+        # artifact, and never turns a failed run green. A cancelled or timed-out suite is
+        # `incomplete`, which asserts no product failure because none was established.
+        # The verdict is also a qualification gate on the passing path: a suite that
+        # passed while the worker task definition changed refuses the qualification, while
+        # a rotation of task ARNs on one unchanged definition is still recorded only.
         id: environment
         if: ${{ always() }}
         env:
           SUITE_OUTCOME: ${{ steps.beta-suite.outcome == 'success' && 'success' || (steps.beta-suite.outcome == 'failure' && 'failure' || 'incomplete') }}
         run: node scripts/beta-sizing-environment.mjs verdict --suite-outcome "$SUITE_OUTCOME"
+
+      - name: Refuse a qualification measured across two worker definitions
+        # The blocking half of the policy: a suite measured across two worker task
+        # definitions measured neither of them, so its pass cannot become a
+        # qualification record. An ARN rotation alone still records and still
+        # qualifies, because the configuration under test did not change.
+        if: ${{ always() && steps.beta-suite.outcome == 'success' }}
+        run: node scripts/beta-sizing-environment.mjs qualification-gate
 
       - name: Preserve Beta suite failure
         if: ${{ always() && steps.beta-suite.outcome == 'failure' }}

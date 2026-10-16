@@ -8,7 +8,7 @@ import { buildQualificationRecord, collectDeploymentEvidence, verifyQualificatio
 import { assertRecoveryArtifact, prepareAccountRecovery } from './account-recovery-inputs.mjs';
 
 const now = new Date('2026-10-08T00:20:00.000Z');
-const qualify = (f) => buildQualificationRecord(f.input, f.compatibility, f.evidence, now);
+const qualify = (f) => buildQualificationRecord(f.input, f.compatibility, f.evidence, now, f.environment);
 
 test('strict JSON rejects escaped duplicate keys, invalid UTF-8/Unicode and non-JSON values', () => {
   for (const source of ['{"a":1,"\\u0061":2}', '{"a":{"x":1,"x":2}}', '1e999', '"\\ud800"', '\u00a0{}', '{"a":1,}', '[1,]']) {
