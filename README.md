@@ -445,7 +445,11 @@ sequential/burst, two repeats), then four VTO shapes twice. Two
 bursts overlap VTO submissions; actual same-Worker overlap must still be shown by
 telemetry. VTO uses one/three garment references on the served ordinary base photo,
 submitted smallest-first so each shape carries the least payload it can, with the
-default 2K output. These are representative cases bounded by the measured envelope
+default 2K output. Every garment is a fixture the run submits before the first VTO
+case, and each case resolves its garment ids from the frozen submission plan rather
+than from the uploads recorded when that case starts, so the submission order and the
+VTO order are independent of each other. These are representative cases bounded by
+the measured envelope
 below, not asserted product/provider maxima. The five-garment shape that carried the
 representative larger 4K output is deferred to #140 with its aggregate recorded; see
 the envelope section.
@@ -482,13 +486,42 @@ it is not made passable, it is not submitted. The constraint lives in
 `scripts/beta-sizing-envelope.mjs` as explicit constants, and every path that could
 exceed it fails loudly instead: `sizingUploadCases()` builds the matrix only from
 `SIZING_WORKLOAD.size_classes` and asserts the resulting count, `loadSizingFixtures`
-rejects any frozen fixture above the bound, any case input naming an excluded fixture
-and any garment list that is not the canonical smallest-first one, and `evidenceGap`
+rejects any frozen fixture above the bound, any case input naming an excluded fixture,
+any garment outside `S1_VTO_GARMENT_POOL`, and any garment list that is not the
+canonical smallest-first one, and `evidenceGap`
 marks a recorded upload, VTO base photo or VTO garment above the bound, or a VTO
 observation that does not report its aggregate, unqualified. The fixture manifest
 repeats the bound, its per-input basis, the measured inputs, the excluded fixtures, the
 historical VTO shape names and the deferred VTO shape, and the loader refuses a manifest
 whose declared envelope differs from these constants.
+
+**The VTO garment pool and its rule.** A VTO case must resolve each garment to the
+wardrobe item its upload created, so a garment may only be a fixture the run submits
+*before* the first VTO case. `S1_VTO_GARMENT_POOL` is therefore the sequential half's
+uploads restricted to the reviewed garment formats - `VTO_GARMENT_FORMATS`, the ordinary
+JPEG and PNG. `sequentialGarmentUploads()` derives exactly that rule from
+`mime` and the case set, and the loader refuses a pool that does not equal it;
+`createSizingVtoGarmentPlan()` then refuses any case whose garment the plan cannot
+resolve, naming the fixture and the case before the first VTO is accepted.
+
+The rule costs coverage, and that trade is accepted rather than hidden. The sequential
+half submits four distinct fixtures and the pool holds three:
+
+- `bag-ordinary.jpg` and `shoes-ordinary.jpg` are **burst-only** - the only upload cases
+  that carry them are `burst-ordinary-jpg-1` and `burst-ordinary-jpg-0`, which launch
+  *inside* the VTO loop. No pre-VTO upload produces their wardrobe item, so they cannot
+  be resolved when the first VTO case needs one. These two are the fixtures the
+  previous five-id `S1_VTO_GARMENT_ORDER` named and the defect this change fixes.
+- `sweater-ordinary.webp` is deliberately outside the reviewed garment formats: it is the
+  WebP format-coverage fixture, not a garment reference. It is submitted sequentially,
+  so it is excluded by the format rule rather than by timing.
+- `sweater-ordinary.png` **is** a pool garment. It is submitted sequentially as
+  `sequential-ordinary-png-0` - the case whose 696,168-byte upload reached terminal
+  `ready` in run 38844432804 - and it is not burst-only.
+
+So VTO coverage no longer includes the two smallest fixtures. The submitted shapes keep
+their one/three garment counts and their smallest-first order within the pool, and the
+aggregates that follow from the frozen bytes are stated in the aggregate bullet below.
 
 The run aborted at that third case, so **no VTO generation has ever run in this
 workload** and every route sample count is 0. The VTO cases are therefore unobserved
@@ -518,7 +551,21 @@ What this measurement covers, and what it does not:
   base photo is a 2,953,744-byte aggregate, about 79% of the 3,742,711-byte single input
   whose base64 payload exhausted the 60 s budget. Keeping it would stake the measurement
   on the shape most likely to reproduce the failure this bound works around. It returns
-  when a run passes with it, with its aggregate recorded.
+  when a run passes with it, with its aggregate recorded. The aggregates the **submitted**
+  shapes carry are not frozen numbers but the sum of the frozen fixture bytes each case
+  names: for the shipped bytes the one-garment shapes submit 933,902 B
+  (545,720 + 388,182) and the three-garment shapes 2,294,523 B
+  (545,720 + 388,182 + 664,453 + 696,168), both above the per-input bound and both
+  recorded per observation, recomputed by `vtoAggregateSubmittedBytes` rather than
+  restated, so a fixture re-encode cannot leave a stale claim behind.
+- **The submitted-shape aggregates follow the pool.** The 933,902 B and 2,294,523 B
+  above are the sums the current pool produces, not independent limits. Adding a fixture
+  back as a garment - `bag-ordinary.jpg`, `shoes-ordinary.jpg` or
+  `sweater-ordinary.webp` - or re-encoding a pool fixture moves them, which is why they
+  are recomputed rather than restated. The deferred shape's own 2,408,024 B, 545,720 B and
+  2,953,744 B are restated constants, so the test recomputes all three from the frozen
+  fixtures and fails on any difference: those figures may not outlive the bytes they
+  describe.
 - **Widening needs a passing run.** Re-adding an input above 697,437 B — the removed
   `near-supported-limit` class, `base-photo-large.jpg`, or the deferred five-garment 4K
   shape — requires a run that passes at those sizes, and that run's evidence must then

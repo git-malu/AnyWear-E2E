@@ -61,9 +61,22 @@ export const S1_INPUT_EXCLUDED_FIXTURES = Object.freeze([
 // quantity from the per-input bound and is NOT proven by this envelope: no VTO
 // generation has ever run in this workload. Garments are ordered smallest-first
 // so each shape carries the least payload it can.
-export const S1_VTO_GARMENT_ORDER = Object.freeze([
-  'bag-ordinary.jpg', 'shoes-ordinary.jpg', 'trousers-ordinary.jpg',
-  'jacket-ordinary.jpg', 'sweater-ordinary.png',
+//
+// The pool is CONSTRAINED to the garment references the submission plan resolves
+// before the VTO cases. It was a five-id list, and only three of those ids survive:
+// `bag-ordinary.jpg` and `shoes-ordinary.jpg` are submitted ONLY by burst uploads,
+// which launch inside the VTO loop, so no VTO case can resolve them, and
+// `sweater-ordinary.webp` is outside the reviewed garment formats. Note that
+// `sweater-ordinary.png` IS a sequential upload - it is `sequential-ordinary-png-0`,
+// the case whose 696,168-byte upload passed in run 38844432804 - so it stays. The
+// rule, its reason and the coverage it trades away are recorded in the README's
+// "Measured S1 input envelope and its limits" section. The workload module refuses a
+// pool that differs from the sequential uploads it resolves, and
+// `createSizingVtoGarmentPlan` refuses a case whose garment the submission plan
+// cannot resolve. A reference outside this pool is not resolvable and is not
+// "maybe later": it fails.
+export const S1_VTO_GARMENT_POOL = Object.freeze([
+  'trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary.png',
 ]);
 
 export const SIZING_VTO_AGGREGATE_LIMIT = 'per submitted input, not per aggregate: the VTO aggregate (base photo '
@@ -85,7 +98,13 @@ export const S1_DEFERRED_VTO_SHAPE = Object.freeze({
   shape: 'representative-larger-outfit-output',
   garment_count: 5,
   advanced_settings: Object.freeze({ size: '4K' }),
-  garment_fixtures: S1_VTO_GARMENT_ORDER,
+  // The deferred record keeps its own frozen five-garment list verbatim rather
+  // than tracking the submitted pool: it is a record of the shape that is NOT
+  // submitted, so it must not drift with the pool that is.
+  garment_fixtures: Object.freeze([
+    'bag-ordinary.jpg', 'shoes-ordinary.jpg', 'trousers-ordinary.jpg',
+    'jacket-ordinary.jpg', 'sweater-ordinary.png',
+  ]),
   garment_only_bytes: 2_408_024,
   base_photo_bytes: 545_720,
   aggregate_submitted_bytes: 2_953_744,
@@ -129,12 +148,12 @@ export function assertSizingInputEnvelope(bytes, label, { bound = S1_INPUT_BYTES
 
 // Garment selects are ordered smallest-first so a shape carries the least payload
 // it can; a reordered or padded list would raise the aggregate without adding
-// coverage.
+// coverage. The select is drawn from `S1_VTO_GARMENT_POOL`, the resolvable pool.
 export function orderedSizingGarments(fixtures, count) {
-  if (!Number.isInteger(count) || count < 1 || count > S1_VTO_GARMENT_ORDER.length) {
-    throw new Error(`A VTO shape may submit between 1 and ${S1_VTO_GARMENT_ORDER.length} garments`);
+  if (!Number.isInteger(count) || count < 1 || count > S1_VTO_GARMENT_POOL.length) {
+    throw new Error(`A VTO shape may submit between 1 and ${S1_VTO_GARMENT_POOL.length} garments`);
   }
-  const ordered = S1_VTO_GARMENT_ORDER.map(id => {
+  const ordered = S1_VTO_GARMENT_POOL.map(id => {
     const fixture = fixtures.get(id);
     if (!fixture) throw new Error(`Frozen garment ${id} is missing from the sizing fixture set`);
     return { id, bytes: fixture.bytes };
