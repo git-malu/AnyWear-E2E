@@ -180,6 +180,29 @@ test('binds the sizing workload record to the identity the suite started in', ()
   assert.equal(environmentVerdict({ comparison, suiteOutcome: 'success' }).workload_binding.record_present, false);
 });
 
+test('asserts no product failure for a suite that neither passed nor failed', () => {
+  // A cancelled suite and a suite ended by the job timeout both arrive as
+  // `incomplete`. No product failure was established, so none may be recorded; the
+  // run is already red from the cancelled step.
+  const passed = suiteWindow();
+  const unchanged = environmentVerdict({
+    comparison: compareWorkerIdentity(passed.before, passed.after), suiteOutcome: 'incomplete',
+  });
+  assert.equal(unchanged.verdict, 'unchanged');
+  assert.equal(unchanged.attribution, 'undetermined');
+  assert.equal(unchanged.product_failure_asserted, false);
+  const rotated = suiteWindow({ afterTasks: [workerTask('b')] });
+  const replaced = environmentVerdict({
+    comparison: compareWorkerIdentity(rotated.before, rotated.after), suiteOutcome: 'incomplete',
+  });
+  assert.equal(replaced.verdict, 'environment-changed');
+  assert.equal(replaced.product_failure_asserted, false);
+  // Only the three known outcomes are accepted, so a new GitHub step outcome cannot
+  // be silently mapped onto a product-failure claim.
+  assert.throws(() => environmentVerdict({ comparison: unchanged.comparison ?? {}, suiteOutcome: 'cancelled' }),
+    /success, failure or incomplete/);
+});
+
 test('reads a missing or malformed environment input as a recorded problem', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'anywear-env-'));
   try {

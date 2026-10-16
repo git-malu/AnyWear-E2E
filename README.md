@@ -506,15 +506,25 @@ comparison rules while the spec keeps recording what it observed.
 
 A verdict of `environment-changed` **replaces the product-failure report**: the run
 states that the platform was redeployed under the suite and that no product failure is
-asserted. It does not turn the run green. A run the platform was redeployed under cannot
-qualify the release, so the job still ends non-success and no qualification record is
-created. The converse is equally strict: a case that fails while the worker identity is
-unchanged is still a product failure, and a check that could not be established is
-reported as `unavailable` so the failure keeps standing instead of being explained away.
-The verdict is a conservative label rather than per-case causation - the captures
-bracket the suite and cannot say when a rotation happened relative to the interrupted
-case - so a genuine product failure that coincides with a worker replacement is reported
-as an environment change and must be re-adjudicated by a re-run.
+asserted. It does not turn the run green. When the suite failed, the job still ends
+non-success and no qualification record is created. The converse is equally strict: a
+case that fails while the worker identity is unchanged is still a product failure, and a
+check that could not be established is reported as `unavailable` so the failure keeps
+standing instead of being explained away. An `incomplete` suite - one that was cancelled
+or ended by the job timeout and so neither passed nor produced a product failure -
+asserts no product failure either, because none was established; its red run comes from
+the cancelled step. The verdict is a conservative label rather than per-case causation -
+the captures bracket the suite and cannot say when a rotation happened relative to the
+interrupted case - so a genuine product failure that coincides with a worker replacement
+is reported as an environment change and must be re-adjudicated by a re-run.
+
+The verdict annotates a run; it is not itself a qualification gate. A suite that **passed**
+while the workers were replaced still creates its qualification record, because what it
+observed was the product behaving correctly, and the deployed tuple it qualifies is
+rechecked independently by `Confirm deployed identities remained stable`. A rotation with
+an unchanged Client, Service and image is recorded as `environment-changed` evidence in
+the verdict rather than acted on; only a change to the deployed tuple fails that recheck.
+A redeployment that replaces the tuple therefore still cannot qualify the release.
 
 The capture is unconditional for every qualification run, not only for the opt-in sizing
 stage, because a deployment change cannot qualify release evidence of any kind. The

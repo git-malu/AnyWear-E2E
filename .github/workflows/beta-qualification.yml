@@ -208,20 +208,22 @@ jobs:
       - name: Attribute the suite outcome to the product or the Beta environment
         # The verdict is evidence, not a gate: it attributes the run's outcome to the
         # product or to the environment in its own artifact, and never turns a failed
-        # run green. The step below reports whatever it concluded.
+        # run green. The step below reports whatever it concluded. A cancelled or
+        # timed-out suite is `incomplete`, which asserts no product failure because
+        # none was established.
         id: environment
         if: ${{ always() }}
         env:
-          SUITE_OUTCOME: ${{ steps.beta-suite.outcome == 'success' && 'success' || 'failure' }}
+          SUITE_OUTCOME: ${{ steps.beta-suite.outcome == 'success' && 'success' || (steps.beta-suite.outcome == 'failure' && 'failure' || 'incomplete') }}
         run: node scripts/beta-sizing-environment.mjs verdict --suite-outcome "$SUITE_OUTCOME"
 
       - name: Preserve Beta suite failure
         if: ${{ always() && steps.beta-suite.outcome == 'failure' }}
         env:
-          PRODUCT_FAILURE_ASSERTED: ${{ steps.environment.outputs.product_failure_asserted }}
+          ENVIRONMENT_VERDICT: ${{ steps.environment.outputs.verdict }}
           ENVIRONMENT_REASON: ${{ steps.environment.outputs.reason }}
         run: |
-          if [[ "$PRODUCT_FAILURE_ASSERTED" == "false" ]]; then
+          if [[ "$ENVIRONMENT_VERDICT" == "environment-changed" ]]; then
             echo "::error title=Environment changed during the suite::${ENVIRONMENT_REASON}"
             {
               echo "### Environment changed during the Beta suite"

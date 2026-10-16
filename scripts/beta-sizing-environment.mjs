@@ -274,15 +274,23 @@ export function compareWorkerIdentity(before, after, { problem } = {}) {
 // The verdict is the machine-readable answer to "was the platform redeployed
 // under us?" It annotates the run; it never turns a red run green, because a run
 // the platform was redeployed under cannot qualify the release.
+//
+// `suiteOutcome` is 'success', 'failure', or 'incomplete' for a suite that neither
+// passed nor produced a product failure - a cancelled run, or one the job timeout
+// ended. An incomplete suite asserts no product failure, because no product failure
+// was established; its red run comes from the cancelled step itself.
 export function environmentVerdict({ comparison, suiteOutcome, workload = null }) {
-  if (!['success', 'failure'].includes(suiteOutcome)) throw new Error('A verdict needs the suite outcome: success or failure');
+  if (!['success', 'failure', 'incomplete'].includes(suiteOutcome)) {
+    throw new Error('A verdict needs the suite outcome: success, failure or incomplete');
+  }
   if (!comparison || !['changed', 'unchanged', 'unavailable'].includes(comparison.verdict)) {
     throw new Error('A verdict needs a worker identity comparison');
   }
   const changed = comparison.verdict === 'changed';
   const coverageEstablished = comparison.verdict !== 'unavailable';
   const productFailureAsserted = suiteOutcome === 'failure' && !changed;
-  const attribution = changed ? 'environment' : productFailureAsserted ? 'product' : 'none';
+  const attribution = changed ? 'environment' : suiteOutcome === 'failure' ? 'product'
+    : suiteOutcome === 'incomplete' ? 'undetermined' : 'none';
   const verdict = changed ? 'environment-changed' : coverageEstablished ? 'unchanged' : 'unavailable';
   const reason = changed
     ? `${comparison.reason}; the suite outcome is attributed to the environment, not to a product failure`
