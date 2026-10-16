@@ -20,22 +20,22 @@ export const DIAGNOSTIC_EXPECTED = Object.freeze({
     sha: 'fdaff2b63886ebc81c85e685fb231fce673bc219',
     workflow_path: DIAGNOSTIC_WORKFLOW,
     workflow_ref: `${repositories.infra}/${DIAGNOSTIC_WORKFLOW}@refs/heads/main`,
-    run_id: 38849233045,
+    run_id: 38861241917,
     run_attempt: 1,
   }),
   artifacts: Object.freeze({
     deployment: Object.freeze({
-      id: 12024484073,
-      name: 'infra-deployment-38849233045-1',
-      zip_sha256: '4c70a9c82d81d2c8410398c101e07041a60362640e8542c14384856907dca17d',
-      record_sha256: '05fd36542319e458e0478f6d10829c0b0239c09e4d3b2067797cbff18281817a',
+      id: 12030215722,
+      name: 'infra-deployment-38861241917-1',
+      zip_sha256: '50ed06843388989f5695bb7c7ffe663969ce07b03e8ce05d7db1ebf50a9c022e',
+      record_sha256: '994bad9583d878c586dffa91f993e42c1dd15fd02a95695044143c6d6531d961',
       member: 'deployment-record.json',
     }),
     operation: Object.freeze({
-      id: 12024623621,
-      name: 'infra-operation-38849233045-1',
-      zip_sha256: '3729c9674a2a17c3dc108aabe23a8bfd6f774c5b548b5dc28a21d95209d7fa18',
-      record_sha256: 'c87dafc42be4bbb5c2573ae04c89e7e4728463d7774eff82498635f33309deeb',
+      id: 12029377964,
+      name: 'infra-operation-38861241917-1',
+      zip_sha256: '7d42ebf0ac8f860106bca2304d64df8a7aa4c198472796c43735985557f94987',
+      record_sha256: '1cf7dbcb914f2b450ca13404e2340f42748a3b8ec077c93de60f6ebce1d27775',
       member: 'operation-record.json',
     }),
   }),
@@ -61,13 +61,13 @@ export const DIAGNOSTIC_EXPECTED = Object.freeze({
     client_sha: '7b92ace1719b1ed53eb5a7cce2bfe32ef327410a',
     api_endpoint: 'https://d1pfqujqt29n11.cloudfront.net',
     client_endpoint: 'https://d2rztl7o0y7rf8.cloudfront.net',
-    api_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:67',
-    worker_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:66',
+    api_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-api:69',
+    worker_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-worker:68',
     rollout_state: 'UPDATE_COMPLETE',
     schema_version: 17,
-    prior_verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/ffb3efc01ad449c6ae395bc38df55e75',
-    verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/ac74d8bb0df641e7b3d152408cd3e2e3',
-    verify_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:162',
+    prior_verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/5f81793e0cc24710bbe8b71eeeed2bdf',
+    verify_task: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/21f040880e0f40a98defd48388a60ff1',
+    verify_task_definition: 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:165',
   }),
   capability: Object.freeze({
     state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:6',
@@ -169,7 +169,7 @@ function validateObservation(record, expected) {
     || record.schema.verification.executor.repository !== expected.infra.repository || record.schema.verification.executor.run_attempt !== expected.infra.run_attempt
     || record.schema.verification.executor.run_id !== expected.infra.run_id || record.schema.verification.executor.sha !== expected.infra.sha
     || record.schema.verification.executor.workflow_path !== DIAGNOSTIC_WORKFLOW || !TASK.test(record.schema.verification.task_arn)
-    || record.schema.verification.task_definition_arn !== 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:125') throw new Error('Diagnostic schema verification binding mismatch');
+    || record.schema.verification.task_definition_arn !== 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:134') throw new Error('Diagnostic schema verification binding mismatch');
   return { selector, record };
 }
 
@@ -219,7 +219,7 @@ function validateOperation(operation, expected, observation) {
   if (definitions.length !== 2) throw new Error('Diagnostic runtime task definitions are incomplete');
   definitions.forEach((definition, index) => {
     exactKeys(definition, ['task_definition_arn', 'type'], 'Diagnostic runtime task definition');
-    if (definition.task_definition_arn !== `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:${index === 0 ? 124 : 125}`) throw new Error('Diagnostic runtime task definition is foreign');
+    if (definition.task_definition_arn !== `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:${index === 0 ? 133 : 134}`) throw new Error('Diagnostic runtime task definition is foreign');
   });
   for (const [index, task] of started.entries()) {
     exactKeys(task, ['result', 'task_arns', 'type'], 'Diagnostic runtime task');
