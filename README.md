@@ -45,7 +45,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # eight current offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 24 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -72,13 +72,19 @@ suite; a filename wildcard cannot select a routine or release gate.
 | `test` / `test:full-stack` | E2E maintainers; allocated Beta+ qualification | Deployed business flows, identity creation and cleanup, external VLM/provider work; only the complete qualification workflow and its evidence can qualify a release |
 | `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
 
-The eight routine core files retain account-budget, Cognito cleanup, qualification
+The 24 registered core files retain account-budget, Cognito cleanup, qualification
 record, wardrobe cleanup and worker cleanup contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
-`trusted-deployment-inputs.test.mjs` contracts. The latter protect pinned source,
-committed selection, direct native release verification, deployment identity and execution validation; their
-offline assertions remain required by `check` without claiming actual publication or
-qualification.
+`trusted-deployment-inputs.test.mjs` contracts. `test:core` also owns
+`scripts/beta-cleanup-diagnostic.test.mjs`, which asserts the cleanup diagnostic's
+`DIAGNOSTIC_EXPECTED` evidence record offline, without credentials, cloud calls or
+deployed reads; it belongs with its `cleanup-acceptance.test.mjs`,
+`service-cleanup-operation.test.mjs` and `worker-cleanup.test.mjs` neighbours, and its
+production module is consumed by `scripts/account-recovery-inputs.mjs` and
+`scripts/cleanup-worker-accounts.mjs`. The infra contracts protect pinned source,
+committed selection, direct native release verification, deployment identity and
+execution validation; their offline assertions remain required by `check` without
+claiming actual publication or qualification.
 
 The tool workflow watches the registered tests, their implementation and fixture
 dependencies, shared evidence/source contracts, vendored direct-release validators and
@@ -91,7 +97,7 @@ define classification, cost, evidence and retirement policy.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit eight core test files, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit 24 core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
