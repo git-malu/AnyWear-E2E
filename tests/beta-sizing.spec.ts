@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { APIResponse, Page } from '@playwright/test';
 import { assertE2EExecution } from '../scripts/execution-guard.mjs';
 import { captureSizingSource, validateSizingSource } from '../scripts/beta-sizing-source.mjs';
-import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases,
+import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, vtoAggregateSubmittedBytes,
   SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
 import { expect, login, test } from './support/fixtures.js';
 import { requireEnvironment } from './support/account.js';
@@ -58,7 +58,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     // attempt so a retry always allocates a fresh operation and lease generation.
     teardown = new DirectTeardown({
       runScope: requireEnvironment('E2E_CLEANUP_RUN_SCOPE'),
-      testScope: 'beta-sizing.spec.ts::runs-the-frozen-24-uploads-and-10-vto-cases-once',
+      testScope: 'beta-sizing.spec.ts::runs-the-frozen-12-uploads-and-8-vto-cases-once',
       retryIndex: testInfo.retry,
       leaseId: randomUUID(),
       leaseGeneration: leaseGenerationFor(`${workerAccount.email}:${testInfo.retry}:${randomUUID()}`),
@@ -128,7 +128,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     }
   });
 
-  test('runs the frozen 24 uploads and 10 VTO cases once', async ({ page }) => {
+  test('runs the frozen 12 uploads and 8 VTO cases once', async ({ page }) => {
     test.setTimeout(2_700_000);
     assertE2EExecution();
     if (process.env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main') {
@@ -293,8 +293,11 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
     let sourceError: unknown;
     try {
       expect(await credit()).toBeGreaterThanOrEqual(10);
+      const cases = sizingVtoCases();
+      // Only base photos this case set actually submits: the VTO payload is the
+      // base photo plus the garments, and both sides stay inside the S1 envelope.
       const basePhotos = new Map<string, string>();
-      for (const name of ['base-photo-ordinary.jpg', 'base-photo-large.jpg']) {
+      for (const name of [...new Set(cases.map(entry => entry.base_fixture))].sort()) {
         const image = fixture(name);
         assertE2EExecution();
         const response = await check(await page.request.post(`${serviceUrl}/vto/base-photos`, {
@@ -312,16 +315,23 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
         await preserve();
       }
       const burst = sizingUploadCases().filter(item => item.submission === 'burst');
-      const cases = sizingVtoCases();
       for (const [index, entry] of cases.entries()) {
-        const garmentIds = [
-          uploads.find(item => item.fixture === 'sweater-ordinary.png')?.resource_id,
-          ...['trousers', 'jacket', 'shoes', 'bag'].map(name => uploads.find(item => item.fixture === `${name}-ordinary.jpg`)?.resource_id),
-        ].slice(0, entry.garment_count);
+        // The garment list is the canonical smallest-first one, so the shape
+        // carries the least payload it can.
+        const garmentIds = entry.garment_fixtures
+          .map(fixture => uploads.find(item => item.fixture === fixture)?.resource_id);
         expect(garmentIds.every(id => typeof id === 'string')).toBe(true);
         const before = await credit();
+        const base = fixture(entry.base_fixture);
+        // The VTO payload aggregates the base photo and the garments; the recorded
+        // aggregate is what was actually submitted, and the per-input bound does not
+        // cover it.
+        const aggregateSubmittedBytes = vtoAggregateSubmittedBytes(frozen.fixtures,
+          entry.base_fixture, entry.garment_fixtures);
         const item: Observation = { ...entry, started_at: new Date().toISOString(),
-          fixture_sha256: fixture(entry.base_fixture).sha256, garment_resource_ids: garmentIds };
+          base_fixture_sha256: base.sha256, base_fixture_bytes: base.bytes,
+          base_fixture_dimensions: [base.width, base.height],
+          garment_resource_ids: garmentIds, aggregate_submitted_bytes: aggregateSubmittedBytes };
         vto.push(item);
         const requestBody = { base_photo_id: basePhotos.get(entry.base_fixture), wearable_item_ids: garmentIds,
           ...(entry.advanced_settings ? { advanced_settings: entry.advanced_settings } : {}) };

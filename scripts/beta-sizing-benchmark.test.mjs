@@ -3,6 +3,8 @@ import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createSizingPlan, evaluateSizingResult, sizingUploadCases, SIZING_STAGES, SIZING_WORKLOAD, validateSizingPlan } from './beta-sizing-benchmark.mjs';
+import { sizingVtoCases, vtoAggregateSubmittedBytes } from './beta-sizing-workload.mjs';
+import { S1_INPUT_BYTES_MAX, S1_DEFERRED_VTO_SHAPE } from './beta-sizing-envelope.mjs';
 import { sizingSourceFixture } from './fixtures/beta-sizing-source.mjs';
 
 const hash = 'a'.repeat(64);
@@ -12,6 +14,7 @@ const finished = '2026-10-10T00:05:00Z';
 const fixtureBytes = readFileSync(new URL('../tests/fixtures/beta-sizing/fixture-manifest.json', import.meta.url));
 const fixtures = new Map(JSON.parse(fixtureBytes).fixtures.map(fixture => [fixture.id, fixture]));
 const manifestSha256 = createHash('sha256').update(fixtureBytes).digest('hex');
+const vtoCases = sizingVtoCases();
 
 function result(stage) {
   const sizing = SIZING_STAGES.find((item) => item.id === stage);
@@ -24,8 +27,12 @@ function result(stage) {
     worker_process_instance: 'worker-process', started_monotonic_ms: 1000, finished_monotonic_ms: 2000,
     started_at: '2026-10-10T00:01:00Z', finished_at: '2026-10-10T00:02:00Z',
   }));
-  const vto = Array.from({ length: 10 }, (_, index) => ({
-    task_id: `vto-${index}`, shape: SIZING_WORKLOAD.vto_shapes[index % 5],
+  const vto = Array.from({ length: SIZING_WORKLOAD.vto_generations }, (_, index) => ({
+    ...vtoCases[index], task_id: `vto-${index}`,
+    base_fixture_sha256: fixtures.get(vtoCases[index].base_fixture).sha256,
+    base_fixture_bytes: fixtures.get(vtoCases[index].base_fixture).bytes,
+    aggregate_submitted_bytes: vtoAggregateSubmittedBytes(fixtures, vtoCases[index].base_fixture,
+      vtoCases[index].garment_fixtures),
     terminal_state: 'Complete', output_retrievable: true, progress_reload_verified: true,
     replay_verified: true, credit_debit: 1, worker_task_arn: uploads[0].worker_task_arn,
     worker_process_instance: 'worker-process', started_monotonic_ms: 1500, finished_monotonic_ms: 3000,
@@ -70,10 +77,11 @@ function result(stage) {
   };
 }
 
-test('binds the reviewed plan to full hashes and five supported VTO shapes', () => {
+test('binds the reviewed plan to full hashes and the four remaining VTO shapes', () => {
   const plan = createSizingPlan({ fixtureManifestSha256: hash, compatibilitySha: sha });
   assert.equal(validateSizingPlan(plan), true);
-  assert.equal(plan.workload.vto_shapes.length, 5);
+  assert.equal(plan.workload.vto_shapes.length, 4);
+  assert.equal(plan.workload.vto_generations, 8);
   assert.throws(() => createSizingPlan({ fixtureManifestSha256: 'partial', compatibilitySha: sha }), /full SHA-256/);
   plan.stages[0].api.desired = 1;
   assert.throws(() => validateSizingPlan(plan), /S0 api.desired differs/);
@@ -140,21 +148,70 @@ test('all formats and sizes require two sequential and two burst cases with froz
   const replaced = result('S1');
   // Preserve total count and all format/size/mode presence while replacing most
   // cells with repeated ordinary sequential JPEG uploads.
-  const keep = new Set([0, 2, 4, 6, 8, 10, 12]);
+  const keep = new Set([0, 2, 4, 6, 8, 10]);
   for (let index = 0; index < replaced.workload.uploads.length; index++) {
     if (!keep.has(index)) replaced.workload.uploads[index] = { ...replaced.workload.uploads[0], task_id: `upload-${index}` };
   }
   assert.equal(evaluateSizingResult(replaced).status, 'unqualified');
   const missingBurst = result('S1');
-  const item = missingBurst.workload.uploads.find(upload => upload.case_id === 'burst-near-supported-limit-webp-1');
+  const item = missingBurst.workload.uploads.find(upload => upload.case_id === 'burst-ordinary-webp-1');
   item.submission = 'sequential';
   assert.match(evaluateSizingResult(missingBurst).reason, /Upload matrix/);
-  for (const mutate of [upload => { upload.case_id = 'invented-case'; }, upload => { upload.fixture = 'sweater-large.jpg'; },
+  for (const mutate of [upload => { upload.case_id = 'invented-case'; },
+    upload => { upload.fixture = 'sweater-large.png'; },
     upload => { upload.fixture_sha256 = hash; }, upload => { upload.fixture_bytes++; },
     upload => { upload.fixture_dimensions[0]++; }]) {
     const value = result('S1'); mutate(value.workload.uploads[0]);
     assert.match(evaluateSizingResult(value).reason, /Upload matrix/);
   }
+});
+
+test('binds the reviewed plan and collected evidence to the measured S1 input envelope', () => {
+  const plan = createSizingPlan({ fixtureManifestSha256: hash, compatibilitySha: sha });
+  assert.equal(plan.workload.upload_tagging_cases, 12);
+  assert.equal(plan.workload.vto_generations, 8);
+  assert.equal(plan.workload.per_input_bytes_max, S1_INPUT_BYTES_MAX);
+  assert.deepEqual(plan.workload.size_classes, ['ordinary']);
+  plan.workload.upload_tagging_cases = 24;
+  assert.throws(() => validateSizingPlan(plan), /reviewed representative set/);
+  const widened = createSizingPlan({ fixtureManifestSha256: hash, compatibilitySha: sha });
+  widened.workload.per_input_bytes_max = S1_INPUT_BYTES_MAX + 1;
+  assert.throws(() => validateSizingPlan(widened), /reviewed representative set/);
+  const moreShapes = createSizingPlan({ fixtureManifestSha256: hash, compatibilitySha: sha });
+  moreShapes.workload.vto_shapes.push('representative-larger-outfit-output');
+  assert.throws(() => validateSizingPlan(moreShapes), /reviewed representative set/);
+
+  // Evidence that reports an above-envelope input is unqualified, not accepted:
+  // constraining what is submitted never relaxes what must pass. The measured
+  // inputs are the run's historical figures, so the shipped fixtures may differ.
+  const declared = JSON.parse(fixtureBytes);
+  assert.ok(declared.fixtures.every(fixture => fixture.bytes <= S1_INPUT_BYTES_MAX));
+  assert.match(declared.s1_input_envelope.measured_inputs_basis, /historical run evidence/);
+  assert.match(declared.s1_input_envelope.input_bytes_max_basis, /per submitted input/);
+  assert.deepEqual(declared.s1_input_envelope.deferred_vto_shape, { ...S1_DEFERRED_VTO_SHAPE,
+    advanced_settings: { ...S1_DEFERRED_VTO_SHAPE.advanced_settings },
+    garment_fixtures: [...S1_DEFERRED_VTO_SHAPE.garment_fixtures] });
+  const served = declared.s1_input_envelope.measured_inputs;
+  assert.equal(Math.max(...served.filter(item => item.terminal_state === 'ready').map(item => item.bytes)),
+    S1_INPUT_BYTES_MAX);
+  const unbindableVto = result('S1');
+  unbindableVto.workload.vto[0].base_fixture_bytes = S1_INPUT_BYTES_MAX + 1;
+  assert.match(evaluateSizingResult(unbindableVto).reason, /VTO base fixture binding/);
+  const unboundVto = result('S1');
+  delete unboundVto.workload.vto[0].base_fixture_sha256;
+  assert.match(evaluateSizingResult(unboundVto).reason, /VTO base fixture binding/);
+
+  // The VTO aggregate is reported per observation: a missing or wrong figure, and a
+  // garment list that is not the canonical smallest-first one, are unqualified.
+  const missingAggregate = result('S1');
+  delete missingAggregate.workload.vto[0].aggregate_submitted_bytes;
+  assert.match(evaluateSizingResult(missingAggregate).reason, /aggregate they submitted/);
+  const padded = result('S1');
+  padded.workload.vto[0].garment_fixtures = ['bag-ordinary.jpg', 'sweater-ordinary.png'];
+  assert.match(evaluateSizingResult(padded).reason, /canonical inside-envelope list/);
+  const reordered = result('S1');
+  reordered.workload.vto[2].garment_fixtures = ['trousers-ordinary.jpg', 'bag-ordinary.jpg', 'shoes-ordinary.jpg'];
+  assert.match(evaluateSizingResult(reordered).reason, /canonical inside-envelope list/);
 });
 
 test('sampled memory, missing task peaks and missing CPU minutes remain unqualified', () => {

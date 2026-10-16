@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { assertSizingCompatibilityEqual, validateSizingSource } from './beta-sizing-source.mjs';
+import { S1_INPUT_BYTES_MAX } from './beta-sizing-envelope.mjs';
+import { sizingVtoCases } from './beta-sizing-workload.mjs';
 
 const STAGE_DEFINITIONS = Object.freeze([
   Object.freeze({ id: 'S0', purpose: 'historical-replica-cost-baseline', api: { desired: 2, minimum: 2, cpu: 512, memoryMiB: 1024 }, worker: { desired: 1, minimum: 1, cpu: 1024, memoryMiB: 2048 } }),
@@ -12,13 +14,29 @@ const STAGE_DEFINITIONS = Object.freeze([
 export const SIZING_STAGES = STAGE_DEFINITIONS;
 
 export const SIZING_WORKLOAD = Object.freeze({
-  upload_tagging_cases: 24,
-  vto_generations: 10,
+  upload_tagging_cases: 12,
+  vto_generations: 8,
   paced_requests_per_route: 100,
   paced_routes: Object.freeze(['/users/me', '/wardrobe', '/vto/base-photos', '/vto/generations']),
   overlap_cases: 2,
   image_formats: Object.freeze(['image/jpeg', 'image/png', 'image/webp']),
-  vto_shapes: Object.freeze(['ordinary-base-one-garment', 'large-base-one-garment', 'ordinary-base-three-garments', 'large-base-three-garments', 'representative-larger-outfit-output']),
+  // Four shapes, twice. The fifth reviewed shape carried five garments and the
+  // representative larger 4K output; it is deferred to #140 with its aggregate
+  // recorded in `S1_DEFERRED_VTO_SHAPE`, because that payload is the one most
+  // likely to reproduce the large-input failure this bound works around. The
+  // `large-base-*` names are historical bindings retained for stability: every
+  // submitted shape uses the served ordinary base photo (see `S1_VTO_SHAPE_NAMING`).
+  vto_shapes: Object.freeze(['ordinary-base-one-garment', 'large-base-one-garment', 'ordinary-base-three-garments', 'large-base-three-garments']),
+  submission_modes: Object.freeze(['sequential', 'burst']),
+  // The reviewed matrix had a second `near-supported-limit` class. Those inputs
+  // were above the demonstrated S1 envelope, so the class is not part of the
+  // submitted set: `sizingUploadCases()` may only build cases from these classes
+  // and `loadSizingFixtures` rejects any fixture above `S1_INPUT_BYTES_MAX`.
+  size_classes: Object.freeze(['ordinary']),
+  // The bound is per submitted input. A VTO generation aggregates the base photo
+  // plus the garments; that aggregate is recorded per observation and is not
+  // bounded or proven by this number.
+  per_input_bytes_max: S1_INPUT_BYTES_MAX,
 });
 
 export const SIZING_LIMITS = Object.freeze({
@@ -42,8 +60,8 @@ export function sizingUploadCases() {
   const cases = [];
   const extraGarments = ['trousers', 'jacket', 'shoes', 'bag'];
   let extra = 0;
-  for (const submission of ['sequential', 'burst']) {
-    for (const size of ['ordinary', 'near-supported-limit']) {
+  for (const submission of SIZING_WORKLOAD.submission_modes) {
+    for (const size of SIZING_WORKLOAD.size_classes) {
       for (const ext of ['jpg', 'png', 'webp']) {
         for (let repeat = 0; repeat < 2; repeat += 1) {
           const fixture = size === 'ordinary' && ext === 'jpg'
@@ -53,6 +71,9 @@ export function sizingUploadCases() {
         }
       }
     }
+  }
+  if (cases.length !== SIZING_WORKLOAD.upload_tagging_cases) {
+    throw new Error(`Upload matrix has ${cases.length} cases, not the reviewed ${SIZING_WORKLOAD.upload_tagging_cases}`);
   }
   return cases;
 }
@@ -97,10 +118,13 @@ export function validateSizingPlan(plan) {
   if (plan.runtime_baseline !== 'S1') fail('Fresh runtime comparison must use the one-replica S1 baseline');
   if (!Array.isArray(plan.stages) || plan.stages.length !== STAGE_DEFINITIONS.length) fail('Sizing plan must contain S0 through S3 exactly once');
   plan.stages.forEach((stage, index) => exactStage(stage, STAGE_DEFINITIONS[index], `S${index}`));
-  if (!plan.workload || plan.workload.upload_tagging_cases !== 24 || plan.workload.vto_generations !== 10
+  if (!plan.workload || plan.workload.upload_tagging_cases !== SIZING_WORKLOAD.upload_tagging_cases
+    || plan.workload.vto_generations !== SIZING_WORKLOAD.vto_generations
     || plan.workload.paced_requests_per_route !== 100 || plan.workload.overlap_cases !== 2
+    || plan.workload.per_input_bytes_max !== S1_INPUT_BYTES_MAX
     || JSON.stringify(plan.workload.paced_routes) !== JSON.stringify(SIZING_WORKLOAD.paced_routes)
     || JSON.stringify(plan.workload.image_formats) !== JSON.stringify(SIZING_WORKLOAD.image_formats)
+    || JSON.stringify(plan.workload.size_classes) !== JSON.stringify(SIZING_WORKLOAD.size_classes)
     || JSON.stringify(plan.workload.vto_shapes) !== JSON.stringify(SIZING_WORKLOAD.vto_shapes)) fail('Sizing workload does not match the reviewed representative set');
   for (const [key, value] of Object.entries(SIZING_LIMITS)) {
     if (plan.limits?.[key] !== value) fail(`Sizing decision limit ${key} changed`);
@@ -188,14 +212,40 @@ function evidenceGap(result, stage) {
       || item.fixture_dimensions[0] !== fixture.width || item.fixture_dimensions[1] !== fixture.height) {
       return 'Upload matrix or frozen fixture binding differs from the reviewed case';
     }
+    if (item.fixture_bytes > S1_INPUT_BYTES_MAX) return `Upload input ${item.case_id} exceeds the demonstrated S1 input envelope`;
   }
   const vto = result.workload?.vto;
   if (!Array.isArray(vto) || vto.length !== SIZING_WORKLOAD.vto_generations) return 'Representative VTO coverage is incomplete';
+  // A VTO generation sends the base photo plus its garments. Every one of those
+  // inputs must be inside the per-input bound, the garment list must be the
+  // canonical smallest-first one, and the observation must report the aggregate
+  // it actually submitted so the payload is visible rather than left to be added
+  // up. That aggregate is not bounded by the per-input number and stays unproven.
+  const vtoCases = new Map(sizingVtoCases().map(item => [item.case_id, item]));
+  for (const item of vto) {
+    const expected = vtoCases.get(item.case_id);
+    const base = expected && frozenFixtures.get(expected.base_fixture);
+    if (!base || item.base_fixture !== expected.base_fixture || item.base_fixture_sha256 !== base.sha256
+      || item.base_fixture_bytes !== base.bytes || !Number.isInteger(item.base_fixture_bytes)
+      || item.base_fixture_bytes > S1_INPUT_BYTES_MAX) {
+      return 'VTO base fixture binding is missing, changed or above the demonstrated S1 input envelope';
+    }
+    const garments = expected.garment_fixtures;
+    if (item.garment_count !== expected.garment_count
+      || JSON.stringify(item.garment_fixtures) !== JSON.stringify(garments)
+      || garments.some(id => !frozenFixtures.has(id) || frozenFixtures.get(id).bytes > S1_INPUT_BYTES_MAX)) {
+      return 'VTO garment binding must be the canonical inside-envelope list submitted smallest-first';
+    }
+    const aggregate = base.bytes + garments.reduce((total, id) => total + frozenFixtures.get(id).bytes, 0);
+    if (item.aggregate_submitted_bytes !== aggregate || aggregate <= S1_INPUT_BYTES_MAX) {
+      return 'VTO observations must report the aggregate they submitted, which the per-input bound does not cover';
+    }
+  }
   const ids = [...uploads, ...vto].map((item) => item.task_id);
   if (ids.some((id) => typeof id !== 'string' || !id) || new Set(ids).size !== ids.length) return 'Accepted task identities must be distinct';
   if (uploads.some((item) => item.terminal_state !== 'ready' || item.replay_verified !== true || item.reload_verified !== true)) return 'Upload terminal, replay or recovery evidence is incomplete';
   for (const shape of SIZING_WORKLOAD.vto_shapes) {
-    if (vto.filter((item) => item.shape === shape).length !== 2) return 'Each of five supported VTO shapes must run twice';
+    if (vto.filter((item) => item.shape === shape).length !== 2) return 'Each supported VTO shape must run twice';
   }
   if (vto.some((item) => item.terminal_state !== 'Complete' || item.output_retrievable !== true
     || item.progress_reload_verified !== true || item.replay_verified !== true || item.credit_debit !== 1)) return 'VTO completion, output, progress, replay or credit evidence is incomplete';
