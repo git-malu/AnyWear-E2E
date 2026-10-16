@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { correlateSizingTask } from './beta-sizing-telemetry.mjs';
 import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, orderedSizingGarments,
   vtoAggregateSubmittedBytes, createSizingVtoGarmentPlan, assertVtoCasesResolvableInPlan,
-  sizingVtoGarmentUploadCases, S1_VTO_GARMENT_POOL } from './beta-sizing-workload.mjs';
+  sizingVtoGarmentUploadCases, sequentialGarmentUploads,
+  S1_VTO_GARMENT_POOL, VTO_GARMENT_FORMATS } from './beta-sizing-workload.mjs';
 import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
 import { S1_INPUT_BYTES_MAX, S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_DEFERRED_VTO_SHAPE,
   S1_VTO_SHAPE_NAMING, assertCaseInputsWithinEnvelope, assertSizingInputEnvelope } from './beta-sizing-envelope.mjs';
@@ -147,13 +148,29 @@ test('resolves every VTO garment from the submission plan, not from the uploads 
   const frozen = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
   const plan = createSizingVtoGarmentPlan();
   const uploads = sizingUploadCases();
-  const sequential = uploads.filter(item => item.submission === 'sequential');
-  // The pool is exactly what the sequential half submits before the VTO loop, and
-  // no fixture only the burst half carries may be a garment.
-  const sequentialGarments = [...new Set(sequential.map(item => item.fixture))]
-    .filter(fixture => frozen.fixtures.get(fixture).mime !== 'image/webp');
-  assert.deepEqual([...S1_VTO_GARMENT_POOL], sequentialGarments);
+  // The pool is exactly the sequential half's uploads in the reviewed garment
+  // formats - JPEG and PNG. The sequential half submits four distinct fixtures and
+  // the pool holds three, because `sweater-ordinary.webp` is the WebP
+  // format-coverage fixture. No fixture only the burst half carries may be a garment:
+  // those uploads launch inside the VTO loop and cannot resolve one in time.
+  assert.deepEqual(sequentialGarmentUploads(frozen.fixtures).join(), S1_VTO_GARMENT_POOL.join());
+  assert.deepEqual(sequentialGarmentUploads(frozen.fixtures), [...S1_VTO_GARMENT_POOL]);
   assert.deepEqual([...S1_VTO_GARMENT_POOL], [...plan.pool]);
+  assert.deepEqual([...VTO_GARMENT_FORMATS], ['image/jpeg', 'image/png']);
+  assert.equal(S1_VTO_GARMENT_POOL.length, 3);
+  assert.deepEqual([...new Set(uploads.filter(item => item.submission === 'sequential')
+    .map(item => item.fixture))].filter(fixture => !S1_VTO_GARMENT_POOL.includes(fixture)),
+  ['sweater-ordinary.webp']);
+  for (const burstOnly of ['bag-ordinary.jpg', 'shoes-ordinary.jpg']) {
+    assert.ok(uploads.filter(item => item.fixture === burstOnly).every(item => item.submission === 'burst'),
+      `${burstOnly} must be burst-only, or the pool rule no longer describes the plan`);
+    assert.ok(!S1_VTO_GARMENT_POOL.includes(burstOnly));
+  }
+  // `sweater-ordinary.png` is a SEQUENTIAL upload - run 38844432804 recorded its
+  // 696,168-byte case as `sequential-ordinary-png-0` - so it is a pool garment.
+  assert.ok(uploads.some(item => item.fixture === 'sweater-ordinary.png' && item.submission === 'sequential'
+    && item.case_id === 'sequential-ordinary-png-0'));
+  assert.ok(S1_VTO_GARMENT_POOL.includes('sweater-ordinary.png'));
   assert.ok(S1_VTO_GARMENT_POOL.every(fixture => uploads.some(item => item.fixture === fixture)));
   for (const entry of sizingVtoCases()) {
     for (const fixture of entry.garment_fixtures) {
@@ -192,16 +209,35 @@ test('resolves every VTO garment from the submission plan, not from the uploads 
     /VTO case ordinary-base-one-garment-0 cannot resolve garment bag-ordinary\.jpg/);
 });
 
-test('records the deferred five-garment 4K VTO shape rather than dropping it', () => {
+// These three figures are restated constants in the manifest and in the envelope
+// module, so they survive a fixture re-encode that changes the bytes they claim to
+// describe. They are recomputed from the frozen fixtures here, and the loader
+// refuses a record that no longer describes them, so a stale aggregate cannot sit
+// behind a green test.
+test('records the deferred five-garment 4K VTO shape rather than dropping it', async () => {
+  const frozen = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
   const deferred = S1_DEFERRED_VTO_SHAPE;
   assert.equal(deferred.garment_count, 5);
   assert.equal(deferred.advanced_settings.size, '4K');
   assert.equal(deferred.reason, 'deferred_to_140');
-  assert.equal(deferred.garment_only_bytes, 2_408_024);
-  assert.equal(deferred.aggregate_submitted_bytes, 2_953_744);
+  assert.equal(deferred.garment_fixtures.length, deferred.garment_count);
+  // Recomputed, never restated: the recorded figures must still describe the frozen
+  // bytes. A re-encode that moved them would fail here and in the loader.
+  const recomputedGarments = deferred.garment_fixtures
+    .reduce((total, id) => total + frozen.fixtures.get(id).bytes, 0);
+  const recomputedBase = frozen.fixtures.get('base-photo-ordinary.jpg').bytes;
+  assert.equal(deferred.garment_only_bytes, recomputedGarments,
+    'the deferred garment-only figure must be the sum of its frozen garment bytes');
+  assert.equal(deferred.base_photo_bytes, recomputedBase,
+    'the deferred base-photo figure must be the frozen base photo bytes');
+  assert.equal(deferred.aggregate_submitted_bytes, recomputedGarments + recomputedBase,
+    'the deferred aggregate must be the sum of the frozen inputs it names');
   assert.ok(deferred.aggregate_submitted_bytes > S1_INPUT_BYTES_MAX);
   // It is about 79% of the single input whose base64 payload exhausted the budget.
   assert.ok(deferred.garment_only_bytes / 3_742_711 > 0.6);
+  // The record may not be left behind by a re-encode: the figures above are held to
+  // the frozen bytes here, and the manifest is held to the constant by the loader, so
+  // a re-encoded fixture fails rather than sitting behind a green test.
   // No submitted case may be the deferred shape.
   assert.ok(sizingVtoCases().every(item => item.shape !== deferred.shape));
   assert.ok(!SIZING_WORKLOAD.vto_shapes.includes(deferred.shape));
@@ -241,7 +277,18 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
       await writeFile(join(directory, id), bytes);
       return frozenEntry(id, bytes);
     };
-    const manifest = (fixtures, excluded) => ({ schema_version: 1, fixtures,
+    // The fresh manifest records the deferred shape's byte figures from the fixtures
+    // it actually freezes, so the record is truthful for these bytes. The loader
+    // compares the record against the reviewed constant, so this test cannot use the
+    // shipped record's figures; the figures' agreement with the SHIPPED frozen bytes
+    // is the recompute in the deferred-shape test above.
+    const deferredBytes = (fixtures, field) => {
+      const bytesOf = id => fixtures.find(item => item.id === id).bytes;
+      const garments = S1_DEFERRED_VTO_SHAPE.garment_fixtures.reduce((total, id) => total + bytesOf(id), 0);
+      return { garment_only_bytes: garments, base_photo_bytes: bytesOf('base-photo-ordinary.jpg'),
+        aggregate_submitted_bytes: garments + bytesOf('base-photo-ordinary.jpg') }[field];
+    };
+    const manifest = (fixtures, { excluded, deferred } = {}) => ({ schema_version: 1, fixtures,
       s1_input_envelope: { reference: S1_INPUT_ENVELOPE.reference, run_url: S1_INPUT_ENVELOPE.run_url,
         stage: S1_INPUT_ENVELOPE.stage, e2e_sha: S1_INPUT_ENVELOPE.e2e_sha,
         input_bytes_max: S1_INPUT_BYTES_MAX, largest_served_bytes: S1_INPUT_BYTES_MAX,
@@ -249,7 +296,7 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
         measured_inputs_basis: S1_INPUT_ENVELOPE.measured_inputs_basis,
         vto_aggregate_limit: S1_INPUT_ENVELOPE.vto_aggregate_limit,
         vto_shape_naming: S1_INPUT_ENVELOPE.vto_shape_naming,
-        deferred_vto_shape: S1_DEFERRED_VTO_SHAPE,
+        deferred_vto_shape: deferred ?? S1_DEFERRED_VTO_SHAPE,
         measured_inputs: S1_INPUT_ENVELOPE.measured_inputs,
         excluded_fixtures: excluded ?? S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes)) } });
     // The frozen manifest is strict JSON with no byte-order mark; write the same here.
@@ -279,8 +326,15 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
     // A declared exclusion that disagrees with the reviewed one is refused: the
     // manifest may not quietly re-label, resize or re-order an excluded fixture.
     const stated = S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes));
-    await write(manifest(inEnvelope, [{ ...stated[0], bytes: 1_000 }, ...stated.slice(1)]));
+    await write(manifest(inEnvelope, { excluded: [{ ...stated[0], bytes: 1_000 }, ...stated.slice(1)] }));
     await assert.rejects(() => loadSizingFixtures(directoryUrl), /Declared excluded sizing fixture/);
+
+    // A deferred record that disagrees with the reviewed constant is refused, so the
+    // manifest may not quietly restate the deferred shape.
+    await write(manifest(inEnvelope, { deferred: { ...S1_DEFERRED_VTO_SHAPE,
+      aggregate_submitted_bytes: deferredBytes(inEnvelope, 'aggregate_submitted_bytes') + 1 } }));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl),
+      /must record the deferred VTO shape with its aggregate and reason/);
 
     // A case input, not just the frozen set, is checked against the bound — including
     // a VTO case, whose base photo and every garment reference is a payload input.

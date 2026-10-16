@@ -9,33 +9,46 @@ export { sizingUploadCases } from './beta-sizing-benchmark.mjs';
 // reads the bound, the pool and the case set from one module.
 export * from './beta-sizing-envelope.mjs';
 
-// The constrained set submits every fixture this pool names in the SEQUENTIAL half,
+// The pool: the reviewed garment references, restricted to the formats the VTO
+// cases carry - the ordinary JPEGs and the ordinary PNG. The sequential half submits
+// six cases over four distinct fixtures; the pool holds three of them, because
+// `sweater-ordinary.webp` is the WebP format-coverage fixture rather than a reviewed
+// garment reference. Every pool fixture is submitted by a sequential upload case,
 // which runs before the first VTO case, so each garment is resolved by the time a
-// VTO case needs it. A fixture only burst uploads carry is not in the pool: those
-// uploads launch inside the VTO loop, so they cannot resolve a garment before it is
-// needed - which is exactly how the previous five-id list broke. The pool is the
-// frozen, reviewed subset of those sequential fixtures, and
-// `S1_VTO_GARMENT_POOL` is the value this selection must reproduce; one that names
-// anything else, in any other order, is refused.
-const VTO_GARMENT_FIXTURES = Object.freeze(['trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary.png']);
+// VTO case needs it. The fixtures left out are `bag-ordinary.jpg` and
+// `shoes-ordinary.jpg`, which ONLY burst uploads carry: those uploads launch inside
+// the VTO loop, so they cannot resolve a garment before it is needed - that is the
+// shape of the previous five-id list's failure. `S1_VTO_GARMENT_POOL` is the value
+// this selection must reproduce; one that names anything else, in any other order,
+// is refused. See the README for the reason and the accepted coverage trade.
+export const VTO_GARMENT_FORMATS = Object.freeze(['image/jpeg', 'image/png']);
 
-function sequentialGarmentUploads() {
+// The fixtures the plan submits before the first VTO case in a reviewed garment
+// format, in submission order. This is the rule the pool must equal; it needs the
+// frozen manifest's mime types, so callers pass them and callers without them fall
+// back to the pool's own membership.
+export function sequentialGarmentUploads(fixtures) {
   const ordered = [];
   for (const entry of sizingUploadCases()) {
-    if (entry.submission !== 'sequential' || !VTO_GARMENT_FIXTURES.includes(entry.fixture)) continue;
+    if (entry.submission !== 'sequential') continue;
+    const reviewed = fixtures
+      ? VTO_GARMENT_FORMATS.includes(fixtures.get(entry.fixture)?.mime)
+      : S1_VTO_GARMENT_POOL.includes(entry.fixture);
+    if (!reviewed) continue;
     if (!ordered.includes(entry.fixture)) ordered.push(entry.fixture);
   }
   return ordered;
 }
 
 // The constraint that stops a VTO case naming a garment the submission plan cannot
-// resolve: it was a five-id list whose last entry, `sweater-ordinary.png`, is
-// submitted only by burst uploads that launch inside the VTO loop.
-export function assertVtoGarmentPoolIsSubmitted() {
-  const submitted = sequentialGarmentUploads();
+// resolve: it was a five-id list, and the two ids no pre-VTO upload produces were
+// the two fixtures only the burst half carries.
+export function assertVtoGarmentPoolIsSubmitted(fixtures) {
+  const submitted = sequentialGarmentUploads(fixtures);
   if (submitted.join() !== S1_VTO_GARMENT_POOL.join()) {
-    throw new Error(`The VTO garment pool ${S1_VTO_GARMENT_POOL.join(', ')} must be the sequential uploads the `
-      + `submission plan resolves before the VTO cases, which are ${submitted.join(', ')}`);
+    throw new Error(`The VTO garment pool ${S1_VTO_GARMENT_POOL.join(', ')} must be the sequential uploads of the `
+      + `reviewed garment formats the submission plan resolves before the VTO cases, which are `
+      + `${submitted.join(', ')}`);
   }
   return S1_VTO_GARMENT_POOL;
 }
@@ -209,8 +222,9 @@ export async function loadSizingFixtures(directory) {
   }
   assertCaseInputsWithinEnvelope(fixtures, [...sizingUploadCases(), ...sizingVtoCases()]);
   // A garment reference outside the pool the submission plan resolves is dead on
-  // arrival: no case can name it and no upload yields an id for it.
-  assertVtoGarmentPoolIsSubmitted();
+  // arrival: no case can name it and no upload yields an id for it. The frozen
+  // manifest's own mime types decide it here.
+  assertVtoGarmentPoolIsSubmitted(fixtures);
   // A VTO case submits the base photo plus its garment list; each input and the
   // canonical smallest-first order are checked here, where the frozen bytes are.
   for (const entry of sizingVtoCases()) {

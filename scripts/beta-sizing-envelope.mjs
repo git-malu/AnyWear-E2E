@@ -62,12 +62,16 @@ export const S1_INPUT_EXCLUDED_FIXTURES = Object.freeze([
 // generation has ever run in this workload. Garments are ordered smallest-first
 // so each shape carries the least payload it can.
 //
-// The pool is CONSTRAINED to the fixtures the submission plan resolves before the
-// VTO cases: every id here is submitted by a sequential sizing upload case, so no
-// VTO case can name a garment the case set never submits - the defect this pool
-// exists to remove is a five-id list whose last entry, `sweater-ordinary.png`, is
-// submitted only by burst uploads that launch inside the VTO loop. The workload
-// module refuses a pool that names anything outside this set, and
+// The pool is CONSTRAINED to the garment references the submission plan resolves
+// before the VTO cases. It was a five-id list, and only three of those ids survive:
+// `bag-ordinary.jpg` and `shoes-ordinary.jpg` are submitted ONLY by burst uploads,
+// which launch inside the VTO loop, so no VTO case can resolve them, and
+// `sweater-ordinary.webp` is outside the reviewed garment formats. Note that
+// `sweater-ordinary.png` IS a sequential upload - it is `sequential-ordinary-png-0`,
+// the case whose 696,168-byte upload passed in run 38844432804 - so it stays. The
+// rule, its reason and the coverage it trades away are recorded in the README's
+// "Measured S1 input envelope and its limits" section. The workload module refuses a
+// pool that differs from the sequential uploads it resolves, and
 // `createSizingVtoGarmentPlan` refuses a case whose garment the submission plan
 // cannot resolve. A reference outside this pool is not resolvable and is not
 // "maybe later": it fails.
