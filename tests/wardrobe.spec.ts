@@ -130,14 +130,21 @@ test.describe('Wardrobe Management @regression @full-stack', () => {
 
     const uploadedResponse = await uploaded;
     expect(uploadedResponse.status()).toBe(200);
-    createdItemId = (await readServiceJson<{ itemId: string }>(uploadedResponse)).itemId;
+    // The upload-url response books the upload; the item does not exist until the
+    // confirmation has read the stored object back.
+    const reservation = await readServiceJson<{ reservationId: string; key: string; expiresAt: string; upload: unknown }>(uploadedResponse);
+    expect(reservation.reservationId).toBeTruthy();
+    expect(reservation.key).toBeTruthy();
+    expect(reservation.expiresAt).toBeTruthy();
+    expect(reservation.upload).toBeTruthy();
     authorization = await uploadedResponse.request().headerValue('authorization') ?? undefined;
-    expect(createdItemId).toBeTruthy();
     expect(authorization).toBeTruthy();
 
     const confirmedResponse = await confirmed;
     expect(confirmedResponse.status()).toBe(202);
-    const accepted = await readServiceJson(confirmedResponse);
+    const accepted = await readServiceJson<{ itemId: string; taggingStatus: string }>(confirmedResponse);
+    createdItemId = accepted.itemId;
+    expect(createdItemId).toBeTruthy();
     expect(accepted).toEqual({ itemId: createdItemId, taggingStatus: 'processing' });
     const idempotencyKey = await confirmedResponse.request().headerValue('idempotency-key');
     expect(idempotencyKey).toBeTruthy();
@@ -146,7 +153,7 @@ test.describe('Wardrobe Management @regression @full-stack', () => {
 
     const replay = await page.request.post(`${serviceUrl}/wardrobe/upload`, {
       headers,
-      data: { itemId: createdItemId },
+      data: { reservationId: reservation.reservationId },
     });
     expect(replay.status()).toBe(202);
     expect(await readServiceJson(replay)).toEqual(accepted);
@@ -170,7 +177,7 @@ test.describe('Wardrobe Management @regression @full-stack', () => {
 
     const terminalReplay = await observer.request.post(`${serviceUrl}/wardrobe/upload`, {
       headers,
-      data: { itemId: createdItemId },
+      data: { reservationId: reservation.reservationId },
     });
     expect(terminalReplay.status()).toBe(202);
     expect(await readServiceJson(terminalReplay)).toEqual(accepted);

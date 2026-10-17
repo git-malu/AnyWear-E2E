@@ -46,10 +46,13 @@ export function parseRuntimeRecovery(json) {
     throw new Error('Runtime recovery control/deletion intent belongs to a foreign run/user');
   }
   for (const object of record.resources ?? []) {
+    // The key is minted when the upload is reserved, before any item exists, so
+    // it is bound to the synthetic owner's namespace and to an immutable object
+    // name rather than to an item id. Cleanup deletes exactly this recorded key.
     const parts = object.key?.split('/');
-    if (object.bucket !== record.stack.bucket || parts?.length !== 4 || parts[0] !== 'wearable-items'
-      || parts[1] !== user.sub || !record.items.includes(parts[2])
-      || !/^[a-f0-9-]{36}\.png$/.test(parts[3])) throw new Error('Runtime recovery S3 object is outside the captured synthetic item');
+    if (object.bucket !== record.stack.bucket || parts?.length !== 3 || parts[0] !== 'wearable-items'
+      || parts[1] !== user.sub
+      || !/^[a-f0-9-]{36}\.(png|jpg|jpeg|webp|heic|heif)$/.test(parts[2] ?? '')) throw new Error('Runtime recovery S3 object is outside the captured synthetic owner');
   }
   if (record.known_dlq_message && (!UUID.test(record.known_dlq_message.taskId) || !UUID.test(record.known_dlq_message.messageId))) {
     throw new Error('Runtime recovery known DLQ binding is invalid');

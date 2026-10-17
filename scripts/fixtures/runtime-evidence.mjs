@@ -52,7 +52,7 @@ export function auditFixture(request, { status = 'ready', token = 1, version = 3
     task: { id: request.taskId, task_type: 'auto-tagging', status: status === 'ready' ? 'complete' : 'failed',
       execution_token: token, attempt_count: status === 'ready' ? 1 : 3, state_version: 3, terminal_at: '2026-10-05T00:59:00Z' },
     resource: { item_id: request.itemId, tagging_status: status, state_version: version },
-    current_rows: { same_resource_tasks: 1, exact_idempotency_records: 1 },
+    current_rows: { same_resource_tasks: 1, exact_confirmation_records: 1 },
     outbox: { task_id: request.taskId, status: 'published', published_at: '2026-10-05T00:58:00Z' },
     credit: { applicability: 'not-applicable', reason: 'auto-tagging' },
     extraction: proofFixture(scopeFixture(request), 'task-audit', JSON.stringify(request), status === 'ready' ? (after ? 'b' : 'a') : (after ? 'd' : 'c')) };

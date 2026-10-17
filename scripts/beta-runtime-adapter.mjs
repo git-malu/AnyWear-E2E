@@ -213,31 +213,40 @@ async function serviceRequest(io, baseUrl, method, pathname, token, body, header
 
 async function uploadItem(io, scope, fixturePath, marker) {
   const { serviceUrl } = scope.config;
+  // 1. Reserve the upload. No item exists yet: the service creates one only from
+  // a confirmation that has read the stored object back.
   const uploadUrl = await serviceRequest(io, serviceUrl, 'POST', '/wardrobe/upload-url', scope.accessToken,
-    { contentType: 'image/png', extension: 'png' }, { 'X-Request-ID': requestId(marker) });
+    { contentType: 'image/png' }, { 'X-Request-ID': requestId(marker) });
   const target = asObject(uploadUrl.body, 'upload-url response');
-  required(target.itemId, 'upload itemId');
+  required(target.reservationId, 'upload reservation id');
   required(target.key, 'upload S3 key');
-  required(target.url, 'upload URL');
-  if (!/^[0-9a-f-]{36}$/i.test(target.itemId) || !target.key.includes(scope.subject)) {
-    throw new Error('Upload response does not expose an exact owned item/object');
+  const policy = asObject(target.upload, 'signed upload policy');
+  required(policy.url, 'upload policy URL');
+  const fields = asObject(policy.fields, 'signed upload policy fields');
+  if (!/^[0-9a-f-]{36}$/i.test(target.reservationId) || !target.key.includes(scope.subject)) {
+    throw new Error('Upload response does not expose an exact owned reservation/object');
   }
-  scope.items ??= [];
-  scope.items.push(target.itemId);
   scope.resources.push({ bucket: scope.stack.bucket, key: target.key });
   if (io.saveRecovery) await io.saveRecovery(scope);
+  // 2. Upload through the signed policy: its fields verbatim, the file last.
   const image = await readFile(fixturePath);
-  const putResponse = await io.fetch(target.url, { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: image,
+  const form = new FormData();
+  for (const [name, value] of Object.entries(fields)) form.append(name, String(value));
+  form.append('file', new Blob([image], { type: 'image/png' }), 'image.png');
+  const postResponse = await io.fetch(policy.url, { method: 'POST', body: form,
     signal: AbortSignal.timeout(30_000) });
-  if (!putResponse.ok) throw new Error(`S3 upload failed (${putResponse.status})`);
+  if (!postResponse.ok) throw new Error(`S3 upload failed (${postResponse.status})`);
+  // 3. Confirm: this is what creates the item and starts auto-tagging.
   const idempotencyKey = randomUUID();
   const accepted = await serviceRequest(io, serviceUrl, 'POST', '/wardrobe/upload', scope.accessToken,
-    { itemId: target.itemId }, { 'Idempotency-Key': idempotencyKey, 'X-Request-ID': requestId(marker) });
-  if (accepted.response.status !== 202 || accepted.body.itemId !== target.itemId) {
-    throw new Error('Wardrobe upload did not return the expected accepted task');
-  }
+    { reservationId: target.reservationId }, { 'Idempotency-Key': idempotencyKey, 'X-Request-ID': requestId(marker) });
+  required(accepted.body.itemId, 'accepted itemId');
+  scope.items ??= [];
+  scope.items.push(accepted.body.itemId);
+  if (io.saveRecovery) await io.saveRecovery(scope);
   return {
-    itemId: target.itemId,
+    itemId: accepted.body.itemId,
+    reservationId: target.reservationId,
     key: target.key,
     idempotencyKey,
     accepted: accepted.body,
@@ -471,7 +480,7 @@ async function replaceAndRestoreEcs({ stack, scope }, io) {
     const workerChanged = workerAfter.taskArns.some((arn) => !workerBefore.taskArns.includes(arn));
     if (!apiChanged || !workerChanged) throw new Error('ECS replacement did not produce a changed API and worker task set');
     const replay = await serviceRequest(io, scope.config.serviceUrl, 'POST', '/wardrobe/upload', scope.accessToken,
-      { itemId: scope.item.itemId }, { 'Idempotency-Key': scope.item.idempotencyKey, 'X-Request-ID': requestId(scope.marker) });
+      { reservationId: scope.item.reservationId }, { 'Idempotency-Key': scope.item.idempotencyKey, 'X-Request-ID': requestId(scope.marker) });
     if (replay.response.status !== 202 || JSON.stringify(replay.body) !== JSON.stringify(scope.item.accepted)) {
       throw new Error('Idempotency replay did not return the original accepted response');
     }

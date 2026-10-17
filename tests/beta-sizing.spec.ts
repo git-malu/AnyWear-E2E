@@ -247,9 +247,25 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
       if (!value) throw new Error(`Missing frozen sizing image ${id}`);
       return value;
     };
-    const putImage = async (url: string, image: SizingFixture) => {
+    /**
+     * Upload through the signed S3 POST policy the service issued.
+     *
+     * The policy's fields must be sent verbatim and the file part last; S3
+     * refuses a body over the policy's size range or of a different declared
+     * content type, so an oversized or mis-typed upload fails here rather than
+     * at the confirmation.
+     */
+    const postImage = async (upload: { url?: unknown; fields?: unknown }, image: SizingFixture) => {
       assertE2EExecution();
-      const response = await page.request.put(url, { headers: { 'Content-Type': image.mime }, data: image.data });
+      const url = typeof upload.url === 'string' ? upload.url : '';
+      const fields = upload.fields;
+      if (!url || !fields || typeof fields !== 'object') {
+        throw new Error('Upload reservation did not return a signed POST policy');
+      }
+      const multipart: Record<string, string | { name: string; mimeType: string; buffer: Buffer }> = {};
+      for (const [name, value] of Object.entries(fields as Record<string, unknown>)) multipart[name] = String(value);
+      multipart.file = { name: image.file, mimeType: image.mime, buffer: image.data };
+      const response = await page.request.post(url, { multipart });
       expect(response.ok()).toBe(true);
     };
     const waitTerminal = async (path: string, kind: 'tagging' | 'vto', item: Observation, observer: Page = page) => {
@@ -290,19 +306,27 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
       const item: Observation = { ...entry, mime: image.mime, fixture_sha256: image.sha256, fixture_bytes: image.bytes,
         fixture_dimensions: [image.width, image.height], started_at: new Date().toISOString() };
       uploads.push(item);
+      // 1. Reserve the upload. No wardrobe item exists yet, and none can, because
+      // the service only creates one from a confirmation that has read the stored
+      // object back.
       const presign = await check(await page.request.post(`${serviceUrl}/wardrobe/upload-url`, {
-        headers, data: { contentType: image.mime, extension: image.file.split('.').at(-1) },
+        headers, data: { contentType: image.mime },
       }), 200);
-      item.resource_id = String(presign.itemId);
-      await captureCreated('wardrobe_item', item.resource_id, observeStream(`/wardrobe/items/${item.resource_id}`));
+      const reservationId = String(presign.reservationId);
       await preserve();
-      await putImage(String(presign.url), image);
+      // 2. Upload through the signed policy.
+      await postImage(presign.upload as { url?: unknown; fields?: unknown }, image);
+      // 3. Confirm: this is what creates the item and starts auto-tagging, so the
+      // item id is first known here and the item's own stream is opened against it.
       const acceptedHeaders = { ...headers, 'Idempotency-Key': randomUUID() };
       const accepted = await check(await page.request.post(`${serviceUrl}/wardrobe/upload`, {
-        headers: acceptedHeaders, data: { itemId: item.resource_id },
+        headers: acceptedHeaders, data: { reservationId },
       }), 202);
+      item.resource_id = String(accepted.itemId);
+      await captureCreated('wardrobe_item', item.resource_id, observeStream(`/wardrobe/items/${item.resource_id}`));
+      await preserve();
       const replay = await check(await page.request.post(`${serviceUrl}/wardrobe/upload`, {
-        headers: acceptedHeaders, data: { itemId: item.resource_id },
+        headers: acceptedHeaders, data: { reservationId },
       }), 202);
       expect(replay).toEqual(accepted);
       item.replay_verified = true;
@@ -344,13 +368,19 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
       for (const name of [...new Set(cases.map(entry => entry.base_fixture))].sort()) {
         const image = fixture(name);
         assertE2EExecution();
-        const response = await check(await page.request.post(`${serviceUrl}/vto/base-photos`, {
-          headers, data: { contentType: image.mime, extension: 'jpg' },
+        // Reserve, upload, then confirm: the photo row exists only after the
+        // service has read the stored object, so it cannot be listed or selected
+        // before its bytes are there.
+        const reservation = await check(await page.request.post(`${serviceUrl}/vto/base-photos/upload-url`, {
+          headers, data: { contentType: image.mime },
+        }), 200);
+        await postImage(reservation.upload as { url?: unknown; fields?: unknown }, image);
+        const response = await check(await page.request.post(`${serviceUrl}/vto/base-photos/upload`, {
+          headers, data: { reservationId: String(reservation.reservationId) },
         }), 201);
         basePhotos.set(name, String(response.id));
         // Captured as created: the lease's cleanup deletes this exact base photo.
         await captureCreated('base_photo', String(response.id));
-        await putImage(String(response.uploadUrl), image);
       }
       const sequential = sizingUploadCases().filter(item => item.submission === 'sequential');
       // The garment fixtures are submitted FIRST, before any VTO is accepted: a VTO

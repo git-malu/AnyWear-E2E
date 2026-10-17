@@ -39,6 +39,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
   const services = new Map();
   const logs = new Map();
   const items = new Map();
+const reservations = new Map();
   const requests = new Map();
   const writes = [];
   const uploads = [];
@@ -126,15 +127,24 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
       if (pathname === '/users/me') return response({ id: SUBJECT, email });
       if (pathname === '/wardrobe/upload-url') {
         markMutation('upload-url');
-        const itemId = uuid(items.size + 1);
-        const key = `wearable-items/${SUBJECT}/${itemId}/${uuid(items.size + 10)}.png`;
-        items.set(itemId, { itemId, key, taskId: uuid(items.size + 20), failure: replaced, deleted: false,
-          workerArn: services.get(stack.workerService).taskArns[0] });
-        return response({ itemId, key, url: `https://upload.example/${itemId}` });
+        const reservationId = uuid(reservations.size + 1);
+        const key = `wearable-items/${SUBJECT}/${reservationId}.png`;
+        reservations.set(reservationId, { key, failure: replaced });
+        return response({ reservationId, key, expiresAt: new Date(Date.now() + 900_000).toISOString(),
+          upload: { url: `https://upload.example/${reservationId}`, fields: { key, 'Content-Type': 'image/png' } } });
       }
       if (pathname === '/wardrobe/upload') {
         markMutation('accepted-upload');
-        const item = items.get(JSON.parse(options.body).itemId);
+        const { reservationId } = JSON.parse(options.body);
+        const reservation = reservations.get(reservationId);
+        if (!reservation) return response({ error: 'NOT_FOUND' }, 404);
+        // The item is created by the confirmation, and confirming twice replays
+        // the same item and task rather than creating a second one.
+        if (!items.has(reservationId)) {
+          items.set(reservationId, { itemId: reservationId, key: reservation.key, taskId: uuid(items.size + 20),
+            failure: reservation.failure, deleted: false, workerArn: services.get(stack.workerService).taskArns[0] });
+        }
+        const item = items.get(reservationId);
         item.idempotencyKey = options.headers['Idempotency-Key'];
         if (item.failure) dlq = true;
         return response({ itemId: item.itemId, taskId: item.taskId }, 202);
