@@ -17,7 +17,7 @@ export function validateTaskAudit(audit, request, terminalStatus) {
     || !Number.isInteger(audit.task.attempt_count) || audit.task.attempt_count < 1
     || !Number.isInteger(audit.task.state_version) || audit.task.state_version < 1
     || !Number.isInteger(audit.resource.state_version) || audit.resource.state_version < 1
-    || audit.current_rows?.same_resource_tasks !== 1 || audit.current_rows?.exact_idempotency_records !== 1
+    || audit.current_rows?.same_resource_tasks !== 1 || audit.current_rows?.exact_confirmation_records !== 1
     || audit.outbox?.task_id !== request.taskId || audit.outbox?.status !== 'published'
     || !Number.isFinite(Date.parse(audit.outbox.published_at))
     || audit.credit?.applicability !== 'not-applicable' || audit.credit?.reason !== 'auto-tagging') {
