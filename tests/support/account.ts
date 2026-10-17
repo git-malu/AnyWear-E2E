@@ -57,7 +57,7 @@ function accountScopeSegment(value: string, fallback: string, maxLength: number)
 }
 
 export function configuredE2eWorkers(): number {
-  const raw = process.env.E2E_WORKERS ?? (process.env.CI ? '1' : '1');
+  const raw = process.env.E2E_WORKERS ?? '1';
   const workers = Number(raw);
   if (!Number.isInteger(workers) || workers < 1 || workers > 8) {
     throw new Error('E2E_WORKERS must be an integer between 1 and 8');
