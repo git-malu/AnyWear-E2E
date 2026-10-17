@@ -1,4 +1,5 @@
 import { createOwnedRuntimeIo, createRuntimeDrillAdapter } from '../beta-runtime-adapter.mjs';
+import { effectiveAdmissionMode } from '../beta-admission-mode.mjs';
 import { executeRuntimeDrill } from '../runtime-drill.mjs';
 import { expectedCommand } from '../runtime-one-shot.mjs';
 import { testerHash } from '../runtime-window-controls.mjs';
@@ -9,6 +10,13 @@ import { completeOneShotDefinition, platformOutputs } from './runtime-platform.m
 const ECS = 'arn:aws:ecs:ap-east-1:650880818323:';
 const SUBJECT = '123e4567-e89b-12d3-a456-426614174000';
 const uuid = (number) => `123e4567-e89b-12d3-a456-${String(number).padStart(12, '0')}`;
+// The mirror's own bound: every simulated `resume` writes a fresh four-hour window. The
+// bound is measured from the wall clock, not the simulated evidence clock, because a
+// reader decides admission against its own clock and a fixture window must be live.
+const WINDOW_BOUND_MS = 240 * 60_000;
+const WINDOW_START_MS = Date.parse('2026-10-05T01:00:00Z');
+const liveBound = () => new Date(Date.now() + WINDOW_BOUND_MS).toISOString();
+const admissionRecord = (mode, expiresAt) => JSON.stringify(mode === 'closed' ? { mode } : { mode, expires_at: expiresAt });
 
 // Only cloud/process/file boundaries are simulated. Adapter, helper ownership, audit extraction,
 // policy write ledger, snapshot serialization, cleanup and recovery run their production code.
@@ -31,8 +39,8 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
     verificationTaskRoleArn: 'arn:aws:iam::650880818323:role/beta-verification',
     lifecycleTaskRoleArn: 'arn:aws:iam::650880818323:role/beta-lifecycle',
     queues: Object.fromEntries(['vto', 'autoTagging', 'vtoDlq', 'autoTaggingDlq'].map((name) => [name, `https://sqs.example/${name}`])) };
-  const policy = { intake_open: { Value: 'false', Version: 1 }, tester_allowlist: { Value: '["baseline@example.com"]', Version: 2 },
-    admission_suspended: { Value: String(suspended), Version: 3 } };
+  const policy = { admission_mode: { Value: admissionRecord(suspended ? 'closed' : 'testers', liveBound()), Version: 1 },
+    tester_allowlist: { Value: '["baseline@example.com"]', Version: 2 } };
   const baselinePolicy = structuredClone(policy);
   const definitions = new Map();
   const tasks = new Map();
@@ -46,7 +54,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
   const mutations = [];
   const phases = [];
   let phase = 'initial';
-  let time = Date.parse('2026-10-05T01:00:00Z');
+  let time = WINDOW_START_MS;
   let taskNumber = 100;
   let definitionNumber = 10;
   let email;
@@ -242,15 +250,19 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
     const stream = `beta-anywear-${purpose}/OneShot/${taskArn.split('/').at(-1)}`;
     const lines = [`Task definition: ${arn}`, `Task ARN: ${taskArn}`, 'Task log group: /anywear/beta/one-shot', `Task log stream: ${stream}`];
     // A launched ECS task completes independently even when the host loses its next metadata upload.
+    // A tester write changes the list and nothing else; only `suspend` and `resume`
+    // write the mode, one parameter each, exactly as the Service writer does.
     if (purpose === 'lifecycle') {
-      if (action === 'configure-testers') { policy.tester_allowlist.Value = payload; policy.tester_allowlist.Version++; policy.admission_suspended.Version += 2; }
-      else policy.admission_suspended.Version++;
-      policy.admission_suspended.Value = String(action === 'close');
+      if (action === 'set-testers') { policy.tester_allowlist.Value = payload; policy.tester_allowlist.Version++; }
+      else {
+        policy.admission_mode.Version++;
+        policy.admission_mode.Value = admissionRecord(action === 'suspend' ? 'closed' : 'testers', liveBound());
+      }
     } else if (purpose === 'task-audit') {
       const request = JSON.parse(payload);
       let event;
       if (request.mode === 'window-preflight') event = { schema_version: 1, source: 'durable-runtime-window-audit', binding: request,
-        observed_at: new Date(time).toISOString(), policy: { intake_open: false, admission_suspended: policy.admission_suspended.Value === 'true',
+        observed_at: new Date(time).toISOString(), policy: { admission_mode: effectiveAdmissionMode(policy.admission_mode.Value).mode,
           tester_count: JSON.parse(policy.tester_allowlist.Value).length, tester_allowlist_hash: testerHash(JSON.parse(policy.tester_allowlist.Value)),
           updated_at: new Date(time).toISOString() }, current_rows: { active_tasks: 0, unpublished_outbox: 0, manual_intervention_outbox: 0 } };
       else {
@@ -282,7 +294,7 @@ export function runtimeCloudHarness({ suspended = false, actions = true, origina
   return { environment, compatibility, deployment, stack, policy, baselinePolicy, definitions, tasks, logs,
     writes, uploads, calls, mutations, phases, io, adapter, makeAdapter,
     execute: () => executeRuntimeDrill(environment, compatibility, adapter, {
-      preflightCollector: async () => ({ intake_open: false, stack, deployment }),
+      preflightCollector: async () => ({ admission_mode: 'closed', stack, deployment }),
       fencingReader: async () => fencingCiFixture(compatibility.service.sha),
     }) };
 }

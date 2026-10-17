@@ -1,41 +1,44 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { ADMISSION_MODE_PARAMETER, TESTER_ALLOWLIST_PARAMETER, effectiveAdmissionMode, parseAdmissionMode } from './beta-admission-mode.mjs';
 import { parseStrictJson } from './evidence-contract.mjs';
 import { assertE2EExecution } from './execution-guard.mjs';
 
-const policyNames = ['admission_suspended', 'intake_open', 'tester_allowlist'];
-const parameterNames = policyNames.map(name => `/anywear/beta/${name}`);
+const parameters = { admission_mode: ADMISSION_MODE_PARAMETER, tester_allowlist: TESTER_ALLOWLIST_PARAMETER };
+const policyNames = Object.keys(parameters);
+const parameterNames = Object.values(parameters);
 const qualificationWorkflow = 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main';
 // Match the Infra tester producer's accepted email syntax and normalization.
 const emailPattern = /^[a-z0-9.!#$%&'+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
-export function validateBetaAdmissionPolicy(response) {
+export function validateBetaAdmissionPolicy(response, { now = Date.now() } = {}) {
   if (!response || !Array.isArray(response.Parameters) || response.Parameters.length !== parameterNames.length
     || (response.InvalidParameters !== undefined
       && (!Array.isArray(response.InvalidParameters) || response.InvalidParameters.length !== 0))) {
-    throw new Error('Beta admission eligibility requires all three exact SSM parameters');
+    throw new Error('Beta admission eligibility requires both exact SSM parameters');
   }
-  const parameters = new Map();
+  const read = new Map();
   for (const parameter of response.Parameters) {
-    if (!parameter || !parameterNames.includes(parameter.Name) || parameters.has(parameter.Name)
+    if (!parameter || !parameterNames.includes(parameter.Name) || read.has(parameter.Name)
       || parameter.Type !== 'String' || typeof parameter.Value !== 'string'
       || Buffer.byteLength(parameter.Value, 'utf8') > 4096
       || !Number.isSafeInteger(parameter.Version) || parameter.Version < 1) {
       throw new Error('Beta admission eligibility received malformed or duplicate SSM parameters');
     }
-    parameters.set(parameter.Name, parameter);
+    read.set(parameter.Name, parameter);
   }
-  const policy = Object.fromEntries(policyNames.map(name => [name, parameters.get(`/anywear/beta/${name}`)]));
-  for (const name of ['admission_suspended', 'intake_open']) {
-    if (!['true', 'false'].includes(policy[name].Value)) {
-      throw new Error(`Beta admission eligibility received malformed ${name}`);
-    }
-  }
-  if (policy.admission_suspended.Value !== 'false') {
+  const policy = Object.fromEntries(policyNames.map(name => [name, read.get(parameters[name])]));
+  // The mode record states its own condition, so the pre-flight names one requirement
+  // instead of remembering two booleans: admission is effectively `testers` right now.
+  const declared = parseAdmissionMode(policy.admission_mode.Value);
+  if (!declared) throw new Error('Beta admission eligibility received a malformed admission mode record');
+  if (declared.mode === 'closed') {
     throw new Error('Beta admission is suspended; an authorized admission window is required before qualification');
   }
-  if (policy.intake_open.Value !== 'false') {
-    throw new Error('Beta qualification requires public intake closed');
+  // A `testers` record whose bound has passed (or is beyond the read's window) is closed
+  // to every reader, so the pre-flight refuses it at the moment it runs.
+  if (effectiveAdmissionMode(policy.admission_mode.Value, now).mode !== 'testers') {
+    throw new Error('Beta admission window is not open; an authorized admission window is required before qualification');
   }
   let testers;
   try { testers = parseStrictJson(policy.tester_allowlist.Value); }
@@ -76,5 +79,5 @@ export function verifyBetaAdmissionEligibility(environment = process.env, { exec
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length !== 2) throw new Error('Unknown Beta admission eligibility option');
   verifyBetaAdmissionEligibility();
-  console.log('Verified unsuspended private Beta admission for the qualification run.');
+  console.log('Verified an open Beta admission window for the qualification run.');
 }
