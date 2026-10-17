@@ -32,6 +32,7 @@ on:
       - scripts/evidence-contract.mjs
       - scripts/infra-source.mjs
       - scripts/qualification-record.mjs
+      - scripts/test-selection.mjs
       - scripts/trusted-deployment-inputs.mjs
       - scripts/vendor/**
       - scripts/fixtures/runtime-*.mjs
@@ -68,6 +69,7 @@ on:
       - scripts/evidence-contract.mjs
       - scripts/infra-source.mjs
       - scripts/qualification-record.mjs
+      - scripts/test-selection.mjs
       - scripts/trusted-deployment-inputs.mjs
       - scripts/vendor/**
       - scripts/fixtures/runtime-*.mjs

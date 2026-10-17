@@ -44,6 +44,11 @@ jobs:
       # One lease per attempt: 2 workers x 3 attempts (initial + two CI retries).
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 6
       E2E_MAX_QUARANTINED_ACCOUNTS: 2
+      # The run's own Playwright JSON report. The qualification record's `test` member is
+      # derived from these bytes — the selection, the report digest and one outcome per
+      # selected spec — and both artifact lists below retain the report, so the digest the
+      # record states can be audited against the report it names.
+      E2E_QUALIFICATION_REPORT: test-results/qualification-report.json
 
     steps:
       - name: Checkout E2E sources
@@ -174,7 +179,7 @@ jobs:
       - name: Capture Beta worker identity before the suite
         run: node scripts/beta-sizing-environment.mjs capture --phase before
 
-      - name: Run complete deployed Beta suite
+      - name: Run the release-gating business regression suite
         id: beta-suite
         run: |
           node scripts/execution-guard.mjs
@@ -259,6 +264,7 @@ jobs:
             deployment-evidence-before.json
             deployment-evidence.json
             qualification-record.json
+            test-results/qualification-report.json
             test-results/beta-environment-verdict.json
             github-cli-version.txt
           retention-days: 90
@@ -277,6 +283,7 @@ jobs:
             .qualification-inputs/beta-environment-after.json
             deployment-evidence-before.json
             deployment-evidence.json
+            test-results/qualification-report.json
             test-results/beta-environment-verdict.json
             github-cli-version.txt
             test-results/**/error-context.md

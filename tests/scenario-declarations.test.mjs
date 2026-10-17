@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import {
+  deployedInvocationTag,
+  inventorySections,
+  inventoryTags,
+  invocationTags,
+  specDeclarations,
+} from '../scripts/test-selection.mjs';
 
 // The deployed invocations select scenarios by tag, so a tag is the scenario's
 // declared membership in an invocation. This offline check holds the two ends of
@@ -13,60 +19,15 @@ import test from 'node:test';
 //
 // The selection itself is not executed here. A discovery run cannot establish a
 // deployed claim, and an offline file cannot load the deployed environment.
+//
+// The parsers are the qualification record's own: the record states which scenarios
+// the release-gating selection contains, and it is derived from these titles, so a
+// second copy of the parser here could agree with itself and disagree with the
+// record. `scripts/test-selection.mjs` owns them and both callers read them.
 
-const testsDirectory = fileURLToPath(new URL('.', import.meta.url));
 const inventoryUrl = new URL('../docs/scenario-inventory.md', import.meta.url);
 const packageUrl = new URL('../package.json', import.meta.url);
 const inventoryPath = 'docs/scenario-inventory.md';
-
-// Invocation tags, and the scripts that select them. A scenario may carry several:
-// `@smoke` and `@regression` overlap deliberately, because the on-demand diagnostic
-// and the release gate ask different questions of the same stable path.
-const deployedInvocationTag = /@(smoke|regression|instrumentation|drill|full-stack|beta-sizing)\b/;
-
-async function specDeclarations() {
-  const entries = (await readdir(testsDirectory)).filter((name) => name.endsWith('.spec.ts')).sort();
-  assert.ok(entries.length > 0, 'no spec file was discovered: a check over an empty set proves nothing');
-  const specs = [];
-  for (const name of entries) {
-    // Keys are repository-relative paths, because the inventory names each scenario
-    // by the path a reader can open.
-    const file = `tests/${name}`;
-    const source = await readFile(new URL(name, import.meta.url), 'utf8');
-    const title = /test\.describe\(\s*'([^']+)'/.exec(source)?.[1];
-    assert.ok(title, `${file} declares no test.describe title`);
-    specs.push({ file, title, tags: title.match(/@[a-z-]+/g) ?? [] });
-  }
-  return specs;
-}
-
-function inventorySections(inventory) {
-  // The inventory names each scenario with a level-three heading whose text is the
-  // spec path. A section runs to the next heading of the same or a higher level.
-  const headings = [...inventory.matchAll(/^(#{1,3}) (.+)$/gm)];
-  const sections = new Map();
-  headings.forEach((heading, index) => {
-    const level = heading[1].length;
-    const start = heading.index + heading[0].length;
-    let end = inventory.length;
-    for (const next of headings.slice(index + 1)) {
-      if (next[1].length <= level) { end = next.index; break; }
-    }
-    const name = /^`([^`]+)`$/.exec(heading[2])?.[1];
-    if (level === 3 && name) sections.set(name, inventory.slice(start, end));
-  });
-  return sections;
-}
-
-function inventoryTags(section) {
-  const declared = /^\| Tags \| (.+) \|$/m.exec(section)?.[1];
-  assert.ok(declared, 'the inventory section has no Tags row');
-  return declared.match(/@[a-z-]+/g) ?? [];
-}
-
-function invocationTags(tags) {
-  return tags.filter((tag) => deployedInvocationTag.test(tag)).sort();
-}
 
 test('every scenario declares its deployed invocation membership as a tag', async () => {
   for (const { file, title, tags } of await specDeclarations()) {
