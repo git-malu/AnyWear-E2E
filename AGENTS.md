@@ -66,11 +66,12 @@ Run install and build commands from this repository.
   revisions, image digest, environment endpoints, and qualification run/artifact
   links together with the intended SHAs in the release evidence. Checking out
   pinned source alone does not prove the deployed system ran it.
-- The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
-  execution for beta and later stages; it must not target dev. The Beta Qualification
-  workflow owns the release-gating deployed suite and its release evidence, and it runs
-  nothing else. A measurement or drill scenario is dispatched from its own protected
-  workflow: it cannot run inside a qualification, because a release consumer accepts a
-  qualification record only from a completed-success qualification run, so sharing that run
-  would let a measurement withhold a record the gate produced. Its result is never
-  substituted for qualification evidence.
+- The single protected `qualify` entry in `beta-qualification.yml` owns the deployed
+  operations for beta and later stages; it must not target dev. Separation between
+  qualification, the smoke diagnostic, measurement and account recovery now lives in the
+  signed `operation` field, not in a workflow-file boundary: `qualification-record.json` is
+  produced only by the `full` operation, the record binds the operation that was dispatched,
+  and both this repository's producer/verifier and the Infra-side executor allow-list require
+  `operation: full`. A `smoke`, `measure` or `recover` run therefore can neither produce nor
+  withhold the record the release gate produced, and a measurement or recovery result is
+  never substituted for qualification evidence.

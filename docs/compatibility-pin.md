@@ -86,10 +86,10 @@ Three places bind it, by symbol:
 
 Each of these is occasionally offered as a way to move the pin without the observation. None of them is one.
 
-- **A read-only state check.** A `beta-observe.yml` `state` run is read-only, is excluded from the qualified workflow set and uploads no deployment record. **A read-only state check is not a substitute for the observation.**
+- **A read-only state check.** A `runtime.yml` `state` run is read-only, is excluded from the qualified workflow set and uploads no deployment record. **A read-only state check is not a substitute for the observation.**
 - **The deployment workflow's own record artifact.** A deployment, lifecycle, schema or admission run also uploads an `infra-deployment-<run_id>-<run_attempt>` artifact, but its `record_type` is `anywear_infra_family_observation` and the binding refuses it by type. Only `runtime.yml` emits `anywear_infra_deployment`.
 - **A hand-edited record.** Editing a field so the values fit dies on the byte hash: `deployment.record_sha256` is the hash of the downloaded bytes, and the validator compares bytes before it parses anything.
-- **The v1-only tools.** `scripts/migrate-compatibility.mjs` and `scripts/build-v2-candidate.mjs` are both v1-only and refuse the committed v2 pin.
+- **The v1-only tool.** `scripts/migrate-compatibility.mjs` is v1-only and refuses the committed v2 pin.
 - **`pnpm check`.** On its own it validates the pin's shape, never its agreement with a record.
 
 ## Choosing the observation's inputs
@@ -113,7 +113,7 @@ Three traps:
 
 Take the observation at the deployment's own Infra revision: dispatch it while `main` is still at the revision that produced the deployed stacks, because the run's `GITHUB_SHA` is whatever `main` is at dispatch time, and `infra.sha` comes from it.
 
-The record artifact is retained for ninety days and the binding refuses an expired one, so the pin must move while its record still exists. `observe` is task-mutating but state-preserving: it needs the activation gate on (`ENABLE_BETA_DEPLOY`) and both Beta stacks active, and it needs no Beta admission.
+The record artifact is retained for ninety days and the binding refuses an expired one, so the pin must move while its record still exists. `observe` is task-mutating but state-preserving: it needs the stage gate on (`ENABLE_BETA_MUTATION`) and both Beta stacks active, and it needs no Beta admission.
 
 ## The offline validator
 
@@ -154,7 +154,7 @@ One pass, end to end. Every step carries the command or the exact field to read.
 10. Move `service.sha`, the three `service_artifacts` fields, `infra.sha` and the four `deployment` values (`run_id`, `run_attempt`, `artifact_id`, `record_sha256`; `repository` and `workflow_path` stay) in one commit; leave `version` and, unless the record says otherwise, `client.sha` alone.
 11. Run the validator and require exit 0: `node scripts/validate-compatibility-pin.mjs --deployment-record .qualification-inputs/deployment-record.json --previous .qualification-inputs/previous-compatibility.json`.
 12. Commit, open the PR, review and merge; the PR states the source and value of each of the four members and links the observation run. Record the observation run and the pin commit on the work item that owns the move.
-13. Run qualification on the merged pin: `gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main -f worker_slot_offset=<first of an unused captured worker-slot pair>`. Record that run's id on the same work item, so the move, the pin and the qualification are one trail.
+13. Run qualification on the merged pin: `gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main -f operation=full -f worker_slot_offset=<first of an unused captured worker-slot pair>`. Record that run's id on the same work item, so the move, the pin and the qualification are one trail.
 
 Do not move one member at a time — the four identity members move in one commit.
 
