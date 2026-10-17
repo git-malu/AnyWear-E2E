@@ -48,12 +48,6 @@ jobs:
       - name: Check E2E Source
         run: pnpm check
 
-      - name: Check native release verification CLI
-        run: |
-          gh --version
-          gh release verify --help --format json > /dev/null
-          gh release verify-asset --help --format json > /dev/null
-
   tool-regressions:
     name: Credential-free tool regressions
     runs-on: ubuntu-latest

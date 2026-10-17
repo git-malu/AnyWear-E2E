@@ -6,9 +6,6 @@ import {
   requireHash, requireImageDigest, requireOwnedRepository, repositoryIds,
 } from './evidence-contract.mjs';
 import { ghApi, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
-import { assertSelectionManifest, validateSelection } from './vendor/artifact-consumer.mjs';
-import { validateManifest } from './vendor/vendor/service-artifact-contract.mjs';
-import { configuredStackNames, validateStackManifest } from './vendor/operation-stacks.mjs';
 
 // #163 transition allow-list. Infra is replacing its `beta-deploy.yml` dispatch entry with
 // `mutate.yml` while deliberately keeping the operation record's family name `beta-deploy`.
@@ -151,7 +148,13 @@ function validateObservation(record, expected) {
   exactKeys(record.selection.release, ['repository', 'id', 'manifest_asset_id', 'manifest_sha256'], 'Diagnostic release');
   equal(record.selection.release, expected.selection.release, 'Diagnostic release');
   const selector = { schema_version: 2, record_type: 'anywear_infra_selection', release: record.selection.release, ...record.selection.components };
-  validateSelection(selector);
+  // The retired v2 selection contract is not re-vendored. The historical record is
+  // pinned by exact bytes and hashes, so this audit path checks the frozen shape it
+  // was written with rather than parsing it through the removed consumer.
+  if (selector.schema_version !== 2 || selector.record_type !== 'anywear_infra_selection'
+    || !selector.image || !selector.lambdas || !selector.runtime_policy || !selector.schema) {
+    throw new Error('Unexpected historical selection shape');
+  }
   if (record.selection.components.image.service_sha !== expected.service.source_sha
     || record.selection.components.image.digest !== expected.service.image_digest) throw new Error('Diagnostic image source/digest mismatch');
   for (const component of [...Object.values(record.selection.components.lambdas), record.selection.components.runtime_policy, record.selection.components.schema]) {
@@ -215,10 +218,22 @@ function validateOperation(operation, expected, observation) {
   if (operation.original_runtime.image_digest === expected.service.image_digest || operation.original_runtime.service_sha === expected.service.source_sha) throw new Error('Diagnostic operation lost original runtime boundary');
   exactKeys(operation.selection, ['file', 'sha256', 'release', 'components'], 'Diagnostic operation selection');
   equal(operation.selection, observation.selection, 'Diagnostic operation selection');
-  const configured = configuredStackNames();
+  // Frozen historical stack set: the diagnostic record was written when the
+  // Workload stack was still an Infra-configured stack. The current v3 configured
+  // set no longer contains it, so the audit path must not use it.
+  const configured = ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearWorkloadStack-beta', 'AnyWearBillingStack-beta'];
   if (!Array.isArray(operation.original_stack_templates) || operation.original_stack_templates.length !== configured.length) throw new Error('Diagnostic operation stack maps are incomplete');
   for (const row of operation.original_stack_templates) exactKeys(row, ['region', 'stack_name', 'template_sha256'], 'Diagnostic original stack');
-  validateStackManifest(operation.stack_manifest, 'diagnostic operation stack manifest');
+  const stackRows = (rows) => {
+    if (!Array.isArray(rows) || rows.length !== configured.length) throw new Error('Diagnostic operation stack manifest is incomplete');
+    const names = new Set();
+    for (const row of rows) {
+      if (!configured.includes(row?.stack_name) || names.has(row.stack_name)) throw new Error('Diagnostic stack identity mismatch');
+      names.add(row.stack_name);
+    }
+    return rows;
+  };
+  stackRows(operation.stack_manifest);
   for (const row of operation.stack_manifest) exactKeys(row, ['region', 'source_repository', 'source_sha', 'stack_name'], 'Diagnostic stack manifest row');
   if (!Array.isArray(operation.changed_stack_names) || !operation.changed_stack_names.length
     || operation.changed_stack_names.some(name => !configured.includes(name))) throw new Error('Diagnostic changed stack names are outside the configured set');
@@ -375,7 +390,10 @@ export async function loadDiagnosticEvidence({ directory, api = ghApi, extract =
   const selectionBytes = await readContent(api, expected.selection.file, infraEnvironment, expected.selection.raw_sha256, expected.selection.blob_sha256);
   const stackMapBytes = await readContent(api, expected.selection.stack_map_file, infraEnvironment, expected.selection.stack_map_sha256);
   const selection = parseStrictJson(selectionBytes);
-  validateSelection(selection);
+  if (selection.schema_version !== 2 || selection.record_type !== 'anywear_infra_selection'
+    || !selection.release || !selection.image || !selection.lambdas || !selection.runtime_policy || !selection.schema) {
+    throw new Error('Unexpected historical selection shape');
+  }
   if (selectionBytes.toString('utf8') !== (await import('./evidence-contract.mjs')).canonicalJson(selection)) throw new Error('Diagnostic selection bytes are not canonical');
   const selected = selection;
   const health = await readHealth(fetcher, expected);
@@ -395,9 +413,13 @@ export async function loadDiagnosticEvidence({ directory, api = ghApi, extract =
   const asset = parseStrictJson(await api(`repos/${repositories.service}/releases/assets/${expected.selection.release.manifest_asset_id}`, false, serviceEnvironment));
   const manifestBytes = await api(`repos/${repositories.service}/releases/assets/${expected.selection.release.manifest_asset_id}`, true, serviceEnvironment, { binaryAccept: 'application/octet-stream' });
   if (byteHash(manifestBytes) !== expected.selection.release.manifest_sha256) throw new Error('Diagnostic Service manifest checksum mismatch');
-  const manifest = validateManifest(parseStrictJson(manifestBytes));
+  const manifest = parseStrictJson(manifestBytes);
+  if (manifest.schema_version !== 1 || manifest.record_type !== 'anywear_service_artifacts'
+    || !['source-build', 'deployed-baseline-import'].includes(manifest.kind)
+    || manifest.producer?.repository !== repositories.service) throw new Error('Unsupported historical Service manifest');
   if (release.id !== expected.selection.release.id || release.immutable !== true || release.draft !== false || asset.id !== expected.selection.release.manifest_asset_id || asset.name !== 'service-artifacts.json') throw new Error('Diagnostic Service release/asset mismatch');
-  assertSelectionManifest(selected, manifest);
+  if (manifest.components?.image?.service_sha !== selected.image.service_sha
+    || manifest.components?.image?.digest !== selected.image.digest) throw new Error('Historical selection and manifest image disagree');
   return { record, observation, operation: operationRecord, selection, stackMapBytes, release, manifest, health,
     artifacts: { deployment: deployment.artifact, operation: operation.artifact }, bytes: { deployment: deploymentBytes, operation: operationBytes, selection: selectionBytes, manifest: manifestBytes } };
 }

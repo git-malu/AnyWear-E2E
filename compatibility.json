@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "client": {
     "repository": "git-malu/AnyWear-Client",
     "sha": "7b92ace1719b1ed53eb5a7cce2bfe32ef327410a"
@@ -12,18 +12,30 @@
     "repository": "git-malu/AnyWear-Infra",
     "sha": "c7691379a37f242a57e65c3c37441fa4862faf9e"
   },
+  "platform": {
+    "producer": "git-malu/AnyWear-Infra",
+    "producer_sha": "c7691379a37f242a57e65c3c37441fa4862faf9e",
+    "record": {
+      "producer": "git-malu/AnyWear-Infra",
+      "workflow_path": ".github/workflows/runtime.yml",
+      "status": "deferred",
+      "reason": "no Infra v3 platform record exists yet; pin the first authorized platform observe"
+    }
+  },
+  "workload": {
+    "producer": "git-malu/AnyWear-Service",
+    "producer_sha": "56387c30623a85249b0b714ff2c852a865f8ba3d"
+  },
+  "deployment": {
+    "producer": "git-malu/AnyWear-Service",
+    "workflow_path": ".github/workflows/service-artifacts.yml",
+    "status": "deferred",
+    "reason": "no Service release-chain deployment record exists yet; pin the first authorized Service release-chain deploy"
+  },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
     "release_id": 414921320,
     "manifest_asset_id": 647218560,
     "manifest_sha256": "ce09ddcb387fcec612cb4707ac9ee069a7025c094f0ab5c0231d914cb20488ce"
-  },
-  "deployment": {
-    "repository": "git-malu/AnyWear-Infra",
-    "workflow_path": ".github/workflows/runtime.yml",
-    "run_id": 38901515193,
-    "run_attempt": 1,
-    "artifact_id": 12045819461,
-    "record_sha256": "64cabb9683cf14c280a1ce0536d7c91b1d65275344955b0095412cd8090ae118"
   }
 }

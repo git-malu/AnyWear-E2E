@@ -169,12 +169,6 @@ jobs:
           node scripts/execution-guard.mjs --source-only
           echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Check native release verification CLI
-        run: |
-          gh --version | tee github-cli-version.txt
-          gh release verify --help --format json > /dev/null
-          gh release verify-asset --help --format json > /dev/null
-
       - name: Generate Infra evidence read token
         id: evidence-token
         uses: actions/create-github-app-token@v3
@@ -196,7 +190,6 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
-          permission-attestations: read
 
       - name: Checkout exact reviewed Infra observation tools
         uses: actions/checkout@v4
@@ -207,7 +200,7 @@ jobs:
           token: ${{ steps.evidence-token.outputs.token }}
           persist-credentials: false
 
-      - name: Verify trusted deployment and immutable Service inputs
+      - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
           GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
@@ -281,12 +274,6 @@ jobs:
           node scripts/execution-guard.mjs --source-only
           echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Check native release verification CLI
-        run: |
-          gh --version | tee github-cli-version.txt
-          gh release verify --help --format json > /dev/null
-          gh release verify-asset --help --format json > /dev/null
-
       - name: Generate Infra evidence read token
         id: evidence-token
         uses: actions/create-github-app-token@v3
@@ -308,7 +295,6 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
-          permission-attestations: read
 
       - name: Checkout exact reviewed Infra observation tools
         uses: actions/checkout@v4
@@ -319,7 +305,7 @@ jobs:
           token: ${{ steps.evidence-token.outputs.token }}
           persist-credentials: false
 
-      - name: Verify trusted deployment and immutable Service inputs
+      - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
           GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
@@ -462,6 +448,7 @@ jobs:
         with:
           name: beta-qualification-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            .qualification-inputs/platform-deployment-record.json
             .qualification-inputs/deployment-record.json
             .qualification-inputs/service-artifacts.json
             .qualification-inputs/beta-environment-before.json
@@ -471,7 +458,6 @@ jobs:
             qualification-record.json
             test-results/qualification-report.json
             test-results/beta-environment-verdict.json
-            github-cli-version.txt
           retention-days: 90
           include-hidden-files: true
           if-no-files-found: error
@@ -482,6 +468,7 @@ jobs:
         with:
           name: beta-qualification-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            .qualification-inputs/platform-deployment-record.json
             .qualification-inputs/deployment-record.json
             .qualification-inputs/service-artifacts.json
             .qualification-inputs/beta-environment-before.json
@@ -490,7 +477,6 @@ jobs:
             deployment-evidence.json
             test-results/qualification-report.json
             test-results/beta-environment-verdict.json
-            github-cli-version.txt
             test-results/**/error-context.md
           retention-days: 90
           include-hidden-files: true
@@ -574,12 +560,6 @@ jobs:
       - name: Check E2E source
         run: pnpm check
 
-      - name: Check native release verification CLI
-        run: |
-          gh --version | tee github-cli-version.txt
-          gh release verify --help --format json > /dev/null
-          gh release verify-asset --help --format json > /dev/null
-
       - name: Generate source checkout token
         id: generate-token
         uses: actions/create-github-app-token@v3
@@ -614,7 +594,6 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
-          permission-attestations: read
 
       - name: Load pinned compatibility set
         id: compatibility
@@ -670,7 +649,7 @@ jobs:
           token: ${{ steps.infra-evidence-token.outputs.token }}
           persist-credentials: false
 
-      - name: Verify trusted deployment and immutable Service inputs
+      - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
           GH_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
@@ -765,7 +744,6 @@ jobs:
           name: tested-revisions-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             tested-revisions.txt
-            github-cli-version.txt
             deployment-evidence.json
 
       - name: Upload Playwright diagnostics
@@ -876,7 +854,6 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
-          permission-attestations: read
 
       - name: Checkout exact reviewed Infra observation tools
         uses: actions/checkout@v4
@@ -887,7 +864,7 @@ jobs:
           token: ${{ steps.evidence-token.outputs.token }}
           persist-credentials: false
 
-      - name: Verify trusted deployment and immutable Service inputs
+      - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
           GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
@@ -1063,7 +1040,6 @@ jobs:
           repositories: AnyWear-Service
           permission-contents: read
           permission-actions: read
-          permission-attestations: read
 
       - name: Require reviewed compatibility and protected recovery execution
         run: |
@@ -1185,6 +1161,7 @@ jobs:
         with:
           name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            .qualification-inputs/platform-deployment-record.json
             .qualification-inputs/deployment-record.json
             .qualification-inputs/service-artifacts.json
             .qualification-inputs/beta-environment-before.json
@@ -1194,7 +1171,6 @@ jobs:
             qualification-record.json
             test-results/qualification-report.json
             test-results/beta-environment-verdict.json
-            github-cli-version.txt
           retention-days: 90
           include-hidden-files: true
           if-no-files-found: error
