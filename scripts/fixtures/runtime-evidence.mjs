@@ -1,4 +1,5 @@
 import { FENCING_CASES } from '../runtime-fencing-evidence.mjs';
+import { admissionWindowPayload } from '../admission-window.mjs';
 import { TERMINAL_STABILITY_MS } from '../runtime-task-audit.mjs';
 import { oneShotProof, payloadHash } from '../runtime-one-shot.mjs';
 import { cleanupPayload } from '../runtime-one-shot-logs.mjs';
@@ -35,9 +36,13 @@ export function windowFixture(scope) {
   const ledger = [['set-testers', [scope.email]], ['resume'], ['suspend'], ['set-testers', []]].map(([action, emails], index) => {
     const after = { admission_mode: versions.admission_mode + (action === 'set-testers' ? 0 : 1),
       tester_allowlist: versions.tester_allowlist + (emails ? 1 : 0) };
+    // The two payload-carrying actions carry different bytes: the canonical tester array,
+    // and the bounded window request the Service requires before it opens a window.
+    const payload = action === 'set-testers' ? JSON.stringify(emails)
+      : action === 'resume' ? admissionWindowPayload() : '';
     const entry = { run_scope: scope.runScope, action, before_versions: versions, after_versions: after,
       tester_hash: testerHash(emails ?? [scope.email]),
-      extraction: proofFixture(scope, 'lifecycle', emails ? JSON.stringify(emails) : '', String(index + 1), action) };
+      extraction: proofFixture(scope, 'lifecycle', payload, String(index + 1), action) };
     versions = after;
     return entry;
   });

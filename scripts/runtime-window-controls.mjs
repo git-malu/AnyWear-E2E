@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { admissionWindowPayload } from './admission-window.mjs';
 import { effectiveAdmissionMode, parseAdmissionMode } from './beta-admission-mode.mjs';
 import { payloadHash, recoverOneShotRegistrations, verifyOneShotTask } from './runtime-one-shot.mjs';
 
@@ -159,14 +160,17 @@ export async function reconcilePendingPolicy(io, scope, notStarted,
   if (io.saveRecovery) await io.saveRecovery(scope);
 }
 
-async function writePolicy(io, scope, action, emails) {
+// `payload` is the exact bytes the one-shot helper will carry: the canonical tester array
+// for `set-testers`, the bounded window request for `resume`, nothing for `suspend`. The
+// same bytes go into the durable intent, because reconciliation compares them.
+async function writePolicy(io, scope, action, payload = '') {
   const before = await guardRuntimeWindow(io, scope);
   const intent = { run_scope: scope.runScope, action, before_versions: Object.fromEntries(POLICY_KEYS.map((key) => [key, before[key].version])),
-    before_policy: before, request_payload: emails === undefined ? '' : JSON.stringify(emails), started_at: new Date().toISOString(),
-    tester_hash: emails ? testerHash(emails) : testerHash(JSON.parse(before.tester_allowlist.value)) };
+    before_policy: before, request_payload: payload, started_at: new Date().toISOString(),
+    tester_hash: action === 'set-testers' ? testerHash(JSON.parse(payload)) : testerHash(JSON.parse(before.tester_allowlist.value)) };
   scope.runtimeWindow.pending_write = intent;
   if (io.saveRecovery) await io.saveRecovery(scope);
-  const operation = await io.runLifecycle({ scope, action, payload: emails === undefined ? '' : JSON.stringify(emails) });
+  const operation = await io.runLifecycle({ scope, action, payload });
   if (operation?.operation?.proof) intent.extraction = operation.operation.proof;
   const after = await readRuntimePolicy(io);
   if (!nominalWrite(intent.before_versions, before, after, action, intent.tester_hash)) {
@@ -182,9 +186,10 @@ async function writePolicy(io, scope, action, emails) {
 
 export async function activateRuntimeWindow(io, scope) {
   // The run owns exactly one tester for its window, and only `resume` opens admission:
-  // the tester write itself changes no admission state.
-  await writePolicy(io, scope, 'set-testers', [scope.email]);
-  await writePolicy(io, scope, 'resume');
+  // the tester write itself changes no admission state. `resume` must carry the bounded
+  // window request the Service requires before it writes the mirror.
+  await writePolicy(io, scope, 'set-testers', JSON.stringify([scope.email]));
+  await writePolicy(io, scope, 'resume', admissionWindowPayload());
   scope.runtimeWindow.phase = 'private-owned-tester';
   if (io.saveRecovery) await io.saveRecovery(scope);
 }
@@ -213,13 +218,14 @@ export async function restoreRuntimeWindow(io, scope) {
     }
     return;
   }
-  // `set-testers` refuses while the mirror does not prove admission closed, so the
-  // tester list is only written once the window is suspended in fact.
+  // The Service refuses `set-testers` unless the database's effective mode is closed — not
+  // the mirror's, which can lag the row — so the window is suspended before the tester
+  // list is written.
   if (effectiveMode(scope.runtimeWindow.expected.admission_mode) !== 'closed') await writePolicy(io, scope, 'suspend');
-  await writePolicy(io, scope, 'set-testers', JSON.parse(baseline.tester_allowlist.value));
+  await writePolicy(io, scope, 'set-testers', JSON.stringify(JSON.parse(baseline.tester_allowlist.value)));
   // A tester write changes no admission state, so the found decision is restored by its
   // own operation: `resume` when the run found admission open, nothing when it did not.
-  if (baselineMode !== 'closed') await writePolicy(io, scope, 'resume');
+  if (baselineMode !== 'closed') await writePolicy(io, scope, 'resume', admissionWindowPayload());
   const actual = await guardRuntimeWindow(io, scope, { requireEmpty: true });
   if (actual.tester_allowlist.value !== baseline.tester_allowlist.value
     || effectiveMode(actual.admission_mode) !== baselineMode) {

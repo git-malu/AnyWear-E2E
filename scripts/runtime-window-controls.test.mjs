@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { admissionWindowPayload } from './admission-window.mjs';
 import { effectiveAdmissionMode } from './beta-admission-mode.mjs';
 import { activateRuntimeWindow, captureRuntimeWindow, guardRuntimeWindow, pauseRuntimeWindow, restoreRuntimeWindow, testerHash } from './runtime-window-controls.mjs';
 import { assertLiveRuntimeSourceReady, LIVE_RUNTIME_SOURCE_READY } from './runtime-source-readiness.mjs';
@@ -12,6 +13,7 @@ function windowHarness({ backlog = 0, dbMismatch = false, extraVersion = false, 
   const policy = { admission_mode: { value: baselineRecord ?? admissionRecord(baselineMode), version: 4 },
     tester_allowlist: { value: '["original@example.com"]', version: 2 } };
   const calls = [];
+  const payloads = [];
   const scope = { runScope: '123-1-aaaaaaaaaaaaaaaa', email: 'e2e-beta-123-1-aaaaaaaaaaaaaaaa-0-01234567@anywear.local' };
   const io = {
     async aws(args) { const key = args.at(-1).split('/').at(-1); return { Parameter: { Value: policy[key].value, Version: policy[key].version } }; },
@@ -24,6 +26,7 @@ function windowHarness({ backlog = 0, dbMismatch = false, extraVersion = false, 
         updated_at: '2026-10-05T01:00:00Z' } }; },
     async runLifecycle({ action, payload }) {
       calls.push(action);
+      payloads.push([action, payload]);
       // One mode parameter: a tester write moves the list only, and the mode moves only
       // for `resume`/`suspend`, exactly as the Service writer does.
       if (action === 'set-testers') { policy.tester_allowlist.value = payload; policy.tester_allowlist.version += 1; }
@@ -33,16 +36,19 @@ function windowHarness({ backlog = 0, dbMismatch = false, extraVersion = false, 
       }
     },
   };
-  return { scope, io, policy, calls };
+  return { scope, io, policy, calls, payloads };
 }
 
 test('private window uses one run-owned tester, nominal mode deltas, and exact original-policy restore', async () => {
-  const { scope, io, policy, calls } = windowHarness();
+  const { scope, io, policy, calls, payloads } = windowHarness();
   await captureRuntimeWindow(io, scope);
   await activateRuntimeWindow(io, scope);
   assert.deepEqual(JSON.parse(policy.tester_allowlist.value), [scope.email]);
-  // The tester write does not open admission; only `resume` does, and it writes the mode once.
+  // The tester write does not open admission; only `resume` does, it writes the mode once,
+  // and it carries the bounded window request the Service requires.
   assert.deepEqual(calls, ['set-testers', 'resume']);
+  assert.deepEqual(payloads, [['set-testers', JSON.stringify([scope.email])], ['resume', admissionWindowPayload()]]);
+  assert.equal(scope.runtimeWindow.write_ledger[1].request_payload, admissionWindowPayload());
   assert.equal(scope.runtimeWindow.write_ledger[0].after_versions.admission_mode, 4);
   assert.equal(scope.runtimeWindow.write_ledger[0].after_versions.tester_allowlist, 3);
   assert.equal(scope.runtimeWindow.write_ledger[1].after_versions.admission_mode, 5);
