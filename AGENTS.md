@@ -67,7 +67,9 @@ Run install and build commands from this repository.
   pinned source alone does not prove the deployed system ran it.
 - The E2E Integration workflow owns on-demand cross-repository checkout and diagnostic
   execution for beta and later stages; it must not target dev. The Beta Qualification
-  workflow owns the release-gating deployed suite and its release evidence. A
-  measurement or drill scenario it hosts runs as its own invocation and carries no
-  release verdict, and a measurement result is never substituted for qualification
-  evidence.
+  workflow owns the release-gating deployed suite and its release evidence, and it runs
+  nothing else. A measurement or drill scenario is dispatched from its own protected
+  workflow: it cannot run inside a qualification, because a release consumer accepts a
+  qualification record only from a completed-success qualification run, so sharing that run
+  would let a measurement withhold a record the gate produced. Its result is never
+  substituted for qualification evidence.

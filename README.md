@@ -568,8 +568,10 @@ with the task definition unchanged, and the run still created its qualification 
 redeployment that replaces the deployed tuple is still caught separately by
 `Confirm deployed identities remained stable`.
 
-The capture is unconditional for every qualification run, not only for the opt-in sizing
-stage, because a deployment change cannot qualify release evidence of any kind. The
+The capture is unconditional for every qualification run, because a deployment change
+cannot qualify release evidence of any kind. The instrumentation dispatch captures the same
+identity around its own workload, so a rotated task definition during a measurement is
+attributable too. The
 frozen shape set is untouched by any of this: the four VTO shapes, the three-garment
 shapes included, still run twice each, and the environment record bounds no payload -
 the VTO aggregate stays the separate, unproven quantity recorded per observation.
