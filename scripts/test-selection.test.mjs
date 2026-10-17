@@ -103,12 +103,62 @@ test('refuses a suite step that runs no pnpm script or more than one', async (t)
     const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: syntheticWorkflow(run) });
     assert.throws(() => qualificationInvocation({ root }), expected, label);
   }
+  // The refusal names what the step actually runs, so a reader is not sent looking for a
+  // script that was never in the block.
+  const empty = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: syntheticWorkflow('node scripts/execution-guard.mjs') });
+  assert.throws(() => qualificationInvocation({ root: empty }),
+    /its run block is node scripts\/execution-guard\.mjs/, 'no pnpm script must name the commands it runs');
+});
 
-  // A workflow edited so the identifier is gone cannot say which selection a record is about.
-  const missing = await temporaryRoot(t, {
-    [QUALIFICATION_WORKFLOW_PATH]: syntheticWorkflow('pnpm test').replace('id: beta-suite', 'id: something-else'),
-  });
-  assert.throws(() => qualificationInvocation({ root: missing }), /no step with beta-suite as its id/);
+// A step's keys belong to the step, not to the position of a `run:` block inside it: a
+// workflow that writes `id:` below its block `run:` is just as identifiable as one that
+// writes it above.
+test('derives the invocation when the step id is written after a block run block', async (t) => {
+  const workflowWithLateId = `name: Beta Qualification
+
+jobs:
+  qualify:
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+
+      - name: Whatever a reader sees
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm test
+        id: beta-suite
+`;
+  const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: workflowWithLateId });
+  const suite = qualificationSuiteStep({ root });
+  assert.equal(suite.id, QUALIFICATION_SUITE_STEP);
+  assert.deepEqual(suite.run.map((line) => line.trim()).filter(Boolean), ['node scripts/execution-guard.mjs', 'pnpm test']);
+  assert.equal(qualificationInvocation({ root }), 'test');
+});
+
+test('refuses a workflow with no beta-suite step and names the ids it found', async (t) => {
+  // The `id:` and `- name:` lines below sit inside the run body, so neither may be read as
+  // the step's own key or as a new step: the step genuinely has no beta-suite id.
+  const noSuiteStep = `name: Beta Qualification
+
+jobs:
+  qualify:
+    steps:
+      - name: Checkout E2E sources
+        id: checkout
+        uses: actions/checkout@v4
+
+      - name: Whatever a reader sees
+        id: not-the-suite
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm test
+          - name: Not a step
+          id: beta-suite
+`;
+  const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: noSuiteStep });
+  assert.throws(() => qualificationInvocation({ root }),
+    /declares no step with id beta-suite, so the selection that issued a record is unknown \(declared step ids: checkout, not-the-suite\)/);
+  assert.throws(() => qualificationSuiteStep({ root }), /declared step ids: checkout, not-the-suite/);
 });
 
 test('derives each invocation tag from package.json and refuses any that selects no single tag', () => {

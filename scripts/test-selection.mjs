@@ -76,23 +76,30 @@ function workflowSteps(source) {
   });
 }
 
+// A step's keys are read from the whole step, wherever a `run:` block sits inside it: an
+// `id:` written above or below a block `run:` is the step's id either way. What a block
+// scalar contains is content rather than keys, so a `- name:` or an `id:`-shaped line inside
+// a `run: |` script cannot start a step or become one.
 function readStep(lines, indent) {
   const keyIndent = indent + 2;
   const keyPattern = new RegExp(`^ {${keyIndent}}([a-zA-Z_][a-zA-Z0-9_-]*):[ \t]*(.*)$`);
   const step = { name: /^( *)- name:[ \t]*(.*)$/.exec(lines[0])?.[2].trim() ?? '', id: undefined, run: [] };
-  for (const [index, line] of lines.entries()) {
+  let block = null;
+  for (const line of lines.slice(1)) {
+    const lineIndent = line.length - line.trimStart().length;
+    if (block !== null) {
+      if (line.trim() === '' || lineIndent > keyIndent) {
+        if (block === 'run') step.run.push(line);
+        continue;
+      }
+      block = null;
+    }
     const key = keyPattern.exec(line);
     if (!key) continue;
-    if (key[1] === 'id') { step.id = key[2].trim(); continue; }
-    if (key[1] !== 'run') continue;
-    const header = key[2].trim();
-    if (!/^[|>][-+]?$/.test(header)) { if (header) step.run.push(header); continue; }
-    for (const body of lines.slice(index + 1)) {
-      const bodyIndent = body.length - body.trimStart().length;
-      if (body.trim() !== '' && bodyIndent <= keyIndent) break;
-      step.run.push(body);
-    }
-    break;
+    const value = key[2].trim();
+    if (/^[|>][-+]?$/.test(value)) { block = key[1]; continue; }
+    if (key[1] === 'id') { step.id = value; continue; }
+    if (key[1] === 'run' && value) step.run.push(value);
   }
   return step;
 }
@@ -101,7 +108,8 @@ export function qualificationSuiteStep(options = {}) {
   const steps = workflowSteps(readText(QUALIFICATION_WORKFLOW_PATH, options));
   const suite = steps.find((step) => step.id === QUALIFICATION_SUITE_STEP);
   if (!suite) {
-    throw new Error(`${QUALIFICATION_WORKFLOW_PATH} has no step with ${QUALIFICATION_SUITE_STEP} as its id, so the selection that issued a record is unknown`);
+    const declared = steps.map((step) => step.id).filter(Boolean);
+    throw new Error(`${QUALIFICATION_WORKFLOW_PATH} declares no step with id ${QUALIFICATION_SUITE_STEP}, so the selection that issued a record is unknown (declared step ids: ${declared.length > 0 ? declared.join(', ') : 'none'})`);
   }
   return suite;
 }
@@ -114,7 +122,8 @@ export function qualificationInvocation(options = {}) {
   const step = qualificationSuiteStep(options);
   const scripts = step.run.map((line) => pnpmScript.exec(line.trim())?.[1]).filter(Boolean);
   if (scripts.length === 0) {
-    throw new Error(`The ${QUALIFICATION_SUITE_STEP} step in ${QUALIFICATION_WORKFLOW_PATH} runs no pnpm script, so the selection that issued a record is unknown`);
+    const commands = step.run.map((line) => line.trim()).filter(Boolean);
+    throw new Error(`The ${QUALIFICATION_SUITE_STEP} step in ${QUALIFICATION_WORKFLOW_PATH} runs no pnpm script, so the selection that issued a record is unknown (its run block is ${commands.length > 0 ? commands.join('; ') : 'empty'})`);
   }
   if (scripts.length > 1) {
     throw new Error(`The ${QUALIFICATION_SUITE_STEP} step in ${QUALIFICATION_WORKFLOW_PATH} runs more than one pnpm script (${scripts.join(', ')}), so the selection that issued a record is ambiguous`);
