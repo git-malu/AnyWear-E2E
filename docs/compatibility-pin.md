@@ -196,13 +196,18 @@ and writes the record after `cdk deploy` from `ssm get-parameters` and
 Both artifacts are retained for ninety days and the live binding refuses an
 expired one, so the pin must move while both records still exist.
 
-The Platform → Workload deploy ordering is **not claimed safe yet**. C's post-C
-Platform deploy removes every `PublishOutput*` output, while the release-slice
-deploy still reads nine cleanup and two isolated-subnet values through the weak
-`Fn::GetStackOutput` reference. A recommendation to add those ten values to the
-stage contract (39 names instead of 29) is pending the issue owner's decision.
-The record validator accepts the resulting input list without a schema change;
-the ordering dependency is recorded in the PR until that decision lands.
+The Platform → Workload deploy ordering is **not claimed safe yet**, but the
+producer-side fix is approved. C's post-C Platform deploy removes every
+`PublishOutput*` output, and the release-slice deploy's last eleven weak reads
+(nine cleanup values and two isolated-subnet values) are being converted into
+stage-contract parameters. The Service record's `inputs[]` grows to whatever the
+deployed phase reads — expected 38 for resident active `roles-added` (25 stage
+parameters + 9 cleanup + 4 reused values), or 39 if `isolated_subnet_ids` is also
+published and read. This consumer accepts the recorded, sorted and unique list
+without a count or name assertion, so no schema or format change follows. Once
+both stacks read pure SSM parameters, deploy order no longer matters. Until the
+deferred Foundation/Platform round supplies those parameters and the first
+records, there is no live qualification and no Workload deploy.
 
 ## The offline validator
 

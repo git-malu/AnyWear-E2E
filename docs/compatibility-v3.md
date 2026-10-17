@@ -160,15 +160,19 @@ The first authorized deployment/observe round supplies the two records and the
 pin moves to the recorded shape through
 [compatibility-pin.md](compatibility-pin.md).
 
-One cross-repository dependency is recorded but not resolved here. C's post-C
-Platform deploy removes every `PublishOutput*` output from the Platform stack,
-while the release-slice deploy still reads nine cleanup and two isolated-subnet
-values through the weak `Fn::GetStackOutput` reference. A recommendation to add
-those ten values to the stage contract (making the Service record's `inputs[]`
-grow from 29 to 39 names) is pending the issue owner's decision. The v3 record
-and this consumer are name- and count-agnostic within the contract's bounded
-input list, so the shape does not change; what is not claimed is that the
-Platform → Workload deploy ordering is safe until that decision lands.
+One cross-repository dependency is recorded here and has now been approved for the
+producer side. C's post-C Platform deploy removes every `PublishOutput*` output,
+and the release-slice deploy's last eleven weak reads (nine cleanup values and
+two isolated-subnet values) are being converted into stage-contract parameters.
+The Service record's `inputs[]` therefore grows to whatever the deployed phase
+actually reads — expected 38 for resident active `roles-added` (25 stage
+parameters + 9 cleanup + 4 reused values), or 39 if `isolated_subnet_ids` is also
+published and read at that phase. E2E does not hardcode a count or a name list:
+it accepts the producer's recorded, sorted and unique list within the contract's
+bound, and derives the schema hash from it, so no schema or format change
+follows. Once both stacks read pure SSM parameters, deploy order no longer
+matters. Until the deferred Foundation/Platform round supplies the parameters and
+the first records, there is no live qualification and no Workload deploy.
 
 ## Migration
 

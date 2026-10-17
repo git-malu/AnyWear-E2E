@@ -307,13 +307,19 @@ authorized deployment and platform-observe rounds supply the two records, and
 [`docs/compatibility-pin.md`](docs/compatibility-pin.md) moves the pin to the
 recorded shape.
 
-The Platform → Workload deploy ordering is not claimed safe yet: C's post-C
-Platform deploy removes every `PublishOutput*` output, while the release-slice
-deploy still reads nine cleanup and two isolated-subnet values through the weak
-`Fn::GetStackOutput` reference. A recommendation to add those ten values to the
-stage contract is pending the issue owner's decision; the v3 record validator is
-name- and count-agnostic, so no schema change would follow. The dependency is
-recorded in the PR rather than assumed away.
+The Platform → Workload deploy ordering is not claimed safe yet, but the
+producer-side extension is **approved and in progress**. C's post-C Platform
+deploy removes every `PublishOutput*` output, and the release-slice deploy's last
+eleven weak reads (nine cleanup values and two isolated-subnet values) are being
+converted into stage-contract parameters. The Service record's `inputs[]` grows
+to whatever the deployed phase reads — expected 38 for resident active
+`roles-added` (25 stage parameters + 9 cleanup + 4 reused values), or 39 if
+`isolated_subnet_ids` is also published and read. E2E hardcodes neither the count
+nor the names: it accepts the producer's recorded, sorted and unique list and
+derives the schema hash from it. Once both stacks read pure SSM parameters,
+deploy order no longer matters. Until the deferred Foundation/Platform round
+supplies those parameters and the first records, there is no live qualification
+and no Workload deploy.
 
 `scripts/migrate-compatibility.mjs` owns the offline transition. v2 → v3 is
 strict: a valid v2 previous pin plus both v3 records, with each record's producer,
