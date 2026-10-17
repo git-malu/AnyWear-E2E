@@ -508,9 +508,10 @@ only against that passing S1 with identical E2E source, image, Client, fixture a
 provider configurations. Do not reuse old-image timings or restore two replicas
 merely to collect a new baseline.
 
-The `full` and `smoke` operations do not run the workload and have no sizing input. The
-`measure` operation takes the stage as a required input and has no default, so a measurement
-is never implicit, and runs `tests/beta-sizing.spec.ts` in `pnpm test:instrumentation`
+The `full` and `smoke` operations do not run the workload and accept no sizing stage. The
+`measure` operation refuses the menu's `none` sentinel and any stage other than `S1`, `S2` or
+`S3`, and there is no default stage, so a measurement is never implicit. It runs
+`tests/beta-sizing.spec.ts` in `pnpm test:instrumentation`
 once with no retries: 12 uploads/tagging tasks (three formats, JPEG/PNG/WebP,
 sequential/burst, two repeats), then four VTO shapes twice. Two
 bursts overlap VTO submissions; actual same-Worker overlap must still be shown by

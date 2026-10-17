@@ -53,7 +53,9 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   assert.match(operation, /options: \[full, smoke, measure, recover\]/);
   const sizing = inputBlock('sizing_stage');
   assert.match(sizing, /type: choice/);
-  assert.match(sizing, /options: \[S1, S2, S3\]/);
+  // `none` is the unselected sentinel a no-default choice needs (GitHub preselects the first
+  // option); measure refuses it, so a measurement stage is never implicit.
+  assert.match(sizing, /options: \[none, S1, S2, S3\]/);
   assert.doesNotMatch(sizing, /default:/, 'a measurement stage is never implicit');
 });
 

@@ -26,10 +26,14 @@ on:
         default: 0
         type: number
       sizing_stage:
-        description: Reviewed sizing stage this measurement runs; only operation measure accepts it, and there is no default because a measurement is never implicit
+        # `none` is the unselected sentinel, not a sizing stage: GitHub preselects the first
+        # option of a choice input when no `default` is declared, so a no-default stage menu
+        # cannot express "not supplied". The entry has no default stage, measure refuses
+        # `none`, and every other operation refuses anything but `none`.
+        description: Reviewed sizing stage; only operation measure accepts S1, S2 or S3, and there is no default stage
         required: false
         type: choice
-        options: [S1, S2, S3]
+        options: [none, S1, S2, S3]
       source_run_id:
         description: Failed E2E run ID containing the account manifest; only operation recover accepts it
         required: false
@@ -57,7 +61,7 @@ on:
         required: false
         type: string
       retry_failed_execution:
-        description: Legacy normal-mode retry after exact no-commit and task-cessation proof; only operation recover accepts it, and recovery mode forbids it
+        description: Legacy normal-mode retry after exact no-commit proof; only operation recover accepts it and recovery forbids it
         required: false
         default: false
         type: boolean
@@ -115,7 +119,7 @@ jobs:
 
       # The entry is one dispatch surface, so the operation and the inputs that belong to
       # another operation are refused here rather than by file presence. `sizing_stage` is
-      # required by measure and rejected by every other operation; the recovery inputs are
+      # required by measure and refused by every other operation; the recovery inputs are
       # rejected by every operation but recover.
       - name: Validate the dispatch operation and its input scope
         shell: bash
@@ -138,7 +142,7 @@ jobs:
               S1|S2|S3) ;;
               *) echo "::error::operation measure requires sizing_stage S1, S2 or S3"; exit 1 ;;
             esac
-          elif [[ -n "$SIZING_STAGE" ]]; then
+          elif [[ "$SIZING_STAGE" != "" && "$SIZING_STAGE" != "none" ]]; then
             echo "::error::sizing_stage is only accepted by operation measure (got '$SIZING_STAGE' for '$OPERATION')"
             exit 1
           fi
