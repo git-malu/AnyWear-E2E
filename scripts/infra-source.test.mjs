@@ -46,10 +46,11 @@ test('pinned source guard refuses subdirectories, wrong origins and hidden track
 
 const scopedReaderAssertions = `
 import assert from 'node:assert/strict';
-const argument = name => process.argv[process.argv.indexOf(name) + 1];
-function requireScopedReader() {
-  assert.equal(argument('--trusted-infra-root'), process.env.QUALIFICATION_INFRA_DIR);
-  assert.ok(process.argv.includes('--infra-sha'));
+function requireObservationEnvironment(env, infraSha) {
+  assert.equal(env.GITHUB_SHA, infraSha);
+  assert.equal(env.GITHUB_REPOSITORY, 'git-malu/AnyWear-E2E');
+  assert.equal(env.GITHUB_WORKFLOW_REF, 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main');
+  assert.ok(env.QUALIFICATION_INFRA_DIR);
 }
 `;
 
@@ -62,19 +63,13 @@ function readerEnvironment(directory) {
 }
 
 const observerFixture = `${scopedReaderAssertions}
-import { readFileSync, writeFileSync } from 'node:fs';
-export function validateDeploymentRecord(record) { return record; }
-export function assertObservedMatchesDeployment(record, snapshot) {
-  assert.equal(snapshot.observed.client_sha, record.observed.client_sha);
-}
-if (process.argv.includes('--expected')) {
-  requireScopedReader();
-  assert.ok(!process.argv.includes('--selection'));
-  assert.ok(!process.argv.includes('--selection-sha256'));
-  const platform = JSON.parse(readFileSync(argument('--expected')));
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+export async function observeDeployment({ infraSha, env }) {
+  requireObservationEnvironment(env, infraSha);
+  const platform = JSON.parse(readFileSync(join(env.QUALIFICATION_INPUTS_DIR, 'platform-deployment-record.json')));
   assert.equal(platform.record_type, 'anywear_infra_deployment');
-  const snapshot = { stacks: platform.stacks, inputs: platform.inputs, observed: platform.observed, schema: platform.schema };
-  writeFileSync(argument('--output'), JSON.stringify(snapshot));
+  return { stacks: platform.stacks, inputs: platform.inputs, observed: platform.observed, schema: platform.schema };
 }
 `;
 

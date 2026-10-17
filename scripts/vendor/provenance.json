@@ -1,7 +1,8 @@
 {
   "source_repository": "git-malu/AnyWear-Infra",
   "source_sha": "bab0b6a69ad27f86f405c80f34f588044f28adc4",
-  "source_note": "Infra C v3 contract surface. Every file below is an exact byte copy from that commit; the loader assertion hashes the files it imports and refuses a mismatch.",
+  "final_c_sha": "fc0e23a7efc832562559ae465d06f68a7bf94126",
+  "source_note": "Contract files are byte-identical between bab0b6a and the final C commit fc0e23a; the approved stage-contract parameter-list extension is a separate change and does not alter these three files. The Infra observer is not vendored.",
   "files": {
     "deployment-contract.mjs": "307dfdf5b69be2c74e61685ac076ae7f4de72a4f5ec0b1665e10f5d7c191cd59",
     "json-contract.mjs": "c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047",

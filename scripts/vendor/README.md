@@ -2,7 +2,11 @@
 
 These files are exact byte copies of the public v3 deployment contract from
 [`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`bab0b6a69ad27f86f405c80f34f588044f28adc4`:
+`bab0b6a69ad27f86f405c80f34f588044f28adc4`. The final C commit
+`fc0e23a7efc832562559ae465d06f68a7bf94126` carries byte-identical copies of these
+three files; the approved stage-contract parameter-list extension is a separate
+change and does not alter them. The Infra observer was rewritten separately and is
+not vendored.
 
 | E2E file | Producer path in Infra | Raw SHA-256 |
 | --- | --- | --- |

@@ -15,6 +15,9 @@ export async function loadVendoredProvenance({ root = defaultRoot } = {}) {
   const provenance = JSON.parse(await readFile(new URL('provenance.json', root), 'utf8'));
   if (provenance.source_repository !== 'git-malu/AnyWear-Infra') throw new Error('Vendored contract source repository is unexpected');
   if (typeof provenance.source_sha !== 'string' || !/^[0-9a-f]{40}$/.test(provenance.source_sha)) throw new Error('Vendored contract source SHA is malformed');
+  if (provenance.final_c_sha !== undefined && (typeof provenance.final_c_sha !== 'string' || !/^[0-9a-f]{40}$/.test(provenance.final_c_sha))) {
+    throw new Error('Vendored contract final C SHA is malformed');
+  }
   return provenance;
 }
 

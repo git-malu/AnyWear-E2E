@@ -10,6 +10,7 @@ test('the vendored v3 contract matches its pinned producer commit and file hashe
   const provenance = await loadVendoredProvenance();
   assert.equal(provenance.source_repository, 'git-malu/AnyWear-Infra');
   assert.equal(provenance.source_sha, 'bab0b6a69ad27f86f405c80f34f588044f28adc4');
+  assert.equal(provenance.final_c_sha, 'fc0e23a7efc832562559ae465d06f68a7bf94126');
   assert.deepEqual(Object.keys(provenance.files).sort(), ['deployment-contract.mjs', 'json-contract.mjs', 'operation-stacks.mjs']);
   assert.deepEqual(await assertVendoredProvenance(), provenance);
 });
