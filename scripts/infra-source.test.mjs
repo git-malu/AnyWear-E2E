@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalJson } from './evidence-contract.mjs';
+import { fileURLToPath } from 'node:url';
 import { reviewedInfraSource } from './infra-source.mjs';
+import { byteHash } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
-import { verifyPinnedSelection } from './trusted-deployment-inputs.mjs';
 import { pinnedInfraObserver } from './infra-observation.mjs';
 
 async function withInfraFixture(action, additionalSources = {}) {
@@ -22,13 +22,19 @@ async function withInfraFixture(action, additionalSources = {}) {
     const source = 'export const authentic = true;\n';
     await writeFile(filename, source);
     for (const [name, contents] of Object.entries(additionalSources)) await writeFile(join(directory, 'scripts', name), contents);
-    const fixture = qualificationFixture(); const selection = fixture.deployment.selection;
-    const selector = { schema_version: 2, record_type: 'anywear_infra_selection', release: selection.release, ...selection.components };
-    await mkdir(join(directory, 'selections'));
-    await writeFile(join(directory, selection.file), canonicalJson(selector));
-    git(['add', 'scripts', 'selections']); git(['commit', '--quiet', '-m', 'Offline fixture']);
-    const compatibility = fixture.compatibility; compatibility.infra.sha = git(['rev-parse', 'HEAD']);
-    await action({ directory, git, filename, source, compatibility, selection, selector, env: { QUALIFICATION_INFRA_DIR: directory } });
+    git(['add', 'scripts']); git(['commit', '--quiet', '-m', 'Offline fixture']);
+    const fixture = qualificationFixture();
+    const compatibility = fixture.compatibility;
+    // The v3 observer CLI requires the expected record's producer to equal the
+    // observer source SHA: E2E checks out the producer revision it observes.
+    const commit = git(['rev-parse', 'HEAD']);
+    compatibility.infra.sha = commit;
+    compatibility.platform.producer_sha = commit;
+    fixture.platformRecord.producer.sha = commit;
+    for (const row of fixture.platformRecord.stacks) row.producer_sha = commit;
+    fixture.bytes.platform = Buffer.from(`${JSON.stringify(fixture.platformRecord, null, 2)}\n`);
+    compatibility.platform.record.record_sha256 = byteHash(fixture.bytes.platform);
+    await action({ directory, git, filename, source, compatibility, fixture, env: { QUALIFICATION_INFRA_DIR: directory } });
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
@@ -50,16 +56,13 @@ test('pinned source guard refuses subdirectories, wrong origins and hidden track
 
 const scopedReaderAssertions = `
 import assert from 'node:assert/strict';
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 const argument = name => process.argv[process.argv.indexOf(name) + 1];
-function requireScopedReader() {
-  assert.equal(process.env.GH_TOKEN, 'service-read-fixture');
-  for (const name of ['GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
-    'E2E_EVIDENCE_READ_TOKEN', 'INFRA_EVIDENCE_READ_TOKEN', 'SERVICE_ARTIFACT_READ_TOKEN',
-    'CLIENT_CONTENTS_READ_TOKEN']) assert.equal(process.env[name], undefined);
+function requireObservationEnvironment(infraSha) {
+  assert.equal(process.env.GITHUB_REPOSITORY, 'git-malu/AnyWear-E2E');
+  assert.equal(process.env.GITHUB_WORKFLOW_REF, 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main');
+  assert.ok(process.env.QUALIFICATION_INFRA_DIR);
+  assert.equal(argument('--infra-sha'), infraSha);
   assert.equal(argument('--trusted-infra-root'), process.env.QUALIFICATION_INFRA_DIR);
-  if (process.env.TEST_NATIVE_PERMISSION_DENIED === 'true') throw new Error('Native release verification denied');
 }
 `;
 
@@ -71,118 +74,49 @@ function readerEnvironment(directory) {
     QUALIFICATION_INFRA_DIR: directory };
 }
 
-const directConsumerFixture = `${scopedReaderAssertions}
-import { loadCommittedSelection } from ${JSON.stringify(new URL('./vendor/artifact-consumer.mjs', import.meta.url).href)};
-export { loadCommittedSelection };
-if (process.argv.includes('--selection')) {
-requireScopedReader();
-assert.equal(argument('--infra-sha'), process.env.TEST_INFRA_SHA);
-assert.equal(argument('--selection'), 'selections/beta-baseline.json');
-assert.equal(argument('--selection-sha256'), process.env.TEST_SELECTION_SHA256);
-const selector = await loadCommittedSelection({ trustedInfraRoot: argument('--trusted-infra-root'), expectedInfraSha: argument('--infra-sha'),
-  selectionFile: argument('--selection'), selectionSha256: argument('--selection-sha256') });
-const output = argument('--output-dir'); mkdirSync(output, { recursive: true });
-writeFileSync(join(output, 'service-artifacts.json'), JSON.stringify({ release: selector.release }));
-}
+const observerFixture = `${scopedReaderAssertions}
+import { readFileSync, writeFileSync } from 'node:fs';
+export async function observeDeployment({ infraSha, env }) { return null; }
+const platform = JSON.parse(readFileSync(argument('--expected')));
+requireObservationEnvironment(platform.producer.sha);
+assert.equal(platform.record_type, 'anywear_infra_deployment');
+const body = { stacks: platform.stacks, inputs: platform.inputs, observed: platform.observed, schema: platform.schema };
+writeFileSync(argument('--output'), JSON.stringify(body));
 `;
 
-test('pinned direct CLI receives committed relative selection/hash and only its Service reader', async () => {
-  await withInfraFixture(async ({ directory, compatibility, selection, selector }) => {
-    const output = await mkdtemp(join(tmpdir(), 'anywear-pinned-publication-'));
-    const environment = { ...readerEnvironment(directory), TEST_INFRA_SHA: compatibility.infra.sha, TEST_SELECTION_SHA256: selection.sha256 };
-    try {
-      const result = await verifyPinnedSelection(compatibility, selection, output, environment);
-      assert.deepEqual(result.manifest.release, selector.release);
-      assert.deepEqual(result.selector, selector);
-      await assert.rejects(readFile(join(output, 'service-selection.json')), { code: 'ENOENT' });
-      assert.equal(environment.GH_TOKEN, 'infra-read-fixture');
-      assert.equal(environment.GITHUB_TOKEN, 'cleanup-write-fixture');
-      await assert.rejects(verifyPinnedSelection(compatibility, selection, output,
-        { ...environment, TEST_NATIVE_PERMISSION_DENIED: 'true' }), /Native release verification denied/);
-      delete environment.SERVICE_ARTIFACT_READ_TOKEN;
-      await assert.rejects(verifyPinnedSelection(compatibility, selection, output, environment), /SERVICE_ARTIFACT_READ_TOKEN/);
-    } finally { await rm(output, { recursive: true, force: true }); }
-  }, { 'artifact-consumer.mjs': directConsumerFixture });
-});
-
-test('direct pinned wrapper rejects external/temp inputs, wrong hashes/components and dirty selection before CLI', async () => {
-  await withInfraFixture(async ({ directory, compatibility, selection, git, selector }) => {
-    const output = await mkdtemp(join(tmpdir(), 'anywear-selection-negatives-'));
-    const environment = readerEnvironment(directory);
-    try {
-      for (const patch of [{ file: join(output, 'reconstructed.json') }, { file: '../selections/beta-baseline.json' },
-        { file: 'selections/untracked.json' }, { sha256: '0'.repeat(64) },
-        { components: { ...selection.components, image: { ...selection.components.image, digest: `sha256:${'f'.repeat(64)}` } } }]) {
-        await assert.rejects(verifyPinnedSelection(compatibility, { ...selection, ...patch }, output, environment));
-      }
-      await assert.rejects(readFile(join(output, 'service-assets/service-artifacts.json')), { code: 'ENOENT' });
-      const wrongPin = { ...compatibility, infra: { ...compatibility.infra, sha: '0'.repeat(40) } };
-      await assert.rejects(verifyPinnedSelection(wrongPin, selection, output, environment), /immutable revision/);
-      await writeFile(join(directory, selection.file), `${canonicalJson(selector)}\n`);
-      await assert.rejects(verifyPinnedSelection(compatibility, selection, output, environment), /local changes/);
-      git(['checkout', '--', selection.file]);
-      await writeFile(join(directory, 'untracked.json'), '{}');
-      await assert.rejects(verifyPinnedSelection(compatibility, selection, output, environment), /local changes/);
-      await rm(join(directory, 'untracked.json'));
-      for (const flag of ['skip-worktree', 'assume-unchanged']) {
-        git(['update-index', `--${flag}`, selection.file]);
-        await assert.rejects(verifyPinnedSelection(compatibility, selection, output, environment), /index flags/);
-        git(['update-index', `--no-${flag}`, selection.file]);
-      }
-      // A tracked canonical-looking selection still cannot traverse a directory link.
-      git(['mv', 'selections', 'selection-target']); git(['commit', '--quiet', '-m', 'Move selection']);
-      await symlink(join(directory, 'selection-target'), join(directory, 'selections'), process.platform === 'win32' ? 'junction' : 'dir');
-      const updated = { ...compatibility, infra: { ...compatibility.infra, sha: git(['rev-parse', 'HEAD']) } };
-      await assert.rejects(verifyPinnedSelection(updated, selection, output, environment));
-    } finally { await rm(output, { recursive: true, force: true }); }
-  }, { 'artifact-consumer.mjs': directConsumerFixture });
-});
-
-test('pinned observer scopes all inherited native release calls to the Service reader', async () => {
-  const observer = `${scopedReaderAssertions}
-export function validateDeploymentRecord(record) { return record; }
-export function assertObservedMatchesDeployment(record, snapshot) {
-  assert.equal(snapshot.schema.verification.service_sha, record.observed.service_sha);
-}
-if (process.argv.includes('--expected')) {
-  requireScopedReader();
-  const record = JSON.parse(readFileSync(argument('--expected')));
-  assert.equal(argument('--selection'), record.selection.file);
-  assert.equal(argument('--selection-sha256'), record.selection.sha256);
-  const snapshot = { schema: { verification: { source_repository: 'git-malu/AnyWear-Infra',
-    source_sha: record.infra.sha, image_digest: record.observed.image_digest, service_sha: record.observed.service_sha,
-    executor: { repository: process.env.GITHUB_REPOSITORY, sha: process.env.GITHUB_SHA,
-      workflow_path: '.github/workflows/beta-qualification.yml', run_id: Number(process.env.GITHUB_RUN_ID),
-      run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT) } } } };
-  writeFileSync(argument('--output'), JSON.stringify(snapshot));
-}
-`;
-  await withInfraFixture(async ({ directory, compatibility }) => {
+test('pinned observer receives both producer records and no retired selection input', async () => {
+  await withInfraFixture(async ({ directory, compatibility, fixture }) => {
     const output = await mkdtemp(join(tmpdir(), 'anywear-pinned-observation-'));
-    const record = qualificationFixture().deployment; record.infra.sha = compatibility.infra.sha;
-    const sha = execFileSync('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const e2eSha = execFileSync('git', ['--no-replace-objects', '-C', fileURLToPath(new URL('..', import.meta.url)), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const environment = { ...readerEnvironment(directory), QUALIFICATION_INPUTS_DIR: output,
       GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
       GITHUB_REPOSITORY_ID: '1317091305', GITHUB_REPOSITORY_OWNER: 'git-malu', GITHUB_REPOSITORY_OWNER_ID: '11473072',
       GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
-      E2E_STAGE: 'beta', ENABLE_BETA_MUTATION: 'true', E2E_OPERATION: 'full', GITHUB_SHA: sha, GITHUB_WORKFLOW_SHA: sha,
+      E2E_STAGE: 'beta', ENABLE_BETA_MUTATION: 'true', E2E_OPERATION: 'full', GITHUB_SHA: e2eSha, GITHUB_WORKFLOW_SHA: e2eSha,
       GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', E2E_AWS_ACCOUNT: '650880818323',
       E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/fixture-123',
       AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40) };
     try {
-      await writeFile(join(output, 'deployment-record.json'), JSON.stringify(record));
+      await writeFile(join(output, 'platform-deployment-record.json'), fixture.bytes.platform);
+      await writeFile(join(output, 'deployment-record.json'), fixture.bytes.workload);
       for (const principal of [undefined, 'arn:aws:sts::650880818323:assumed-role/beta-infra-role/fixture-123']) {
-        await assert.rejects(pinnedInfraObserver(compatibility, record, { ...environment, E2E_AWS_PRINCIPAL_ARN: principal }), /dedicated E2E principal/);
+        await assert.rejects(pinnedInfraObserver(compatibility, { platform: fixture.platformRecord, workload: fixture.workloadRecord },
+          { ...environment, E2E_AWS_PRINCIPAL_ARN: principal }), /dedicated E2E principal/);
         await assert.rejects(readFile(join(output, 'aws-observation.json')), { code: 'ENOENT' });
       }
-      const snapshot = await pinnedInfraObserver(compatibility, record, environment);
-      assert.equal(snapshot.schema.verification.source_sha, compatibility.infra.sha);
+      const snapshot = await pinnedInfraObserver(compatibility, { platform: fixture.platformRecord, workload: fixture.workloadRecord }, environment);
+      assert.deepEqual(snapshot, { stacks: fixture.platformRecord.stacks, inputs: fixture.platformRecord.inputs,
+        observed: fixture.platformRecord.observed, schema: fixture.platformRecord.schema });
       assert.deepEqual(JSON.parse(await readFile(join(output, 'aws-observation.json'))), snapshot);
       assert.equal(environment.GH_TOKEN, 'infra-read-fixture');
-      delete environment.SERVICE_ARTIFACT_READ_TOKEN;
-      await assert.rejects(pinnedInfraObserver(compatibility, record, environment), /SERVICE_ARTIFACT_READ_TOKEN/);
     } finally { await rm(output, { recursive: true, force: true }); }
-  }, { 'observe-deployment.mjs': observer });
+  }, { 'observe-deployment.mjs': observerFixture });
+});
+
+test('pinned observer refuses a deferred producer before invoking the helper', async () => {
+  const fixture = qualificationFixture({ deferred: true });
+  await assert.rejects(pinnedInfraObserver(fixture.compatibility, { platform: fixture.platformRecord, workload: fixture.workloadRecord }, {}),
+    /Deployment evidence deferred/);
 });
 
 test('pinned source guard evaluates the original commit despite Git replacement objects', async () => {

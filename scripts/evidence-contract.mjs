@@ -158,29 +158,131 @@ export function parseStrictJson(bytes) {
   return parsed;
 }
 
-export function validateCompatibility(manifest, { allowLegacy = false } = {}) {
-  if (manifest.version !== 2 && !(allowLegacy && manifest.version === 1)) throw new Error('Compatibility version must be 2 for Infra qualification');
-  const keys = manifest.version === 1 ? ['version', 'client', 'service'] : ['version', 'client', 'service', 'infra', 'service_artifacts', 'deployment'];
-  exactKeys(manifest, keys, 'compatibility');
-  for (const component of manifest.version === 1 ? ['client', 'service'] : ['client', 'service', 'infra']) {
-    const entry = exactKeys(manifest[component], ['repository', 'sha'], component);
-    if (entry.repository !== repositories[component]) throw new Error(`${component}.repository is unexpected`);
-    requireCommit(entry.sha, `${component}.sha`);
+// Compatibility v3 names two deployment producers. A record identity is either
+// deferred (the producer is named, no record is pinned yet) or recorded (the exact
+// run/attempt/artifact bytes are pinned). The workflow paths are reviewed here so a
+// pin can never name a producer file this repository did not review.
+export const PLATFORM_RECORD_WORKFLOW = '.github/workflows/runtime.yml';
+export const WORKLOAD_RECORD_WORKFLOW = '.github/workflows/service-artifacts.yml';
+export const DEPLOYMENT_RECORD_STATUSES = Object.freeze(['deferred', 'recorded']);
+const RECORDED_IDENTITY_KEYS = Object.freeze(['producer', 'workflow_path', 'status', 'run_id', 'run_attempt', 'artifact_id', 'record_sha256']);
+const DEFERRED_IDENTITY_KEYS = Object.freeze(['producer', 'workflow_path', 'status', 'reason']);
+const producerWorkflows = Object.freeze({
+  [repositories.infra]: Object.freeze([PLATFORM_RECORD_WORKFLOW, '.github/workflows/mutate.yml']),
+  [repositories.service]: Object.freeze([WORKLOAD_RECORD_WORKFLOW]),
+});
+
+export function isDeferredRecord(identity) {
+  return identity?.status === 'deferred';
+}
+
+// The exact-keys check is the shape authority: a deferred identity may not carry a
+// run id and a recorded identity may not carry a reason. `producer` is explicit so a
+// record cannot be reinterpreted for another repository after review.
+export function validateDeploymentIdentity(value, { label, producer }) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} is required`);
+  if (value.producer !== producer) throw new Error(`${label}.producer is not the pinned producer ${producer}`);
+  requireMatch(value.workflow_path, /^\.github\/workflows\/[a-z0-9-]+\.yml$/, `${label}.workflow_path`);
+  if (!producerWorkflows[producer]?.includes(value.workflow_path)) throw new Error(`${label}.workflow_path is not a reviewed ${producer} producer workflow`);
+  if (!DEPLOYMENT_RECORD_STATUSES.includes(value.status)) throw new Error(`${label}.status must be ${DEPLOYMENT_RECORD_STATUSES.join(' or ')}`);
+  if (value.status === 'deferred') {
+    exactKeys(value, DEFERRED_IDENTITY_KEYS, label);
+    if (typeof value.reason !== 'string' || value.reason.trim().length === 0 || value.reason.length > 512) throw new Error(`${label}.reason must be a non-empty bounded string`);
+    return value;
   }
-  if (manifest.version === 1) return manifest;
+  exactKeys(value, RECORDED_IDENTITY_KEYS, label);
+  for (const field of ['run_id', 'run_attempt', 'artifact_id']) requireId(value[field], `${label}.${field}`);
+  requireHash(value.record_sha256, `${label}.record_sha256`);
+  return value;
+}
+
+export function validateCompatibility(manifest, { allowLegacy = false } = {}) {
+  if (manifest.version !== 3 && !(allowLegacy && (manifest.version === 2 || manifest.version === 1))) {
+    throw new Error('Compatibility version must be 3 for qualification; v1 and v2 are historical inputs only');
+  }
+  if (manifest.version === 1) {
+    exactKeys(manifest, ['version', 'client', 'service'], 'compatibility');
+    for (const component of ['client', 'service']) requireRepositoryPin(manifest, component);
+    return manifest;
+  }
+  exactKeys(manifest, manifest.version === 2
+    ? ['version', 'client', 'service', 'infra', 'service_artifacts', 'deployment']
+    : ['version', 'client', 'service', 'infra', 'platform', 'workload', 'deployment', 'service_artifacts'], 'compatibility');
+  for (const component of ['client', 'service', 'infra']) requireRepositoryPin(manifest, component);
   const assets = exactKeys(manifest.service_artifacts, ['repository', 'release_id', 'manifest_asset_id', 'manifest_sha256'], 'service_artifacts');
   if (assets.repository !== repositories.service) throw new Error('service_artifacts.repository is unexpected');
   requireId(assets.release_id, 'Service release ID');
   requireId(assets.manifest_asset_id, 'Service manifest asset ID');
   requireHash(assets.manifest_sha256, 'Service manifest checksum');
-  const deployment = exactKeys(manifest.deployment, ['repository', 'workflow_path', 'run_id', 'run_attempt', 'artifact_id', 'record_sha256'], 'deployment');
-  if (deployment.repository !== repositories.infra) throw new Error('deployment.repository is unexpected');
-  requireMatch(deployment.workflow_path, /^\.github\/workflows\/[a-z0-9-]+\.yml$/, 'Deployment workflow path');
-  for (const field of ['run_id', 'run_attempt', 'artifact_id']) requireId(deployment[field], `deployment.${field}`);
-  requireHash(deployment.record_sha256, 'Deployment record checksum');
+  if (manifest.version === 2) {
+    // Historical v2 pin: one Infra runtime.yml record covering every stack. It stays
+    // readable as a previous pin for the strict v2 -> v3 migration, never as a live
+    // v3 input.
+    const deployment = exactKeys(manifest.deployment, ['repository', 'workflow_path', 'run_id', 'run_attempt', 'artifact_id', 'record_sha256'], 'deployment');
+    if (deployment.repository !== repositories.infra) throw new Error('deployment.repository is unexpected');
+    if (deployment.workflow_path !== PLATFORM_RECORD_WORKFLOW) throw new Error('deployment.workflow_path is unexpected');
+    for (const field of ['run_id', 'run_attempt', 'artifact_id']) requireId(deployment[field], `deployment.${field}`);
+    requireHash(deployment.record_sha256, 'Deployment record checksum');
+    return manifest;
+  }
+  const platform = exactKeys(manifest.platform, ['producer', 'producer_sha', 'record'], 'platform');
+  const workload = exactKeys(manifest.workload, ['producer', 'producer_sha'], 'workload');
+  if (platform.producer !== repositories.infra) throw new Error('platform.producer must be the reviewed Infra repository');
+  if (workload.producer !== repositories.service) throw new Error('workload.producer must be the Service release chain repository');
+  requireCommit(platform.producer_sha, 'platform.producer_sha');
+  requireCommit(workload.producer_sha, 'workload.producer_sha');
+  validateDeploymentIdentity(platform.record, { label: 'platform.record', producer: platform.producer });
+  const deployment = validateDeploymentIdentity(manifest.deployment, { label: 'deployment', producer: workload.producer });
+  if (deployment.producer !== workload.producer) throw new Error('deployment.producer must equal workload.producer');
   return manifest;
 }
 
+function requireRepositoryPin(manifest, component) {
+  const entry = exactKeys(manifest[component], ['repository', 'sha'], component);
+  if (entry.repository !== repositories[component]) throw new Error(`${component}.repository is unexpected`);
+  requireCommit(entry.sha, `${component}.sha`);
+  return entry;
+}
+
+// The first differing path, not just "something differs". The comparison feeds
+// deployment identity checks (AnyWear #138), where a refusal has to tell the
+// operator which field moved and what the reviewed value was.
+function firstDifference(actual, expected, path = '') {
+  if (actual === undefined && expected === undefined) return null;
+  if (actual === undefined || expected === undefined) return { path: path || '<root>', actual, expected };
+  if (canonicalJson(actual) === canonicalJson(expected)) return null;
+  const at = path || '<root>';
+  if (Array.isArray(actual) && Array.isArray(expected)) {
+    for (let index = 0; index < Math.max(actual.length, expected.length); index++) {
+      if (index >= actual.length) return { path: `${at}[${index}]`, actual: undefined, expected: expected[index] };
+      if (index >= expected.length) return { path: `${at}[${index}]`, actual: actual[index], expected: undefined };
+      const child = firstDifference(actual[index], expected[index], `${at}[${index}]`);
+      if (child) return child;
+    }
+  }
+  const isObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+  if (isObject(actual) && isObject(expected)) {
+    const keys = [...new Set([...Object.keys(actual), ...Object.keys(expected)])].sort();
+    for (const key of keys) {
+      const child = firstDifference(actual[key], expected[key], `${at}.${key}`);
+      if (child) return child;
+    }
+  }
+  return { path: at, actual, expected };
+}
+
+const describeValue = (value) => {
+  if (value === undefined) return 'undefined';
+  let text;
+  try { text = JSON.stringify(value); } catch { text = String(value); }
+  if (text === undefined) text = String(value);
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+};
+
 export function assertEqual(actual, expected, label) {
-  if (canonicalJson(actual) !== canonicalJson(expected)) throw new Error(`${label} mismatch`);
+  const difference = firstDifference(actual, expected);
+  if (difference) {
+    throw new Error(`${label} mismatch at ${difference.path}: expected ${describeValue(difference.expected)}, observed ${describeValue(difference.actual)}`);
+  }
+  return actual;
 }

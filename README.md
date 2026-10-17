@@ -45,7 +45,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 26 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 27 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -94,7 +94,7 @@ repository's producer/verifier and the Infra-side executor allow-list check
 `operation == full`. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 26 registered core files retain account-budget, Cognito cleanup, qualification
+The 27 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
@@ -107,13 +107,14 @@ deployed reads; it belongs with its `service-cleanup-operation.test.mjs` and
 `worker-cleanup.test.mjs` neighbours, and its
 production module is consumed by `scripts/account-recovery-inputs.mjs` and
 `scripts/cleanup-worker-accounts.mjs`. The infra contracts protect pinned source,
-committed selection, direct native release verification, deployment identity and
-execution validation; their offline assertions remain required by `check` without
+the two v3 producer record identities, deployment identity and execution
+validation; their offline assertions remain required by `check` without
 claiming actual publication or qualification.
 
 The automatic `Check` entry's `tool-regressions` job runs the retained tool tests, their
-implementation and fixture dependencies, shared evidence/source contracts, vendored
-direct-release validators and compatibility/lockfile inputs. `quality.yml` carried no path
+implementation and fixture dependencies, shared evidence/source contracts, the
+vendored v3 deployment contract with its provenance assertion, and
+compatibility/lockfile inputs. `quality.yml` carried no path
 filter, so that job now runs on every check rather than only on its former path set; the
 cost is recorded in the PR body for #163. Both jobs have only `contents: read` and no
 deployment environment or credential steps. SQS prototypes are excluded from both routine
@@ -125,7 +126,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Check entry runs compatibility validation, the explicit 26 core test files, the
+Check entry runs compatibility validation, the explicit 27 core test files, the
 credential-free tool regressions, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
@@ -248,7 +249,8 @@ to that stable `https://<distribution>.cloudfront.net` endpoint before qualifica
 ## CI Model
 
 `compatibility.json` is the CI source of truth for the Client and Service
-revisions under test. It accepts only full commit SHAs; branch and tag names are
+revisions under test and for the two deployment producers that wrote the v3
+records. It accepts only full commit SHAs; branch and tag names are
 rejected. When invoked, the `smoke` operation of the `qualify` entry checks out those exact
 private repositories, including their recursive API submodules, and records every tested
 revision as an artifact.
@@ -256,119 +258,117 @@ revision as an artifact.
 Update `compatibility.json` only after the peer commits exist on their remotes
 and their repository-owned pipelines pass.
 
-## Infra qualification contract v2
+## Release-slice qualification contract v3
 
-[ADR 0021](https://github.com/git-malu/AnyWear-Meta/blob/a8eba148cfef4c124c46010276e66e4c8c41e420/architecture/ADR/0021-shared-infrastructure-repository.md)
-defines the shared infrastructure cutover. Offline source checks still accept the
-existing reviewed v1 Client/Service pins. The `qualify` entry's deployed operations require
-v2 and remain disabled until their required writer authorization is in place, and the
-`preflight` refuses a v1 pin with `--require-infra`. These changes do not select a newer
-image or refresh current pins.
+The release-slice split moves `AnyWearWorkloadStack-{beta,prod}` to `AnyWear-Service`.
+`AnyWear-Infra` keeps Bootstrap, Platform, Billing and the reviewed observation
+entry; the Service release chain builds, verifies, deploys and records the Workload
+slice in one run. E2E follows that split: the deployed tuple is qualified by two
+per-producer deployment records, not by one Infra record covering every stack and
+not by a committed cross-repository `selection`.
 
-A reviewed v2 compatibility file has these additional identities:
+The full v3 shape, the two record identities, the deferred state and the checks
+each record passes are in [docs/compatibility-v3.md](docs/compatibility-v3.md).
+The committed v3 pin names two producers:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "client": { "repository": "git-malu/AnyWear-Client", "sha": "<full-client-sha>" },
   "service": { "repository": "git-malu/AnyWear-Service", "sha": "<full-image-producer-sha>" },
-  "infra": { "repository": "git-malu/AnyWear-Infra", "sha": "<full-infra-sha>" },
+  "infra": { "repository": "git-malu/AnyWear-Infra", "sha": "<full-observed-infra-sha>" },
+  "platform": {
+    "producer": "git-malu/AnyWear-Infra",
+    "producer_sha": "<full-infra-producer-sha>",
+    "record": { "<Infra deployment identity>" }
+  },
+  "workload": {
+    "producer": "git-malu/AnyWear-Service",
+    "producer_sha": "<full-service-producer-sha>"
+  },
+  "deployment": { "<Service release-chain deployment identity>" },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
     "release_id": 1,
     "manifest_asset_id": 2,
     "manifest_sha256": "<exact-manifest-byte-sha256>"
-  },
-  "deployment": {
-    "repository": "git-malu/AnyWear-Infra",
-    "workflow_path": ".github/workflows/runtime.yml",
-    "run_id": 3,
-    "run_attempt": 1,
-    "artifact_id": 4,
-    "record_sha256": "<exact-deployment-record-byte-sha256>"
   }
 }
 ```
 
-The placeholders above are rejected by validation. The committed
-`compatibility.json` is already v2, and the v1-only
-`scripts/migrate-compatibility.mjs` refuses
-it. Moving the pin is an operational routine with a stated owner, a start
-condition and a checklist: follow
-[`docs/compatibility-pin.md`](docs/compatibility-pin.md). It observes the
-deployed tuple once with a qualified `runtime.yml` run, moves the four identity
-members together from that record, and refuses a partial pin offline before the
-commit exists.
+A deployment identity is either `status: deferred` — the producer and workflow are
+named, no run is claimed — or `status: recorded` with `run_id`, `run_attempt`,
+`artifact_id` and the exact record byte hash. The committed pin is currently
+deferred for both producers because C removes the Infra Workload deploy path
+before the first Service release-chain deployment exists. Every live operation
+fails closed with `deployment evidence deferred`; no historical Infra `runtime.yml`
+run and no Service publication run is relabelled as a deployment. The first
+authorized deployment and platform-observe rounds supply the two records, and
+[`docs/compatibility-pin.md`](docs/compatibility-pin.md) moves the pin to the
+recorded shape.
 
-The final #54 tuple must pin the deployment record produced **after the
-authorized Beta maintenance migration and restart**; a rehearsal record cannot
-substitute.
+The Platform → Workload deploy ordering is not claimed safe yet, but the
+producer-side extension is **approved and in progress**. C's post-C Platform
+deploy removes every `PublishOutput*` output, and the release-slice deploy's last
+eleven weak reads (nine cleanup values and two isolated-subnet values) are being
+converted into stage-contract parameters. The Service record's `inputs[]` grows
+to whatever the deployed phase reads — expected 39 for resident active
+`roles-added` (35 stage parameters + 4 reused values). E2E hardcodes neither the
+count nor the names: it accepts the producer's recorded, sorted and unique list
+and derives the schema hash from it. Once both stacks read pure SSM parameters,
+deploy order no longer matters. Until the deferred Foundation/Platform round
+supplies those parameters and the first records, there is no live qualification
+and no Workload deploy.
 
-The evidence reader accepts only the protected Infra `runtime.yml` and Service
-`service-artifacts.yml` completed-success main run/attempt. It rejects missing,
-expired, tampered or duplicate-key records, unknown formats, unsealed releases,
-asset/source mismatches and unverified release attestations. Selection, deployment
-and operation runtime records use Infra schema v2; historical receipt-bearing v1
-records are rejected without relabeling historical evidence. E2E loads the actual
-regular tracked canonical `selections/*.json` file in the clean reviewed Infra
-checkout, bound to the recorded raw SHA-256 and explicit `compatibility.infra.sha`.
-The pinned consumer receives that relative path/hash and the trusted root/SHA;
-its complete release/components must match the deployment record. A reconstructed
-external JSON file cannot supply selection authority, and the vendored directory
-cannot replace the runtime Infra checkout. Direct verification checks the
-completed-success publisher identity before and after the native release and all
-five asset verifications, API asset size/digest, and unchanged complete signed
-statement. It needs no candidate, receipt, approval record or Actions publication
-ZIP. See the exact staged source and raw hashes in [vendor provenance](scripts/vendor/README.md).
-Private retrieval
-uses separate GitHub App readers: Infra-only Contents/Actions read through
-`GH_TOKEN`, and Service-only Contents/Actions/Attestations read through
+`scripts/migrate-compatibility.mjs` owns the offline transition. v2 → v3 is
+strict: a valid v2 previous pin plus both v3 records, with each record's producer,
+stack set and observed application tuple checked before the candidate is written.
+v1 → v2 is historical only and is never accepted as a live migration input by the
+CLI. `scripts/validate-compatibility-pin.mjs` re-reads both exact record byte
+streams and refuses a deferred or non-forward pin. The vendored contract is an
+exact byte copy of `AnyWear-Infra` at the pinned commit; its source SHA and file
+hashes are in [vendor provenance](scripts/vendor/README.md) and enforced by
+`scripts/vendored-contract.mjs`.
+
+Private retrieval uses separate GitHub App readers: Infra-only Contents/Actions read
+through `GH_TOKEN`, and Service-only Contents/Actions read through
 `SERVICE_ARTIFACT_READ_TOKEN`. App token creation uses v3 so the declared
-permissions are applied. Smoke source checkouts use a separate Contents
-read token limited to Client, Service, and Service-API; cleanup tokens retain only
-Service Actions write. Native release verification and the pinned Infra observer
-receive the Service reader through an explicit subprocess environment, with no
-fallback to the Infra token or local authentication. It does not use a PAT.
-`gh release verify` and `verify-asset` must be available. The Check entry and the
-`qualify` preflight check these commands offline; qualification evidence
-preserves the actual runner `github-cli-version.txt`. The Ubuntu
-runner uses Python's ZIP reader to read exactly `deployment-record.json`, without
+permissions are applied. Smoke source checkouts use a separate Contents read token
+limited to Client, Service, and Service-API; cleanup tokens retain only Service
+Actions write. The two deployment-record reads use the reader of the producer they
+belong to: the Infra record uses `GH_TOKEN`, the Service release-chain record uses
+`SERVICE_ARTIFACT_READ_TOKEN`. The pinned Infra observer receives an environment
+with no other reader. It does not use a PAT. The Ubuntu runner uses Python's ZIP
+reader to read exactly one declared member of each record artifact, without
 extracting any archive paths.
+
 
 AWS credentials are assumed before the first observation through
 `beta-e2e-qualification-role`. The exact compatibility-pinned Infra helper observes
-the actual CFN Original templates, stable Lambda configuration and code hashes,
-ECS task/image identity and queue settings, and runs a bounded read-only task from
-the exact selected image to inspect full policy content and the actual DB migration
-history. HTTP minimum schema values do not establish applied DB state. Compatible
-extra applied migrations remain legal for image rollback; selected and applied
-journal hashes describe different inputs and need not match.
+the three stage-base stacks, the actual CFN Original template content hashes, the
+stable Lambda configuration and code hashes, the queue settings and the stage SSM
+inputs. The Workload identity is bound by the deployed Service `/health` and the
+Client build metadata. The v3 record's `schema` member is a content hash of the
+stage-contract inputs; the database/applied schema identity moved to the Service
+release chain with the release slice.
 
-Before and after snapshots must match the trusted deployed tuple, use different
-verification tasks and remain stable across the release-gating deployed selection. Only the
-`full` operation emits v2 passing records, and the record now states `operation: full`; the
-`operation` member is additive to v2, so the flat v2 record Infra's production preflight
-requires stays compatible. Its local `verifyQualificationRecord`
-checks schema, integrity, the signed operation and all tuple bindings while the producer is
-in progress.
+Before and after observations must match the trusted deployed tuple and remain
+stable across the release-gating deployed selection. Only the `full` operation
+emits passing records, and the record states `operation: full`; the qualification
+record remains schema v2, while its `deployment` member now carries the platform
+and workload records separately. Its local `verifyQualificationRecord` checks
+schema, integrity, the signed operation and all tuple bindings while the producer
+is in progress.
 A release consumer must call `verifyQualificationForPromotion` with authenticated
 completed-success E2E run/attempt, unexpired exact artifact metadata and the pinned
 record bytes/hash. A checksum alone does not establish trusted publication.
 
 ## Ordinary E2E execution
 
-For the offline cross-repository builder gate, first run the locked Service
-`artifacts:build` command from its clean exact source checkout with explicit mock
-producer/image inputs. Then, from E2E, run
-`node scripts/verify-artifact-builder-fixture.mjs <actual-builder-output> <Infra-checkout>`.
-This verifies real ZIP/policy/schema/manifest bytes through both Infra and E2E
-public contracts and the v2 qualification consistency builder. The result under
-`.qualification-inputs/builder-fixture/` labels all run IDs and deployment data as
-offline mocks; it cannot establish publication, authenticated observation or a
-passing deployed suite. Repeat on the final producer/consumer source revisions.
-The [public-contract provenance and source acceptance](scripts/vendor/README.md)
-records the exact Service builder and Infra revisions, asset integrity cases and
-the limits of this offline result.
+The former offline cross-repository builder gate was retired with the `selection`
+contract. The Service release chain verifies its own sealed release before it
+deploys, and E2E binds the pinned release/asset identity and exact manifest bytes
+without executing the retired Service parser.
 
 Verify that Infra/Client/legacy writers have ceased before allocating an E2E
 qualification or recovery window. Repository-local concurrency

@@ -1,73 +1,56 @@
-# Public evidence contract sources
+# Vendored deployment contract
 
-These files are exact copies of public Infra/Service interfaces. E2E consumes public contracts without importing Service application implementation. Relative imports preserve the producer dependency layout. The source record is this README.
-
-## Direct selection source
-
-The staged source integration consumes immutable [Infra `e6a08de5d6eebdeb13097094d91fb2d7589c6496`](https://github.com/git-malu/AnyWear-Infra/commit/e6a08de5d6eebdeb13097094d91fb2d7589c6496) under the [owner source allocation](https://github.com/git-malu/AnyWear/issues/54#issuecomment-6060314076). Final producer/consumer source acceptance requires checked and independently reviewed intended revisions. Source availability does not select a runtime compatibility tuple or authorize live qualification.
-
-All contract files match the exact Infra source bytes:
+These files are exact byte copies of the public v3 deployment contract from
+[`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
+`61a3f61ded06699cd1e10039cd2f3c53bf3a7f7d`, the final C contract source. The
+approved stage-contract parameter-list extension changes the recorded input
+names, not the v3 record shape. The Infra observer was rewritten separately and
+is not vendored.
 
 | E2E file | Producer path in Infra | Raw SHA-256 |
 | --- | --- | --- |
-| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `13bb804e854ff9389e0eca472c839f5594307b8b84acba88329df7391af72a8d` |
+| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `e43b0f0213fbbf391849d6f816a6bf7f44edd8318e07cba2d31fcb6a9a7dab80` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
-| `artifact-consumer.mjs` | `scripts/artifact-consumer.mjs` | `83f4ba2be6325a96178687f24443460c6509c000556d6804acf294620fc0b499` |
-| `vendor/service-artifact-contract.mjs` | `scripts/vendor/service-artifact-contract.mjs` | `57fbd454b90fae6de856d05bb612a8c9b5b8d9e130e0521093fee0bf7e9422de` |
-| `vendor/service-release-attestation.mjs` | `scripts/vendor/service-release-attestation.mjs` | `c02c1691ad12203b6d2bd55bbaf58b25feead3ad2bd76ed8240c3c7369d38c65` |
-| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `f015d7879d231843f3f4208ad49132b9c6d6671d709130cc947969c65f194c7c` |
+| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023` |
 
-`deployment-contract.mjs` is re-pinned to `13bb804e854ff9389e0eca472c839f5594307b8b84acba88329df7391af72a8d`
-because that revision imports the shared `configuredStacks` manifest table from
-`operation-stacks.mjs` instead of restating stack names, regions and the stack count.
-`json-contract.mjs` and `artifact-consumer.mjs` are byte-identical to the previous
-pin.
+`provenance.json` is the machine-readable pin. `scripts/vendored-contract.mjs`
+asserts the repository, the source SHA and every file hash before the consumer
+imports the contract; `scripts/vendored-contract.test.mjs` proves a modified,
+missing or extra module is refused. The assertion is a source-drift check, not
+provenance authority: it does not fetch the producer, prove its review status or
+authorize a deployment.
 
-The `e6a08de5` re-pin re-read every hash at the merged revision; all six files
-remain byte-identical to the `0416fcb5` pin.
+## What the contract validates
 
-Both Service helpers remain byte-identical to authoritative [Service `6a0551b3ea83937d3ac350ee78608784bc2d9dc6`](https://github.com/git-malu/AnyWear-Service/commit/6a0551b3ea83937d3ac350ee78608784bc2d9dc6), paths `.github/scripts/{service-artifact-contract,service-release-attestation}.mjs`. The native parser retains both strict v0.1 and v0.2 predicates, the original signed statement and complete owner/repository/release/tag/target/asset bindings. Receipt-only `publication-acceptance.mjs` is retired from the executable consumer closure. Historical records below retain their original meaning.
+`deployment-contract.mjs` is producer-parameterized. `validateDeploymentRecord`
+dispatches on `record_type` and accepts exactly one producer's record:
 
-The genuine [v0.2 fixture](../fixtures/github-native-release-verification-v0.2.json) remains unchanged, copied from Infra path `test/fixtures/github-native-release-verification-v0.2.json`, which retains Service's exact 5,681 bytes with raw SHA-256 `cf0bf9a5550ec9b475cb9b1fea68b793a39a2e640431deb69f075254d23ab0e2`. Failed publisher `37757528038/1`, release `406660922` remains UNSELECTABLE. The fixture and synthetic policy tests prove no successful cryptographic verification or deployment. Legacy v0.1 producer fixtures are preserved.
+- `anywear_infra_deployment` — producer `git-malu/AnyWear-Infra`, workflow
+  `runtime.yml` or `mutate.yml`. The record lists exactly the three Infra stacks
+  (`AnyWearFoundationStack`, `AnyWearPlatformStack-beta`,
+  `AnyWearBillingStack-beta`). Its `observed` is the Platform tuple: the two
+  Lambdas, the queue configuration hash, the Client commit and the Client
+  endpoint.
+- `anywear_service_deployment` — producer `git-malu/AnyWear-Service`, workflow
+  `.github/workflows/service-artifacts.yml`. The record lists exactly
+  `AnyWearWorkloadStack-beta`. Its `observed` is the Workload tuple: the Service
+  commit, the image digest, the two ECS service identities and the API endpoint.
 
-## Runtime trust boundary
+Both records carry `stacks[]` (each row with its producer and the sha256 of the
+deployed `Original` template body), `inputs[]` (stage-contract SSM parameter name,
+version and value hash, sorted), a `schema` member that is a content hash derived
+from those inputs, and a `producer` member with the producing repository, commit,
+workflow, workflow ref and run/attempt. A record that lists another producer's
+stack or mixes producer identities is refused.
 
-Selector and deployment observation records keep Infra schema v2. Operation records are schema v3: provenance travels in a complete stack_manifest covering every configured stack plus the operation's changed_stack_names, and no longer in hand-authored eviewed_stack_sources. Historical v2 operation records stay readable during the dual run, and the v2 carrier is accepted only when it is the sole provenance field. Unknown versions are rejected with no permissive fallback. Historical receipt-bearing v1 records are rejected as runtime inputs, never converted into a new accepted record. The actual selection must be a regular tracked canonical `selections/*.json` blob, bound to its raw SHA-256 and the explicit full `compatibility.infra.sha`. The reviewed origin, root, commit, clean tracked/untracked state, replacement refs and hidden index flags are checked by the pinned loader before and after verification.
+## Retired sources
 
-E2E executes the separately checked-out, compatibility-pinned Infra consumer with `--selection <repository-relative file> --selection-sha256 <raw hash> --trusted-infra-root <absolute checkout> --infra-sha <full compatibility pin> --output-dir <external output>`. It loads the committed selector and compares its complete release/components against the deployment record. A temporary reconstructed JSON object is a comparison value only. The vendored validator is not the runtime trust source.
-
-Direct verification retains the completed-success publisher/main/workflow/run/attempt/head-owner identities, immutable release/tag/source/manifest, API asset IDs/names/sizes/digests, native release verification and all five asset verifications, original native statement equality and full component/schema hashes. Service reads use only the Service App reader. Runtime no longer depends on the Actions publication ZIP, candidate, receipt or Issue approval record. The observer uses the same actual committed selection file/hash, with its expected deployment record as a comparison value.
-
-Compatibility v1 and its existing Client/Service pins remain unchanged in this source delivery. The later deployed v2 tuple and observed system qualification require separate acceptance. #87 retains 8 core / 16 tool / 2 deferred SQS files and its existing workflow/package taxonomy.
-
-## Offline source acceptance
-
-The actual locked Service builder output from source
-`8dfb61b1ff4f671eed27d3a7cb8d315bed3d68ce` is consumed again with clean Infra
-source `1616783bf604c6c837f32452f039019fc5dd65f5`. The complete manifest has
-raw SHA-256 `beed1d70d328193de6a616e3b492e22ed64bee4cd2dcc049218d5d515b0be878`.
-The acceptance command is
-`node scripts/verify-artifact-builder-fixture.mjs <actual-builder-output> <Infra-checkout>`;
-the original output directory is retained outside the removable
-workspace. Its report records the exact Infra HEAD, checkout cleanliness, contract
-file bytes and original asset hashes. All four asset tamper cases and all four
-missing-asset cases are rejected. The real schema version is 16, with 18 SQL
-migration hashes and a minimum migration count of 18. Hypothetical next-version
-prefix checks pass in both directions, and a conflicting SQL hash is rejected.
-The final `offline-contract-result.json` has raw SHA-256
-`2e45b0e661ce9239ff50318754e0ab0465919213d0b1111951ed81e3cc5ec409`.
-The original builder output and the new report are retained outside the removable
-workspace. The manifest still identifies its actual `8dfb61b` builder source;
-this revalidation does not relabel it as an artifact produced at `75c65b2`.
-Its deployment-contract checkout hash is
-`107c0691b8d7f918c386351b984b741f5f164cdb0b4d6f7d932f18fb38a1ff19`
-because that Infra working copy uses CRLF; the committed LF hash is the
-`87d0530...` value above, verified against both repositories' Git blobs.
-
-This source acceptance retains `publication_verified:false` and
-`deployment_qualified:false`. Run IDs, image digest, release identity and runtime
-observations in this fixture are offline inputs. The new App preflight and live
-Foundation external-role ownership changes at the Infra revision are reviewed
-separately; this public-contract check does not establish App access, Foundation
-rollout safety, a publication receipt or a deployed suite result. Compatibility v1
-and its existing Client/Service pins remain unchanged.
+`artifact-consumer.mjs` (the v2 selection loader/verifier) and the nested
+`vendor/service-artifact-contract.mjs` / `vendor/service-release-attestation.mjs`
+Service parser copies are deleted. The v2 `selection` contract, its committed
+files and the cross-repository native release verification path no longer exist
+in this consumer; the Service release chain verifies its own sealed release
+before it deploys, and E2E keeps only the four-field `service_artifacts` identity
+as evidence. Historical v2 records remain readable for the audit/migration path
+through the frozen envelope check in `scripts/trusted-deployment-inputs.mjs`,
+never as a live v3 input.

@@ -55,9 +55,13 @@ Run install and build commands from this repository.
 - Never commit credentials, browser storage state, reports, traces, screenshots,
   or videos.
 - Treat `compatibility.json` as the system-test compatibility contract. Use only
-  full Client and Service commit SHAs that exist on their remotes; never use a
-  mutable branch or tag. [docs/compatibility-pin.md](docs/compatibility-pin.md) is
-  the routine that moves it.
+  full Client, Service and Infra commit SHAs that exist on their remotes; never
+  use a mutable branch or tag. Version 3 pins the two deployment producers (Infra
+  for the platform record, the Service release chain for the workload record);
+  the shape and the deferred-record rule are in
+  [docs/compatibility-v3.md](docs/compatibility-v3.md), and
+  [docs/compatibility-pin.md](docs/compatibility-pin.md) is the routine that moves
+  it.
 - For release qualification, record the full intended Client, Service, and E2E
   SHAs and verify that the target environment serves those Client and Service
   revisions through Client `build-metadata.json` and Service `/health`. Recheck
