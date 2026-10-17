@@ -94,7 +94,7 @@ agreeing about the invocations that exist.
 | Evidence level | Deployed smoke for the diagnostic run; Qualification as part of the complete release selection |
 | Disposition | Retain |
 | Cleanup contract | Declares `declareNoBusinessCleanup` with `teardownResult: 'passed'`, because the attempt creates no business resource. The worker-lease fixture then deletes the captured Cognito identity, reads back its absence, and releases the lease; the declaration replaces the business-cleanup operation, never the identity cleanup. An undeclared attempt is treated as `partial` and quarantined rather than released |
-| Verification rationale | The scenario is the stable critical path the smoke invocation requires, and it is the only `@smoke` scenario that exercises session destruction as well as startup. Its assertion is stable without retries; its retry budget is the workflow default |
+| Verification rationale | The scenario is the stable critical path the smoke invocation requires, and it is the only `@smoke` scenario that exercises session destruction as well as startup. Its retry budget is the workflow default rather than `0`, so a run that only passes on a retry is a flake to investigate, not evidence that its assertion needed the retry |
 | Red result means | A product failure in session startup, restore or logout — or an environment or credential condition. A red smoke run withholds diagnostic confidence but asserts no release verdict by itself; the same red inside the qualification selection fails the release gate |
 
 ### `tests/auth.spec.ts`
@@ -148,7 +148,7 @@ agreeing about the invocations that exist.
 | Field | Value |
 | --- | --- |
 | Declared title | `Representative Beta sizing @full-stack @beta-sizing @instrumentation` |
-| Policy class | Full deployed system E2E, admitted as measurement rather than as a gate |
+| Policy class | `Destructive/expensive drill`, admitted as measurement rather than as a gate: it spends paid provider work, so the policy classes it as a drill even though it observes the ordinary deployed environment |
 | Tags | `@instrumentation` to select it, plus `@full-stack` for cross-repository discovery and `@beta-sizing` as the sizing workload identifier |
 | Intent | A frozen representative workload — twelve upload/tagging cases and eight virtual try-on cases — runs once against the deployed environment so cost, capacity and provider behaviour can be measured from its own artifact |
 | Current caller | The protected Beta Instrumentation dispatch, which requires a sizing stage as an input. It also skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3` |
@@ -168,23 +168,22 @@ agreeing about the invocations that exist.
 
 ## Admission rule
 
-A new deployed scenario is admitted only under the [scenario admission
-rule](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/devops/test/test_governance.md)
-in the testing policy: it crosses at least two deployable boundaries, its claim cannot be
-established at a lower boundary, it maps to a named high-cost failure, it has a cleanup
-contract, and its assertion is stable without retries. The policy owns the rule; this
-document applies it, and a scenario added here without all five conditions is added
-against the policy.
+The [testing policy
+admission rule](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/devops/test/test_governance.md)
+governs whether a new deployed scenario is admitted, and this document does not restate it:
+the policy is its single normative statement, so that a reader has one wording to rely on
+rather than two that can drift apart.
 
-Admission also has a repository-local step, because a scenario's verdict follows from the
-invocation that selects it:
+What this repository adds is the local procedure a candidate follows once the policy admits
+it, because a scenario's verdict follows from the invocation that selects it:
 
 1. Declare the invocation tag on the `test.describe` title, and give the scenario a
-   section in this document. `tests/scenario-declarations.test.mjs` fails the offline check
-   if a spec and this document disagree.
+   section in this document that applies the policy's inventory-row fields.
+   `tests/scenario-declarations.test.mjs` fails the offline check if a spec and this
+   document disagree.
 2. Tag a release-gating scenario `@regression` and every cross-repository scenario
    `@full-stack`. Reserve `@instrumentation` for measurement workloads and drills, which
-   are admitted as measurement and never as a gate.
+   the policy admits as measurement and never as a gate.
 3. Record the cleanup contract. A scenario that creates no business resource declares that
    in its own attempt record; an absent declaration is not a declaration.
 4. Satisfy the offline `pnpm check` gate before the scenario enters any deployed
