@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runtimeCloudHarness } from './fixtures/runtime-cloud-harness.mjs';
 import { oneShotHarness } from './fixtures/runtime-one-shot-harness.mjs';
+import { parseAdmissionMode } from './beta-admission-mode.mjs';
 import { payloadHash, recoverOneShotRegistrations, runOwnedOneShot, verifyOneShotTask } from './runtime-one-shot.mjs';
 import { activateRuntimeWindow, captureRuntimeWindow, reconcilePendingPolicy, testerHash } from './runtime-window-controls.mjs';
 import { parseRuntimeRecovery } from './runtime-recovery.mjs';
@@ -9,7 +10,7 @@ import { parseRuntimeRecovery } from './runtime-recovery.mjs';
 async function orphan({ definition = true, task = false, inactive = false } = {}) {
   const h = oneShotHarness();
   h.scope.recoverySourceCompleted = true;
-  const { operation } = await runOwnedOneShot(h.io, h.scope, 'lifecycle', 'close', '', h.runner);
+  const { operation } = await runOwnedOneShot(h.io, h.scope, 'lifecycle', 'suspend', '', h.runner);
   if (!task) h.tasks.clear();
   if (inactive) h.definitions.get(operation.task_definition_arn).taskDefinition.status = 'INACTIVE';
   if (!definition) h.definitions.clear();
@@ -85,7 +86,7 @@ async function pending() {
   await captureRuntimeWindow(h.io, scope);
   scope.recoverySourceCompleted = true;
   const payload = JSON.stringify([scope.email]);
-  const operation = { run_scope: scope.runScope, purpose: 'lifecycle', action: 'configure-testers', request_payload: payload,
+  const operation = { run_scope: scope.runScope, purpose: 'lifecycle', action: 'set-testers', request_payload: payload,
     payload_sha256: payloadHash(payload), started_at: new Date().toISOString(), completed: false, deregistered: false };
   scope.oneShots.push(operation);
   scope.runtimeWindow.pending_write = { run_scope: scope.runScope, action: operation.action, one_shot_index: scope.oneShots.length - 1,
@@ -100,7 +101,7 @@ test('pending no-start reconciliation requires exact unchanged SSM values/versio
     const h = await pending();
     const proof = await recoverOneShotRegistrations(h.io, h.scope);
     if (boundary === 'value') h.policy.tester_allowlist.Value = '["foreign@example.com"]';
-    if (boundary === 'version') h.policy.intake_open.Version++;
+    if (boundary === 'version') h.policy.admission_mode.Version++;
     if (boundary === 'database') h.io.auditRuntimeWindow = async () => ({ source: 'not-authoritative' });
     if (boundary === 'payload') h.scope.runtimeWindow.pending_write.request_payload = '["foreign@example.com"]';
     if (boundary === 'none') {
@@ -111,7 +112,7 @@ test('pending no-start reconciliation requires exact unchanged SSM values/versio
       await assert.rejects(reconcilePendingPolicy(h.io, h.scope, proof));
       assert.ok(h.scope.runtimeWindow.pending_write);
     }
-    assert.ok(!h.mutations.some(({ operation }) => operation === 'one-shot-lifecycle-configure-testers'));
+    assert.ok(!h.mutations.some(({ operation }) => operation === 'one-shot-lifecycle-set-testers'));
     for (const { json } of h.writes) parseRuntimeRecovery(json);
   }
 });
@@ -145,7 +146,11 @@ test('fresh recovery handles intent-before-helper, helper-intent and definition-
     assert.ok(final.runtime_window.write_ledger.some((entry) => entry.not_started));
     assert.equal(final.runtime_window.pending_write, undefined);
     assert.ok(h.tasks.size > originalTaskCount);
-    for (const [key, value] of Object.entries(h.policy)) assert.equal(value.Value, h.baselinePolicy[key].Value);
+    // A mode record's bound is written fresh by `resume`, so restoration is proven on
+    // the decision and the exact tester list rather than on the baseline's instant.
+    assert.equal(h.policy.tester_allowlist.Value, h.baselinePolicy.tester_allowlist.Value);
+    assert.equal(parseAdmissionMode(h.policy.admission_mode.Value).mode,
+      parseAdmissionMode(h.baselinePolicy.admission_mode.Value).mode);
     for (const { json } of h.writes) parseRuntimeRecovery(json);
   }
 });
@@ -155,10 +160,10 @@ test('a STOPPED exit-one helper reconciles only an exact nominal SSM write and a
     const h = await pending();
     h.scope.oneShots.pop();
     const payload = h.scope.runtimeWindow.pending_write.request_payload;
-    const { operation } = await h.io.runLifecycle({ scope: h.scope, action: 'configure-testers', payload });
+    const { operation } = await h.io.runLifecycle({ scope: h.scope, action: 'set-testers', payload });
     h.tasks.get(operation.task_arn).containers[0].exitCode = 1;
-    if (boundary === 'partial') h.policy.admission_suspended.Version--;
-    if (boundary === 'retry-version') h.policy.admission_suspended.Version++;
+    if (boundary === 'partial') h.policy.admission_mode.Version--;
+    if (boundary === 'retry-version') h.policy.admission_mode.Version++;
     if (boundary === 'database') h.io.auditRuntimeWindow = async () => ({ source: 'not-authoritative' });
     if (boundary === 'nominal') {
       await reconcilePendingPolicy(h.io, h.scope);

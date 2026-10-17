@@ -27,19 +27,23 @@ export function cleanupFixture(scope) {
 }
 
 export function windowFixture(scope) {
-  const baseline = { intake_open: 1, tester_allowlist: 2, admission_suspended: 3 };
+  // One mode parameter replaces the boolean pair, so the per-action version deltas are
+  // the point of this fixture: `set-testers` moves the list only, and `resume`/`suspend`
+  // move the mode only. Activation is therefore two writes, not one.
+  const baseline = { admission_mode: 1, tester_allowlist: 2 };
   let versions = baseline;
-  const ledger = [['configure-testers', [scope.email]], ['close'], ['configure-testers', []], ['close']].map(([action, emails], index) => {
-    const after = { ...versions, tester_allowlist: versions.tester_allowlist + (emails ? 1 : 0),
-      admission_suspended: versions.admission_suspended + (emails ? 2 : 1) };
+  const ledger = [['set-testers', [scope.email]], ['resume'], ['suspend'], ['set-testers', []]].map(([action, emails], index) => {
+    const after = { admission_mode: versions.admission_mode + (action === 'set-testers' ? 0 : 1),
+      tester_allowlist: versions.tester_allowlist + (emails ? 1 : 0) };
     const entry = { run_scope: scope.runScope, action, before_versions: versions, after_versions: after,
-      tester_hash: testerHash(emails ?? [scope.email]), extraction: proofFixture(scope, 'lifecycle', emails ? JSON.stringify(emails) : '', String(index + 1), action) };
+      tester_hash: testerHash(emails ?? [scope.email]),
+      extraction: proofFixture(scope, 'lifecycle', emails ? JSON.stringify(emails) : '', String(index + 1), action) };
     versions = after;
     return entry;
   });
   const request = { runScope: scope.runScope, mode: 'window-preflight' };
   const audit = (id) => ({ schema_version: 1, source: 'durable-runtime-window-audit', binding: request, observed_at: '2026-10-05T01:00:00Z',
-    policy: { intake_open: false, admission_suspended: true, tester_count: 0, tester_allowlist_hash: testerHash([]), updated_at: '2026-10-05T01:00:00Z' },
+    policy: { admission_mode: 'closed', tester_count: 0, tester_allowlist_hash: testerHash([]), updated_at: '2026-10-05T01:00:00Z' },
     current_rows: { active_tasks: 0, unpublished_outbox: 0, manual_intervention_outbox: 0 },
     extraction: proofFixture(scope, 'task-audit', JSON.stringify(request), id) });
   return { run_scope: scope.runScope, synthetic_owner: { sub: scope.subject, email: scope.email }, phase: 'restored', restored: true,

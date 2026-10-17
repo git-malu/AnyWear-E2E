@@ -10,6 +10,15 @@ import { validateBetaAdmissionPolicy, verifyBetaAdmissionEligibility } from './b
 
 const sourceSha = 'a'.repeat(40);
 const workers = ['e2e-beta-worker-0-chromium@anywear.local', 'e2e-beta-worker-1-chromium@anywear.local'];
+const hour = 60 * 60_000;
+
+function instant(offsetMs) {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function testersWindow(patch = {}) {
+  return JSON.stringify({ mode: 'testers', expires_at: instant(hour), ...patch });
+}
 
 function environment(patch = {}) {
   return {
@@ -28,7 +37,7 @@ function environment(patch = {}) {
 }
 
 function response(patch = {}) {
-  const values = { admission_suspended: 'false', intake_open: 'false', tester_allowlist: JSON.stringify([...workers, 'human@example.com']), ...patch };
+  const values = { admission_mode: testersWindow(), tester_allowlist: JSON.stringify([...workers, 'human@example.com']), ...patch };
   return { Parameters: Object.entries(values).map(([name, Value]) => ({
     Name: `/anywear/beta/${name}`, Type: 'String', Value, Version: 7,
   })), InvalidParameters: [] };
@@ -46,15 +55,15 @@ function reader(payload = JSON.stringify(response())) {
   };
 }
 
-test('eligible private admission reads only the exact three parameters under the dedicated guarded executor', () => {
+test('an effectively testers record reads only the exact two admission parameters under the dedicated guarded executor', () => {
   const input = environment();
   const io = reader();
   assert.deepEqual(verifyBetaAdmissionEligibility(input, { execute: io.execute, sourceSha }), {
-    versions: { admission_suspended: 7, intake_open: 7, tester_allowlist: 7 },
+    versions: { admission_mode: 7, tester_allowlist: 7 },
   });
   assert.deepEqual(io.calls, [{ command: 'aws', args: [
-    'ssm', 'get-parameters', '--names', '/anywear/beta/admission_suspended',
-    '/anywear/beta/intake_open', '/anywear/beta/tester_allowlist',
+    'ssm', 'get-parameters', '--names', '/anywear/beta/admission_mode',
+    '/anywear/beta/tester_allowlist',
     '--region', 'ap-east-1', '--output', 'json', '--no-cli-pager',
   ], options: { encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'], env: input } }]);
@@ -92,15 +101,73 @@ test('the qualification requires explicitly configured two workers before any SS
   }
 });
 
-test('suspended admission and open public intake refuse qualification without any policy mutation', () => {
+test('a closed record and a passed window both refuse qualification without any policy mutation', () => {
   for (const [patch, message] of [
-    [{ admission_suspended: 'true' }, /admission is suspended/],
-    [{ intake_open: 'true' }, /public intake closed/],
+    [{ admission_mode: JSON.stringify({ mode: 'closed' }) }, /admission is suspended/],
+    [{ admission_mode: JSON.stringify({ mode: 'closed' }) }, /authorized admission window/],
+    [{ admission_mode: JSON.stringify({ mode: 'testers', expires_at: instant(-1_000) }) }, /authorized admission window/],
+    [{ admission_mode: JSON.stringify({ mode: 'testers', expires_at: instant(-hour) }) }, /authorized admission window/],
   ]) {
     const io = reader(JSON.stringify(response(patch)));
     assert.throws(() => verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }), message);
     assert.equal(io.calls.length, 1);
     assert.deepEqual(io.calls[0].args.slice(0, 2), ['ssm', 'get-parameters']);
+  }
+});
+
+test('admission mode conformance table: only the writer-canonical record is read', () => {
+  // The writer emits `JSON.stringify` over `Date.prototype.toISOString`, so the accepted
+  // column is exactly that form. Every other row is fail-closed, and the distinction the
+  // table proves is *which* refusal: a well-formed record whose bound is spent reads as
+  // a spent window, while anything a reader cannot parse is malformed.
+  const now = Date.parse('2026-10-17T07:30:00.000Z');
+  const live = '2026-10-17T08:30:00.000Z';
+  const read = (value) => {
+    try { validateBetaAdmissionPolicy(response({ admission_mode: value }), { now }); return 'open'; }
+    catch (error) { return error.message; }
+  };
+  for (const [value, expected] of [
+    [JSON.stringify({ mode: 'testers', expires_at: live }), 'open'],
+    // The ceiling plus the read's one-minute skew is admitted exactly, and not one
+    // millisecond beyond it.
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T11:31:00.000Z' }), 'open'],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T11:31:00.001Z' }), /not open/],
+    // A bound reached, or an abandoned window: still well formed, no longer admitting.
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T07:30:00.000Z' }), /not open/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T06:30:00.000Z' }), /not open/],
+    [JSON.stringify({ mode: 'closed' }), /admission is suspended/],
+    // Syntax and shape.
+    ['', /malformed admission mode record/],
+    ['not json', /malformed admission mode record/],
+    ['[1]', /malformed admission mode record/],
+    ['null', /malformed admission mode record/],
+    ['"testers"', /malformed admission mode record/],
+    ['{}', /malformed admission mode record/],
+    // A hand-edited duplicate key must never read open: the strict parser refuses it
+    // instead of taking the last value the way `JSON.parse` would.
+    [`{"mode":"closed","mode":"testers","expires_at":"${live}"}`, /malformed admission mode record/],
+    // Unknown mode, wrong case, and the extra keys the reader refuses.
+    [JSON.stringify({ mode: 'open' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'Testers', expires_at: live }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: live, expires: live }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'closed', extra: true }), /malformed admission mode record/],
+    // A bound is required on `testers` and forbidden on `closed`.
+    [JSON.stringify({ mode: 'testers' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: null }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: 1_760_000_000_000 }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'closed', expires_at: live }), /malformed admission mode record/],
+    // `Date.parse` alone would accept all of these; the round-trip refuses them.
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2030-02-30T00:00:00.000Z' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026/10/17 08:30:00' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T08:30:00' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T08:30:00Z' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T08:30:00.000+00:00' }), /malformed admission mode record/],
+    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T16:30:00.000+08:00' }), /malformed admission mode record/],
+  ]) {
+    const outcome = read(value);
+    if (expected === 'open') assert.equal(outcome, 'open', value);
+    else assert.match(outcome, expected, value);
   }
 });
 
@@ -133,7 +200,7 @@ test('run-scoped harness addresses pass the policy check, with or without stable
 test('an empty tester allowlist passes the whole pre-flight, not only the policy check', () => {
   const io = reader(JSON.stringify(response({ tester_allowlist: '[]' })));
   assert.deepEqual(verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }), {
-    versions: { admission_suspended: 7, intake_open: 7, tester_allowlist: 7 },
+    versions: { admission_mode: 7, tester_allowlist: 7 },
   });
   assert.equal(io.calls.length, 1);
 });
@@ -141,15 +208,15 @@ test('an empty tester allowlist passes the whole pre-flight, not only the policy
 test('incomplete, duplicate, unexpected or malformed parameter entries never supply a permissive default', () => {
   const valid = response();
   for (const invalid of [null, {}, { Parameters: null }, { Parameters: [] },
-    { Parameters: valid.Parameters.slice(0, 2) },
+    { Parameters: valid.Parameters.slice(0, 1) },
     { Parameters: [...valid.Parameters, valid.Parameters[0]] },
-    { Parameters: [valid.Parameters[0], valid.Parameters[0], valid.Parameters[2]] },
-    { ...valid, InvalidParameters: ['/anywear/beta/intake_open'] },
+    { Parameters: [valid.Parameters[0], valid.Parameters[0], valid.Parameters[1]] },
+    { ...valid, InvalidParameters: ['/anywear/beta/admission_mode'] },
     { ...valid, InvalidParameters: null }]) {
     assert.throws(() => validateBetaAdmissionPolicy(invalid));
   }
   for (const patch of [
-    { Name: '/anywear/prod/admission_suspended' }, { Name: undefined },
+    { Name: '/anywear/prod/admission_mode' }, { Name: undefined },
     { Type: 'SecureString' }, { Value: undefined }, { Value: false }, { Value: 'x'.repeat(4097) },
     { Version: undefined }, { Version: 0 }, { Version: 1.5 }, { Version: '7' },
   ]) {
@@ -161,12 +228,7 @@ test('incomplete, duplicate, unexpected or malformed parameter entries never sup
   assert.throws(() => validateBetaAdmissionPolicy(invalid));
 });
 
-test('Boolean strings, tester JSON, email validity and normalized membership uniqueness fail closed', () => {
-  for (const name of ['admission_suspended', 'intake_open']) {
-    for (const value of ['', 'False', ' false', '0', 'null']) {
-      assert.throws(() => validateBetaAdmissionPolicy(response({ [name]: value })), /malformed/);
-    }
-  }
+test('tester JSON, email validity and normalized membership uniqueness fail closed', () => {
   for (const value of ['not json', '[', '{"x":1,"x":2}', 'null', '{}', '"email"',
     JSON.stringify([...workers, null]), JSON.stringify([...workers, '']),
     JSON.stringify([...workers, 'not-an-email']), JSON.stringify([...workers, 'human*@example.com']),
@@ -267,8 +329,9 @@ globalThis.fetch = async () => { throw new Error('Network blocked'); };
       NODE_OPTIONS: '', AWS_EC2_METADATA_DISABLED: 'true', ...environment(),
       TEST_ADMISSION_CALLS: callsFile, TEST_ADMISSION_RESPONSE: JSON.stringify(response()) };
     for (const [patch, message] of [
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_suspended: 'true' })) }, /admission is suspended/],
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ intake_open: 'true' })) }, /public intake closed/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_mode: JSON.stringify({ mode: 'closed' }) })) }, /admission is suspended/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_mode: JSON.stringify({ mode: 'testers', expires_at: instant(-1_000) }) })) }, /authorized admission window/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_mode: 'not json' })) }, /malformed admission mode record/],
       [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ tester_allowlist: 'not json' })) }, /malformed tester allowlist JSON/],
       [{ TEST_ADMISSION_UNAVAILABLE: 'true' }, /could not read valid SSM policy/],
       [{ TEST_ADMISSION_RESPONSE: 'not json' }, /could not read valid SSM policy/],
@@ -295,7 +358,7 @@ globalThis.fetch = async () => { throw new Error('Network blocked'); };
       fileURLToPath(new URL('./beta-admission-eligibility.mjs', import.meta.url))], {
       env: isolated, timeout: 10_000, maxBuffer: 64 * 1024,
     });
-    assert.match(success.stdout, /^Verified unsuspended private Beta admission for the qualification run\.$/m);
+    assert.match(success.stdout, /^Verified an open Beta admission window for the qualification run\.$/m);
     assert.doesNotMatch(success.stdout, /human@example\.com/);
     assert.equal(success.stderr, '');
   } finally { await rm(directory, { recursive: true, force: true }); }

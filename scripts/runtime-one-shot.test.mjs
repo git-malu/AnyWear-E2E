@@ -89,8 +89,8 @@ test('irreversible DLQ deletion followed by rollback never qualifies as committe
 });
 
 test('actual Service-approved helper blueprint accepts all owned purposes and documented ECS defaults', async () => {
-  for (const [purpose, action, payload] of [['task-audit', '', undefined], ['lifecycle', 'close', ''],
-    ['lifecycle', 'open', ''], ['lifecycle', 'configure-testers', '[]'], ['tester-cleanup', '', undefined]]) {
+  for (const [purpose, action, payload] of [['task-audit', '', undefined], ['lifecycle', 'suspend', ''],
+    ['lifecycle', 'resume', ''], ['lifecycle', 'set-testers', '[]'], ['tester-cleanup', '', undefined]]) {
     const h = oneShotHarness();
     const request = purpose === 'tester-cleanup' ? JSON.stringify({ runScope: h.scope.runScope, users: [{ sub: h.scope.subject, email: h.scope.email }] })
       : JSON.stringify({ runScope: h.scope.runScope, mode: 'window-preflight' });

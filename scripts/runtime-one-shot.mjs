@@ -11,11 +11,18 @@ const CONTAINER_DEFAULTS = { cpu: 0, essential: true, privileged: false, readonl
 
 export function payloadHash(payload) { return createHash('sha256').update(payload).digest('hex'); }
 
+// Lifecycle actions are routed by exact name, never by prefix: the rename to
+// `suspend`, `resume` and `set-testers` leaves no `tester-`/`close-` family to match,
+// and a prefix rule would silently accept a foreign action here.
+const LIFECYCLE_ACTIONS = ['set-testers', 'suspend', 'resume'];
+const PAYLOAD_LIFECYCLE_ACTION = 'set-testers';
+
 export function expectedCommand(operation) {
   if (operation.purpose === 'task-audit') return ['node', 'dist/ops/beta-task-audit.js', operation.request_payload];
   if (operation.purpose === 'tester-cleanup') return ['node', 'dist/ops/beta-tester-cleanup.js', operation.request_payload];
-  if (operation.purpose === 'lifecycle' && ['configure-testers', 'close', 'open'].includes(operation.action)) {
-    return ['node', 'dist/ops/beta-lifecycle.js', operation.action, ...(operation.action === 'configure-testers' ? [operation.request_payload] : [])];
+  if (operation.purpose === 'lifecycle' && LIFECYCLE_ACTIONS.includes(operation.action)) {
+    return ['node', 'dist/ops/beta-lifecycle.js', operation.action,
+      ...(operation.action === PAYLOAD_LIFECYCLE_ACTION ? [operation.request_payload] : [])];
   }
   throw new Error('Unsupported owned one-shot purpose/action');
 }
@@ -25,7 +32,7 @@ export function validateOperationBinding(scope, operation) {
     || payloadHash(operation.request_payload) !== operation.payload_sha256) throw new Error('Foreign run or changed one-shot payload');
   expectedCommand(operation);
   if (operation.purpose === 'lifecycle') {
-    if (operation.action === 'configure-testers') {
+    if (operation.action === PAYLOAD_LIFECYCLE_ACTION) {
       const emails = JSON.parse(operation.request_payload);
       if (!Array.isArray(emails) || emails.length > 50 || emails.some((email) => typeof email !== 'string')) throw new Error('Invalid lifecycle tester payload');
     } else if (operation.request_payload !== '') throw new Error('Unexpected lifecycle payload');
