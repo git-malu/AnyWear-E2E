@@ -138,18 +138,19 @@ The qualification record states the selection that produced it instead of a cons
 `test` member names the invocation the suite step ran and the `--grep` tag that invocation
 selects, the SHA-256 digest of the run's own Playwright JSON report, and one entry per
 selected scenario with its outcome and how many of its collected tests were skipped. A
-scenario's `collected` count is its test executions: one per collected test of the single
-Playwright project this configuration declares, so a second project would count each case
-once per project. `test.result` is `passed` unless at least one selected scenario passed
-only on a retry, which records it as `flaky`; a declared skip is recorded in that scenario's
-own counts and does not change the run result. A retry-only pass still issues a record,
-because a retry is the run-level flake control, while the testing policy's admission
-condition is about a scenario that routinely needs one. The suite step writes the report to
-the path the job declares as `E2E_QUALIFICATION_REPORT`, and both the qualification evidence
-artifact and its diagnostics retain the report, so the digest the record states is auditable
-against the bytes it names. Two different verifiers judge that statement. The record
-verifier a release gate calls holds no report: from the checkout it is given it re-derives
-the invocation, the tag and the membership — the spec titles cross-checked against the
+scenario's `collected` count counts collected test cases, one per case per declared
+Playwright project — a skipped case is still collected and a retried case still counts
+once — so a second project would count each case once per project. `test.result` is `passed`
+unless at least one selected scenario passed only on a retry, which records it as `flaky`; a
+declared skip is recorded in that scenario's own counts and does not change the run result.
+A retry-only pass still issues a record, because a retry is the run-level flake control,
+while the testing policy's admission condition is about a scenario that routinely needs one.
+The suite step writes the report to the path the job declares as
+`E2E_QUALIFICATION_REPORT`, and both the qualification evidence artifact and its
+diagnostics retain the report, so the digest the record states is auditable against the
+bytes it names. Two different verifiers judge that statement. The record verifier a release
+gate calls holds no report: from the checkout it is given it re-derives the invocation, the
+tag and the membership — the spec titles cross-checked against the
 [scenario inventory](docs/scenario-inventory.md) — and refuses a record whose stated
 selection or scenario list disagrees with them. The producer's own verify step, which runs
 in the job before upload, re-derives the per-scenario outcomes, the counts and the digest
