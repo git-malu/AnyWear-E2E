@@ -140,17 +140,22 @@ test('execution guard binds protected dispatch/source and the captured dedicated
     GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
     GITHUB_WORKFLOW_SHA: sourceSha, GITHUB_SHA: sourceSha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
-    E2E_STAGE: 'beta', ENABLE_INFRA_E2E: 'true', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
+    E2E_STAGE: 'beta', ENABLE_BETA_MUTATION: 'true', E2E_OPERATION: 'full', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
     E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40), E2E_AWS_ACCOUNT: '650880818323',
     E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/qualification-123' };
   assert.equal(assertE2EExecution(env, { sourceSha }), true);
-  for (const name of ['integration', 'account-recovery']) {
-    assert.equal(assertE2EExecution({ ...env, GITHUB_WORKFLOW_REF: `git-malu/AnyWear-E2E/.github/workflows/${name}.yml@refs/heads/main` }, { sourceSha }), true);
+  // #163: the operation map replaces the workflow-file allow-list. Every operation names the
+  // one qualify entry, and no other repository file may serve an operation.
+  for (const operation of ['full', 'smoke', 'measure', 'recover']) {
+    assert.equal(assertE2EExecution({ ...env, E2E_OPERATION: operation }, { sourceSha }), true);
   }
-  for (const patch of [{ ENABLE_INFRA_E2E: 'false' }, { GITHUB_REPOSITORY: 'other/E2E' }, { GITHUB_REPOSITORY_ID: '1' },
+  for (const patch of [{ ENABLE_BETA_MUTATION: 'false' }, { GITHUB_REPOSITORY: 'other/E2E' }, { GITHUB_REPOSITORY_ID: '1' },
     { GITHUB_REPOSITORY_OWNER: 'other' }, { GITHUB_REPOSITORY_OWNER_ID: '1' }, { GITHUB_REF: 'refs/heads/topic' },
     { GITHUB_EVENT_NAME: 'pull_request' }, { E2E_STAGE: 'dev' }, { GITHUB_WORKFLOW_SHA: 'b'.repeat(40) },
+    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/integration.yml@refs/heads/main' },
+    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/account-recovery.yml@refs/heads/main' },
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/runtime-drill.yml@refs/heads/main' },
+    { E2E_OPERATION: undefined }, { E2E_OPERATION: '' }, { E2E_OPERATION: 'instrumentation' },
     { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '9007199254740992' }, { GITHUB_RUN_ATTEMPT: '0' },
     { AWS_ACCOUNT_ID: '1' }, { AWS_REGION: 'us-east-1' }, { E2E_CLEANUP_SERVICE_SHA: 'main' },
     { E2E_AWS_ACCOUNT: undefined }, { E2E_AWS_ACCOUNT: '1' }, { E2E_AWS_PRINCIPAL_ARN: undefined },

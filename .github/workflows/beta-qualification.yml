@@ -1,13 +1,70 @@
 name: Beta Qualification
 
+# The E2E deployable unit's single manual entry (#163): the `qualify` entry. One protected
+# dispatch surface carries four operations — `full` (release qualification), `smoke`
+# (deployed diagnostic), `measure` (sizing workload) and `recover` (account recovery).
+#
+# Separation between those outcomes no longer lives in the workflow-file boundary: it
+# lives in the signed `operation` field. Only the `full` job can produce
+# `qualification-record.json`; the record binds the operation dispatched; and both this
+# repository's producer/verifier and the Infra-side executor allow-list require
+# `operation: full`. A `smoke`, `measure` or `recover` run can therefore neither produce
+# nor withhold a qualification record. The `record` job validates and attaches the record
+# without any credential. `execution-guard.mjs` maps each operation to this one entry and
+# refuses an operation that was not stated explicitly.
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: 'Qualification operation: full (release gate), smoke (diagnostic), measure (sizing), recover (account recovery)'
+        required: true
+        type: choice
+        options: [full, smoke, measure, recover]
       worker_slot_offset:
-        description: First of two captured worker slots (0 through 6; choose an unused pair)
+        description: First captured worker slot (full/smoke allocate two; measure allocates one; choose unused slots)
         required: false
         default: 0
         type: number
+      sizing_stage:
+        # `none` is the unselected sentinel, not a sizing stage: GitHub preselects the first
+        # option of a choice input when no `default` is declared, so a no-default stage menu
+        # cannot express "not supplied". The entry has no default stage, measure refuses
+        # `none`, and every other operation refuses anything but `none`.
+        description: Reviewed sizing stage; only operation measure accepts S1, S2 or S3, and there is no default stage
+        required: false
+        type: choice
+        options: [none, S1, S2, S3]
+      source_run_id:
+        description: Failed E2E run ID containing the account manifest; only operation recover accepts it
+        required: false
+        type: string
+      source_run_attempt:
+        description: Attempt number for that failed E2E run; only operation recover accepts it
+        required: false
+        type: string
+      operation_mode:
+        description: Cleanup execution mode; only operation recover reads it
+        required: false
+        default: normal
+        type: choice
+        options: [normal, recovery]
+      recovery_attempt:
+        description: Explicit recovery attempt (1..999999), empty for normal; only operation recover accepts it
+        required: false
+        type: string
+      previous_recovery_run_id:
+        description: Latest completed recovery run containing its trusted artifact; only operation recover accepts it
+        required: false
+        type: string
+      previous_recovery_run_attempt:
+        description: Attempt number of that recovery run; only operation recover accepts it
+        required: false
+        type: string
+      retry_failed_execution:
+        description: Legacy normal-mode retry after exact no-commit proof; only operation recover accepts it and recovery forbids it
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -17,9 +74,152 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  qualify:
-    name: Qualify reviewed revisions on Beta
+  # The gate that runs before any credential job. It holds no AWS credentials, declares no
+  # environment and verifies the source, the reviewed compatibility set, the read-only App
+  # tokens and the reviewed Infra observation checkout. Every credential job `needs` it.
+  preflight:
+    name: Verify the protected qualification source and inputs
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      E2E_OPERATION: ${{ inputs.operation }}
+      E2E_EXTERNAL_SERVERS: true
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
+
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The entry is one dispatch surface, so the operation and the inputs that belong to
+      # another operation are refused here rather than by file presence. `sizing_stage` is
+      # required by measure and refused by every other operation; the recovery inputs are
+      # rejected by every operation but recover.
+      - name: Validate the dispatch operation and its input scope
+        shell: bash
+        env:
+          OPERATION: ${{ inputs.operation }}
+          SIZING_STAGE: ${{ inputs.sizing_stage }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
+          PREVIOUS_RECOVERY_RUN_ID: ${{ inputs.previous_recovery_run_id }}
+          PREVIOUS_RECOVERY_RUN_ATTEMPT: ${{ inputs.previous_recovery_run_attempt }}
+          RETRY_FAILED_EXECUTION: ${{ inputs.retry_failed_execution }}
+        run: |
+          case "$OPERATION" in
+            full|smoke|measure|recover) ;;
+            *) echo "::error::Unknown qualification operation '$OPERATION'"; exit 1 ;;
+          esac
+          if [[ "$OPERATION" == measure ]]; then
+            case "$SIZING_STAGE" in
+              S1|S2|S3) ;;
+              *) echo "::error::operation measure requires sizing_stage S1, S2 or S3"; exit 1 ;;
+            esac
+          elif [[ "$SIZING_STAGE" != "" && "$SIZING_STAGE" != "none" ]]; then
+            echo "::error::sizing_stage is only accepted by operation measure (got '$SIZING_STAGE' for '$OPERATION')"
+            exit 1
+          fi
+          if [[ "$OPERATION" != recover ]]; then
+            for name in SOURCE_RUN_ID SOURCE_RUN_ATTEMPT RECOVERY_ATTEMPT PREVIOUS_RECOVERY_RUN_ID PREVIOUS_RECOVERY_RUN_ATTEMPT; do
+              if [[ -n "${!name}" ]]; then
+                echo "::error::$name is only accepted by operation recover"
+                exit 1
+              fi
+            done
+            if [[ "$RETRY_FAILED_EXECUTION" == "true" ]]; then
+              echo "::error::retry_failed_execution is only accepted by operation recover"
+              exit 1
+            fi
+          fi
+
+      - name: Check E2E source and reviewed compatibility set
+        run: pnpm check
+
+      - name: Require Infra compatibility and protected execution
+        id: compatibility
+        run: |
+          node scripts/check-compatibility.mjs --require-infra
+          node scripts/execution-guard.mjs --source-only
+          echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Check native release verification CLI
+        run: |
+          gh --version | tee github-cli-version.txt
+          gh release verify --help --format json > /dev/null
+          gh release verify-asset --help --format json > /dev/null
+
+      - name: Generate Infra evidence read token
+        id: evidence-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+
+      - name: Checkout exact reviewed Infra observation tools
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Infra
+          ref: ${{ steps.compatibility.outputs.infra_sha }}
+          path: .infra-source
+          token: ${{ steps.evidence-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify trusted deployment and immutable Service inputs
+        env:
+          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+        run: node scripts/trusted-deployment-inputs.mjs
+
+  # The only job that may produce `qualification-record.json`. It carries the deployed
+  # release-gating suite of the former Beta Qualification workflow. The record path binds
+  # the dispatched operation and refuses anything but `full`.
+  full:
+    name: Qualify reviewed revisions on Beta
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: beta
@@ -29,12 +229,13 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       E2E_STAGE: beta
+      E2E_OPERATION: ${{ inputs.operation }}
       E2E_EXTERNAL_SERVERS: true
       E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
-      ENABLE_INFRA_E2E: ${{ vars.ENABLE_INFRA_E2E }}
+      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
       CLEANUP_MACHINE_AUTH_SECRET: ${{ secrets.CLEANUP_MACHINE_AUTH_SECRET }}
@@ -252,10 +453,14 @@ jobs:
           pnpm qualification:generate
           pnpm qualification:verify
 
-      - name: Upload qualification evidence
+      # Handoff to the credential-free `record` job, which independently verifies the
+      # record and uploads the artifact a release consumer reads. The final artifact is
+      # not uploaded here: only `record` attaches it, and its name is the one
+      # `verifyQualificationForPromotion` accepts.
+      - name: Upload the qualification record handoff
         uses: actions/upload-artifact@v4
         with:
-          name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          name: beta-qualification-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .qualification-inputs/deployment-record.json
             .qualification-inputs/service-artifacts.json
@@ -313,3 +518,683 @@ jobs:
             test-results/**/worker-profile-binding.json
           retention-days: 7
           if-no-files-found: ignore
+
+  # The deployed smoke diagnostic of the former E2E Integration workflow. It never writes
+  # qualification evidence.
+  smoke:
+    name: Reviewed revisions on deployed Beta
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'smoke'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: beta
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      E2E_OPERATION: ${{ inputs.operation }}
+      E2E_EXTERNAL_SERVERS: true
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
+      CLEANUP_MACHINE_AUTH_SECRET: ${{ secrets.CLEANUP_MACHINE_AUTH_SECRET }}
+      E2E_WORKERS: 2
+      E2E_WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
+      E2E_MAX_ACTIVE_ACCOUNTS: 2
+      # One lease per attempt: 2 workers x 3 attempts (initial + two CI retries).
+      E2E_MAX_NEW_ACCOUNTS_PER_RUN: 6
+      E2E_MAX_QUARANTINED_ACCOUNTS: 2
+
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install E2E dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check E2E source
+        run: pnpm check
+
+      - name: Check native release verification CLI
+        run: |
+          gh --version | tee github-cli-version.txt
+          gh release verify --help --format json > /dev/null
+          gh release verify-asset --help --format json > /dev/null
+
+      - name: Generate source checkout token
+        id: generate-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            AnyWear-Client
+            AnyWear-Service
+            AnyWear-Service-API
+          permission-contents: read
+
+      - name: Generate Infra evidence read token
+        id: infra-evidence-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+
+      - name: Load pinned compatibility set
+        id: compatibility
+        shell: bash
+        run: |
+          node scripts/check-compatibility.mjs --require-infra
+          node scripts/execution-guard.mjs --source-only
+          {
+            echo "client_repository=$(jq -r '.client.repository' compatibility.json)"
+            echo "client_sha=$(jq -r '.client.sha' compatibility.json)"
+            echo "service_repository=$(jq -r '.service.repository' compatibility.json)"
+            echo "service_sha=$(jq -r '.service.sha' compatibility.json)"
+            echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned Client
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.compatibility.outputs.client_repository }}
+          ref: ${{ steps.compatibility.outputs.client_sha }}
+          path: AnyWear-Client
+          submodules: recursive
+          token: ${{ steps.generate-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Checkout pinned Service
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.compatibility.outputs.service_repository }}
+          ref: ${{ steps.compatibility.outputs.service_sha }}
+          path: AnyWear-Service
+          submodules: recursive
+          token: ${{ steps.generate-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Record tested revisions
+        shell: bash
+        run: |
+          {
+            echo "E2E $(git rev-parse HEAD)"
+            echo "Client $(git -C AnyWear-Client rev-parse HEAD)"
+            git -C AnyWear-Client submodule status --recursive
+            echo "Service $(git -C AnyWear-Service rev-parse HEAD)"
+            git -C AnyWear-Service submodule status --recursive
+          } | tee tested-revisions.txt
+
+      - name: Checkout exact reviewed Infra observation tools
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Infra
+          ref: ${{ steps.compatibility.outputs.infra_sha }}
+          path: .infra-source
+          token: ${{ steps.infra-evidence-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify trusted deployment and immutable Service inputs
+        env:
+          GH_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+        run: node scripts/trusted-deployment-inputs.mjs
+
+      - name: Verify OIDC identity
+        shell: bash
+        run: |
+          response=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          token=$(jq -r '.value' <<< "$response")
+          claims=$(node -e \
+            "const payload = process.argv[1].split('.')[1]; process.stdout.write(Buffer.from(payload, 'base64url').toString())" \
+            "$token")
+          actual_subject=$(jq -r '.sub' <<< "$claims")
+          expected_subject="repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:beta"
+          jq '{iss, aud, sub}' <<< "$claims"
+          test "$actual_subject" = "$expected_subject"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify dedicated E2E principal
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
+
+      - name: Observe authenticated deployed tuple before smoke
+        env:
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+          QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
+        run: pnpm qualification:collect
+
+      - name: Load Beta test identity configuration
+        shell: bash
+        run: |
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          client_id=$(aws ssm get-parameter --name /anywear/beta/cognito_client_id --query Parameter.Value --output text)
+          {
+            echo "USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_CLIENT_ID=$client_id"
+          } >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+
+      - name: Set unique cleanup run scope
+        shell: bash
+        run: |
+          run_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 8)"
+          echo "E2E_CLEANUP_RUN_SCOPE=$run_scope" >> "$GITHUB_ENV"
+
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Run deployed Beta smoke tests
+        id: beta-smoke-suite
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm test:smoke
+
+      - name: Clean up exact Beta worker identities
+        if: ${{ always() && steps.beta-smoke-suite.outcome != 'skipped' }}
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm accounts:cleanup-workers
+
+      - name: Preserve Beta smoke failure
+        if: ${{ always() && steps.beta-smoke-suite.outcome == 'failure' }}
+        run: exit 1
+
+      - name: Confirm authenticated deployed tuple remained stable
+        env:
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+          QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
+        run: pnpm qualification:collect
+
+      - name: Upload tested revisions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-revisions-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tested-revisions.txt
+            github-cli-version.txt
+            deployment-evidence.json
+
+      - name: Upload Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-smoke-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/account-budget.json
+            test-results/service-cleanup-operation.json
+            test-results/service-cleanup-run.json
+          if-no-files-found: ignore
+
+      - name: Upload failed-test screenshots and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-failure-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/**/test-failed-*.png
+            test-results/**/trace.zip
+            test-results/**/worker-profile-binding.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The single-worker-slot measurement of the former Beta Instrumentation workflow. It
+  # requires an explicit sizing stage and one worker slot, and it uploads measurement
+  # evidence only; it never writes a qualification record.
+  measure:
+    name: Measure the representative Beta sizing workload
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'measure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: beta
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      E2E_OPERATION: ${{ inputs.operation }}
+      E2E_EXTERNAL_SERVERS: true
+      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
+      CLEANUP_MACHINE_AUTH_SECRET: ${{ secrets.CLEANUP_MACHINE_AUTH_SECRET }}
+      # One worker slot: the workload runs once with no retries.
+      E2E_WORKERS: 1
+      E2E_WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
+      E2E_MAX_ACTIVE_ACCOUNTS: 1
+      E2E_MAX_NEW_ACCOUNTS_PER_RUN: 1
+      E2E_MAX_QUARANTINED_ACCOUNTS: 1
+      BETA_SIZING_STAGE: ${{ inputs.sizing_stage }}
+
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check E2E source and reviewed compatibility set
+        run: pnpm check
+
+      - name: Require Infra compatibility and protected execution
+        id: compatibility
+        run: |
+          node scripts/check-compatibility.mjs --require-infra
+          node scripts/execution-guard.mjs --source-only
+          echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Infra evidence read token
+        id: evidence-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+
+      - name: Checkout exact reviewed Infra observation tools
+        uses: actions/checkout@v4
+        with:
+          repository: git-malu/AnyWear-Infra
+          ref: ${{ steps.compatibility.outputs.infra_sha }}
+          path: .infra-source
+          token: ${{ steps.evidence-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify trusted deployment and immutable Service inputs
+        env:
+          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+        run: node scripts/trusted-deployment-inputs.mjs
+
+      - name: Configure Beta AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify dedicated E2E principal
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
+
+      - name: Require Beta admission eligibility
+        run: node scripts/beta-admission-eligibility.mjs
+
+      # The workload binds itself to the tuple it measured, the identity it started
+      # under and the run-scoped cleanup identity, so it needs the same authenticated
+      # observation a qualification takes rather than a lighter substitute.
+      - name: Observe authenticated deployed tuple before the measurement
+        env:
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+          QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
+        run: pnpm qualification:collect
+
+      - name: Load Beta test identity configuration
+        shell: bash
+        run: |
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          client_id=$(aws ssm get-parameter --name /anywear/beta/cognito_client_id --query Parameter.Value --output text)
+          {
+            echo "USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
+            echo "VITE_COGNITO_CLIENT_ID=$client_id"
+          } >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+
+      - name: Set unique cleanup run scope
+        shell: bash
+        run: |
+          run_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-measure-$(openssl rand -hex 8)"
+          echo "E2E_CLEANUP_RUN_SCOPE=$run_scope" >> "$GITHUB_ENV"
+
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Capture the sizing task inventory the workload is measured on
+        run: node scripts/beta-sizing-runtime.mjs
+
+      # The workload records the worker identity it started under, so a replaced task
+      # definition during the measurement is attributable instead of silent.
+      - name: Capture Beta worker identity before the measurement
+        run: node scripts/beta-sizing-environment.mjs capture --phase before
+
+      - name: Run the instrumentation workload
+        id: beta-measure-suite
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm test:instrumentation
+
+      - name: Capture Beta worker identity after the measurement
+        if: ${{ always() }}
+        run: node scripts/beta-sizing-environment.mjs capture --phase after
+
+      - name: Clean up exact Beta worker identities
+        if: ${{ always() && steps.beta-measure-suite.outcome != 'skipped' }}
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm accounts:cleanup-workers
+
+      # A measurement result, uploaded with a name of its own. The qualification record is
+      # written only by `full`, and this artifact can never be read as one:
+      # `verifyQualificationForPromotion` requires the `beta-qualification-<run>-<attempt>`
+      # name and a completed-success qualification run.
+      - name: Upload measurement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            deployment-evidence-before.json
+            .qualification-inputs/beta-sizing-runtime-before.json
+            .qualification-inputs/beta-environment-before.json
+            .qualification-inputs/beta-environment-after.json
+            test-results/beta-sizing-workload.json
+            test-results/account-budget.json
+            test-results/service-cleanup-operation.json
+            test-results/**/error-context.md
+          retention-days: 90
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  # The account-recovery flow of the former E2E Account Recovery workflow. It never writes
+  # qualification evidence.
+  recover:
+    name: Recover exact E2E identities and owned resources
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'recover'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: beta
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      E2E_OPERATION: ${{ inputs.operation }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
+      E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
+      E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
+      E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: recovery/beta-cleanup-diagnostic.json
+      E2E_CLEANUP_OPERATION_MODE: ${{ inputs.operation_mode }}
+      E2E_CLEANUP_RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
+      E2E_CLEANUP_RETRY_FAILED: ${{ inputs.retry_failed_execution && 'true' || 'false' }}
+      RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RECOVERY_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+      RECOVERY_PREVIOUS_RUN_ID: ${{ inputs.previous_recovery_run_id }}
+      RECOVERY_PREVIOUS_RUN_ATTEMPT: ${{ inputs.previous_recovery_run_attempt }}
+      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+
+    steps:
+      - name: Checkout E2E recovery tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install E2E dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Infra evidence read token
+        id: infra-evidence-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Infra
+          permission-contents: read
+          permission-actions: read
+
+      - name: Generate Service artifact read token
+        id: service-artifact-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Service
+          permission-contents: read
+          permission-actions: read
+          permission-attestations: read
+
+      - name: Require reviewed compatibility and protected recovery execution
+        run: |
+          node scripts/account-recovery-inputs.mjs --validate-inputs
+          node scripts/check-compatibility.mjs --require-infra
+
+      - name: Verify exact original E2E owner and previous recovery artifact
+        id: recovery-scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INFRA_EVIDENCE_READ_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
+          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+        run: node scripts/account-recovery-inputs.mjs
+
+      - name: Configure Beta AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify dedicated E2E principal
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
+
+      - name: Load deployed identity configuration
+        shell: bash
+        run: |
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          echo "USER_POOL_ID=$pool_id" >> "$GITHUB_ENV"
+
+      - name: Recover exact worker data and identities through the reviewed Service operator
+        env:
+          E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.original_operation_path }}
+          E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.previous_operation_path }}
+          E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: ${{ steps.recovery-scope.outputs.diagnostic_path }}
+          E2E_BETA_CLEANUP_DIAGNOSTIC_SHA256: ${{ steps.recovery-scope.outputs.diagnostic_sha256 }}
+          E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
+          E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
+          E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
+          E2E_MAX_NEW_ACCOUNTS_PER_RUN: ${{ steps.recovery-scope.outputs.max_new }}
+          E2E_MAX_QUARANTINED_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_quarantined }}
+          E2E_CLEANUP_SERVICE_SHA: ${{ steps.recovery-scope.outputs.diagnostic_service_source_sha }}
+          E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ steps.recovery-scope.outputs.diagnostic_service_source_sha }}
+          E2E_CLEANUP_SERVICE_IMAGE_DIGEST: ${{ steps.recovery-scope.outputs.diagnostic_service_image_digest }}
+          BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ steps.recovery-scope.outputs.diagnostic_state_machine_version_arn }}
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm accounts:cleanup-workers
+
+      - name: Reject remaining unknown or unrecovered accounts
+        run: jq -e 'all(.accounts[]; .status == "deleted")' recovery/account-budget.json >/dev/null
+
+      - name: Preserve structured recovery failure
+        if: failure()
+        run: node scripts/account-recovery-inputs.mjs --record-failure
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-account-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            recovery/account-budget.json
+            recovery/service-cleanup-operation.json
+            recovery/service-cleanup-run.json
+            recovery/original-account-budget.json
+            recovery/original-service-cleanup-operation.json
+            recovery/original-service-cleanup-run.json
+            recovery/original-owner.json
+            recovery/beta-cleanup-diagnostic.json
+            recovery/previous-recovery-operation.json
+            recovery/previous-recovery-owner.json
+            recovery/recovery-selection.json
+            recovery/account-recovery-failure.json
+          if-no-files-found: ignore
+
+  # The credential-free half of the qualification record: it downloads the `full` job's
+  # handoff, re-runs the verifier in a job with no environment and no id-token, and only
+  # then attaches the artifact a release consumer reads. It holds no AWS credential and is
+  # skipped unless the dispatched operation is `full`; the other three operations can
+  # neither produce nor withhold it.
+  record:
+    name: Validate and attach the qualification record
+    needs: full
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout E2E verification sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download the qualification record handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: beta-qualification-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Verify the qualification record without credentials
+        run: node scripts/verify-qualification-record.mjs
+
+      - name: Attach the qualification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .qualification-inputs/deployment-record.json
+            .qualification-inputs/service-artifacts.json
+            .qualification-inputs/beta-environment-before.json
+            .qualification-inputs/beta-environment-after.json
+            deployment-evidence-before.json
+            deployment-evidence.json
+            qualification-record.json
+            test-results/qualification-report.json
+            test-results/beta-environment-verdict.json
+            github-cli-version.txt
+          retention-days: 90
+          include-hidden-files: true
+          if-no-files-found: error

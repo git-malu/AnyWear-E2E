@@ -14,7 +14,7 @@ function environment(sha) {
   return { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_REPOSITORY_ID: '1317091305',
     GITHUB_REPOSITORY_OWNER: 'git-malu', GITHUB_REPOSITORY_OWNER_ID: '11473072',
     GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch', E2E_STAGE: 'beta',
-    ENABLE_INFRA_E2E: 'true', GITHUB_SHA: sha, GITHUB_WORKFLOW_SHA: sha,
+    ENABLE_BETA_MUTATION: 'true', E2E_OPERATION: 'measure', GITHUB_SHA: sha, GITHUB_WORKFLOW_SHA: sha,
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
     GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
     E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40), E2E_AWS_ACCOUNT: '650880818323',

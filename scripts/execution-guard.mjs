@@ -1,24 +1,36 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { requireCommit, requireString } from './evidence-contract.mjs';
+import { repositories, requireCommit, requireString } from './evidence-contract.mjs';
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
-// Protected dispatches that may perform deployed operations. `beta-instrumentation` is
-// separate from `beta-qualification` on purpose: a measurement shares this guard's
-// identity and cleanup controls, and must not share the qualification run's conclusion,
-// because a release consumer accepts only a completed-success qualification run.
-const workflows = ['beta-qualification', 'beta-instrumentation', 'integration', 'account-recovery', 'beta-cleanup-acceptance'];
+
+// #163: the four protected operations all run from the single `qualify` entry. The old
+// workflow-file allow-list is replaced by an operation → entry map: an operation must be
+// stated explicitly instead of being inferred from whichever file happened to dispatch,
+// and every operation names the one entry that may serve it. Adding an operation to a
+// different file therefore means changing this map, which is the reviewable point the
+// allow-list used to be.
+export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'measure', 'recover']);
+const operationEntries = Object.freeze({
+  full: 'beta-qualification',
+  smoke: 'beta-qualification',
+  measure: 'beta-qualification',
+  recover: 'beta-qualification',
+});
 
 export function assertE2EExecution(environment = process.env, { sourceOnly = false, sourceSha } = {}) {
-  if (environment.GITHUB_REPOSITORY !== 'git-malu/AnyWear-E2E'
+  if (environment.GITHUB_REPOSITORY !== repositories.e2e
     || environment.GITHUB_REPOSITORY_ID !== '1317091305'
     || environment.GITHUB_REPOSITORY_OWNER !== 'git-malu' || environment.GITHUB_REPOSITORY_OWNER_ID !== '11473072'
     || environment.GITHUB_REF !== 'refs/heads/main' || environment.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || environment.E2E_STAGE !== 'beta') throw new Error('E2E operations require the protected main Beta repository/owner dispatch');
-  if (environment.ENABLE_INFRA_E2E !== 'true') throw new Error('Infra E2E activation gate is closed');
+  if (environment.ENABLE_BETA_MUTATION !== 'true') throw new Error('Beta mutation activation gate is closed');
+  const operation = environment.E2E_OPERATION;
+  if (!E2E_OPERATIONS.includes(operation)) throw new Error('E2E execution requires an explicit qualification operation');
+  const entry = operationEntries[operation];
   const sha = requireCommit(environment.GITHUB_SHA, 'Current E2E revision');
   if (environment.GITHUB_WORKFLOW_SHA !== sha
-    || !workflows.some(name => environment.GITHUB_WORKFLOW_REF === `git-malu/AnyWear-E2E/.github/workflows/${name}.yml@refs/heads/main`)) {
+    || environment.GITHUB_WORKFLOW_REF !== `${repositories.e2e}/.github/workflows/${entry}.yml@refs/heads/main`) {
     throw new Error('E2E execution requires an exact protected workflow/source');
   }
   const actual = sourceSha ?? execFileSync('git', ['--no-replace-objects', '-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();

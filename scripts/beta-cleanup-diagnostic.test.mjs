@@ -152,6 +152,48 @@ test('validates the diagnostic envelope and keeps formal deployment contracts cl
   assert.throws(() => validateDeploymentRecord(fixture.record), /Unknown deployment schema|Invalid deployment record fields/);
 });
 
+// AnyWear-Client#21 released build-metadata schema 2: the four schema-1 identity fields are
+// unchanged and one `interface` object is added. The diagnostic must accept both released
+// shapes strictly, keep the source_revision binding exact, and refuse a partial or unknown
+// shape rather than ignoring it.
+test('accepts Client build-metadata schema 1 and schema 2 and refuses every other shape', () => {
+  const fixture = diagnosticFixture();
+  const identity = {
+    schema_version: 1,
+    component: 'AnyWear-Client',
+    source_commit: fixture.expected.runtime.client_sha,
+    built_at: '2026-10-12T22:00:00.000Z',
+  };
+  const schema2 = {
+    ...identity,
+    schema_version: 2,
+    interface: { api_base_url: 'https://api.example.invalid', cognito_user_pool_id: 'pool-id', cognito_client_id: 'client-id' },
+  };
+  const withClient = (client) => {
+    const candidate = structuredClone(fixture);
+    candidate.record.runtime.health.client = client;
+    return candidate;
+  };
+  for (const [label, client] of [['schema 1', identity], ['schema 2', schema2]]) {
+    const candidate = withClient(client);
+    assert.strictEqual(validateDiagnosticRecord(candidate.record, fixture.expected), candidate.record, label);
+  }
+  for (const [label, client, expected] of [
+    ['schema 2 missing interface', { ...identity, schema_version: 2 }, /Diagnostic Client health\.interface is required/],
+    ['schema 2 extra top-level key', { ...schema2, extra: true }, /Diagnostic Client health\.extra is unknown/],
+    ['unknown schema version', { ...schema2, schema_version: 3 }, /schema version is unsupported/],
+    ['schema 2 missing interface member', { ...schema2, interface: { api_base_url: schema2.interface.api_base_url, cognito_user_pool_id: schema2.interface.cognito_user_pool_id } }, /Diagnostic Client interface\.cognito_client_id is required/],
+    ['schema 2 unknown interface member', { ...schema2, interface: { ...schema2.interface, extra: 'x' } }, /Diagnostic Client interface\.extra is unknown/],
+    ['schema 2 empty interface member', { ...schema2, interface: { ...schema2.interface, cognito_client_id: '' } }, /Diagnostic Client interface\.cognito_client_id must be a non-empty string/],
+    ['schema 2 non-string interface member', { ...schema2, interface: { ...schema2.interface, api_base_url: 7 } }, /Diagnostic Client interface\.api_base_url must be a non-empty string/],
+    ['schema 2 foreign client source', { ...schema2, source_commit: sha('f') }, /Diagnostic Client health identity mismatch/],
+    ['schema 1 carrying the schema 2 interface', { ...identity, interface: schema2.interface }, /Diagnostic Client health\.interface is unknown/],
+  ]) {
+    const candidate = withClient(client);
+    assert.throws(() => validateDiagnosticRecord(candidate.record, fixture.expected), expected, label);
+  }
+});
+
 test('rejects unknown, duplicate and every producer/runtime binding drift', () => {
   const base = diagnosticFixture();
   const mutations = [
@@ -164,6 +206,32 @@ test('rejects unknown, duplicate and every producer/runtime binding drift', () =
   for (const [index, mutate] of mutations.entries()) { const candidate = structuredClone(base.record); mutate(candidate); assert.throws(() => validateDiagnosticRecord(candidate, base.expected), `mutation ${index} must fail`); }
   const duplicate = JSON.stringify(base.record).replace('{"schema_version":1,', '{"schema_version":1,"schema_version":1,');
   assert.throws(() => parseStrictJson(Buffer.from(duplicate)), /Duplicate JSON key/);
+});
+
+// #163: Infra replaces `beta-deploy.yml` with `mutate.yml` but deliberately keeps the
+// operation record's family name `beta-deploy`. The diagnostic accepts both producer paths,
+// keeps the historical evidence readable, and refuses a record that mixes them or names a
+// path outside the transition allow-list.
+test('#163 accepts the historical beta-deploy path and the new mutate path, but no mix', () => {
+  const historical = diagnosticFixture();
+  assert.strictEqual(validateDiagnosticRecord(historical.record, historical.expected), historical.record);
+
+  const expected = expectedFixture();
+  expected.infra.workflow_path = '.github/workflows/mutate.yml';
+  expected.infra.workflow_ref = `git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main`;
+  const replacement = diagnosticFixture(expected);
+  assert.equal(replacement.operation.family, 'beta-deploy');
+  assert.strictEqual(validateDiagnosticRecord(replacement.record, replacement.expected), replacement.record);
+  assert.strictEqual(assertDiagnosticRun({ ...diagnosticRun(), path: expected.infra.workflow_path }, replacement.expected).path,
+    '.github/workflows/mutate.yml');
+
+  const mixed = structuredClone(replacement.record);
+  mixed.observation.schema.verification.executor.workflow_path = '.github/workflows/beta-deploy.yml';
+  assert.throws(() => validateDiagnosticRecord(mixed, replacement.expected), /does not match the diagnostic producer/);
+
+  const foreign = expectedFixture();
+  foreign.infra.workflow_path = '.github/workflows/runtime.yml';
+  assert.throws(() => validateDiagnosticRecord(diagnosticFixture(foreign).record, foreign), /transition allow-list/);
 });
 
 test('loader reads only pinned bytes, release metadata and HTTP health', async () => {

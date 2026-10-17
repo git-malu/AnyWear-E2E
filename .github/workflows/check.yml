@@ -1,0 +1,81 @@
+name: Check
+
+# The E2E deployable unit's single automatic entry (#163). It absorbs `quality.yml` and
+# `tool-regressions.yml`: both were already automatic, so the entry count drops without
+# losing a check. `quality.yml` carried no path filter, so the workflow-level trigger is
+# unfiltered; `tool-regressions` therefore also runs on every check instead of only on its
+# former path set. That cost is recorded in the PR body for #163.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: E2E Source Quality
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit Dependencies
+        run: pnpm audit --audit-level high
+
+      - name: Check E2E Source
+        run: pnpm check
+
+      - name: Check native release verification CLI
+        run: |
+          gh --version
+          gh release verify --help --format json > /dev/null
+          gh release verify-asset --help --format json > /dev/null
+
+  tool-regressions:
+    name: Credential-free tool regressions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run explicit tool regressions
+        run: pnpm test:tool-regressions

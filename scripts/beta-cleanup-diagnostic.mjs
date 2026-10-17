@@ -10,7 +10,17 @@ import { assertSelectionManifest, validateSelection } from './vendor/artifact-co
 import { validateManifest } from './vendor/vendor/service-artifact-contract.mjs';
 import { configuredStackNames, validateStackManifest } from './vendor/operation-stacks.mjs';
 
+// #163 transition allow-list. Infra is replacing its `beta-deploy.yml` dispatch entry with
+// `mutate.yml` while deliberately keeping the operation record's family name `beta-deploy`.
+// A diagnostic record names the workflow path that produced it, so the historical path (for
+// records already written) and the new path (for new records) are both accepted. Everything
+// else about the path stays exact: it must be one of these two, the record's own producer,
+// schema-verification and operation-executor paths must all agree, and the run must still be
+// the reviewed main source. `family === 'beta-deploy'` is a record family name, not a path,
+// and remains exact.
 export const DIAGNOSTIC_WORKFLOW = '.github/workflows/beta-deploy.yml';
+export const MUTATE_WORKFLOW = '.github/workflows/mutate.yml';
+export const DIAGNOSTIC_WORKFLOWS = Object.freeze([DIAGNOSTIC_WORKFLOW, MUTATE_WORKFLOW]);
 export const DIAGNOSTIC_OPERATION = 'deploy-workload';
 export const DIAGNOSTIC_EXPECTED = Object.freeze({
   account_id: '650880818323',
@@ -85,6 +95,15 @@ const HASH = /^[0-9a-f]{64}$/;
 const TASK = /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/;
 const TASK_DEFINITION = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/[a-z0-9-]+:[1-9][0-9]*$/;
 
+// The #163 transition allow-list check. It accepts the historical `beta-deploy.yml` path and
+// the new `mutate.yml` path, and nothing else. `expectedPath` is the path the pinned
+// diagnostic evidence names: a record may not mix the two.
+function requireTransitionWorkflow(path, label = 'Diagnostic producer workflow path', expectedPath = path) {
+  if (!DIAGNOSTIC_WORKFLOWS.includes(path)) throw new Error(`${label} is outside the #163 transition allow-list`);
+  if (path !== expectedPath) throw new Error(`${label} does not match the diagnostic producer`);
+  return path;
+}
+
 function equal(actual, expected, label) {
   assertEqual(actual, expected, label);
   return actual;
@@ -112,6 +131,7 @@ function expectedRunSha(run) {
 }
 
 export function assertDiagnosticRun(run, expected = DIAGNOSTIC_EXPECTED) {
+  requireTransitionWorkflow(expected.infra.workflow_path);
   for (const repository of [run.repository, run.head_repository]) requireOwnedRepository(repository, repositories.infra, 'Diagnostic run repository');
   if (run.id !== expected.infra.run_id || run.run_attempt !== expected.infra.run_attempt || run.head_sha !== expected.infra.sha
     || run.head_branch !== 'main' || run.path !== expected.infra.workflow_path || run.event !== 'workflow_dispatch'
@@ -164,11 +184,13 @@ function validateObservation(record, expected) {
     || record.schema.minimum_schema_version !== expected.service.schema_version || record.schema.compatibility_result !== 'compatible') throw new Error('Diagnostic schema/version mismatch');
   exactKeys(record.schema.verification, ['command_sha256', 'executor', 'image_digest', 'service_sha', 'source_repository', 'source_sha', 'task_arn', 'task_definition_arn'], 'Diagnostic schema verification');
   exactKeys(record.schema.verification.executor, ['repository', 'run_attempt', 'run_id', 'sha', 'workflow_path'], 'Diagnostic schema executor');
+  requireTransitionWorkflow(record.schema.verification.executor.workflow_path,
+    'Diagnostic schema executor workflow path', expected.infra.workflow_path);
   if (record.schema.verification.source_repository !== repositories.infra || record.schema.verification.source_sha !== expected.infra.sha
     || record.schema.verification.service_sha !== expected.service.source_sha || record.schema.verification.image_digest !== expected.service.image_digest
     || record.schema.verification.executor.repository !== expected.infra.repository || record.schema.verification.executor.run_attempt !== expected.infra.run_attempt
     || record.schema.verification.executor.run_id !== expected.infra.run_id || record.schema.verification.executor.sha !== expected.infra.sha
-    || record.schema.verification.executor.workflow_path !== DIAGNOSTIC_WORKFLOW || !TASK.test(record.schema.verification.task_arn)
+    || !TASK.test(record.schema.verification.task_arn)
     || record.schema.verification.task_definition_arn !== 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-artifact-verify:155') throw new Error('Diagnostic schema verification binding mismatch');
   return { selector, record };
 }
@@ -240,7 +262,37 @@ function validateCapability(capability, expected) {
   return capability;
 }
 
+const CLIENT_HEALTH_KEYS = Object.freeze(['schema_version', 'component', 'source_commit', 'built_at']);
+const CLIENT_INTERFACE_KEYS = Object.freeze(['api_base_url', 'cognito_user_pool_id', 'cognito_client_id']);
+
+// The deployed Client's build-metadata identity. Schema 1 is exactly the four identity
+// fields. Schema 2 (AnyWear-Client#21) keeps those four unchanged and adds one `interface`
+// object, so both released shapes are accepted strictly: no other version, no unknown key
+// in either shape, no missing or empty interface member, and the `source_commit` binding to
+// the observed Client revision is unchanged from schema 1.
+function validateClientHealth(health, expected) {
+  if (!health || typeof health !== 'object' || Array.isArray(health)) throw new Error('Diagnostic Client health must be an object');
+  if (health.schema_version === 2) {
+    exactKeys(health, [...CLIENT_HEALTH_KEYS, 'interface'], 'Diagnostic Client health');
+    exactKeys(health.interface, CLIENT_INTERFACE_KEYS, 'Diagnostic Client interface');
+    for (const key of CLIENT_INTERFACE_KEYS) {
+      if (typeof health.interface[key] !== 'string' || health.interface[key].length === 0) {
+        throw new Error(`Diagnostic Client interface.${key} must be a non-empty string`);
+      }
+    }
+  } else if (health.schema_version === 1) {
+    exactKeys(health, CLIENT_HEALTH_KEYS, 'Diagnostic Client health');
+  } else {
+    throw new Error('Diagnostic Client health schema version is unsupported');
+  }
+  if (health.component !== 'AnyWear-Client' || health.source_commit !== expected.runtime.client_sha) {
+    throw new Error('Diagnostic Client health identity mismatch');
+  }
+  return health;
+}
+
 export function validateDiagnosticRecord(record, expected = DIAGNOSTIC_EXPECTED) {
+  requireTransitionWorkflow(expected.infra.workflow_path);
   exactKeys(record, ['schema_version', 'record_type', 'producer', 'artifacts', 'selection', 'service', 'runtime', 'capability', 'observation', 'operation'], 'Diagnostic record');
   if (record.schema_version !== 1 || record.record_type !== 'anywear_beta_cleanup_diagnostic') throw new Error('Unsupported diagnostic record schema');
   exactKeys(record.producer, ['account_id', 'region', 'repository', 'workflow_path', 'workflow_ref', 'run_id', 'run_attempt', 'sha', 'operation'], 'Diagnostic producer');
@@ -257,9 +309,9 @@ export function validateDiagnosticRecord(record, expected = DIAGNOSTIC_EXPECTED)
     || record.runtime.api_endpoint !== expected.runtime.api_endpoint || record.runtime.client_endpoint !== expected.runtime.client_endpoint || record.runtime.api_task_definition !== expected.runtime.api_task_definition
     || record.runtime.worker_task_definition !== expected.runtime.worker_task_definition || record.runtime.rollout_state !== expected.runtime.rollout_state || record.runtime.schema_version !== expected.runtime.schema_version) throw new Error('Diagnostic runtime binding mismatch');
   exactKeys(record.runtime.health, ['client', 'service'], 'Diagnostic health');
-  exactKeys(record.runtime.health.client, ['schema_version', 'component', 'source_commit', 'built_at'], 'Diagnostic Client health');
+  validateClientHealth(record.runtime.health.client, expected);
   exactKeys(record.runtime.health.service, ['status', 'service_commit', 'image_digest', 'minimum_schema_version'], 'Diagnostic Service health');
-  if (record.runtime.health.client.schema_version !== 1 || record.runtime.health.client.component !== 'AnyWear-Client' || record.runtime.health.client.source_commit !== expected.runtime.client_sha || record.runtime.health.service.status !== 'ok'
+  if (record.runtime.health.service.status !== 'ok'
     || record.runtime.health.service.service_commit !== expected.service.source_sha || record.runtime.health.service.image_digest !== expected.service.image_digest
     || record.runtime.health.service.minimum_schema_version !== expected.service.schema_version) throw new Error('Diagnostic HTTP health mismatch');
   validateCapability(record.capability, expected);

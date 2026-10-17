@@ -29,7 +29,7 @@ function environment(patch = {}) {
     GITHUB_SHA: sourceSha, GITHUB_WORKFLOW_SHA: sourceSha,
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
     GITHUB_RUN_ID: '123456789', GITHUB_RUN_ATTEMPT: '1',
-    E2E_STAGE: 'beta', ENABLE_INFRA_E2E: 'true', E2E_WORKERS: '2',
+    E2E_STAGE: 'beta', ENABLE_BETA_MUTATION: 'true', E2E_WORKERS: '2', E2E_OPERATION: 'full',
     E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40),
     AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', E2E_AWS_ACCOUNT: '650880818323',
     E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/fixture',
@@ -81,7 +81,8 @@ test('missing or foreign dedicated identity and untrusted dispatch fail before a
     { GITHUB_REF: 'refs/heads/candidate' }, { GITHUB_EVENT_NAME: 'pull_request' },
     { GITHUB_WORKFLOW_SHA: 'c'.repeat(40) },
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/integration.yml@refs/heads/main' },
-    { E2E_STAGE: 'dev' }, { ENABLE_INFRA_E2E: 'false' },
+    { E2E_STAGE: 'dev' }, { ENABLE_BETA_MUTATION: 'false' },
+    { E2E_OPERATION: undefined }, { E2E_OPERATION: 'observe' },
     { AWS_ACCOUNT_ID: '111111111111' }, { AWS_REGION: 'us-east-1' },
     { E2E_CLEANUP_SERVICE_SHA: undefined }, { GITHUB_RUN_ID: undefined },
   ]) {
@@ -94,10 +95,18 @@ test('missing or foreign dedicated identity and untrusted dispatch fail before a
   assert.deepEqual(io.calls, []);
 });
 
-test('the qualification requires explicitly configured two workers before any SSM read', () => {
-  for (const E2E_WORKERS of [undefined, '', '1', '3', '02', '2.0']) {
+test('the qualification requires the operation\'s explicit worker count before any SSM read', () => {
+  for (const E2E_WORKERS of [undefined, '', '3', '02', '2.0']) {
     const io = reader();
-    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly two workers/);
+    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly 2 workers/);
+    assert.deepEqual(io.calls, []);
+  }
+  // Measure runs the single-worker-slot workload; its count is one, not two.
+  const single = reader();
+  assert.doesNotThrow(() => verifyBetaAdmissionEligibility(environment({ E2E_OPERATION: 'measure', E2E_WORKERS: '1' }), { execute: single.execute, sourceSha }));
+  for (const E2E_WORKERS of [undefined, '', '2', '3']) {
+    const io = reader();
+    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_OPERATION: 'measure', E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly 1 worker/);
     assert.deepEqual(io.calls, []);
   }
 });
@@ -305,36 +314,39 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.ok(eligibility > steps.findIndex(step => step.startsWith('Verify dedicated E2E principal')));
   assert.match(steps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
   assert.doesNotMatch(steps[eligibility], /\bif:|continue-on-error:/);
-  for (const name of ['Observe authenticated deployed tuple before suite',
-    'Load Beta test identity configuration', 'Run the release-gating business regression suite']) {
-    assert.ok(steps.findIndex(step => step.startsWith(name)) > eligibility, name);
+  // #163: one qualify entry carries four operations. full keeps the release-gating suite and
+  // the only record production; smoke is the diagnostic; measure is the single-slot workload
+  // and the only operation with a sizing stage. Separation lives in the signed operation, so
+  // none of them can decide another operation's conclusion.
+  const full = workflow.slice(workflow.indexOf('\n  full:\n'), workflow.indexOf('\n  smoke:\n'));
+  const smoke = workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  measure:\n'));
+  const measure = workflow.slice(workflow.indexOf('\n  measure:\n'), workflow.indexOf('\n  recover:\n'));
+  const record = workflow.slice(workflow.indexOf('\n  record:\n'));
+  for (const [name, job, stepName, command] of [
+    ['full', full, 'Run the release-gating business regression suite', 'pnpm test'],
+    ['smoke', smoke, 'Run deployed Beta smoke tests', 'pnpm test:smoke'],
+    ['measure', measure, 'Run the instrumentation workload', 'pnpm test:instrumentation'],
+  ]) {
+    const suite = job.split(/\r?\n {6}- name: /).slice(1).find(step => step.startsWith(stepName));
+    assert.ok(suite, `${name} must carry its own suite step`);
+    assert.match(suite, new RegExp(`node scripts/execution-guard\\.mjs\\r?\\n\\s+${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'));
+    assert.doesNotMatch(suite, /continue-on-error:/);
   }
-  assert.match(workflow, /E2E_WORKERS: 2\r?\n/);
   assert.doesNotMatch(workflow, /continue-on-error:/);
-  const suite = steps.find(step => step.startsWith('Run the release-gating business regression suite'));
-  // The gate runs the release selection, not a discovery run: `pnpm test` selects
-  // `@regression`, so a measurement scenario cannot enter or leave this step.
-  assert.match(suite, /node scripts\/execution-guard\.mjs\r?\n\s+pnpm test\s*$/m);
-  assert.doesNotMatch(suite, /if:\s*.*(?:always|failure)/);
-  assert.equal(steps.filter(step => /\bpnpm test\s*$/.test(step)).length, 1);
-  // The measurement is a separate workflow, not a second job: a release consumer accepts
-  // a qualification record only from a completed-success qualification run, so a
-  // measurement sharing that run's conclusion could withhold a record the gate produced.
-  assert.doesNotMatch(workflow, /instrumentation/);
-  assert.doesNotMatch(workflow, /BETA_SIZING_STAGE/);
-  const instrumentationWorkflow = await readFile(new URL('../.github/workflows/beta-instrumentation.yml', import.meta.url), 'utf8');
-  assert.match(instrumentationWorkflow, /^on:\s*$/m);
-  assert.match(instrumentationWorkflow, /^ {6}sizing_stage:\s*$/m);
-  assert.match(instrumentationWorkflow, /^ {4}if: github\.ref == 'refs\/heads\/main'\s*$/m);
-  assert.match(instrumentationWorkflow, /^ {4}environment: beta\s*$/m);
-  assert.match(instrumentationWorkflow, /^ {6}- name: Run the instrumentation workload\s*$/m);
-  assert.match(instrumentationWorkflow, /\bpnpm test:instrumentation\s*$/m);
-  assert.equal([...instrumentationWorkflow.matchAll(/\bpnpm test:instrumentation\s*$/gm)].length, 1);
-  assert.doesNotMatch(instrumentationWorkflow, /continue-on-error:/);
-  // A measurement cannot produce the qualified tuple: no record step and no environment
-  // refusal, which stay in the qualification workflow.
-  assert.doesNotMatch(instrumentationWorkflow, /qualification:(generate|verify)/);
-  assert.doesNotMatch(instrumentationWorkflow, /beta-sizing-environment\.mjs qualification-gate/);
+  assert.match(full, /E2E_WORKERS: 2\r?\n/);
+  assert.match(measure, /E2E_WORKERS: 1\r?\n/);
+  // The record is produced only by full, bound to its dispatched operation, and the record
+  // job only validates and attaches it. Neither smoke, measure nor recover can write one.
+  assert.ok(record.length > 0, 'the qualify entry must declare a record job');
+  assert.match(record, /needs: full/);
+  assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
+  assert.match(full, /qualification:generate/);
+  for (const [name, job] of [['smoke', smoke], ['measure', measure], ['recover', workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'))], ['record', record]]) {
+    assert.doesNotMatch(job, /qualification:(generate|verify)/, `${name} must not produce a qualification record`);
+  }
+  assert.doesNotMatch(smoke, /BETA_SIZING_STAGE/);
+  assert.match(measure, /BETA_SIZING_STAGE: \$\{\{ inputs\.sizing_stage \}\}/);
+  assert.doesNotMatch(full, /BETA_SIZING_STAGE/);
   // The worker fixture reserves/provisions only after Playwright starts in that later step.
   const fixture = await readFile(new URL('../tests/support/fixtures.ts', import.meta.url), 'utf8');
   assert.ok(fixture.indexOf('await reserveTestAccount(') < fixture.indexOf('await provisionConfirmedTestAccount('));

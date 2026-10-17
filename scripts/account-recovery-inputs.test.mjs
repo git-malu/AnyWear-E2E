@@ -66,6 +66,10 @@ test('recovery captures this run scope\u2019s scoped worker addresses and refuse
 
 test('previous recovery provenance binds source run/attempt and exact canonical original owner files', () => {
   assert.equal(assertPreviousRecovery(priorRun, selection, priorFiles, originalFiles).evidence.operation.input.recovery_attempt, 1);
+  // #163: a new recovery run is the `recover` operation of the shared qualify entry, while
+  // the historical account-recovery.yml predecessor stays readable.
+  assert.equal(assertPreviousRecovery({ ...priorRun, path: '.github/workflows/beta-qualification.yml' }, selection, priorFiles, originalFiles)
+    .evidence.operation.input.recovery_attempt, 1);
   for (const patch of [{ status: 'in_progress' }, { run_attempt: 2 }, { head_branch: 'feature' }, { event: 'pull_request' },
     { path: '.github/workflows/integration.yml' }, { repository: { full_name: 'fork/AnyWear-E2E' } }]) assert.throws(() => assertPreviousRecovery({ ...priorRun, ...patch }, selection, priorFiles, originalFiles));
   for (const name of Object.keys(originalFiles)) assert.throws(() => assertPreviousRecovery(priorRun, selection, { ...priorFiles, [name]: encode({ changed: true }) }, originalFiles));
@@ -127,19 +131,23 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
 });
 
 test('recovery workflow binds cleanup execution to validated diagnostic outputs', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/account-recovery.yml', import.meta.url), 'utf8');
-  assert.doesNotMatch(workflow, /node scripts\/execution-guard\.mjs --source-only/);
-  assert.doesNotMatch(workflow, /vars\.E2E_CLEANUP_SERVICE_(?:SHA|SOURCE_SHA|IMAGE_DIGEST)/);
+  const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  // The recover operation is one job of the shared qualify entry; the preflight's own
+  // source-only guard belongs to another job and is not a substitute for this flow.
+  const recover = workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'));
+  assert.ok(recover.length > 0, 'the qualify entry must declare a recover job');
+  assert.doesNotMatch(recover, /node scripts\/execution-guard\.mjs --source-only/);
+  assert.doesNotMatch(recover, /vars\.E2E_CLEANUP_SERVICE_(?:SHA|SOURCE_SHA|IMAGE_DIGEST)/);
   for (const [name, output] of [
     ['E2E_CLEANUP_SERVICE_SHA', 'diagnostic_service_source_sha'],
     ['E2E_CLEANUP_SERVICE_SOURCE_SHA', 'diagnostic_service_source_sha'],
     ['E2E_CLEANUP_SERVICE_IMAGE_DIGEST', 'diagnostic_service_image_digest'],
     ['BETA_CLEANUP_STATE_MACHINE_VERSION_ARN', 'diagnostic_state_machine_version_arn'],
-  ]) assert.ok(workflow.includes(name + ': ${{ steps.recovery-scope.outputs.' + output + ' }}'));
-  const scopeOutput = workflow.indexOf('id: recovery-scope');
-  const cleanupStep = workflow.indexOf('name: Recover exact worker data and identities');
+  ]) assert.ok(recover.includes(name + ': ${{ steps.recovery-scope.outputs.' + output + ' }}'));
+  const scopeOutput = recover.indexOf('id: recovery-scope');
+  const cleanupStep = recover.indexOf('name: Recover exact worker data and identities');
   assert.ok(scopeOutput >= 0 && cleanupStep > scopeOutput);
-  assert.ok(workflow.indexOf('node scripts/execution-guard.mjs', cleanupStep) > cleanupStep);
+  assert.ok(recover.indexOf('node scripts/execution-guard.mjs', cleanupStep) > cleanupStep);
 });
 
 test('diagnostic preparation requires the dedicated Infra reader and never falls back to ambient GH_TOKEN', async () => {

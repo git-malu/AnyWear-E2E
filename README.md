@@ -38,14 +38,14 @@ Cognito account per Playwright parallel slot, provisioned through the protected 
 path and deleted during worker teardown. Public registration remains governed by the
 Service-owned tester policy; ordinary qualification does not mutate admission policy or
 require a real tester mailbox.
-The qualification and integration workflows share a non-cancelling Beta account-pool
+The operations of the `qualify` entry share a non-cancelling Beta account-pool
 concurrency group, and each run uploads its account-budget manifest for recovery.
 
 ## Commands
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 27 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 26 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -71,44 +71,53 @@ scenario must satisfy.
 
 | Command | Owner and trigger | Actual effects and evidence |
 | --- | --- | --- |
-| `check` / `test:core` | E2E maintainers; PR/main Quality and source preparation in Integration/Qualification | Offline fixtures, temporary files/Git repositories, lint, typecheck and discovery; no credentials, cloud calls or deployed result |
-| `test:tool-regressions` | E2E operational-tool maintainers; affected-path PR/main workflow or explicit manual dispatch | Mock AWS/Cognito/fetch, temporary files, a loopback HTTP fixture and bounded Bash checkpoint helper; no AWS/App credentials or live drill proof |
+| `check` / `test:core` | E2E maintainers; the automatic Check entry (PR/main) and qualify preflight source preparation | Offline fixtures, temporary files/Git repositories, lint, typecheck and discovery; no credentials, cloud calls or deployed result |
+| `test:tool-regressions` | E2E operational-tool maintainers; the automatic Check entry's `tool-regressions` job on every PR/main | Mock AWS/Cognito/fetch, temporary files, a loopback HTTP fixture and bounded Bash checkpoint helper; no AWS/App credentials or live drill proof |
 | `test:deferred-sqs` | Repository maintainer under [#58](https://github.com/git-malu/AnyWear/issues/58); manual future-protocol review only | Two offline ARM/ACK/FIRE prototype files; no live transport, trusted AWS identity or receipt proof, and no #54 acceptance claim |
-| `test:smoke` | E2E maintainers; allocated on-demand Beta+ Integration | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
-| `test:regression` / `test` | E2E maintainers; the protected Beta Qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this workflow and its evidence can qualify a release |
-| `test:instrumentation` | E2E maintainers; explicit opt-in through the protected Beta Instrumentation dispatch | A measurement workload with paid provider spend and its own cleanup contract, reported as a measurement; it can neither satisfy nor fail release qualification |
+| `test:smoke` | E2E maintainers; the `smoke` operation of the protected `qualify` entry | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
+| `test:regression` / `test` | E2E maintainers; the `full` operation's protected Beta qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this operation and its evidence can qualify a release |
+| `test:instrumentation` | E2E maintainers; explicit opt-in through the `measure` operation of the protected `qualify` entry | A measurement workload with paid provider spend and its own cleanup contract, reported as a measurement; it can neither satisfy nor fail release qualification |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario, the measurement included; not a release-gating selection on its own |
 | `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
 | `compatibility:pin` | E2E maintainers, used by the maintainer accountable for a change that moved the deployed tuple | Offline byte-hash and binding comparison of the committed pin against a downloaded deployment record and the previous pin; no credentials, cloud calls or deployed reads |
 
-The release-gating selection and the measurement are separated by a workflow boundary, not
-by a step or a job. A release consumer accepts a qualification record only from a
-completed-success qualification run, so a measurement sharing that run would let its own
-outcome withhold a record the gate legitimately produced. The measurement therefore runs
-from its own protected dispatch, `beta-instrumentation.yml`, with the same evidence inputs
-and cleanup controls. The [scenario inventory](docs/scenario-inventory.md) states which
+The release-gating selection, the smoke diagnostic, the measurement and account recovery are
+separated by the signed `operation` field, not by a workflow boundary, a step or a job. One
+protected dispatch surface, the `qualify` entry in `beta-qualification.yml`, carries
+`full`, `smoke`, `measure` and `recover`. A release consumer accepts a qualification record
+only from the `full` operation of a completed-success qualification run; the record states
+`operation: full` and is produced only by that operation, so a `smoke`, `measure` or
+`recover` run can neither produce nor withhold a record the gate legitimately produced. The
+three properties separation keeps are: the record is produced only by `full`; the record
+binds the operation dispatched, so its producer is uniquely identifiable; and both this
+repository's producer/verifier and the Infra-side executor allow-list check
+`operation == full`. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 27 registered core files retain account-budget, Cognito cleanup, qualification
+The 26 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
-`trusted-deployment-inputs.test.mjs` contracts. `test:core` also owns
+`trusted-deployment-inputs.test.mjs` contracts, and `entry-census.test.mjs` asserts the
+two-entry face, the one manual dispatch surface, the credential ordering and the single
+`ENABLE_BETA_MUTATION` name. `test:core` also owns
 `scripts/beta-cleanup-diagnostic.test.mjs`, which asserts the cleanup diagnostic's
 `DIAGNOSTIC_EXPECTED` evidence record offline, without credentials, cloud calls or
-deployed reads; it belongs with its `cleanup-acceptance.test.mjs`,
-`service-cleanup-operation.test.mjs` and `worker-cleanup.test.mjs` neighbours, and its
+deployed reads; it belongs with its `service-cleanup-operation.test.mjs` and
+`worker-cleanup.test.mjs` neighbours, and its
 production module is consumed by `scripts/account-recovery-inputs.mjs` and
 `scripts/cleanup-worker-accounts.mjs`. The infra contracts protect pinned source,
 committed selection, direct native release verification, deployment identity and
 execution validation; their offline assertions remain required by `check` without
 claiming actual publication or qualification.
 
-The tool workflow watches the registered tests, their implementation and fixture
-dependencies, shared evidence/source contracts, vendored direct-release validators and
-compatibility/lockfile inputs. It has only `contents: read` and no deployment
-environment or credential steps. SQS prototypes are excluded from both routine core
-and tool workflows and retain their [source-only handoff](scripts/beta-sqs-boundary-handoff.md).
+The automatic `Check` entry's `tool-regressions` job runs the retained tool tests, their
+implementation and fixture dependencies, shared evidence/source contracts, vendored
+direct-release validators and compatibility/lockfile inputs. `quality.yml` carried no path
+filter, so that job now runs on every check rather than only on its former path set; the
+cost is recorded in the PR body for #163. Both jobs have only `contents: read` and no
+deployment environment or credential steps. SQS prototypes are excluded from both routine
+core and tool checks and retain their [source-only handoff](scripts/beta-sqs-boundary-handoff.md).
 The accepted [testing principles](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/devops/test/test_governance.md)
 define the classification, cost, evidence, admission and retirement policy this
 repository applies.
@@ -116,18 +125,19 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit 27 core test files, lint, type checking, and
+Check entry runs compatibility validation, the explicit 26 core test files, the
+credential-free tool regressions, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
-The E2E Integration workflow is an on-demand deployed Beta smoke diagnostic and runs
-only the small `@smoke` subset. It checks out the reviewed peer commits for diagnostic
-revision evidence, verifies their deployed identities, and exercises Beta's real
-identity boundary. It does not run a local database or mutate the deployment.
-Only Beta Qualification can issue a passing qualification record.
+The `smoke` operation of the protected `qualify` entry is an on-demand deployed Beta
+diagnostic and runs only the small `@smoke` subset. It checks out the reviewed peer commits
+for diagnostic revision evidence, verifies their deployed identities, and exercises Beta's
+real identity boundary. It does not run a local database or mutate the deployment.
+Only the `full` operation can issue a passing qualification record.
 
-The protected `pnpm test` suite step is reserved for the deployed Beta Qualification
-workflow, and it runs the release-gating selection. Only a passing run against the exact
+The protected `pnpm test` suite step is reserved for the `full` operation of the `qualify`
+entry, and it runs the release-gating selection. Only a passing run against the exact
 reviewed Client, Service, and E2E revisions
 produces qualification evidence that Production may consume. The
 [scenario inventory](docs/scenario-inventory.md) records which scenarios that step's
@@ -173,13 +183,16 @@ the deployed selection. `auth.spec.ts` is optional public-registration acceptanc
 skips unless `E2E_PUBLIC_REGISTRATION_OPEN=true` and cannot appear
 as a passing smoke gate. No workflow opens public registration for this scenario.
 
-The manual `Beta Qualification` workflow is the production-readiness gate for an
-already-deployed Beta environment. It reads the reviewed full SHAs from
-`compatibility.json`, verifies those identities against the deployed Client
-`build-metadata.json` and Service `/health`, runs the release-gating deployed selection, rechecks both
-identities and the Service image digest, and uploads a checksummed qualification record.
-A failed, mismatched, or changed deployment, or a worker task definition that changed during
-the suite, cannot issue a passing record. The workflow
+The manual `Beta Qualification` entry (`qualify`) is the single protected dispatch
+surface, with the required operation menu `full` (release gate), `smoke` (diagnostic),
+`measure` (sizing) and `recover` (account recovery). The `full` operation is the
+production-readiness gate for an already-deployed Beta environment. It reads the reviewed
+full SHAs from `compatibility.json`, verifies those identities against the deployed Client
+`build-metadata.json` and Service `/health`, runs the release-gating deployed selection,
+rechecks both identities and the Service image digest, and hands a checksummed
+qualification record to the credential-free `record` job, which re-verifies it offline and
+attaches the artifact. A failed, mismatched, or changed deployment, or a worker task
+definition that changed during the suite, cannot issue a passing record. The workflow
 requests 90-day artifact retention, subject to GitHub's configured
 repository or organization ceiling; durable release-ledger storage remains
 out of scope for the initial Production launch. The finite GitHub retention window is an
@@ -195,9 +208,9 @@ The one-time deployed synthetic allowlist acceptance and recovery workflows were
 retired after the feature's acceptance completed. Their historical evidence, including
 the owner's real email-code and normal-login confirmation, is recorded in
 [AnyWear issue #59](https://github.com/git-malu/AnyWear/issues/59). The ordinary
-Beta Qualification workflow does not mutate tester policy or claim to verify a real
-tester mailbox. Future changes to admission behavior should define only the focused
-tests needed for that change; the retired deployed harness is not a standing release gate.
+`full` and `smoke` operations of the `qualify` entry do not mutate tester policy or claim to
+verify a real tester mailbox. Future changes to admission behavior should define only the
+focused tests needed for that change; the retired deployed harness is not a standing release gate.
 
 The wardrobe scenario verifies repeated `Idempotency-Key` confirmation before and after
 completion, recovery after a browser reload, consistent terminal state in two browser
@@ -236,8 +249,8 @@ to that stable `https://<distribution>.cloudfront.net` endpoint before qualifica
 
 `compatibility.json` is the CI source of truth for the Client and Service
 revisions under test. It accepts only full commit SHAs; branch and tag names are
-rejected. When invoked, the E2E Integration workflow checks out those exact private
-repositories, including their recursive API submodules, and records every tested
+rejected. When invoked, the `smoke` operation of the `qualify` entry checks out those exact
+private repositories, including their recursive API submodules, and records every tested
 revision as an artifact.
 
 Update `compatibility.json` only after the peer commits exist on their remotes
@@ -247,9 +260,10 @@ and their repository-owned pipelines pass.
 
 [ADR 0021](https://github.com/git-malu/AnyWear-Meta/blob/a8eba148cfef4c124c46010276e66e4c8c41e420/architecture/ADR/0021-shared-infrastructure-repository.md)
 defines the shared infrastructure cutover. Offline source checks still accept the
-existing reviewed v1 Client/Service pins. The Infra qualification, integration and
-recovery workflows require v2 and remain disabled until their required writer
-authorization is in place. These changes do not select a newer image or refresh current pins.
+existing reviewed v1 Client/Service pins. The `qualify` entry's deployed operations require
+v2 and remain disabled until their required writer authorization is in place, and the
+`preflight` refuses a v1 pin with `--require-infra`. These changes do not select a newer
+image or refresh current pins.
 
 A reviewed v2 compatibility file has these additional identities:
 
@@ -278,7 +292,7 @@ A reviewed v2 compatibility file has these additional identities:
 
 The placeholders above are rejected by validation. The committed
 `compatibility.json` is already v2, and the v1-only
-`scripts/migrate-compatibility.mjs` and `scripts/build-v2-candidate.mjs` refuse
+`scripts/migrate-compatibility.mjs` refuses
 it. Moving the pin is an operational routine with a stated owner, a start
 condition and a checklist: follow
 [`docs/compatibility-pin.md`](docs/compatibility-pin.md). It observes the
@@ -310,13 +324,13 @@ Private retrieval
 uses separate GitHub App readers: Infra-only Contents/Actions read through
 `GH_TOKEN`, and Service-only Contents/Actions/Attestations read through
 `SERVICE_ARTIFACT_READ_TOKEN`. App token creation uses v3 so the declared
-permissions are applied. Integration source checkouts use a separate Contents
+permissions are applied. Smoke source checkouts use a separate Contents
 read token limited to Client, Service, and Service-API; cleanup tokens retain only
 Service Actions write. Native release verification and the pinned Infra observer
 receive the Service reader through an explicit subprocess environment, with no
 fallback to the Infra token or local authentication. It does not use a PAT.
-`gh release verify` and `verify-asset` must be available. Source Quality and both
-qualification workflows check these commands offline; qualification evidence
+`gh release verify` and `verify-asset` must be available. The Check entry and the
+`qualify` preflight check these commands offline; qualification evidence
 preserves the actual runner `github-cli-version.txt`. The Ubuntu
 runner uses Python's ZIP reader to read exactly `deployment-record.json`, without
 extracting any archive paths.
@@ -331,9 +345,12 @@ extra applied migrations remain legal for image rollback; selected and applied
 journal hashes describe different inputs and need not match.
 
 Before and after snapshots must match the trusted deployed tuple, use different
-verification tasks and remain stable across the release-gating deployed selection. Only Beta
-Qualification emits v2 passing records. Its local `verifyQualificationRecord`
-checks schema, integrity and all tuple bindings while the producer is in progress.
+verification tasks and remain stable across the release-gating deployed selection. Only the
+`full` operation emits v2 passing records, and the record now states `operation: full`; the
+`operation` member is additive to v2, so the flat v2 record Infra's production preflight
+requires stays compatible. Its local `verifyQualificationRecord`
+checks schema, integrity, the signed operation and all tuple bindings while the producer is
+in progress.
 A release consumer must call `verifyQualificationForPromotion` with authenticated
 completed-success E2E run/attempt, unexpired exact artifact metadata and the pinned
 record bytes/hash. A checksum alone does not establish trusted publication.
@@ -355,12 +372,12 @@ the limits of this offline result.
 
 Verify that Infra/Client/legacy writers have ceased before allocating an E2E
 qualification or recovery window. Repository-local concurrency
-does not serialize those other repositories. Keep `ENABLE_INFRA_E2E` unset or
+does not serialize those other repositories. Keep `ENABLE_BETA_MUTATION` unset or
 `false` during preparation. For an authorized protected Beta dispatch, configure:
 
 | Variable | Required value |
 | --- | --- |
-| `ENABLE_INFRA_E2E` | `true` only after role/access/cutover gates pass |
+| `ENABLE_BETA_MUTATION` | `true` only after role/access/cutover gates pass; the single stage switch shared by the system |
 | `E2E_CLEANUP_SERVICE_SOURCE_SHA` | Full reviewed deployed Service source SHA bound into the fixed cleanup capability |
 | `E2E_CLEANUP_SERVICE_SHA` | Legacy source/operator guard value retained during cutover |
 | `E2E_CLEANUP_SERVICE_IMAGE_DIGEST` | Reviewed deployed Service image digest |
@@ -369,15 +386,17 @@ does not serialize those other repositories. Keep `ENABLE_INFRA_E2E` unset or
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | `650880818323`, `ap-east-1` |
 
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
-allowed workflow path and matching workflow/checkout commit establish source identity.
-`execution-guard.mjs --source-only` checks that identity before credentials. After
-assuming the dedicated `beta-e2e-qualification-role`, each workflow captures fresh
+the single `qualify` entry and the explicitly stated `operation` establish source
+identity. `execution-guard.mjs --source-only` checks that identity before credentials,
+including that the operation is one of `full`, `smoke`, `measure` or `recover` and that
+the workflow ref is the entry the operation map names. After
+assuming the dedicated `beta-e2e-qualification-role`, each operation job captures fresh
 STS account/principal values and checks the exact account, role and region. Those
 values are supplied by the workflow, not dispatch inputs. The default guard requires
 that captured principal before observations, suite and mutation boundaries, including
 Cognito deletion after a fixed cleanup operation wait. Missing or mismatched identity
-retains the cleanup manifest for protected recovery. Qualification has a 90-minute
-job bound; integration and account recovery have 60-minute bounds. All three share
+retains the cleanup manifest for protected recovery. `full` has a 90-minute
+job bound; `smoke`, `measure` and `recover` have 60-minute bounds. All four share
 the `beta-e2e-account-pool` concurrency group with cancellation disabled. Verify
 all local/Actions/CFN/ECS/nested Service jobs have ceased before handing the
 environment to another writer; timeout alone never releases it.
@@ -396,7 +415,7 @@ helper or pass the Lifecycle/Cleanup task roles. Service's surviving operator mu
 select the dedicated `CleanupTaskRoleArn` with no fallback to the old Lifecycle
 role. Its legacy image still needs narrowly reviewed data-cleanup permissions for
 the two Beta DLQs, while admission controls remain outside that role. None of these
-workflows deploy CDK, change admission policy, or revive the retired runtime drill.
+operations deploy CDK, change admission policy, or revive the retired runtime drill.
 
 Operation evidence uses schema 3 and records initiation, observed terminal state,
 and a separate `proof_status`. Step Functions success alone does not permit identity
@@ -415,11 +434,12 @@ data/message preservation evidence provide that acceptance boundary.
 
 Protected account recovery defaults to `operation_mode=normal`. Explicit recovery
 requires `operation_mode=recovery` and `recovery_attempt` (1..999999). Attempt 1
-uses the original integration or qualification run's authenticated owner artifact
+uses the original `smoke` or `full` run's authenticated owner artifact
 and canonical captured request. Later runs also select the latest completed main
 recovery workflow through `previous_recovery_run_id` and
 `previous_recovery_run_attempt`; each artifact is named by that recovery workflow's
-own run ID and attempt. These inputs are checked before AWS credentials.
+own run ID and attempt. These inputs are checked before AWS credentials, and the
+`recover` operation is the only consumer of them in the shared `qualify` entry.
 
 Recovery execution names bind the original run scope and attempt alone. Resuming
 the latest attempt preserves its exact source, image, version and input, including
@@ -433,10 +453,10 @@ enter the legacy normal retry/no-commit path. Partial Cognito reconciliation nev
 canonical cleanup request. Shared account-pool concurrency does not establish a
 cross-repository writer allocation; that remains an operational preflight gate.
 
-Integration and Qualification accept `worker_slot_offset` (default `0`) for
+The `full`, `smoke` and `measure` operations accept `worker_slot_offset` (default `0`) for
 allocating the run's worker slots; for example `2` selects slots 2 and 3 without
-reusing slots 0 and 1. Admission eligibility does not use the offset.
-Recovery always uses the exact captured
+reusing slots 0 and 1, while `measure` allocates one slot. Admission eligibility does not
+use the offset. Recovery always uses the exact captured
 original emails/subjects, independent of later slot allocations. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: verify
 outstanding executions, tasks and manifests are reconciled before reuse.
@@ -444,7 +464,7 @@ outstanding executions, tasks and manifests are reconciled before reuse.
 ## Beta sizing evidence
 
 `scripts/beta-sizing-benchmark.mjs` classifies collected sizing evidence. It does
-not authenticate artifact publication or replace Beta Qualification. A normal
+not authenticate artifact publication or replace the `qualify` entry. A normal
 suite pass alone cannot qualify smaller tasks.
 
 Measured result schema version 2 requires exact application/deployment and fixture
@@ -488,9 +508,10 @@ only against that passing S1 with identical E2E source, image, Client, fixture a
 provider configurations. Do not reuse old-image timings or restore two replicas
 merely to collect a new baseline.
 
-Beta Qualification does not run the workload and has no sizing input. The protected Beta
-Instrumentation dispatch takes the stage as a required input, so a measurement is never
-implicit, and runs `tests/beta-sizing.spec.ts` in `pnpm test:instrumentation`
+The `full` and `smoke` operations do not run the workload and accept no sizing stage. The
+`measure` operation refuses the menu's `none` sentinel and any stage other than `S1`, `S2` or
+`S3`, and there is no default stage, so a measurement is never implicit. It runs
+`tests/beta-sizing.spec.ts` in `pnpm test:instrumentation`
 once with no retries: 12 uploads/tagging tasks (three formats, JPEG/PNG/WebP,
 sequential/burst, two repeats), then four VTO shapes twice. Two
 bursts overlap VTO submissions; actual same-Worker overlap must still be shown by
@@ -587,7 +608,7 @@ redeployment that replaces the deployed tuple is still caught separately by
 `Confirm deployed identities remained stable`.
 
 The capture is unconditional for every qualification run, because a deployment change
-cannot qualify release evidence of any kind. The instrumentation dispatch captures the same
+cannot qualify release evidence of any kind. The `measure` operation captures the same
 identity around its own workload, so a rotated task definition during a measurement is
 attributable too. The
 frozen shape set is untouched by any of this: the four VTO shapes, the three-garment
@@ -735,11 +756,11 @@ Valid codec encoding/resize creates the fixtures; no padding or noise is added. 
 Pillow builder enforces the bound itself: it copies an accepted fixture through
 byte-for-byte at the reviewed encoding and refuses to write anything above the bound.
 
-The instrumentation dispatch preserves `.qualification-inputs/beta-sizing-runtime-before.json`
+The `measure` operation preserves `.qualification-inputs/beta-sizing-runtime-before.json`
 and `test-results/beta-sizing-workload.json` in its own
-`beta-instrumentation-<run>-<attempt>` artifact, including
+`beta-measurement-<run>-<attempt>` artifact, including
 partial business results after failure. They are measurement evidence, not part of the
-qualification run's diagnostics, which no longer carry them. Protected leased-account
+`full` operation's diagnostics, which do not carry them. Protected leased-account
 application
 cleanup handles all retained data and exact subjects; the scenario performs no
 ad hoc deletion. Unfinished tasks/failed cleanup cannot qualify the stage.
