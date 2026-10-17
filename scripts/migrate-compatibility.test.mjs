@@ -102,7 +102,7 @@ test('v3 migration rejects the wrong producer, another producer stack and an obs
     workloadRecord: f.workloadRecord, workloadBytes: f.bytes.workload, workloadRun: { run_id: 0, run_attempt: 1, artifact_id: 60 } }), /run identity/);
 });
 
-test('migration CLI reads both v3 records and writes one candidate', () => {
+test('migration CLI reads both producer records and writes one candidate', () => {
   const args = ['--platform-record', 'platform.json', '--deployment-record', 'record.json', '--output', 'reviewed-v3.json'];
   assert.deepEqual(migrationArguments(args), {
     platformRecord: resolve('platform.json'),

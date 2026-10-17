@@ -63,8 +63,9 @@ tuple being pinned; one producer's record cannot stand in for the other.
 2. **Workload record.** Run the Service release chain
    (`service-artifacts.yml`, operation `deploy`) for the exact deployed Service
    commit. It builds and verifies the sealed release, deploys
-   `AnyWearWorkloadStack-beta` and writes the v3 workload deployment record
-   covering only that stack.
+   `AnyWearWorkloadStack-beta` and writes the workload deployment record covering
+   only that stack. The record must be schema version 4 and carry the passed
+   600-second six-signal bake gate; a record without it cannot be pinned.
 3. **Download both artifacts.** The platform artifact is
    `infra-deployment-<run_id>-<run_attempt>` and contains exactly
    `deployment-record.json`. The workload artifact is
@@ -122,22 +123,24 @@ write single-line canonical JSON, so reformatting a file changes the hash.
 ## Deferred records
 
 The committed v3 pin is **deferred** for both producers until the first authorized
-deployment/observe rounds exist. The deferred shape names the producer and its
-reviewed workflow but claims no run:
+deployment/observe rounds exist. On the Service side a pinnable record must be
+schema version 4 with its passed 600-second six-signal bake, so the deferred
+reason names the missing v4 gated record rather than the release chain itself.
+The deferred shape names the producer and its reviewed workflow but claims no run:
 
 ```json
 "deployment": {
   "producer": "git-malu/AnyWear-Service",
   "workflow_path": ".github/workflows/service-artifacts.yml",
   "status": "deferred",
-  "reason": "no Service release-chain deployment record exists yet; pin the first authorized Service release-chain deploy"
+  "reason": "no Service release-chain v4 deployment record exists yet; the first authorized gated deploy supplies the passed 600 s six-signal bake gate and the record identity (run_id, run_attempt, artifact_id, record_sha256)"
 }
 ```
 
 A deferred pin is honest and reviewable, but it is not qualification authority:
 every live path fails closed with `deployment evidence deferred`, and the offline
 validator refuses to move a deferred pin. The first move fills both identities
-with the recorded shape.
+with the recorded shape, and only real downloaded record bytes can supply it.
 
 ## The two-record rule
 
@@ -153,7 +156,7 @@ Three places bind it, by symbol:
 
 | Code | What it binds |
 | --- | --- |
-| `assertDeploymentBinding` in `scripts/trusted-deployment-inputs.mjs` | Begins with the exact v3 record validation, then binds the record's producer (repository, commit, workflow, run and attempt), its per-stack producer identities, its observed Client (Infra) or Service/image (Service), the pinned producer, and the exact pin identity. |
+| `assertDeploymentBinding` in `scripts/trusted-deployment-inputs.mjs` | Begins with the exact shared-contract validation — the Infra v3 record, and the Service v4 record including its passed bake gate bound to the observed Service/image — then binds the record's producer (repository, commit, workflow, run and attempt), its per-stack producer identities, its observed Client (Infra) or Service/image (Service), the pinned producer, and the exact pin identity. |
 | `validateInfraEvidence` in `scripts/qualification-record.mjs` | Re-asserts both records and the authenticated stage-base body at qualification time, before and after the suite; each record is validated for its own producer, and the HTTP identity binds the Client and Service pins to the two producers' observed tuples. |
 | the rest of `scripts/trusted-deployment-inputs.mjs` | Refuses a deferred identity, an expired or differently shaped artifact, and a run that is not the reviewed producer before the suite. |
 
@@ -164,7 +167,7 @@ records. None of them is one.
 
 - **A read-only state check.** A read-only Infra observe without a v3 record
   writes no deployment record and cannot move the pin.
-- **The Infra Workload deploy entry.** C removes it. An Infra run can no longer
+- **The Infra Workload deploy entry.** Retired. An Infra run can no longer
   produce a record for `AnyWearWorkloadStack-beta`; that stack's record comes only
   from the Service release chain.
 - **A Service publication run.** `service-artifacts.yml` publishes a sealed
@@ -190,8 +193,10 @@ The workload record comes from the Service release chain's `deploy` operation fo
 the exact Service commit already published as a sealed release. The chain reads
 the image digest and commit from its own build/verify outputs, asserts both stacks
 are terminal, refuses a non-active Beta, deploys with the reviewed identity phase
-and writes the record after `cdk deploy` from `ssm get-parameters` and
-`describe-stacks`.
+and writes the v4 record after `cdk deploy` from `ssm get-parameters` and
+`describe-stacks`. The record must include the passed 600-second six-signal bake
+gate; this consumer refuses it otherwise, so a failed or incomplete bake can
+never supply a pinnable record.
 
 Both artifacts are retained for ninety days and the live binding refuses an
 expired one, so the pin must move while both records still exist.
@@ -229,8 +234,9 @@ What it asserts, in order:
 2. Each record's byte hash equals its `record_sha256`. Files are read as bytes and
    never re-serialised, pretty-printed or parse-then-hashed.
 3. `assertDeploymentBinding` holds for both records — producer, per-stack
-   producer identities, the observed Client and Service, and the
-   platform/workload producer pins.
+   producer identities, the observed Client and Service, the v4 Service record's
+   passed bake gate (600-second window, six fixed signals, gate Service/image equal
+   to the observed tuple), and the platform/workload producer pins.
 4. Each record's producer identity (repository, commit, workflow, run and
    attempt), stack set, stage-input set and observed identity match the pin. The
    two records are validated separately: their `observed` tuples are disjoint, so
@@ -268,7 +274,8 @@ One pass, end to end. Every step carries the command or the exact field to read.
    `gh run download <workload_run_id> --repo git-malu/AnyWear-Service --name service-deployment-<workload_run_id>-<workload_run_attempt> --dir .qualification-inputs`.
 5. Read the exact byte hashes: `sha256sum .qualification-inputs/deployment-record.json .qualification-inputs/*service-deployment*.json`. Never reformat the files.
 6. Read the producer and observed identities:
-   `jq '{producer: .producer, stacks: [.stacks[] | {name, producer_repository, producer_sha}], observed: {service_sha: .observed.service_sha, client_sha: .observed.client_sha, image_digest: .observed.image_digest}}' .qualification-inputs/deployment-record.json` and the same for the Service record.
+   `jq '{producer: .producer, stacks: [.stacks[] | {name, producer_repository, producer_sha}], observed: {service_sha: .observed.service_sha, client_sha: .observed.client_sha, image_digest: .observed.image_digest}}' .qualification-inputs/deployment-record.json` and the same for the Service record. For the Service record also read the gate:
+   `jq '.gate | {name, result, duration_seconds, service_sha, image_digest, probe, signals: [.signals[] | {name, state}]}' .qualification-inputs/*service-deployment*.json`; it must be the passed 600-second beta bake with the six fixed signals `not-breaching`, and its Service/image must equal `observed`.
 7. Read each artifact id from its run page:
    `gh api repos/git-malu/AnyWear-Infra/actions/runs/<platform_run_id>/artifacts --jq '.artifacts[] | select(.name == "infra-deployment-<platform_run_id>-<platform_run_attempt>") | .id'`
    and

@@ -17,7 +17,7 @@ function runArguments(argv) {
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index];
     if (!MIGRATION_OPTIONS.includes(name)) {
-      throw new Error(`Unsupported argument ${name}; migration reads both v3 records and writes one candidate`);
+      throw new Error(`Unsupported argument ${name}; migration reads both producer records and writes one candidate`);
     }
     const value = argv[++index];
     if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
@@ -122,10 +122,11 @@ async function assertProducerRun({ api = ghApi, producer, record, environment })
 }
 
 // Strict v2 -> v3 migration and v3 deferred-record fill. The v2 pin supplies the
-// application pins and the immutable release identity; the two v3 records supply
-// the producer identities and every deployment identity member. A record from
-// the wrong producer, a record covering another producer's stack, or an observed
-// application tuple that disagrees with the pin is refused.
+// application pins and the immutable release identity; the Infra v3 platform
+// record and the Service v4 workload record supply the producer identities and
+// every deployment identity member. A record from the wrong producer, a record
+// covering another producer's stack, a Service record without its passed bake gate,
+// or an observed application tuple that disagrees with the pin is refused.
 export function buildV3Compatibility(previous, {
   platformRecord, platformBytes, platformRun, workloadRecord, workloadBytes, workloadRun,
 }) {

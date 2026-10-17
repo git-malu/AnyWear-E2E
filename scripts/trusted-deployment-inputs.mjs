@@ -21,16 +21,22 @@ export const PLATFORM_WORKFLOW = '.github/workflows/runtime.yml';
 export const DEPLOYMENT_WORKFLOW = '.github/workflows/service-artifacts.yml';
 export const PUBLISHER_WORKFLOW = '.github/workflows/service-artifacts.yml';
 
-// The shared v3 contract dispatches on `record_type`, so a reader accepts either
-// producer's record but never a mixed one.
+// The shared contract dispatches on `record_type`, so a reader accepts either
+// producer's record but never a mixed one. The Infra record is the v3 seven-member
+// core; the Service record is v4 and validates its required bake gate too.
 export function validateProducerRecord(record) {
   return deploymentContract.validateDeploymentRecord(record);
 }
 
 // Historical v2 records stay readable for the v1 -> v2 audit path and for the
-// cleanup diagnostic. The v3 contract does not validate the retired v2 shape, so
-// this consumer keeps the frozen v2 envelope check for that historical path only;
-// v2 is never accepted as a live v3 input.
+// cleanup diagnostic. The shared contract does not validate the retired v2 shape,
+// so this consumer keeps the frozen v2 envelope check for that historical path
+// only; v2 is never accepted as a live v3 input.
+//
+// The pre-gate Service record (schema version 3, no `gate`) is historical as well
+// and was never produced: the E2E deployment pin was deferred before the first
+// Service release-chain record existed. The Service record is only ever the v4
+// shape whose passed 600-second six-signal bake gate is validated with it.
 export function validateHistoricalV2Record(record) {
   if (record?.schema_version !== 2 || record?.record_type !== 'anywear_infra_deployment') {
     throw new Error('Historical v2 deployment record is not a live v3 input');
@@ -91,7 +97,7 @@ function assertInputShape(inputs) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Deployment record input is malformed');
     assertEqual(Object.keys(input).sort(), ['parameter', 'value_sha256', 'version'], 'Deployment record input fields');
     if (typeof input.parameter !== 'string' || !/^\/anywear\/[a-z0-9]+\/[a-z0-9_]+$/.test(input.parameter)) throw new Error(`Deployment record input parameter ${input.parameter} is not a stage parameter path`);
-    // The shared v3 contract records an SSM parameter Version as a decimal string.
+    // The shared contract records an SSM parameter Version as a decimal string.
     if (typeof input.version !== 'string' || !/^[1-9]\d*$/.test(input.version) || !Number.isSafeInteger(Number(input.version))) {
       throw new Error(`Deployment record input ${input.parameter} version is not a positive integer string`);
     }
@@ -133,9 +139,11 @@ function assertRecordStacks(record, stacks, producer, producerSha) {
 }
 
 // One record, bound to the pin member for its producer. Every failure names the
-// member it refused. This is the E2E consumer half of the shared v3 contract: the
-// record shape itself is validated by the vendored contract, and the pin identity
-// is bound here so a valid record for another tuple cannot qualify.
+// member it refused. This is the E2E consumer half of the shared contract: the
+// record shape (including the v4 Service bake gate, which must be passed and bound
+// to the observed Service and image) is validated by the vendored contract, and
+// the pin identity is bound here so a valid record for another tuple cannot
+// qualify.
 //
 // The two producer records are not copies of each other: the Infra record observes
 // the Platform tuple (Client, Lambdas, queue configuration and the Client

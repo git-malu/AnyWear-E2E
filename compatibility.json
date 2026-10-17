@@ -30,7 +30,7 @@
     "producer": "git-malu/AnyWear-Service",
     "workflow_path": ".github/workflows/service-artifacts.yml",
     "status": "deferred",
-    "reason": "no Service release-chain deployment record exists yet; pin the first authorized Service release-chain deploy"
+    "reason": "no Service release-chain v4 deployment record exists yet; the first authorized gated deploy supplies the passed 600 s six-signal bake gate and the record identity (run_id, run_attempt, artifact_id, record_sha256)"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",

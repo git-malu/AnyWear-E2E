@@ -1,7 +1,10 @@
 import { byteHash } from '../evidence-contract.mjs';
 import { environmentVerdict } from '../beta-sizing-environment.mjs';
 import { SCENARIO_DIRECTORY, qualificationSelection, selectedScenarios } from '../test-selection.mjs';
-import { stageContractSchemaHash } from '../vendor/deployment-contract.mjs';
+import {
+  DEPLOYMENT_GATE_COMPARISONS, DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentBakeName,
+  stageContractSchemaHash,
+} from '../vendor/deployment-contract.mjs';
 
 // Every fixture record is issued from a run's own Playwright JSON report, so the fixture
 // holds one. It is built from the real declared membership rather than a hand-written list:
@@ -57,6 +60,71 @@ const stageInputs = (hash, count, prefix = 'stage_param') => Array.from({ length
   value_sha256: hash(((index % 10) + 0).toString(16)),
 })).sort((a, b) => a.parameter.localeCompare(b.parameter));
 
+// One healthy 600-second bake for the Beta stage. It is written with the shared
+// contract's own thresholds, comparisons, alarm names and bake name so the fixture
+// states the exact shape a real v4 Service record must carry; the negative tests
+// mutate it. Nothing here reads AWS, the filesystem or a clock.
+export function deploymentGate({ serviceSha, imageDigest }) {
+  const stage = 'beta';
+  const alarms = (name) => deploymentAlarmName(stage, name).map((alarmName) => ({ name: alarmName, state: 'OK' }));
+  const signal = (name, value, reads, exceptions = []) => ({
+    name,
+    state: 'not-breaching',
+    value,
+    threshold: { ...DEPLOYMENT_GATE_THRESHOLDS[name] },
+    comparison: DEPLOYMENT_GATE_COMPARISONS[name],
+    alarms: alarms(name),
+    reads,
+    exceptions,
+  });
+  const loadBalancer = `app/${stage}-anywear-api/0123456789abcdef`;
+  const cloudWatch = (metricName, statistic, periodSeconds, datapoints) => ({
+    source: 'cloudwatch', namespace: 'AWS/ApplicationELB', metric_name: metricName,
+    dimensions: { LoadBalancer: loadBalancer }, statistic, period_seconds: periodSeconds, datapoints,
+  });
+  return {
+    name: deploymentBakeName(stage),
+    result: 'passed',
+    started_at: '2026-10-07T00:00:00.000Z',
+    ended_at: '2026-10-07T00:10:00.000Z',
+    duration_seconds: 600,
+    service_sha: serviceSha,
+    image_digest: imageDigest,
+    probe: { interval_seconds: 15, probes_sent: 40, request_floor: 30 },
+    signals: [
+      signal('alb_5xx_rate', { target_5xx: 0, elb_5xx: 0, request_count: 40 }, [
+        cloudWatch('HTTPCode_Target_5XX_Count', 'Sum', 60, 10),
+        cloudWatch('HTTPCode_ELB_5XX_Count', 'Sum', 60, 10),
+        cloudWatch('RequestCount', 'Sum', 60, 10),
+      ]),
+      signal('alb_p95_latency', { p95_milliseconds: 120 }, [
+        cloudWatch('TargetResponseTime', 'p95', 600, 1),
+      ]),
+      signal('ecs_running_not_desired', {
+        longest_gap_seconds: 0,
+        max_sample_gap_seconds: 30,
+        samples: 20,
+        services: {
+          api: { running_count: 1, desired_count: 1, deployment_count: 1, rollout_state: 'COMPLETED' },
+          worker: { running_count: 1, desired_count: 1, deployment_count: 1, rollout_state: 'COMPLETED' },
+        },
+      }, [{ source: 'ecs', cluster: `${stage}-anywear`,
+        services: [`${stage}-anywear-api`, `${stage}-anywear-worker`], samples: 20 }]),
+      signal('sqs_oldest_message_age', { vto_seconds: 0, auto_tagging_seconds: 0 }, [
+        { source: 'sqs', queue_name: `${stage}-anywear-vto`, attribute: 'ApproximateAgeOfOldestMessage', samples: 20 },
+        { source: 'sqs', queue_name: `${stage}-anywear-auto-tagging`, attribute: 'ApproximateAgeOfOldestMessage', samples: 20 },
+      ]),
+      signal('sqs_dlq_depth', { vto_depth: 0, auto_tagging_depth: 0 }, [
+        { source: 'sqs', queue_name: `${stage}-anywear-vto-dlq`, attribute: 'ApproximateNumberOfMessages', samples: 20 },
+        { source: 'sqs', queue_name: `${stage}-anywear-auto-tagging-dlq`, attribute: 'ApproximateNumberOfMessages', samples: 20 },
+      ]),
+      signal('outbox_oldest_age', { oldest_age_milliseconds: 0, backlog: 0, lines_observed: 10 }, [{
+        source: 'logs', log_group: `/anywear/${stage}/worker`, filter_pattern: '"Durable task outbox metrics"', samples: 10,
+      }]),
+    ],
+  };
+}
+
 function records({ sha, hash, platformProducerSha, workloadProducerSha }) {
   const image = `sha256:${hash('c')}`;
   const platformInputs = stageInputs(hash, 4, 'platform');
@@ -95,7 +163,7 @@ function records({ sha, hash, platformProducerSha, workloadProducerSha }) {
     schema: { content_sha256: stageContractSchemaHash(platformInputs) },
   };
   const workloadRecord = {
-    schema_version: 3,
+    schema_version: 4,
     record_type: 'anywear_service_deployment',
     producer: {
       repository: 'git-malu/AnyWear-Service',
@@ -119,6 +187,7 @@ function records({ sha, hash, platformProducerSha, workloadProducerSha }) {
       endpoints: { api: 'https://api123.cloudfront.net' },
     },
     schema: { content_sha256: stageContractSchemaHash(workloadInputs) },
+    gate: deploymentGate({ serviceSha: sha('b'), imageDigest: image }),
   };
   return { platformRecord, workloadRecord };
 }
