@@ -22,7 +22,7 @@ async function withVendoredCopy(action) {
       await writeFile(join(directory, name), await readFile(new URL(`./vendor/${name}`, import.meta.url)));
     }
     await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`);
-    const root = pathToFileURL(`${directory}${directory.endsWith('\\') ? '' : '\\'}`);
+    const root = pathToFileURL(`${directory}/`);
     await action({ directory, root, provenance });
   } finally {
     await rm(directory, { recursive: true, force: true });
