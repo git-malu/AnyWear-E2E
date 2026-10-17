@@ -50,7 +50,7 @@ test('eligible private admission reads only the exact three parameters under the
   const input = environment();
   const io = reader();
   assert.deepEqual(verifyBetaAdmissionEligibility(input, { execute: io.execute, sourceSha }), {
-    workerCount: 2, versions: { admission_suspended: 7, intake_open: 7, tester_allowlist: 7 },
+    versions: { admission_suspended: 7, intake_open: 7, tester_allowlist: 7 },
   });
   assert.deepEqual(io.calls, [{ command: 'aws', args: [
     'ssm', 'get-parameters', '--names', '/anywear/beta/admission_suspended',
@@ -87,19 +87,8 @@ test('missing or foreign dedicated identity and untrusted dispatch fail before a
 test('the qualification requires explicitly configured two workers before any SSM read', () => {
   for (const E2E_WORKERS of [undefined, '', '1', '3', '02', '2.0']) {
     const io = reader();
-    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKERS }), { execute: io.execute, sourceSha }), /two stable Chromium workers/);
+    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly two workers/);
     assert.deepEqual(io.calls, []);
-  }
-});
-
-test('allocated worker offset checks selected memberships and invalid offsets refuse cloud access', () => {
-  const io = reader(JSON.stringify(response({ tester_allowlist: JSON.stringify(['e2e-beta-worker-2-chromium@anywear.local', 'e2e-beta-worker-3-chromium@anywear.local']) })));
-  assert.equal(verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: '2' }), { execute: io.execute, sourceSha }).workerCount, 2);
-  assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: '2' }), { execute: reader().execute, sourceSha }), /configured stable/);
-  for (const E2E_WORKER_SLOT_OFFSET of ['', '-1', '7', '2.5', '02', '1e0']) {
-    const rejected = reader();
-    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET }), { execute: rejected.execute, sourceSha }), /SLOT_OFFSET/);
-    assert.equal(rejected.calls.length, 0);
   }
 });
 
@@ -115,38 +104,38 @@ test('suspended admission and open public intake refuse qualification without an
   }
 });
 
-test('both stable Chromium worker emails must be members; another slot or browser does not qualify', () => {
+test('no tester allowlist row is required: empty, partial, foreign-browser and near-miss lists pass', () => {
   for (const testers of [[], workers.slice(0, 1), workers.slice(1),
     [workers[0], 'e2e-beta-worker-2-chromium@anywear.local'],
-    [workers[0], 'e2e-beta-worker-1-firefox@anywear.local']]) {
-    assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(testers) })), /both configured stable Chromium/);
+    [workers[0], 'e2e-beta-worker-1-firefox@anywear.local'],
+    ['e2e-beta-worker-1-chromium@anywear.local.evil.example'],
+    [workers[0], "human!#$%&'+/=?^_`{|}~-@example.com"]]) {
+    assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(testers) })),
+      JSON.stringify(testers));
   }
   assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(workers.map(email => ` ${email.toUpperCase()} `)) })));
-  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({
-    tester_allowlist: JSON.stringify([...workers, "human!#$%&'+/=?^_`{|}~-@example.com"]),
-  })));
 });
 
-test('the retained stable allowlist rows stay required and scoped attempt addresses cannot replace them', () => {
-  // Issue #129: the per-attempt worker addresses are now run/attempt-scoped, but
-  // the Infra tester producer is exact-membership and rejects wildcards, so the
-  // two stable rows stay in the allowlist and stay required. A scoped address is
-  // a valid tester email, yet it never satisfies that membership.
+test('run-scoped harness addresses pass the policy check, with or without stable rows beside them', () => {
+  // Issue #129 owns the run/attempt-scoped address family and the anchored
+  // namespace on the Service side admits it, so the pre-flight asserts no
+  // membership at all. These lists are only validated for shape.
   const scoped = [
     'e2e-beta-123456789-1-0123456789abcdef-0-a1b2c3d4@anywear.local',
     'e2e-beta-123456789-1-0123456789abcdef-1-b1c2d3e4@anywear.local',
   ];
-  assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(scoped) })),
-    /both configured stable Chromium/);
-  assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify([workers[0], scoped[0]]) })),
-    /both configured stable Chromium/);
-  assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify([scoped[0], workers[1]]) })),
-    /both configured stable Chromium/);
-  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(workers) })));
-  // The rows are literal membership, never a pattern: a near-miss row refuses.
-  assert.throws(() => validateBetaAdmissionPolicy(response({
-    tester_allowlist: JSON.stringify(['e2e-beta-worker-0-chromium@anywear.local', 'e2e-beta-worker-1-chromium@anywear.local.evil.example']),
-  })), /both configured stable Chromium/);
+  for (const testers of [scoped, [workers[0], scoped[0]], [scoped[0], workers[1]], [...scoped, workers[0]]]) {
+    assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(testers) })),
+      JSON.stringify(testers));
+  }
+});
+
+test('an empty tester allowlist passes the whole pre-flight, not only the policy check', () => {
+  const io = reader(JSON.stringify(response({ tester_allowlist: '[]' })));
+  assert.deepEqual(verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }), {
+    versions: { admission_suspended: 7, intake_open: 7, tester_allowlist: 7 },
+  });
+  assert.equal(io.calls.length, 1);
 });
 
 test('incomplete, duplicate, unexpected or malformed parameter entries never supply a permissive default', () => {
@@ -215,12 +204,12 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.match(steps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
   assert.doesNotMatch(steps[eligibility], /\bif:|continue-on-error:/);
   for (const name of ['Observe authenticated deployed tuple before suite',
-    'Load Beta test identity configuration', 'Run complete deployed Beta suite']) {
+    'Load Beta test identity configuration', 'Run the release-gating business regression suite']) {
     assert.ok(steps.findIndex(step => step.startsWith(name)) > eligibility, name);
   }
   assert.match(workflow, /E2E_WORKERS: 2\r?\n/);
   assert.doesNotMatch(workflow, /continue-on-error:/);
-  const suite = steps.find(step => step.startsWith('Run complete deployed Beta suite'));
+  const suite = steps.find(step => step.startsWith('Run the release-gating business regression suite'));
   // The gate runs the release selection, not a discovery run: `pnpm test` selects
   // `@regression`, so a measurement scenario cannot enter or leave this step.
   assert.match(suite, /node scripts\/execution-guard\.mjs\r?\n\s+pnpm test\s*$/m);
@@ -280,7 +269,7 @@ globalThis.fetch = async () => { throw new Error('Network blocked'); };
     for (const [patch, message] of [
       [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_suspended: 'true' })) }, /admission is suspended/],
       [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ intake_open: 'true' })) }, /public intake closed/],
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ tester_allowlist: JSON.stringify(workers.slice(0, 1)) })) }, /both configured stable Chromium/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ tester_allowlist: 'not json' })) }, /malformed tester allowlist JSON/],
       [{ TEST_ADMISSION_UNAVAILABLE: 'true' }, /could not read valid SSM policy/],
       [{ TEST_ADMISSION_RESPONSE: 'not json' }, /could not read valid SSM policy/],
       [{ E2E_AWS_PRINCIPAL_ARN: 'arn:aws:iam::650880818323:user/local-admin' }, /dedicated E2E principal/],
@@ -306,7 +295,7 @@ globalThis.fetch = async () => { throw new Error('Network blocked'); };
       fileURLToPath(new URL('./beta-admission-eligibility.mjs', import.meta.url))], {
       env: isolated, timeout: 10_000, maxBuffer: 64 * 1024,
     });
-    assert.match(success.stdout, /Verified unsuspended private Beta admission/);
+    assert.match(success.stdout, /^Verified unsuspended private Beta admission for the qualification run\.$/m);
     assert.doesNotMatch(success.stdout, /human@example\.com/);
     assert.equal(success.stderr, '');
   } finally { await rm(directory, { recursive: true, force: true }); }

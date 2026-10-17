@@ -16,8 +16,10 @@
  * (`scripts/runtime-identity-creation.mjs`). This module states that grammar
  * once, so allocation and every captured-identity consumer cannot drift apart.
  *
- * The two stable allowlist rows stay in the Beta tester allowlist, because that
- * producer is exact-membership and the admission gate asserts their presence.
+ * The two stable allowlist rows are no longer required by any admission check: the
+ * E2E admission-eligibility pre-flight asserts admission state and the tester list's
+ * own validity, not any membership. Removing them from the live allowlist is a Beta
+ * mutation outside this work.
  * They are only ever accepted here as *historical* artifacts: an account
  * manifest written before this change still names them, and account recovery
  * still has to delete the identities they left in Cognito.

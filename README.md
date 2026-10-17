@@ -45,7 +45,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 25 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 27 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -79,6 +79,7 @@ scenario must satisfy.
 | `test:instrumentation` | E2E maintainers; explicit opt-in through the protected Beta Instrumentation dispatch | A measurement workload with paid provider spend and its own cleanup contract, reported as a measurement; it can neither satisfy nor fail release qualification |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario, the measurement included; not a release-gating selection on its own |
 | `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
+| `compatibility:pin` | E2E maintainers, used by the maintainer accountable for a change that moved the deployed tuple | Offline byte-hash and binding comparison of the committed pin against a downloaded deployment record and the previous pin; no credentials, cloud calls or deployed reads |
 
 The release-gating selection and the measurement are separated by a workflow boundary, not
 by a step or a job. A release consumer accepts a qualification record only from a
@@ -88,7 +89,7 @@ from its own protected dispatch, `beta-instrumentation.yml`, with the same evide
 and cleanup controls. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 25 registered core files retain account-budget, Cognito cleanup, qualification
+The 27 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
@@ -115,7 +116,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit 25 core test files, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit 27 core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -132,6 +133,30 @@ produces qualification evidence that Production may consume. The
 [scenario inventory](docs/scenario-inventory.md) records which scenarios that step's
 selection contains; a measurement or drill result is not part of it and carries no release
 verdict in either direction.
+
+The qualification record states the selection that produced it instead of a constant. Its
+`test` member names the invocation the suite step ran and the `--grep` tag that invocation
+selects, the SHA-256 digest of the run's own Playwright JSON report, and one entry per
+selected scenario with its outcome and how many of its collected tests were skipped. A
+scenario's `collected` count counts collected test cases, one per case per declared
+Playwright project — a skipped case is still collected and a retried case still counts
+once — so a second project would count each case once per project. `test.result` is `passed`
+unless at least one selected scenario passed only on a retry, which records it as `flaky`; a
+declared skip is recorded in that scenario's own counts and does not change the run result.
+A retry-only pass still issues a record, because a retry is the run-level flake control,
+while the testing policy's admission condition is about a scenario that routinely needs one.
+The suite step writes the report to the path the job declares as
+`E2E_QUALIFICATION_REPORT`, and both the qualification evidence artifact and its
+diagnostics retain the report, so the digest the record states is auditable against the
+bytes it names. Two different verifiers judge that statement. The record verifier a release
+gate calls holds no report: from the checkout it is given it re-derives the invocation, the
+tag and the membership — the spec titles cross-checked against the
+[scenario inventory](docs/scenario-inventory.md) — and refuses a record whose stated
+selection or scenario list disagrees with them. The producer's own verify step, which runs
+in the job before upload, re-derives the per-scenario outcomes, the counts and the digest
+from the report the suite just wrote. A record issued before this change always stays valid,
+because the verifier that judges it is always the one from the record's own producing
+revision; the current verifier does not accept the retired `suite: 'complete'` shape.
 
 Test classification is explicit: `@smoke` marks the small, stable critical path for the
 on-demand Beta diagnostic; `@regression` marks the scenarios admitted to the
@@ -251,24 +276,17 @@ A reviewed v2 compatibility file has these additional identities:
 }
 ```
 
-The placeholders above are rejected by validation. Keep the committed
-`compatibility.json` at v1 until a real post-input Infra deployment record exists.
-Then run `node scripts/migrate-compatibility.mjs --deployment-record
-<downloaded-deployment-record.json> --output <reviewed-v2.json>`. The migration
-always reads the committed v1 file as its baseline; there is no alternate-pin
-override. Prepare
-`.infra-source` as a clean checkout of the record's exact Infra SHA from its
-expected origin. Supply the Infra reader as `GH_TOKEN`, the Service reader as
-`SERVICE_ARTIFACT_READ_TOKEN`, and a Client-only Contents read token as
-`CLIENT_CONTENTS_READ_TOKEN` for remote commit checks. The command checks remote
-commit availability, uniquely resolves the genuine Infra artifact for the bound
-completed run attempt, hashes the exact supplied record bytes, and retrieves the
-trusted deployment artifact and sealed Service manifest through the existing
-reader. It validates the pinned Infra committed selection and writes a new
-candidate file with exclusive creation; it never modifies `compatibility.json`,
-infers any pin, dispatches workflows, or runs a suite. The candidate is suitable
-for review only after the exact deployment and its record have passed these
-checks. The final #54 tuple must pin the deployment record produced **after the
+The placeholders above are rejected by validation. The committed
+`compatibility.json` is already v2, and the v1-only
+`scripts/migrate-compatibility.mjs` and `scripts/build-v2-candidate.mjs` refuse
+it. Moving the pin is an operational routine with a stated owner, a start
+condition and a checklist: follow
+[`docs/compatibility-pin.md`](docs/compatibility-pin.md). It observes the
+deployed tuple once with a qualified `runtime.yml` run, moves the four identity
+members together from that record, and refuses a partial pin offline before the
+commit exists.
+
+The final #54 tuple must pin the deployment record produced **after the
 authorized Beta maintenance migration and restart**; a rehearsal record cannot
 substitute.
 
@@ -415,10 +433,10 @@ enter the legacy normal retry/no-commit path. Partial Cognito reconciliation nev
 canonical cleanup request. Shared account-pool concurrency does not establish a
 cross-repository writer allocation; that remains an operational preflight gate.
 
-Integration and Qualification accept `worker_slot_offset` (default `0`) for a
-pair of stable Chromium identities allocated to the run. Account allocation and
-admission eligibility use the same validated offset; for example `2` selects slots
-2 and 3 without reusing slots 0 and 1. Recovery always uses the exact captured
+Integration and Qualification accept `worker_slot_offset` (default `0`) for
+allocating the run's worker slots; for example `2` selects slots 2 and 3 without
+reusing slots 0 and 1. Admission eligibility does not use the offset.
+Recovery always uses the exact captured
 original emails/subjects, independent of later slot allocations. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: verify
 outstanding executions, tasks and manifests are reconciled before reuse.

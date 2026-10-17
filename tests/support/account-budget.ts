@@ -75,7 +75,7 @@ function budgetPath(): string {
 }
 
 function configuredWorkers(): number {
-  const value = Number(process.env.E2E_WORKERS ?? (process.env.CI ? 1 : 1));
+  const value = Number(process.env.E2E_WORKERS ?? 1);
   if (!Number.isInteger(value) || value < 1 || value > 8) {
     throw new Error('E2E_WORKERS must be an integer between 1 and 8');
   }
