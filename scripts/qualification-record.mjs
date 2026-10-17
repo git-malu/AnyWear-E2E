@@ -101,50 +101,66 @@ export function assertStableDeploymentEvidence(before, after) {
       const original = requireValue(before[component]?.[field], `Initial ${component} ${field}`);
       const current = requireValue(after[component]?.[field], `Final ${component} ${field}`);
       if (original !== current) {
-        throw new Error(`Deployed ${component} ${field} changed during qualification`);
+        throw new Error(`Deployed ${component} ${field} changed during qualification: expected ${original}, observed ${current}`);
       }
     }
   }
-  if (before.schema_version === 2 || after.schema_version === 2) {
-    if (before.schema_version !== 2 || after.schema_version !== 2) throw new Error('Observation schema changed during qualification');
+  if (before.schema_version === 3 || after.schema_version === 3) {
+    if (before.schema_version !== 3 || after.schema_version !== 3) throw new Error('Observation schema changed during qualification');
     assertEqual(before.compatibility, after.compatibility, 'Reviewed compatibility');
-    assertEqual(before.deployment, after.deployment, 'Trusted deployment record');
+    assertEqual(before.platform, after.platform, 'Trusted platform deployment evidence');
+    assertEqual(before.workload, after.workload, 'Trusted workload deployment evidence');
     assertEqual(before.service_artifacts, after.service_artifacts, 'Immutable Service artifacts');
     const stable = (snapshot) => {
       const copy = structuredClone(snapshot);
-      delete copy.schema.verification.executor;
-      delete copy.schema.verification.task_arn;
-      delete copy.schema.verification.task_definition_arn;
+      if (copy.schema?.verification) {
+        delete copy.schema.verification.executor;
+        delete copy.schema.verification.task_arn;
+        delete copy.schema.verification.task_definition_arn;
+      }
+      // An ECS task-definition revision is audit information, never identity (AnyWear #138).
+      for (const identity of Object.values(copy.observed?.ecs ?? {})) delete identity.task_definition_arn;
       return copy;
     };
     assertEqual(stable(before.authenticated), stable(after.authenticated), 'Authenticated deployment changed during qualification');
   }
 }
 
-export function validateInfraEvidence(evidence, compatibility, executor) {
+export function validateInfraEvidence(evidence, compatibility) {
   validateCompatibility(compatibility);
-  exactKeys(evidence, ['schema_version', 'collected_at', 'client', 'service', 'compatibility', 'deployment', 'service_artifacts', 'authenticated'], 'deployment evidence');
-  if (evidence.schema_version !== 2 || !Number.isFinite(Date.parse(evidence.collected_at))) throw new Error('Unsupported authenticated evidence schema/date');
+  exactKeys(evidence, ['schema_version', 'collected_at', 'client', 'service', 'compatibility', 'platform', 'workload', 'service_artifacts', 'authenticated'], 'deployment evidence');
+  if (evidence.schema_version !== 3 || !Number.isFinite(Date.parse(evidence.collected_at))) throw new Error('Unsupported authenticated evidence schema/date');
   assertEqual(evidence.compatibility, compatibility, 'Observation compatibility');
   assertEqual(evidence.service_artifacts, compatibility.service_artifacts, 'Observation artifact binding');
-  validateDeploymentRecord(evidence.deployment);
-  assertDeploymentBinding(evidence.deployment, compatibility);
-  validateSnapshot(evidence.authenticated);
-  assertObservedMatchesDeployment(evidence.deployment, evidence.authenticated);
+  exactKeys(evidence.platform, ['identity', 'record'], 'platform deployment evidence');
+  exactKeys(evidence.workload, ['identity', 'record'], 'workload deployment evidence');
+  assertEqual(evidence.platform.identity, compatibility.platform.record, 'Platform deployment identity');
+  assertEqual(evidence.workload.identity, compatibility.deployment, 'Workload deployment identity');
+  validateDeploymentRecord(evidence.platform.record);
+  validateDeploymentRecord(evidence.workload.record);
+  assertDeploymentBinding(evidence.platform.record, compatibility);
+  assertDeploymentBinding(evidence.workload.record, compatibility);
+  // The authenticated observation body is the Infra record's own body: the stage
+  // base's three stacks, inputs, observed platform tuple and schema content hash.
+  // The Service record's observed workload tuple is bound by the HTTP identity
+  // below, because it belongs to the release chain's record, not to Infra's
+  // observation.
+  validateSnapshot({ stacks: evidence.authenticated.stacks, observed: evidence.authenticated.observed, schema: evidence.authenticated.schema });
+  assertObservedMatchesDeployment(evidence.platform.record, evidence.authenticated);
   exactKeys(evidence.client, ['url', 'source_commit', 'built_at'], 'observed Client');
   exactKeys(evidence.service, ['url', 'source_commit', 'image_digest'], 'observed Service');
   if (evidence.client.source_commit !== compatibility.client.sha || evidence.service.source_commit !== compatibility.service.sha
-    || evidence.service.image_digest !== evidence.authenticated.observed.image_digest
-    || evidence.client.url !== evidence.authenticated.observed.endpoints.client
-    || evidence.service.url !== evidence.authenticated.observed.endpoints.api) throw new Error('HTTP and authenticated AWS identities disagree');
+    || evidence.client.source_commit !== evidence.platform.record.observed.client_sha
+    || evidence.service.source_commit !== evidence.workload.record.observed.service_sha
+    || evidence.service.image_digest !== evidence.workload.record.observed.image_digest
+    || evidence.client.url !== evidence.platform.record.observed.endpoints.client
+    || evidence.service.url !== evidence.workload.record.observed.endpoints.api) throw new Error('HTTP and authenticated deployment identities disagree');
   requireCommit(evidence.client.source_commit, 'Observed Client SHA');
   requireCommit(evidence.service.source_commit, 'Observed Service SHA');
   requireImageDigest(evidence.service.image_digest);
   requireHttpsUrl(evidence.client.url, 'Observed Client endpoint');
   requireHttpsUrl(evidence.service.url, 'Observed Service endpoint');
   if (!Number.isFinite(Date.parse(evidence.client.built_at))) throw new Error('Invalid Client build timestamp');
-  if (executor) assertEqual(evidence.authenticated.schema.verification.executor, executor, 'Authenticated observation trusted executor');
-  if (evidence.authenticated.schema.verification.source_sha !== compatibility.infra.sha) throw new Error('Observation command source differs from reviewed Infra');
   return evidence;
 }
 
@@ -192,8 +208,8 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
     workflow_path: input.workflowPath,
     run_id: requireId(Number(input.runId), 'E2E run'), run_attempt: requireId(Number(input.runAttempt), 'E2E attempt'),
   };
-  validateInfraEvidence(evidence.before, compatibility, executor);
-  validateInfraEvidence(evidence.after, compatibility, executor);
+  validateInfraEvidence(evidence.before, compatibility);
+  validateInfraEvidence(evidence.after, compatibility);
   assertStableDeploymentEvidence(evidence.before, evidence.after);
   assertObservationSequence(evidence, now.toISOString());
   const after = evidence.after;
@@ -231,7 +247,7 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
     },
     compatibility,
     service_artifacts: compatibility.service_artifacts,
-    deployment: { identity: compatibility.deployment, record: after.deployment },
+    deployment: { platform: after.platform, workload: after.workload },
     observations: evidence,
     // Which tests this record covers is derived from the run and this checkout, never
     // written as a literal: the invocation the qualification workflow's suite step ran,
@@ -317,14 +333,15 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
   if (payload.environment.stage !== 'beta' || payload.environment.aws_account_id !== '650880818323' || payload.environment.aws_region !== 'ap-east-1') throw new Error('Qualification account/region mismatch');
   if (!Number.isFinite(Date.parse(payload.qualified_at))) throw new Error('Invalid qualification timestamp');
   exactKeys(payload.observations, ['before', 'after'], 'observations');
-  const executor = { repository: repositories.e2e, sha: payload.revisions.e2e.sha, workflow_path: workflow.path, run_id: workflow.run_id, run_attempt: workflow.run_attempt };
-  validateInfraEvidence(payload.observations.before, payload.compatibility, executor);
-  validateInfraEvidence(payload.observations.after, payload.compatibility, executor);
+  validateInfraEvidence(payload.observations.before, payload.compatibility);
+  validateInfraEvidence(payload.observations.after, payload.compatibility);
   assertStableDeploymentEvidence(payload.observations.before, payload.observations.after);
   assertObservationSequence(payload.observations, payload.qualified_at);
-  exactKeys(payload.deployment, ['identity', 'record'], 'qualification deployment');
-  assertEqual(payload.deployment.identity, payload.compatibility.deployment, 'Qualified deployment identity');
-  assertEqual(payload.deployment.record, payload.observations.after.deployment, 'Qualified deployment record');
+  exactKeys(payload.deployment, ['platform', 'workload'], 'qualification deployment');
+  assertEqual(payload.deployment.platform, payload.observations.after.platform, 'Qualified platform deployment evidence');
+  assertEqual(payload.deployment.workload, payload.observations.after.workload, 'Qualified workload deployment evidence');
+  assertEqual(payload.deployment.platform.identity, payload.compatibility.platform.record, 'Qualified platform deployment identity');
+  assertEqual(payload.deployment.workload.identity, payload.compatibility.deployment, 'Qualified workload deployment identity');
   assertEqual(payload.service_artifacts, payload.compatibility.service_artifacts, 'Qualified Service artifacts');
   for (const component of ['client', 'service', 'infra']) {
     if (payload.revisions[component].sha !== payload.compatibility[component].sha) throw new Error('Qualified revision compatibility mismatch');
@@ -357,7 +374,10 @@ export function verifyQualificationAgainstReport(record, reportBytes) {
 export function assertObservationSequence({ before, after }, qualifiedAt) {
   const times = [before.collected_at, after.collected_at, qualifiedAt].map(Date.parse);
   if (times.some((value) => !Number.isFinite(value)) || times[0] >= times[1] || times[1] > times[2]) throw new Error('Qualification observations must occur before and after the suite in order');
-  if (before.authenticated.schema.verification.task_arn === after.authenticated.schema.verification.task_arn) throw new Error('Before and after observations require distinct authenticated verification tasks');
+  // The v3 authenticated body is the stage-base observation; the two pinned
+  // deployment records carry the run identity, so there is no run-scoped
+  // verification task ARN to compare between the observations.
+  if (!before.authenticated?.stacks || !after.authenticated?.stacks) throw new Error('Both observations require an authenticated deployment body');
 }
 
 // Producer self-checks run while their workflow is still in progress. A release
