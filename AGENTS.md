@@ -56,7 +56,8 @@ Run install and build commands from this repository.
   or videos.
 - Treat `compatibility.json` as the system-test compatibility contract. Use only
   full Client and Service commit SHAs that exist on their remotes; never use a
-  mutable branch or tag.
+  mutable branch or tag. [docs/compatibility-pin.md](docs/compatibility-pin.md) is
+  the routine that moves it.
 - For release qualification, record the full intended Client, Service, and E2E
   SHAs and verify that the target environment serves those Client and Service
   revisions through Client `build-metadata.json` and Service `/health`. Recheck
