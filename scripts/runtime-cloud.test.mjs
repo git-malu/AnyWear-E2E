@@ -57,7 +57,11 @@ for (const suspended of [false, true]) {
     assert.equal(verifyRuntimeDrillEvidence(result, h.compatibility).passed, true);
     const final = parseRuntimeRecovery(h.writes.at(-1).json);
     verifyRestored(h, final);
-    assert.equal(h.writes.length, suspended ? 220 : 249);
+    // #145's upload-reservation consumer adds exactly two durable saves to this
+    // drill — its own delta on the unrenamed tree was 198/203 -> 200/205 — so the
+    // restored admission-mode counts carry the same +2 rather than the pre-#145
+    // 220/249. The interruption points stay derived by `restorationBoundary`.
+    assert.equal(h.writes.length, suspended ? 222 : 251);
     assert.equal(h.uploads.length, h.writes.length);
     assert.ok(h.uploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
     assert.equal(final.one_shots.length, suspended ? 35 : 40);
