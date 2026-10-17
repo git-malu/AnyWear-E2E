@@ -161,6 +161,75 @@ jobs:
   assert.throws(() => qualificationSuiteStep({ root }), /declared step ids: checkout, not-the-suite/);
 });
 
+// A workflow whose second step is written as `stepLines`, indented for the step list. The
+// first step is fixed so the reader's indentation probe has a real step to find.
+const stepWorkflow = (stepLines) => `name: Beta Qualification
+
+jobs:
+  qualify:
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+
+${stepLines}
+`;
+
+test('reads every valid block run header as a block rather than as content', async (t) => {
+  // `|-`, `|+`, an indentation indicator, `>`, and a trailing comment are all valid YAML
+  // block headers. Reading any of them as script text would hide the block it introduces.
+  for (const header of ['|', '|-', '|+', '|2', '|2-', '|-2', '|+2', '>', '>-', '>+', '| # comment', '|2 # comment']) {
+    const workflow = stepWorkflow(`      - name: Whatever a reader sees
+        id: beta-suite
+        run: ${header}
+          node scripts/execution-guard.mjs
+          pnpm test`);
+    const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: workflow });
+    assert.equal(qualificationInvocation({ root }), 'test', `header ${JSON.stringify(header)}`);
+  }
+});
+
+test('discloses a run header it cannot parse instead of reporting it as the run block', async (t) => {
+  const workflow = stepWorkflow(`      - name: Whatever a reader sees
+        id: beta-suite
+        run: |x not a header
+          pnpm test`);
+  const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: workflow });
+  let refusal;
+  try { qualificationInvocation({ root }); } catch (error) { refusal = error; }
+  assert.ok(refusal, 'an unparseable run header must refuse');
+  assert.match(refusal.message, /its run header "\|x not a header" is not a block header this reader recognises, so the block was not read/);
+  // Fail-closed and honest: the header is never accepted as an inline command, and it is
+  // never presented as the block's content.
+  assert.doesNotMatch(refusal.message, /its run block is/);
+});
+
+// A step may begin with `- id:`; its display name then comes from its `name:` key, or stays
+// empty when it has none, and an `id:` line inside the run body is content.
+test('finds a step written with its id on the dash line and ignores a decoy id in its run body', async (t) => {
+  const workflow = stepWorkflow(`      - id: beta-suite
+        name: Whatever a reader sees
+        run: |
+          node scripts/execution-guard.mjs
+          pnpm test
+          id: not-the-step`);
+  const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: workflow });
+  const suite = qualificationSuiteStep({ root });
+  assert.equal(suite.id, 'beta-suite');
+  assert.equal(suite.name, 'Whatever a reader sees');
+  assert.deepEqual(suite.run.map((line) => line.trim()).filter(Boolean),
+    ['node scripts/execution-guard.mjs', 'pnpm test', 'id: not-the-step']);
+  assert.equal(qualificationInvocation({ root }), 'test');
+
+  // The same step without a `name:` key keeps an empty display name rather than inventing one.
+  const nameless = await temporaryRoot(t, {
+    [QUALIFICATION_WORKFLOW_PATH]: stepWorkflow(`      - id: beta-suite
+        run: |
+          pnpm test`),
+  });
+  assert.equal(qualificationSuiteStep({ root: nameless }).name, '');
+  assert.equal(qualificationInvocation({ root: nameless }), 'test');
+});
+
 test('derives each invocation tag from package.json and refuses any that selects no single tag', () => {
   const pkg = readPackageJson();
   for (const [invocation, tag] of [

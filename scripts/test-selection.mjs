@@ -58,14 +58,15 @@ export function qualificationReportPath(options = {}) {
 
 // A small, deliberate reader for the one structure this module needs: the workflow's step
 // list. A YAML parser would add a dependency the consumer's verifier checkout does not
-// have, and the workflow is a fixed file whose steps all sit at one indentation. Only a
-// `- name:` at that indentation starts a step, so a `- name:` inside a `run:` block cannot
-// be mistaken for one.
+// have, and the workflow is a fixed file whose steps all sit at one indentation. A step
+// begins with `- name:` or `- id:` at that indentation, so only a list item there starts
+// one: a `- name:` or `id:`-shaped line inside a `run:` block cannot be mistaken for a step
+// or for a step's key.
 function workflowSteps(source) {
   const lines = source.split(/\r?\n/);
   const starts = [];
   for (const [index, line] of lines.entries()) {
-    const match = /^( *)- name:/.exec(line);
+    const match = /^( *)- (?:name|id):/.exec(line);
     if (match) starts.push({ index, indent: match[1].length });
   }
   if (starts.length === 0) throw new Error(`${QUALIFICATION_WORKFLOW_PATH} declares no workflow step`);
@@ -76,14 +77,28 @@ function workflowSteps(source) {
   });
 }
 
+// A YAML block-scalar header: `|` or `>`, an optional indentation indicator (1-9) and/or
+// chomping indicator (`+`/`-`) in either order, and an optional trailing comment. Reading a
+// header as script content would report the header as the block's text and hide the block.
+const blockHeader = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ \t]+#.*)?$/;
+
 // A step's keys are read from the whole step, wherever a `run:` block sits inside it: an
-// `id:` written above or below a block `run:` is the step's id either way. What a block
-// scalar contains is content rather than keys, so a `- name:` or an `id:`-shaped line inside
-// a `run: |` script cannot start a step or become one.
+// `id:` written above or below a block `run:` is the step's id either way, and a step may
+// start on its `- id:` line. What a block scalar contains is content rather than keys, so a
+// `- name:` or an `id:`-shaped line inside a `run: |` script cannot start a step or become
+// one.
 function readStep(lines, indent) {
   const keyIndent = indent + 2;
   const keyPattern = new RegExp(`^ {${keyIndent}}([a-zA-Z_][a-zA-Z0-9_-]*):[ \t]*(.*)$`);
-  const step = { name: /^( *)- name:[ \t]*(.*)$/.exec(lines[0])?.[2].trim() ?? '', id: undefined, run: [] };
+  const first = /^( *)- ([a-zA-Z_][a-zA-Z0-9_-]*):[ \t]*(.*)$/.exec(lines[0]);
+  const step = {
+    name: first?.[2] === 'name' ? first[3].trim() : '',
+    id: first?.[2] === 'id' ? first[3].trim() : undefined,
+    run: [],
+    // A header-looking value this reader cannot parse. It is disclosed as an unread header
+    // rather than passed off as the run block's content.
+    unreadRunHeader: undefined,
+  };
   let block = null;
   for (const line of lines.slice(1)) {
     const lineIndent = line.length - line.trimStart().length;
@@ -97,9 +112,12 @@ function readStep(lines, indent) {
     const key = keyPattern.exec(line);
     if (!key) continue;
     const value = key[2].trim();
-    if (/^[|>][-+]?$/.test(value)) { block = key[1]; continue; }
+    if (blockHeader.test(value)) { block = key[1]; continue; }
+    if (key[1] === 'name') { if (step.name === '') step.name = value; continue; }
     if (key[1] === 'id') { step.id = value; continue; }
-    if (key[1] === 'run' && value) step.run.push(value);
+    if (key[1] !== 'run' || value === '') continue;
+    if (value.startsWith('|') || value.startsWith('>')) step.unreadRunHeader = value;
+    else step.run.push(value);
   }
   return step;
 }
@@ -123,7 +141,10 @@ export function qualificationInvocation(options = {}) {
   const scripts = step.run.map((line) => pnpmScript.exec(line.trim())?.[1]).filter(Boolean);
   if (scripts.length === 0) {
     const commands = step.run.map((line) => line.trim()).filter(Boolean);
-    throw new Error(`The ${QUALIFICATION_SUITE_STEP} step in ${QUALIFICATION_WORKFLOW_PATH} runs no pnpm script, so the selection that issued a record is unknown (its run block is ${commands.length > 0 ? commands.join('; ') : 'empty'})`);
+    const disclosure = step.unreadRunHeader === undefined
+      ? `its run block is ${commands.length > 0 ? commands.join('; ') : 'empty'}`
+      : `its run header ${JSON.stringify(step.unreadRunHeader)} is not a block header this reader recognises, so the block was not read`;
+    throw new Error(`The ${QUALIFICATION_SUITE_STEP} step in ${QUALIFICATION_WORKFLOW_PATH} runs no pnpm script, so the selection that issued a record is unknown (${disclosure})`);
   }
   if (scripts.length > 1) {
     throw new Error(`The ${QUALIFICATION_SUITE_STEP} step in ${QUALIFICATION_WORKFLOW_PATH} runs more than one pnpm script (${scripts.join(', ')}), so the selection that issued a record is ambiguous`);
