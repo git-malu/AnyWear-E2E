@@ -3,7 +3,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { requireCommit, requireString } from './evidence-contract.mjs';
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
-const workflows = ['beta-qualification', 'integration', 'account-recovery', 'beta-cleanup-acceptance'];
+// Protected dispatches that may perform deployed operations. `beta-instrumentation` is
+// separate from `beta-qualification` on purpose: a measurement shares this guard's
+// identity and cleanup controls, and must not share the qualification run's conclusion,
+// because a release consumer accepts only a completed-success qualification run.
+const workflows = ['beta-qualification', 'beta-instrumentation', 'integration', 'account-recovery', 'beta-cleanup-acceptance'];
 
 export function assertE2EExecution(environment = process.env, { sourceOnly = false, sourceSha } = {}) {
   if (environment.GITHUB_REPOSITORY !== 'git-malu/AnyWear-E2E'

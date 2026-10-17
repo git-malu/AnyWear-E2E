@@ -22,18 +22,19 @@ can neither satisfy nor fail release qualification.
 | --- | --- | --- | --- |
 | `test:smoke` | `@smoke` | Allocated on-demand Beta-or-later Integration dispatch | Diagnostic observation of a narrow deployed path; it does not qualify a release |
 | `test:regression` | `@regression` | Deployed Beta Qualification, as the only release-gating selection | Release qualification: a red result fails the gate, and a green result is a required input to the qualification record |
-| `test:instrumentation` | `@instrumentation` | Explicit operator opt-in in the protected Beta Qualification workflow, after the qualification job | Measurement or drill result; it can neither satisfy nor fail release qualification |
+| `test:instrumentation` | `@instrumentation` | Explicit operator opt-in through the protected Beta Instrumentation dispatch | Measurement or drill result; it can neither satisfy nor fail release qualification |
 | `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation, including instrumentation; not a release-gating selection on its own |
 | `test` | `@regression` | Local investigation, and the protected qualification suite step | Identical to `test:regression`: the release gate. An instrumentation scenario is not in this selection |
 | `test:core` | The explicitly listed offline `scripts/*.test.mjs` contract files and `tests/scenario-declarations.test.mjs` | PR/main Quality and source preparation | Source contract result; no deployed claim |
 | `test:tool-regressions` | The explicitly listed offline retained-tool files | Affected-path PR/main workflow or explicit manual dispatch | Tool source result; no deployed claim |
 | `test:deferred-sqs` | The explicitly listed prospective SQS protocol files | Manual deferred-owner review | Prototype contract only |
 
-The separation is carried by the workflow's job boundary, not by a step. The measurement runs
-in its own job after the qualification job, so a failing measurement fails that job and
-leaves the qualification job's record exactly as it was; `continue-on-error` cannot express
-the same thing, because it is forbidden in this workflow and would still leave one job
-reporting a status that mixes the two verdicts.
+The separation is carried by the workflow boundary, not by a step or a job. A release
+consumer accepts a qualification record only from a completed-success qualification run, so a
+measurement sharing that run would let its own outcome withhold a record the gate
+legitimately produced. The measurement therefore runs from its own protected dispatch,
+`beta-instrumentation.yml`; `continue-on-error` could not express the separation either,
+because it is forbidden in the qualification workflow.
 
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.
@@ -150,20 +151,20 @@ agreeing about the invocations that exist.
 | Policy class | Full deployed system E2E, admitted as measurement rather than as a gate |
 | Tags | `@instrumentation` to select it, plus `@full-stack` for cross-repository discovery and `@beta-sizing` as the sizing workload identifier |
 | Intent | A frozen representative workload — twelve upload/tagging cases and eight virtual try-on cases — runs once against the deployed environment so cost, capacity and provider behaviour can be measured from its own artifact |
-| Current caller | The instrumentation job of the protected Beta Qualification workflow, which runs only when the dispatch selects a sizing stage. It also skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3` |
+| Current caller | The protected Beta Instrumentation dispatch, which requires a sizing stage as an input. It also skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3` |
 | Assertion boundary | The deployed Service's task pipeline, provider calls, streaming responses and credit accounting, with the deployed Client used for navigation and reloads |
 | Actual operation | Leases a synthetic identity, uploads frozen fixtures through presigned URLs, submits tagging and VTO work, reads back terminal states, samples ordinary routes, and writes `test-results/beta-sizing-workload.json` |
 | Owner | AnyWear-E2E maintainers, under the sizing work item |
 | Lifecycle | Current while the sizing envelope and cost baseline are being established; it is retired or replaced only with a recorded caller and evidence decision |
 | Command | `pnpm test:instrumentation` |
-| Default trigger | Explicit operator opt-in inside a protected dispatch, after the qualification job. It is never part of the release-gating selection |
+| Default trigger | Explicit operator dispatch of the instrumentation workflow, never as part of a qualification. It is never part of the release-gating selection |
 | Cost | The most expensive scenario here: paid provider spend on twelve uploads and eight VTO generations, plus one leased identity per attempt |
 | Side effects | Application rows, generated images, provider spend, and a Cognito identity |
 | Evidence level | Diagnostic and measurement; the policy's Qualification level is not reachable from an instrumentation result |
 | Disposition | Retain as instrumentation; its own record, not a release verdict |
 | Cleanup contract | `DirectTeardown` against the attempt's own scope, capturing every created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation`. It refuses to report a captured child without its owning resource, proves absence by exact readback for routed resources and by the authenticated list route for base photos, and performs no ad hoc deletion. A teardown that is not `passed` quarantines the scope and fails the separate teardown gate |
 | Verification rationale | The scenario's own terminal record decides its outcome: `passed` only from a completed workload, otherwise `failed-or-incomplete`. The workload is bounded by the measured S1 input envelope, and each observation records the aggregate bytes it actually submitted. `retries: 0`, because each attempt spends real provider budget |
-| Red result means | An unqualified or rejected measurement, not a product verdict. It cannot fail release qualification, and a passing measurement is not qualification evidence. A run that is not the protected Beta Qualification workflow is refused before any provider call |
+| Red result means | An unqualified or rejected measurement, not a product verdict. It cannot fail release qualification, and a passing measurement is not qualification evidence. A run that is not the protected Beta Instrumentation workflow is refused before any provider call |
 
 ## Admission rule
 

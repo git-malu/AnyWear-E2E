@@ -3,18 +3,22 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { sizingRuntimeSnapshot } from './beta-sizing-runtime.mjs';
 
-test('Beta qualification checks the selected sizing tuple before starting Playwright', () => {
-  const workflow = readFileSync(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
-  const preflight = workflow.indexOf('      - name: Validate the selected sizing stage before the suite');
-  const suite = workflow.indexOf('      - name: Run complete deployed Beta suite');
+test('the instrumentation workflow checks the selected sizing tuple before starting Playwright', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/beta-instrumentation.yml', import.meta.url), 'utf8');
+  const preflight = workflow.indexOf('      - name: Capture the sizing task inventory the workload is measured on');
+  const workload = workflow.indexOf('      - name: Run the instrumentation workload');
   assert.notEqual(preflight, -1);
-  assert.notEqual(suite, -1);
-  assert.ok(preflight < suite);
-  assert.match(workflow.slice(preflight, suite), /if: \$\{\{ inputs\.sizing_stage != 'disabled' \}\}/);
-  assert.match(workflow.slice(preflight, suite), /run: node scripts\/beta-sizing-runtime\.mjs/);
-  // The qualification itself no longer collects the measurement, so the stage check here
-  // is only a preflight; the workload runs it again inside its own job.
-  assert.doesNotMatch(workflow.slice(preflight, suite), /pnpm test:instrumentation/);
+  assert.notEqual(workload, -1);
+  assert.ok(preflight < workload);
+  assert.match(workflow.slice(preflight, workload), /run: node scripts\/beta-sizing-runtime\.mjs/);
+  // The measurement runs outside the qualification workflow, so its outcome cannot
+  // become the qualification run's conclusion, which is the only thing a release
+  // consumer accepts a record from.
+  const qualification = readFileSync(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(qualification, /beta-sizing-runtime\.mjs/);
+  assert.doesNotMatch(qualification, /test:instrumentation/);
+  assert.doesNotMatch(qualification, /BETA_SIZING_STAGE/);
+  assert.doesNotMatch(qualification, /sizing_stage/);
 });
 
 function fixture(stageId = 'S1') {

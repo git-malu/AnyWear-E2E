@@ -226,21 +226,24 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.match(suite, /node scripts\/execution-guard\.mjs\r?\n\s+pnpm test\s*$/m);
   assert.doesNotMatch(suite, /if:\s*.*(?:always|failure)/);
   assert.equal(steps.filter(step => /\bpnpm test\s*$/.test(step)).length, 1);
-  // The measurement is a separate job: it must not run inside the qualification job,
-  // which is what keeps a failing measurement from aborting the steps that create the
-  // record, and what keeps a passing measurement from being read as one.
-  const instrumentation = steps.filter(step => /\bpnpm test:instrumentation\s*$/.test(step));
-  assert.equal(instrumentation.length, 1, 'the instrumentation workload needs its own step');
-  assert.ok(steps.indexOf(instrumentation[0]) > steps.indexOf(suite),
-    'the instrumentation workload runs after the qualification job, not inside it');
-  assert.doesNotMatch(suite, /instrumentation/);
-  const instrumentationJob = workflow.slice(workflow.indexOf('  instrumentation:\n'));
-  assert.match(instrumentationJob, /^ {4}needs: qualify\s*$/m);
-  assert.match(instrumentationJob, /^ {4}if:.*inputs\.sizing_stage != 'disabled'.*$/m);
-  assert.doesNotMatch(instrumentationJob, /continue-on-error:/);
-  // A measurement alone cannot produce the qualified tuple: the record's own inputs and
-  // the environment refusal stay in the qualification job.
-  assert.doesNotMatch(instrumentationJob, /qualification:(generate|verify)/);
+  // The measurement is a separate workflow, not a second job: a release consumer accepts
+  // a qualification record only from a completed-success qualification run, so a
+  // measurement sharing that run's conclusion could withhold a record the gate produced.
+  assert.doesNotMatch(workflow, /instrumentation/);
+  assert.doesNotMatch(workflow, /BETA_SIZING_STAGE/);
+  const instrumentationWorkflow = await readFile(new URL('../.github/workflows/beta-instrumentation.yml', import.meta.url), 'utf8');
+  assert.match(instrumentationWorkflow, /^on:\s*$/m);
+  assert.match(instrumentationWorkflow, /^ {6}sizing_stage:\s*$/m);
+  assert.match(instrumentationWorkflow, /^ {4}if: github\.ref == 'refs\/heads\/main'\s*$/m);
+  assert.match(instrumentationWorkflow, /^ {4}environment: beta\s*$/m);
+  assert.match(instrumentationWorkflow, /^ {6}- name: Run the instrumentation workload\s*$/m);
+  assert.match(instrumentationWorkflow, /\bpnpm test:instrumentation\s*$/m);
+  assert.equal([...instrumentationWorkflow.matchAll(/\bpnpm test:instrumentation\s*$/gm)].length, 1);
+  assert.doesNotMatch(instrumentationWorkflow, /continue-on-error:/);
+  // A measurement cannot produce the qualified tuple: no record step and no environment
+  // refusal, which stay in the qualification workflow.
+  assert.doesNotMatch(instrumentationWorkflow, /qualification:(generate|verify)/);
+  assert.doesNotMatch(instrumentationWorkflow, /beta-sizing-environment\.mjs qualification-gate/);
   // The worker fixture reserves/provisions only after Playwright starts in that later step.
   const fixture = await readFile(new URL('../tests/support/fixtures.ts', import.meta.url), 'utf8');
   assert.ok(fixture.indexOf('await reserveTestAccount(') < fixture.indexOf('await provisionConfirmedTestAccount('));
