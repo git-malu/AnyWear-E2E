@@ -45,13 +45,15 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 24 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 25 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
 pnpm test:smoke        # on-demand deployed Beta diagnostic, @smoke only
+pnpm test:regression   # the release-gating deployed selection, @regression only
+pnpm test:instrumentation # a measurement workload or drill, @instrumentation only
 pnpm test:full-stack   # deployed Beta scenarios marked @full-stack
-pnpm test              # every collected deployed scenario, tag-independent
+pnpm test              # the release-gating selection: identical to test:regression
 pnpm report            # open the latest HTML report
 ```
 
@@ -73,16 +75,18 @@ scenario must satisfy.
 | `test:tool-regressions` | E2E operational-tool maintainers; affected-path PR/main workflow or explicit manual dispatch | Mock AWS/Cognito/fetch, temporary files, a loopback HTTP fixture and bounded Bash checkpoint helper; no AWS/App credentials or live drill proof |
 | `test:deferred-sqs` | Repository maintainer under [#58](https://github.com/git-malu/AnyWear/issues/58); manual future-protocol review only | Two offline ARM/ACK/FIRE prototype files; no live transport, trusted AWS identity or receipt proof, and no #54 acceptance claim |
 | `test:smoke` | E2E maintainers; allocated on-demand Beta+ Integration | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
-| `test` / `test:full-stack` | E2E maintainers; allocated Beta+ qualification, or explicit local investigation | Every collected deployed scenario, including the opt-in sizing measurement; only the protected qualification workflow and its evidence can qualify a release |
+| `test:regression` / `test` | E2E maintainers; the protected Beta Qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this workflow and its evidence can qualify a release |
+| `test:instrumentation` | E2E maintainers; explicit opt-in in the protected Beta Qualification workflow, after the qualification job | A measurement workload with paid provider spend and its own cleanup contract, reported as a measurement; it can neither satisfy nor fail release qualification |
+| `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario, the measurement included; not a release-gating selection on its own |
 | `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
 
-The scenario inventory states the release-gating selection this repository is moving
-to, where a measurement or drill result can neither satisfy nor fail release
-qualification. Until that split is wired, `pnpm test` still collects the sizing
-measurement with the business scenarios and a sizing failure still fails the
-qualification step; the inventory marks the invocations that change that.
+The release-gating selection and the measurement are separated by a workflow job boundary,
+not by a step: the measurement runs in its own job after the qualification job, so a failing
+measurement fails that job and leaves the qualification record exactly as it was. The
+[scenario inventory](docs/scenario-inventory.md) states which verdict each invocation
+carries.
 
-The 24 registered core files retain account-budget, Cognito cleanup, qualification
+The 25 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
@@ -109,7 +113,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit 24 core test files, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit 25 core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -120,7 +124,8 @@ identity boundary. It does not run a local database or mutate the deployment.
 Only Beta Qualification can issue a passing qualification record.
 
 The protected `pnpm test` suite step is reserved for the deployed Beta Qualification
-workflow. Only a passing run against the exact reviewed Client, Service, and E2E revisions
+workflow, and it runs the release-gating selection. Only a passing run against the exact
+reviewed Client, Service, and E2E revisions
 produces qualification evidence that Production may consume. The
 [scenario inventory](docs/scenario-inventory.md) records which scenarios that step's
 selection contains; a measurement or drill result is not part of it and carries no release
@@ -464,7 +469,8 @@ provider configurations. Do not reuse old-image timings or restore two replicas
 merely to collect a new baseline.
 
 The `sizing_stage` input of protected Beta Qualification defaults to `disabled`.
-An explicitly reviewed S1/S2/S3 selection runs `tests/beta-sizing.spec.ts`
+An explicitly reviewed S1/S2/S3 selection runs `tests/beta-sizing.spec.ts` in the
+instrumentation job, after the qualification job and in `pnpm test:instrumentation`,
 once with no retries: 12 uploads/tagging tasks (three formats, JPEG/PNG/WebP,
 sequential/burst, two repeats), then four VTO shapes twice. Two
 bursts overlap VTO submissions; actual same-Worker overlap must still be shown by

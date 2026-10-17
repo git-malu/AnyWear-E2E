@@ -21,29 +21,26 @@ can neither satisfy nor fail release qualification.
 | invocation | Selects | Trigger | Verdict |
 | --- | --- | --- | --- |
 | `test:smoke` | `@smoke` | Allocated on-demand Beta-or-later Integration dispatch | Diagnostic observation of a narrow deployed path; it does not qualify a release |
-| `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation; not a release-gating selection on its own |
-| `test` | The complete discovered suite, every tag included | Local investigation, and the protected qualification suite step | The protected suite step is the release gate; a local run asserts nothing |
-| `test:core` | The explicitly listed offline `scripts/*.test.mjs` contract files | PR/main Quality and source preparation | Source contract result; no deployed claim |
+| `test:regression` | `@regression` | Deployed Beta Qualification, as the only release-gating selection | Release qualification: a red result fails the gate, and a green result is a required input to the qualification record |
+| `test:instrumentation` | `@instrumentation` | Explicit operator opt-in in the protected Beta Qualification workflow, after the qualification job | Measurement or drill result; it can neither satisfy nor fail release qualification |
+| `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation, including instrumentation; not a release-gating selection on its own |
+| `test` | `@regression` | Local investigation, and the protected qualification suite step | Identical to `test:regression`: the release gate. An instrumentation scenario is not in this selection |
+| `test:core` | The explicitly listed offline `scripts/*.test.mjs` contract files and `tests/scenario-declarations.test.mjs` | PR/main Quality and source preparation | Source contract result; no deployed claim |
 | `test:tool-regressions` | The explicitly listed offline retained-tool files | Affected-path PR/main workflow or explicit manual dispatch | Tool source result; no deployed claim |
 | `test:deferred-sqs` | The explicitly listed prospective SQS protocol files | Manual deferred-owner review | Prototype contract only |
 
-The release-gating selection is not separated from measurement here yet. Until the split is
-wired, `test` reaches `tests/beta-sizing.spec.ts` whenever an operator selects a sizing
-stage, so a sizing failure and a qualification failure still arrive on the same step. The
-change that completes the split adds two invocations of its own: a release-gating selection
-that runs only the scenarios carrying the `@regression` tag, and a separate instrumentation
-invocation selected by `@instrumentation` and reachable only by explicit operator opt-in.
-The scenario sections below state, in the "Current caller" and "Command" fields, which of
-those two already selects them and which is still pending.
+The separation is carried by the workflow's job boundary, not by a step. The measurement runs
+in its own job after the qualification job, so a failing measurement fails that job and
+leaves the qualification job's record exactly as it was; `continue-on-error` cannot express
+the same thing, because it is forbidden in this workflow and would still leave one job
+reporting a status that mixes the two verdicts.
 
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.
 
 `tests/scenario-declarations.test.mjs` is the offline check that keeps this document and
-the spec files agreeing. The Node test runner discovers it by its `.test.mjs` name, and
-naming it on the `test:core` list is part of the same pending change that wires the
-release-gating selection, so that the registry states its membership explicitly rather
-than by discovery.
+the spec files agreeing, and it is named on the `test:core` list so the registry states its
+membership explicitly rather than by discovery.
 
 Scenario membership is positive: a scenario is in an invocation because it carries that
 invocation's tag. A scenario that loses its tag therefore leaves the release-gating
@@ -61,12 +58,12 @@ agreeing about the invocations that exist.
 | Policy class | Full deployed system E2E |
 | Tags | `@regression @full-stack` |
 | Intent | A wardrobe item survives the real auto-tagging pipeline: the upload is confirmed idempotently before and after the terminal state, tagging reaches `ready` with a monotonic state version across a reload and a second browser page, the item can be edited, and deletion removes it without disturbing items that pre-date the run |
-| Current caller | The protected Beta Qualification workflow, through the `test` suite step. It carries `@regression` so the planned release-gating selection includes it, and no invocation selects that tag yet. `test:smoke` does not select it |
+| Current caller | The protected Beta Qualification workflow, through the release-gating selection. `test:smoke` does not select it |
 | Assertion boundary | Deployed Client UI and Service HTTP API together, with the Service's real provider call in the path |
 | Actual operation | Leases a synthetic Cognito identity, signs in through the real Client, presigned-uploads a fixture to S3, creates and mutates a wardrobe item, and invokes the external VLM |
 | Owner | AnyWear-E2E maintainers |
 | Lifecycle | Current; retired only with a caller and lifecycle decision per the policy's retention rules |
-| Command | `pnpm test` today, and `pnpm test:regression` once the release-gating selection is wired |
+| Command | `pnpm test:regression`, and `pnpm test` because the suite step runs the same selection |
 | Default trigger | Deployed Beta Qualification; opt-in sizing is not required |
 | Cost | External write and paid provider cost: one identity, one uploaded object, one tagging task per attempt. Not separately metered |
 | Side effects | Application rows, an S3 object, provider spend, and a Cognito identity |
@@ -84,13 +81,13 @@ agreeing about the invocations that exist.
 | Policy class | Deployed smoke, and Full deployed system E2E in the release selection |
 | Tags | `@smoke @regression @full-stack` |
 | Intent | The real session starts, is restored across documents, and is destroyed on logout: every authenticated step observes a successful `/users/me` with a bearer header, no transient sign-in heading or login form, and no unexpected navigation to `/login`; an unauthenticated reload and a protected navigation issue no profile request; the persisted Amplify session is cleared before the next document |
-| Current caller | `test:smoke` in the on-demand Integration diagnostic. It carries the `@regression` tag so the planned release-gating selection includes it, and no invocation selects that tag yet |
+| Current caller | `test:smoke` in the on-demand Integration diagnostic, and the release-gating selection in Beta Qualification |
 | Assertion boundary | Deployed Client UI and navigation behaviour together with the Service profile endpoint and the real identity provider's session storage |
 | Actual operation | Leases a synthetic Cognito identity, signs in through the real Client, navigates, reloads, opens a second page in the same context, signs out, and reads browser storage |
 | Owner | AnyWear-E2E maintainers |
 | Lifecycle | Current |
-| Command | `pnpm test:smoke` for the diagnostic, and the planned `pnpm test:regression` for the qualification |
-| Default trigger | On-demand Integration dispatch, and Deployed Beta Qualification once the release-gating selection is wired |
+| Command | `pnpm test:smoke` for the diagnostic, and `pnpm test:regression` for the qualification |
+| Default trigger | On-demand Integration dispatch, and Deployed Beta Qualification |
 | Cost | External write and paid provider cost bounded by one leased identity and no business resource; no provider spend |
 | Side effects | A Cognito identity for the duration of the attempt; in-page observation bindings |
 | Evidence level | Deployed smoke for the diagnostic run; Qualification as part of the complete release selection |
@@ -107,12 +104,12 @@ agreeing about the invocations that exist.
 | Policy class | Full deployed system E2E |
 | Tags | `@regression @full-stack` |
 | Intent | Public registration, when explicitly opened, admits a synthetic user through the deployed Client and that user can sign in and reach the dashboard |
-| Current caller | None yet: it carries the `@regression` tag, and the release-gating selection that will pick it up is not wired. No workflow sets `E2E_PUBLIC_REGISTRATION_OPEN`, so it is collected and skipped in every current run |
+| Current caller | The release-gating selection in Beta Qualification. No workflow sets `E2E_PUBLIC_REGISTRATION_OPEN`, so it is collected and skipped in every current run |
 | Assertion boundary | Deployed Client registration and sign-in flow against the real identity provider |
 | Actual operation | Creates and reserves an `ephemeral` test account, registers it through the UI, confirms it, signs in, and deletes the identity |
 | Owner | AnyWear-E2E maintainers |
 | Lifecycle | Retain while admission policy can change; the scenario is the only acceptance path for an opened registration surface |
-| Command | The planned `pnpm test:regression` |
+| Command | `pnpm test:regression` |
 | Default trigger | Skipped by default. It runs only when an operator explicitly opens registration for the environment, which no workflow does |
 | Cost | External write: one ephemeral identity per attempt. No provider spend |
 | Side effects | A Cognito identity, deleted in the scenario's own `afterEach` |
@@ -130,13 +127,13 @@ agreeing about the invocations that exist.
 | Policy class | Deployed smoke, and Full deployed system E2E in the release selection |
 | Tags | `@smoke @regression @full-stack` |
 | Intent | The first profile read of the attempt's own synthetic identity binds that identity, and the signed-in account reaches the dashboard and the wardrobe |
-| Current caller | `test:smoke` in the on-demand Integration diagnostic. It carries the `@regression` tag so the planned release-gating selection includes it, and no invocation selects that tag yet |
+| Current caller | `test:smoke` in the on-demand Integration diagnostic, and the release-gating selection in Beta Qualification |
 | Assertion boundary | Deployed Client UI against the Service profile endpoint and the real identity boundary |
 | Actual operation | Leases a synthetic Cognito identity, signs in through the real Client, observes the first `GET /users/me`, and navigates to two routes. No upload and no provider call |
 | Owner | AnyWear-E2E maintainers |
 | Lifecycle | Current. It exists to observe the profile binding that issue #129 could only read from CloudWatch |
-| Command | `pnpm test:smoke` for the diagnostic, and the planned `pnpm test:regression` for the qualification |
-| Default trigger | On-demand Integration dispatch, and Deployed Beta Qualification once the release-gating selection is wired |
+| Command | `pnpm test:smoke` for the diagnostic, and `pnpm test:regression` for the qualification |
+| Default trigger | On-demand Integration dispatch, and Deployed Beta Qualification |
 | Cost | External write bounded by one leased identity; no provider spend |
 | Side effects | A Cognito identity for the duration of the attempt; a retained trace on failure, by an explicit file-scoped `test.use`, because the failed attempt is the evidence |
 | Evidence level | Deployed smoke for the diagnostic run; Qualification as part of the complete release selection |
@@ -149,17 +146,17 @@ agreeing about the invocations that exist.
 
 | Field | Value |
 | --- | --- |
-| Declared title | `Representative Beta sizing @full-stack @beta-sizing` |
+| Declared title | `Representative Beta sizing @full-stack @beta-sizing @instrumentation` |
 | Policy class | Full deployed system E2E, admitted as measurement rather than as a gate |
-| Tags | `@full-stack @beta-sizing`. The pending invocation split adds the instrumentation tag that will select this scenario separately |
+| Tags | `@instrumentation` to select it, plus `@full-stack` for cross-repository discovery and `@beta-sizing` as the sizing workload identifier |
 | Intent | A frozen representative workload — twelve upload/tagging cases and eight virtual try-on cases — runs once against the deployed environment so cost, capacity and provider behaviour can be measured from its own artifact |
-| Current caller | The protected Beta Qualification workflow, and no tag selects it yet. It skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3`, which an operator sets by choosing a sizing stage on the dispatch |
+| Current caller | The instrumentation job of the protected Beta Qualification workflow, which runs only when the dispatch selects a sizing stage. It also skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3` |
 | Assertion boundary | The deployed Service's task pipeline, provider calls, streaming responses and credit accounting, with the deployed Client used for navigation and reloads |
 | Actual operation | Leases a synthetic identity, uploads frozen fixtures through presigned URLs, submits tagging and VTO work, reads back terminal states, samples ordinary routes, and writes `test-results/beta-sizing-workload.json` |
 | Owner | AnyWear-E2E maintainers, under the sizing work item |
 | Lifecycle | Current while the sizing envelope and cost baseline are being established; it is retired or replaced only with a recorded caller and evidence decision |
-| Command | The planned `pnpm test:instrumentation`; today the scenario is selected by the sizing-stage environment gate inside the protected suite step |
-| Default trigger | Explicit operator opt-in inside a protected dispatch. It is never part of the release-gating selection |
+| Command | `pnpm test:instrumentation` |
+| Default trigger | Explicit operator opt-in inside a protected dispatch, after the qualification job. It is never part of the release-gating selection |
 | Cost | The most expensive scenario here: paid provider spend on twelve uploads and eight VTO generations, plus one leased identity per attempt |
 | Side effects | Application rows, generated images, provider spend, and a Cognito identity |
 | Evidence level | Diagnostic and measurement; the policy's Qualification level is not reachable from an instrumentation result |

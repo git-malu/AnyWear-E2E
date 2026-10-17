@@ -28,8 +28,10 @@ boundaries. It uses TypeScript, Playwright Test, Node.js 24, and pnpm 11.18.0.
 - Type check: `pnpm typecheck`
 - Discover tests: `pnpm test:list`
 - Smoke tests: `pnpm test:smoke`
-- Deployed suite: `pnpm test` (every collected deployed scenario; the protected
-  qualification step runs it as the release gate)
+- Release-gating deployed selection: `pnpm test:regression`; `pnpm test` runs the same
+  selection, and the protected qualification step runs it as the release gate
+- Measurement or drill: `pnpm test:instrumentation`; never part of the release-gating
+  selection
 - Scenario classification: [docs/scenario-inventory.md](docs/scenario-inventory.md)
 
 Run install and build commands from this repository.

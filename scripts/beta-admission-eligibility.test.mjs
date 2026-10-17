@@ -221,9 +221,26 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.match(workflow, /E2E_WORKERS: 2\r?\n/);
   assert.doesNotMatch(workflow, /continue-on-error:/);
   const suite = steps.find(step => step.startsWith('Run complete deployed Beta suite'));
-  assert.match(suite, /node scripts\/execution-guard\.mjs\r?\n\s+pnpm test/);
+  // The gate runs the release selection, not a discovery run: `pnpm test` selects
+  // `@regression`, so a measurement scenario cannot enter or leave this step.
+  assert.match(suite, /node scripts\/execution-guard\.mjs\r?\n\s+pnpm test\s*$/m);
   assert.doesNotMatch(suite, /if:\s*.*(?:always|failure)/);
   assert.equal(steps.filter(step => /\bpnpm test\s*$/.test(step)).length, 1);
+  // The measurement is a separate job: it must not run inside the qualification job,
+  // which is what keeps a failing measurement from aborting the steps that create the
+  // record, and what keeps a passing measurement from being read as one.
+  const instrumentation = steps.filter(step => /\bpnpm test:instrumentation\s*$/.test(step));
+  assert.equal(instrumentation.length, 1, 'the instrumentation workload needs its own step');
+  assert.ok(steps.indexOf(instrumentation[0]) > steps.indexOf(suite),
+    'the instrumentation workload runs after the qualification job, not inside it');
+  assert.doesNotMatch(suite, /instrumentation/);
+  const instrumentationJob = workflow.slice(workflow.indexOf('  instrumentation:\n'));
+  assert.match(instrumentationJob, /^ {4}needs: qualify\s*$/m);
+  assert.match(instrumentationJob, /^ {4}if:.*inputs\.sizing_stage != 'disabled'.*$/m);
+  assert.doesNotMatch(instrumentationJob, /continue-on-error:/);
+  // A measurement alone cannot produce the qualified tuple: the record's own inputs and
+  // the environment refusal stay in the qualification job.
+  assert.doesNotMatch(instrumentationJob, /qualification:(generate|verify)/);
   // The worker fixture reserves/provisions only after Playwright starts in that later step.
   const fixture = await readFile(new URL('../tests/support/fixtures.ts', import.meta.url), 'utf8');
   assert.ok(fixture.indexOf('await reserveTestAccount(') < fixture.indexOf('await provisionConfirmedTestAccount('));

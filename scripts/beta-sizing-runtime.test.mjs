@@ -5,13 +5,16 @@ import { sizingRuntimeSnapshot } from './beta-sizing-runtime.mjs';
 
 test('Beta qualification checks the selected sizing tuple before starting Playwright', () => {
   const workflow = readFileSync(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
-  const preflight = workflow.indexOf('      - name: Capture opt-in sizing task inventory');
+  const preflight = workflow.indexOf('      - name: Validate the selected sizing stage before the suite');
   const suite = workflow.indexOf('      - name: Run complete deployed Beta suite');
   assert.notEqual(preflight, -1);
   assert.notEqual(suite, -1);
   assert.ok(preflight < suite);
   assert.match(workflow.slice(preflight, suite), /if: \$\{\{ inputs\.sizing_stage != 'disabled' \}\}/);
   assert.match(workflow.slice(preflight, suite), /run: node scripts\/beta-sizing-runtime\.mjs/);
+  // The qualification itself no longer collects the measurement, so the stage check here
+  // is only a preflight; the workload runs it again inside its own job.
+  assert.doesNotMatch(workflow.slice(preflight, suite), /pnpm test:instrumentation/);
 });
 
 function fixture(stageId = 'S1') {

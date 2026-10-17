@@ -45,7 +45,7 @@ interface SizingWorkloadRecord {
   route_samples_ms: Record<string, number[]>;
 }
 
-test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
+test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentation', () => {
   test.describe.configure({ retries: 0 });
   test.skip(!['S1', 'S2', 'S3'].includes(process.env.BETA_SIZING_STAGE ?? ''), 'Manager-selected sizing workload is disabled');
 
