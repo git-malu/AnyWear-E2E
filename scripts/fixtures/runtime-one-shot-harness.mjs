@@ -1,4 +1,4 @@
-import { runOwnedOneShot } from '../runtime-one-shot.mjs';
+import { expectedCommand, runOwnedOneShot } from '../runtime-one-shot.mjs';
 import { cleanupFixture, scopeFixture } from './runtime-evidence.mjs';
 import { collectCleanupEvidence } from '../runtime-one-shot-logs.mjs';
 import { completeOneShotDefinition, platformOutputs } from './runtime-platform.mjs';
@@ -48,8 +48,7 @@ export function oneShotHarness() {
     const number = definitions.size + 1;
     const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${number.toString(16).padStart(32, '0')}`;
     const definitionArn = `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:${number}`;
-    const command = purpose === 'lifecycle' ? ['node', 'dist/ops/beta-lifecycle.js', action, ...(action === 'configure-testers' ? [payload] : [])]
-      : ['node', `dist/ops/beta-${purpose === 'task-audit' ? 'task-audit' : 'tester-cleanup'}.js`, payload];
+    const command = expectedCommand({ purpose, action, request_payload: payload });
     definitions.set(definitionArn, { taskDefinition: { taskDefinitionArn: definitionArn, family: `beta-anywear-${purpose}`, status: 'ACTIVE',
       executionRoleArn: owned.stack.oneShotExecutionRoleArn,
       taskRoleArn: purpose === 'task-audit' ? owned.stack.verificationTaskRoleArn : owned.stack.lifecycleTaskRoleArn,
