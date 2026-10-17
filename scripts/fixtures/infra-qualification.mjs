@@ -1,5 +1,47 @@
 import { byteHash, payloadDigest } from '../evidence-contract.mjs';
 import { environmentVerdict } from '../beta-sizing-environment.mjs';
+import { SCENARIO_DIRECTORY, qualificationSelection, selectedScenarios } from '../test-selection.mjs';
+
+// Every fixture record is issued from a run's own Playwright JSON report, so the fixture
+// holds one. It is built from the real declared membership rather than a hand-written list:
+// one spec and one test per member of the release-gating selection, with
+// `status: 'skipped'` only where the spec declares a runtime skip. A fixture can therefore
+// neither claim a scenario this repository does not select nor record a skip no spec admits.
+function qualificationReport() {
+  const { tag } = qualificationSelection();
+  const suites = selectedScenarios(tag).map(({ file, title, declaresRuntimeSkip }) => ({
+    title: file.slice(SCENARIO_DIRECTORY.length),
+    file,
+    line: 0,
+    column: 0,
+    specs: [],
+    suites: [{
+      title,
+      file,
+      line: 1,
+      column: 1,
+      specs: [{
+        title: `${title} acceptance`,
+        ok: true,
+        tags: [],
+        tests: [{
+          timeout: 30_000,
+          annotations: declaresRuntimeSkip ? [{ type: 'skip', description: 'declared runtime skip' }] : [],
+          expectedStatus: declaresRuntimeSkip ? 'skipped' : 'passed',
+          projectId: 'chromium',
+          projectName: 'chromium',
+          results: [],
+          status: declaresRuntimeSkip ? 'skipped' : 'expected',
+        }],
+        id: `fixture-${file}`,
+        file,
+        line: 1,
+        column: 1,
+      }],
+    }],
+  }));
+  return Buffer.from(`${JSON.stringify({ config: { rootDir: SCENARIO_DIRECTORY.slice(0, -1) }, suites, errors: [], stats: {} }, null, 2)}\n`);
+}
 
 export function qualificationFixture({ forwardSchema = false, imageAhead = false } = {}) {
   const sha = (letter) => letter.repeat(40);
@@ -97,5 +139,5 @@ export function qualificationFixture({ forwardSchema = false, imageAhead = false
     }),
     problem: null,
   };
-  return { compatibility, deployment, input, evidence: { before, after }, environment };
+  return { compatibility, deployment, input, evidence: { before, after }, environment, report: qualificationReport() };
 }

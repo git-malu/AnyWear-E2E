@@ -215,12 +215,12 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.match(steps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
   assert.doesNotMatch(steps[eligibility], /\bif:|continue-on-error:/);
   for (const name of ['Observe authenticated deployed tuple before suite',
-    'Load Beta test identity configuration', 'Run complete deployed Beta suite']) {
+    'Load Beta test identity configuration', 'Run the release-gating business regression suite']) {
     assert.ok(steps.findIndex(step => step.startsWith(name)) > eligibility, name);
   }
   assert.match(workflow, /E2E_WORKERS: 2\r?\n/);
   assert.doesNotMatch(workflow, /continue-on-error:/);
-  const suite = steps.find(step => step.startsWith('Run complete deployed Beta suite'));
+  const suite = steps.find(step => step.startsWith('Run the release-gating business regression suite'));
   // The gate runs the release selection, not a discovery run: `pnpm test` selects
   // `@regression`, so a measurement scenario cannot enter or leave this step.
   assert.match(suite, /node scripts\/execution-guard\.mjs\r?\n\s+pnpm test\s*$/m);

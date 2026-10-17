@@ -4,9 +4,11 @@ import {
   assertStableDeploymentEvidence,
   buildQualificationRecord,
   collectDeploymentEvidence,
+  verifyQualificationAgainstReport,
   verifyQualificationRecord,
 } from './qualification-record.mjs';
 import { ENVIRONMENT_VERDICT_PATH, environmentVerdict, qualificationRefusalMessage } from './beta-sizing-environment.mjs';
+import { byteHash, payloadDigest } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 
 const compatibility = {
@@ -77,8 +79,14 @@ test('collects only deployed revisions matching compatibility.json', async () =>
 test('creates and verifies a checksummed passing record', () => {
   const fixture = qualificationFixture();
   const record = buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), fixture.environment);
+    new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
   assert.equal(record.qualification_id, 'beta-123-1');
+  assert.deepEqual(record.test.scenarios, [
+    { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+    { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 },
+    { file: 'tests/wardrobe.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+    { file: 'tests/worker-smoke.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+  ]);
   assert.equal(verifyQualificationRecord(record), true);
 
   const tampered = structuredClone(record);
@@ -124,7 +132,7 @@ test('refuses a passing suite measured across two worker task definitions', () =
   let refusal;
   try {
     buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-      new Date('2026-10-08T00:20:00.000Z'), environment);
+      new Date('2026-10-08T00:20:00.000Z'), environment, fixture.report);
   } catch (error) { refusal = error; }
   assert.ok(refusal, 'a passing suite across two worker task definitions must not yield a record');
   assert.equal(refusal.message, qualificationRefusalMessage(environment.record));
@@ -146,7 +154,7 @@ test('still qualifies a passing suite that only rotated worker task ARNs', () =>
   assert.equal(environment.record.verdict, 'environment-changed');
   assert.equal(environment.record.comparison.task_definition_changed, false);
   const record = buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), environment);
+    new Date('2026-10-08T00:20:00.000Z'), environment, fixture.report);
   assert.equal(record.qualification_id, 'beta-123-1');
   assert.equal(verifyQualificationRecord(record), true);
 });
@@ -154,7 +162,7 @@ test('still qualifies a passing suite that only rotated worker task ARNs', () =>
 test('requires the environment verdict before it issues a record', () => {
   const fixture = qualificationFixture();
   const build = (environment) => buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), environment);
+    new Date('2026-10-08T00:20:00.000Z'), environment, fixture.report);
   for (const [name, environment] of [
     ['omitted', undefined],
     ['missing', { record: null, problem: `${ENVIRONMENT_VERDICT_PATH} is missing` }],
@@ -167,6 +175,91 @@ test('requires the environment verdict before it issues a record', () => {
     assert.ok(refusal.message.includes(ENVIRONMENT_VERDICT_PATH), `${name} must name the verdict path`);
   }
   assert.doesNotThrow(() => build(fixture.environment));
+});
+
+// Re-digesting a hand-edited record proves only that whoever wrote it knew the algorithm.
+// Every case below edits a field and recomputes `integrity.payload_sha256`, so the record
+// passes its checksum and has to be refused by the verifier's own derivation instead.
+function redigest(record) {
+  const { integrity: ignored, ...payload } = record;
+  void ignored;
+  return { ...payload, integrity: { algorithm: 'sha256', payload_sha256: payloadDigest(payload) } };
+}
+
+const issuedRecord = () => {
+  const fixture = qualificationFixture();
+  return {
+    fixture,
+    record: buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
+      new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report),
+  };
+};
+
+test('refuses a record whose stated selection differs from the one the repository declares', () => {
+  const { record } = issuedRecord();
+  for (const [label, mutate] of [
+    ['tag', (test) => { test.selection.tag = '@full-stack'; }],
+    ['invocation', (test) => { test.selection.invocation = 'test:smoke'; }],
+  ]) {
+    const tampered = structuredClone(record);
+    mutate(tampered.test);
+    assert.throws(() => verifyQualificationRecord(redigest(tampered)), /Qualification selection mismatch/, label);
+  }
+  // The stated tag is also what the scenario list is judged against, so a tag moved to one
+  // that selects more scenarios cannot be hidden behind matching invocation and counts.
+  const widened = structuredClone(record);
+  widened.test.selection = { invocation: 'test:full-stack', tag: '@full-stack' };
+  assert.throws(() => verifyQualificationRecord(redigest(widened)), /Qualification selection mismatch/);
+});
+
+test('refuses a record that omits a collected but skipped scenario', () => {
+  const { record } = issuedRecord();
+  const skipped = record.test.scenarios.find(({ file }) => file === 'tests/auth.spec.ts');
+  assert.deepEqual(skipped, { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 });
+  const tampered = structuredClone(record);
+  tampered.test.scenarios = tampered.test.scenarios.filter(({ file }) => file !== 'tests/auth.spec.ts');
+  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /omits tests\/auth\.spec\.ts/);
+});
+
+test('refuses the retired constant suite shape instead of accepting two vocabularies', () => {
+  const { record } = issuedRecord();
+  const tampered = structuredClone(record);
+  tampered.test = { runner: 'playwright', suite: 'complete', result: 'passed' };
+  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /test result\.selection is required/);
+});
+
+test('requires the run report before it can state what it measured', () => {
+  const fixture = qualificationFixture();
+  for (const [name, report] of [['omitted', undefined], ['null', null]]) {
+    let refusal;
+    try {
+      buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
+        new Date('2026-10-08T00:20:00.000Z'), fixture.environment, report);
+    } catch (error) { refusal = error; }
+    assert.ok(refusal, `${name} report must refuse`);
+    assert.match(refusal.message, /qualification-report\.json/);
+    assert.ok(refusal.message.includes('E2E_QUALIFICATION_REPORT'), `${name} must name the variable that declares the path`);
+  }
+});
+
+test('verifies the record against the report the suite wrote and refuses another run report', () => {
+  const { fixture, record } = issuedRecord();
+  assert.equal(verifyQualificationAgainstReport(record, fixture.report), true);
+
+  // A report from a narrower selection: one declared member never ran, and its digest is
+  // not the one the record states.
+  const report = JSON.parse(fixture.report.toString('utf8'));
+  report.suites = report.suites.slice(1);
+  const narrower = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
+  assert.throws(() => verifyQualificationAgainstReport(record, narrower), /checksums differ/);
+
+  // Even a record that adopts the other report's digest has to state that report's
+  // scenarios, so the digest cannot be moved without the scenario list moving with it.
+  const retargeted = { ...record, test: { ...record.test, report_sha256: byteHash(narrower) } };
+  assert.throws(() => verifyQualificationAgainstReport(retargeted, narrower),
+    /Qualification scenarios and the Playwright report mismatch/);
+
+  assert.throws(() => verifyQualificationAgainstReport(record), /qualification-report\.json/);
 });
 
 test('rejects a deployed revision that differs from the reviewed compatibility set', async () => {

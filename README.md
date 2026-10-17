@@ -45,7 +45,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 25 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 26 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -88,7 +88,7 @@ from its own protected dispatch, `beta-instrumentation.yml`, with the same evide
 and cleanup controls. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 25 registered core files retain account-budget, Cognito cleanup, qualification
+The 26 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
@@ -115,7 +115,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit 25 core test files, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit 26 core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -132,6 +132,21 @@ produces qualification evidence that Production may consume. The
 [scenario inventory](docs/scenario-inventory.md) records which scenarios that step's
 selection contains; a measurement or drill result is not part of it and carries no release
 verdict in either direction.
+
+The qualification record states the selection that produced it instead of a constant. Its
+`test` member names the invocation the suite step ran and the `--grep` tag that invocation
+selects, the SHA-256 digest of the run's own Playwright JSON report, and one entry per
+selected scenario with its outcome and how many of its collected tests were skipped. The
+suite step writes that report to the path the job declares as `E2E_QUALIFICATION_REPORT`,
+and both the qualification evidence artifact and its diagnostics retain the report, so the
+digest the record states is auditable against the bytes it names. Every part of that
+statement is re-derived by the verifier from its own checkout — the workflow step,
+`package.json`, the spec titles cross-checked against the
+[scenario inventory](docs/scenario-inventory.md), and per-scenario counts — and a record
+whose stated selection or scenario list disagrees with them is refused. A record issued
+before this change always stays valid, because the verifier that judges it is always the
+one from the record's own producing revision; the current verifier does not accept the
+retired `suite: 'complete'` shape.
 
 Test classification is explicit: `@smoke` marks the small, stable critical path for the
 on-demand Beta diagnostic; `@regression` marks the scenarios admitted to the

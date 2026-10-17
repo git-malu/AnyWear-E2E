@@ -5,6 +5,10 @@ import {
 import { assertDeploymentBinding } from './trusted-deployment-inputs.mjs';
 import { assertQualificationEnvironment } from './beta-sizing-environment.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment } from './vendor/deployment-contract.mjs';
+import {
+  QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, RECORDABLE_RESULTS, SCENARIO_KEYS, SELECTION_KEYS, TEST_KEYS,
+  assertTestSelection, buildTestMember, reportScenarios,
+} from './test-selection.mjs';
 
 const commitPattern = /^[0-9a-f]{40}$/;
 const imageDigestPattern = /^sha256:[0-9a-f]{64}$/;
@@ -149,11 +153,20 @@ export function validateInfraEvidence(evidence, compatibility, executor) {
 // task definitions measured neither of them, so it cannot issue a qualification record.
 // The assertion denies by default, so no caller can build a record without stating the
 // environment gate it consulted.
-export function buildQualificationRecord(input, compatibility, evidence, now = new Date(), environment) {
+//
+// The run's Playwright JSON report bytes are the sixth required argument for the same
+// reason: the record states which scenarios ran and how many of each spec's tests were
+// collected and skipped, and none of that can be inferred from a suite that merely ended
+// green. The report is where the record's `test` member comes from, so a caller that does
+// not hold it cannot state what it measured.
+export function buildQualificationRecord(input, compatibility, evidence, now = new Date(), environment, reportBytes) {
   if (input.result !== 'passed') {
     throw new Error('Only a completed passing test run can issue a qualification record');
   }
   assertQualificationEnvironment(environment);
+  if (reportBytes === undefined || reportBytes === null) {
+    throw new Error(`The qualification record requires the run's Playwright JSON report bytes at ${QUALIFICATION_REPORT_PATH}; ${QUALIFICATION_REPORT_ENV} names that path and the release-gating suite step writes it`);
+  }
 
   validateCompatibility(compatibility);
   exactKeys(evidence, ['before', 'after'], 'qualification observations');
@@ -204,11 +217,11 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
     service_artifacts: compatibility.service_artifacts,
     deployment: { identity: compatibility.deployment, record: after.deployment },
     observations: evidence,
-    test: {
-      runner: 'playwright',
-      suite: 'complete',
-      result: 'passed',
-    },
+    // Which tests this record covers is derived from the run and this checkout, never
+    // written as a literal: the invocation the qualification workflow's suite step ran,
+    // the tag that invocation selects, the run's own report digest, and one entry per
+    // selected spec with its outcome and its collected/skipped counts.
+    test: buildTestMember(reportBytes),
     workflow: {
       repository: repositories.e2e,
       path: input.workflowPath,
@@ -240,8 +253,16 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
     throw new Error('Unsupported qualification record schema');
   }
   exactKeys(record, ['schema_version', 'record_type', 'qualification_id', 'result', 'qualified_at', 'environment', 'revisions', 'compatibility', 'service_artifacts', 'deployment', 'observations', 'test', 'workflow', 'integrity'], 'qualification');
-  exactKeys(record.test, ['runner', 'suite', 'result'], 'test result');
-  if (record.result !== 'passed' || record.test.result !== 'passed' || record.test.runner !== 'playwright' || record.test.suite !== 'complete') {
+  exactKeys(record.test, TEST_KEYS, 'test result');
+  exactKeys(record.test.selection, SELECTION_KEYS, 'test selection');
+  if (!Array.isArray(record.test.scenarios) || record.test.scenarios.length === 0) {
+    throw new Error('test result.scenarios must be a non-empty list of selected scenarios');
+  }
+  for (const scenario of record.test.scenarios) {
+    exactKeys(scenario, SCENARIO_KEYS, `test scenario ${scenario?.file}`);
+  }
+  requireHash(record.test.report_sha256, 'Qualification report checksum');
+  if (record.result !== 'passed' || record.test.runner !== 'playwright' || !RECORDABLE_RESULTS.includes(record.test.result)) {
     throw new Error('Qualification record is not passing');
   }
   exactKeys(record.integrity, ['algorithm', 'payload_sha256'], 'qualification integrity');
@@ -254,6 +275,11 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
   if (integrity.payload_sha256 !== strictPayloadDigest(payload)) {
     throw new Error('Qualification record checksum mismatch');
   }
+  // Re-derived only after the payload checksum, so a record tampered with anywhere still
+  // reports the checksum mismatch first. This is the half that refuses a record whose
+  // stated selection or scenario list does not match the workflow, `package.json`, the spec
+  // titles and the scenario inventory of the checkout that judges it.
+  assertTestSelection(payload.test);
   validateCompatibility(payload.compatibility);
   exactKeys(payload.workflow, ['repository', 'path', 'ref', 'run_id', 'run_attempt', 'run_url'], 'qualification workflow');
   const workflow = payload.workflow;
@@ -291,6 +317,21 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
     || trustedRun.head_sha !== payload.revisions.e2e.sha || trustedRun.repository?.full_name !== repositories.e2e
     || trustedRun.path !== workflow.path || trustedRun.event !== 'workflow_dispatch' || trustedRun.head_branch !== 'main'
     || trustedRun.status !== 'completed' || trustedRun.conclusion !== 'success')) throw new Error('Trusted E2E run binding mismatch');
+  return true;
+}
+
+// The producer's own next step, run in the job that wrote both files: it refuses a record
+// hand-edited between the report the suite wrote and the artifact upload. The report itself
+// is retained in the qualification artifact, so the digest the record states is auditable
+// against the bytes it names instead of being an unchecked claim.
+export function verifyQualificationAgainstReport(record, reportBytes) {
+  if (reportBytes === undefined || reportBytes === null) {
+    throw new Error(`Verifying a qualification record against its run requires the Playwright JSON report bytes at ${QUALIFICATION_REPORT_PATH}`);
+  }
+  if (record?.test?.report_sha256 !== byteHash(reportBytes)) {
+    throw new Error('Qualification record and Playwright report checksums differ');
+  }
+  assertEqual(record.test.scenarios, reportScenarios(reportBytes), 'Qualification scenarios and the Playwright report');
   return true;
 }
 

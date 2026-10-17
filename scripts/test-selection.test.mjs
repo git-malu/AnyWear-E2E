@@ -1,0 +1,294 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import test from 'node:test';
+import {
+  QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, QUALIFICATION_SUITE_STEP, QUALIFICATION_WORKFLOW_PATH,
+  assertScenarioDeclarations, assertTestSelection, buildTestMember, qualificationInvocation, qualificationReportPath,
+  qualificationSelection, qualificationSuiteStep, readPackageJson, reportScenarios, repositoryRoot, selectionTag,
+  selectedScenarios,
+} from './test-selection.mjs';
+
+// These cases hold the qualification record's statement of its own selection to four
+// independent sources: the qualification workflow's suite step, `package.json`, the run's
+// Playwright JSON report and the spec titles/inventory. The producer and the verifier both
+// call the module under test, so a case here is a case about both ends at once. Nothing
+// below executes a deployed scenario or reads any cloud state.
+
+const workflow = await readFile(join(repositoryRoot, QUALIFICATION_WORKFLOW_PATH), 'utf8');
+
+async function temporaryRoot(t, files) {
+  const root = await mkdtemp(join(tmpdir(), 'anywear-test-selection-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), content, 'utf8');
+  }
+  return root;
+}
+
+// A minimal workflow with one step list: enough for the derivation, and nothing else.
+const syntheticWorkflow = (run) => `name: Beta Qualification
+
+jobs:
+  qualify:
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+
+      - name: Whatever a reader sees
+        id: beta-suite
+        run: |
+${run.split('\n').map((line) => `          ${line}`).join('\n')}
+`;
+
+const reportTest = (status) => ({
+  timeout: 30_000, annotations: [], expectedStatus: 'passed', projectId: 'chromium', projectName: 'chromium', results: [], status,
+});
+
+const describeSuite = (file, title, statuses) => ({
+  title,
+  file,
+  line: 1,
+  column: 1,
+  specs: statuses.map((status, index) => ({
+    title: `${title} case ${index}`,
+    ok: status !== 'unexpected',
+    tags: [],
+    tests: [reportTest(status)],
+    id: `${file}-${index}`,
+    file,
+    line: 1,
+    column: 1,
+  })),
+});
+
+const fileSuite = (file, statuses, nested = []) => ({
+  title: file, file, line: 0, column: 0, specs: [], suites: [describeSuite(file, `${file} describe`, statuses), ...nested],
+});
+
+const reportBytes = (suites) => Buffer.from(`${JSON.stringify({ config: { rootDir: 'tests' }, suites, errors: [], stats: {} }, null, 2)}\n`);
+
+const scenario = (file, overrides = {}) => ({ file, outcome: 'passed', collected: 1, skipped: 0, ...overrides });
+
+const testMember = (tag, scenarios) => ({
+  runner: 'playwright',
+  result: scenarios.some(({ outcome }) => outcome === 'flaky') ? 'flaky' : 'passed',
+  selection: { invocation: 'test', tag },
+  report_sha256: 'a'.repeat(64),
+  scenarios,
+});
+
+test('derives the qualification invocation from the beta-suite step, not from its display name', async (t) => {
+  assert.equal(qualificationInvocation(), 'test');
+  const suite = qualificationSuiteStep();
+  assert.equal(suite.id, QUALIFICATION_SUITE_STEP);
+  assert.equal(suite.name.length > 0, true);
+
+  // Rename the step in a copy of the real workflow and derive again: a reader-facing name
+  // cannot decide which selection issued a record.
+  const renamed = workflow.replace(/( *- name: )([^\n]*)(\n\s+id: beta-suite)/, '$1A name that says nothing$3');
+  assert.notEqual(renamed, workflow, 'the suite step name was not replaced in the copy');
+  const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: renamed });
+  assert.equal(qualificationInvocation({ root }), 'test');
+  assert.equal(qualificationSuiteStep({ root }).name, 'A name that says nothing');
+});
+
+test('refuses a suite step that runs no pnpm script or more than one', async (t) => {
+  for (const [label, run, expected] of [
+    ['no pnpm script', 'node scripts/execution-guard.mjs', /runs no pnpm script/],
+    ['two pnpm scripts', 'node scripts/execution-guard.mjs\npnpm test\npnpm test:smoke', /runs more than one pnpm script \(test, test:smoke\)/],
+  ]) {
+    const root = await temporaryRoot(t, { [QUALIFICATION_WORKFLOW_PATH]: syntheticWorkflow(run) });
+    assert.throws(() => qualificationInvocation({ root }), expected, label);
+  }
+
+  // A workflow edited so the identifier is gone cannot say which selection a record is about.
+  const missing = await temporaryRoot(t, {
+    [QUALIFICATION_WORKFLOW_PATH]: syntheticWorkflow('pnpm test').replace('id: beta-suite', 'id: something-else'),
+  });
+  assert.throws(() => qualificationInvocation({ root: missing }), /no step with beta-suite as its id/);
+});
+
+test('derives each invocation tag from package.json and refuses any that selects no single tag', () => {
+  const pkg = readPackageJson();
+  for (const [invocation, tag] of [
+    ['test', '@regression'],
+    ['test:smoke', '@smoke'],
+    ['test:regression', '@regression'],
+    ['test:instrumentation', '@instrumentation'],
+    ['test:full-stack', '@full-stack'],
+  ]) {
+    assert.equal(selectionTag(pkg, invocation), tag, invocation);
+  }
+  // Discovery, offline contracts and the measurement set carry no single positive tag.
+  for (const invocation of ['test:core', 'test:tool-regressions', 'test:deferred-sqs', 'test:list']) {
+    assert.throws(() => selectionTag(pkg, invocation), /not a single positive --grep tag selection/, invocation);
+  }
+  assert.throws(() => selectionTag(pkg, 'test:undeclared'), /declares no test:undeclared script/);
+  // A tag that is not a plain lowercase positive selection is refused rather than recorded.
+  for (const command of ['playwright test', 'playwright test --grep=@regression', 'playwright test --grep @Regression',
+    'playwright test --grep @regression --grep-invert @smoke', 'playwright test --list --grep @regression']) {
+    assert.throws(() => selectionTag({ scripts: { test: command } }, 'test'), /not a single positive --grep tag selection/, command);
+  }
+});
+
+test('the spec titles, the scenario inventory and the release-gating selection agree on the four members', () => {
+  const declarations = assertScenarioDeclarations();
+  assert.deepEqual(declarations.map(({ file }) => file), [
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
+    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+  ]);
+  assert.deepEqual(qualificationSelection(), { invocation: 'test', tag: '@regression' });
+  assert.deepEqual(selectedScenarios('@regression').map(({ file }) => file), [
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+  ]);
+  // Discovery is wider than the gate: the measurement scenario is selected by @full-stack
+  // and by nothing the release gate runs.
+  assert.deepEqual(selectedScenarios('@full-stack').map(({ file }) => file), [
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
+    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+  ]);
+  assert.deepEqual(selectedScenarios('@instrumentation').map(({ file }) => file), ['tests/beta-sizing.spec.ts']);
+});
+
+test('derives one entry per selected spec from the run report with the documented outcome priority', () => {
+  const scenarios = reportScenarios(reportBytes([
+    // Two nested describe suites under one file suite: a retry-only pass outranks a pass.
+    {
+      title: 'tests/alpha.spec.ts', file: 'tests/alpha.spec.ts', line: 0, column: 0, specs: [],
+      suites: [describeSuite('tests/alpha.spec.ts', 'Alpha', ['expected']), describeSuite('tests/alpha.spec.ts', 'Alpha more', ['expected', 'flaky'])],
+    },
+    // Every collected test skipped is the only way a file is `skipped`.
+    fileSuite('tests/beta.spec.ts', ['skipped', 'skipped']),
+    // A partial skip is a pass with a counted skip, not a skipped scenario.
+    fileSuite('tests/gamma.spec.ts', ['skipped', 'expected']),
+    // A failure outranks a retry-only pass.
+    fileSuite('tests/delta.spec.ts', ['unexpected', 'flaky']),
+  ]));
+  assert.deepEqual(scenarios, [
+    { file: 'tests/alpha.spec.ts', outcome: 'flaky', collected: 3, skipped: 0 },
+    { file: 'tests/beta.spec.ts', outcome: 'skipped', collected: 2, skipped: 2 },
+    { file: 'tests/delta.spec.ts', outcome: 'failed', collected: 2, skipped: 0 },
+    { file: 'tests/gamma.spec.ts', outcome: 'passed', collected: 2, skipped: 1 },
+  ]);
+});
+
+test('refuses a report with no scenario, an unknown status, or a file that disagrees with its suite chain', () => {
+  assert.throws(() => reportScenarios(reportBytes([])), /records no scenario/);
+  assert.throws(() => reportScenarios(reportBytes([{ title: 'tests/alpha.spec.ts', file: 'tests/alpha.spec.ts', specs: [], suites: [] }])),
+    /records no scenario/);
+  assert.throws(() => reportScenarios(Buffer.from('{}')), /declares no suites/);
+  assert.throws(() => reportScenarios(Buffer.from('not json')), /is not JSON/);
+  assert.throws(() => reportScenarios(Buffer.from([0xc0, 0xaf])), /not valid UTF-8/);
+  assert.throws(() => reportScenarios(reportBytes([fileSuite('tests/alpha.spec.ts', ['silent'])])), /unknown test status "silent"/);
+
+  const disagreed = fileSuite('tests/alpha.spec.ts', ['expected']);
+  disagreed.suites[0].specs[0].file = 'tests/beta.spec.ts';
+  assert.throws(() => reportScenarios(reportBytes([disagreed])),
+    /places the tests\/beta\.spec\.ts spec in a suite for tests\/alpha\.spec\.ts/);
+
+  const noTests = fileSuite('tests/alpha.spec.ts', ['expected']);
+  noTests.suites[0].specs[0].tests = [];
+  assert.throws(() => reportScenarios(reportBytes([noTests])), /records a spec in tests\/alpha\.spec\.ts with no test/);
+});
+
+test('refuses a selection that omits a declared member or adds one the tag does not select', () => {
+  const regression = ['tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
+  // A record that drops a declared member silently narrows what it claims to have qualified.
+  assert.throws(() => assertTestSelection(testMember('@regression', [
+    scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }), scenario('tests/worker-smoke.spec.ts'),
+  ])), /omits tests\/wardrobe\.spec\.ts/);
+  // `tests/beta-sizing.spec.ts` is selected by `@full-stack` and by nothing the release gate
+  // runs, so listing it claims a scenario the gate did not run — the discovery-versus-gated
+  // distinction this change exists to make legible.
+  assert.throws(() => assertTestSelection(testMember('@regression', [
+    ...regression.map((file) => scenario(file)), scenario('tests/beta-sizing.spec.ts'),
+  ])), /adds tests\/beta-sizing\.spec\.ts/);
+  // Stating the discovery selection is refused before the scenario list is even compared:
+  // the qualification workflow's suite step does not run `@full-stack`.
+  assert.throws(() => assertTestSelection(testMember('@full-stack', [
+    ...regression.map((file) => scenario(file)), scenario('tests/beta-sizing.spec.ts'),
+  ])), /Qualification selection mismatch/);
+  // The declared selection itself, with the one declared skip, is accepted.
+  assert.doesNotThrow(() => assertTestSelection(testMember('@regression', [
+    scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/wardrobe.spec.ts'),
+    scenario('tests/worker-smoke.spec.ts'),
+  ])));
+});
+
+test('refuses a skipped scenario whose spec declares no runtime skip', () => {
+  const member = testMember('@regression', [
+    scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    // wardrobe.spec.ts has no `test.skip(condition)` at all: a collected-and-skipped entry
+    // here would excuse an acceptance path that never ran.
+    scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/worker-smoke.spec.ts'),
+  ]);
+  assert.throws(() => assertTestSelection(member), /tests\/wardrobe\.spec\.ts declares no runtime skip/);
+  // A partial skip needs the declaration too, because the counts would otherwise read as a
+  // completed spec.
+  assert.throws(() => assertTestSelection(testMember('@regression', [
+    scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/wardrobe.spec.ts', { collected: 2, skipped: 1 }),
+    scenario('tests/worker-smoke.spec.ts'),
+  ])), /tests\/wardrobe\.spec\.ts records 1 skipped test/);
+});
+
+test('refuses a failed scenario even when the run reported success, and a run where nothing executed', () => {
+  const failed = testMember('@regression', [
+    scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/wardrobe.spec.ts', { outcome: 'failed' }),
+    scenario('tests/worker-smoke.spec.ts'),
+  ]);
+  assert.equal(failed.result, 'passed');
+  assert.throws(() => assertTestSelection(failed), /tests\/wardrobe\.spec\.ts failed, so the run cannot issue a qualification record/);
+  // The report is where the failure is read from, and the workflow's literal `passed` result
+  // never reaches it.
+  assert.throws(() => buildTestMember(reportBytes([
+    fileSuite('tests/auth-startup.spec.ts', ['expected']),
+    fileSuite('tests/auth.spec.ts', ['skipped']),
+    fileSuite('tests/wardrobe.spec.ts', ['unexpected']),
+    fileSuite('tests/worker-smoke.spec.ts', ['expected']),
+  ])), /tests\/wardrobe\.spec\.ts failed/);
+
+  // Collected and executed nothing: every scenario is skipped, so the run establishes no
+  // acceptance result even though each skip is legally declared.
+  const nothing = testMember('@regression', [
+    scenario('tests/auth-startup.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/worker-smoke.spec.ts', { outcome: 'skipped', skipped: 1 }),
+  ]);
+  assert.throws(() => assertTestSelection(nothing), /requires at least one scenario that executed/);
+});
+
+test('the qualification workflow writes the report the record reads, in both artifact lists', () => {
+  const configured = workflow.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith(`${QUALIFICATION_REPORT_ENV}:`))
+    ?.slice(QUALIFICATION_REPORT_ENV.length + 1).trim();
+  assert.equal(configured, QUALIFICATION_REPORT_PATH);
+  // One declaration drives both ends: the workflow's reporter output and the module default.
+  assert.equal(qualificationReportPath(), resolve(repositoryRoot, QUALIFICATION_REPORT_PATH));
+
+  for (const upload of ['Upload qualification evidence', 'Upload qualification diagnostics']) {
+    const start = workflow.indexOf(`- name: ${upload}`);
+    assert.ok(start > 0, `${upload} step is missing`);
+    const next = workflow.indexOf('- name: ', start + 1);
+    const block = workflow.slice(start, next < 0 ? undefined : next);
+    assert.ok(block.includes(QUALIFICATION_REPORT_PATH), `${upload} must retain the report the record hashes`);
+  }
+
+  // The suite step still runs the guard and exactly one release-gating invocation, and adds
+  // no reporter flag: the report path travels through the job environment, not the command.
+  const suite = qualificationSuiteStep();
+  assert.deepEqual(suite.run.map((line) => line.trim()).filter(Boolean), ['node scripts/execution-guard.mjs', 'pnpm test']);
+  assert.doesNotMatch(suite.run.join('\n'), /--reporter|--output/);
+});
