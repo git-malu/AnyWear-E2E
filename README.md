@@ -249,7 +249,8 @@ to that stable `https://<distribution>.cloudfront.net` endpoint before qualifica
 ## CI Model
 
 `compatibility.json` is the CI source of truth for the Client and Service
-revisions under test. It accepts only full commit SHAs; branch and tag names are
+revisions under test and for the two deployment producers that wrote the v3
+records. It accepts only full commit SHAs; branch and tag names are
 rejected. When invoked, the `smoke` operation of the `qualify` entry checks out those exact
 private repositories, including their recursive API submodules, and records every tested
 revision as an artifact.
