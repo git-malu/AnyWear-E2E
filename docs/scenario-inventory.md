@@ -65,7 +65,7 @@ agreeing about the invocations that exist.
 | Owner | AnyWear-E2E maintainers |
 | Lifecycle | Current; retired only with a caller and lifecycle decision per the policy's retention rules |
 | Command | `pnpm test:regression`, and `pnpm test` because the suite step runs the same selection |
-| Default trigger | Deployed Beta Qualification; opt-in sizing is not required |
+| Default trigger | Deployed Beta Qualification, whose selection this scenario is part of |
 | Cost | External write and paid provider cost: one identity, one uploaded object, one tagging task per attempt. Not separately metered |
 | Side effects | Application rows, an S3 object, provider spend, and a Cognito identity |
 | Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |

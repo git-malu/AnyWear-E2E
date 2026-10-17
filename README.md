@@ -717,9 +717,12 @@ Valid codec encoding/resize creates the fixtures; no padding or noise is added. 
 Pillow builder enforces the bound itself: it copies an accepted fixture through
 byte-for-byte at the reviewed encoding and refuses to write anything above the bound.
 
-The workflow preserves `.qualification-inputs/beta-sizing-runtime-before.json`
-and `test-results/beta-sizing-workload.json` in qualification diagnostics, including
-partial business results after failure. Protected leased-account application
+The instrumentation dispatch preserves `.qualification-inputs/beta-sizing-runtime-before.json`
+and `test-results/beta-sizing-workload.json` in its own
+`beta-instrumentation-<run>-<attempt>` artifact, including
+partial business results after failure. They are measurement evidence, not part of the
+qualification run's diagnostics, which no longer carry them. Protected leased-account
+application
 cleanup handles all retained data and exact subjects; the scenario performs no
 ad hoc deletion. Unfinished tasks/failed cleanup cannot qualify the stage.
 
