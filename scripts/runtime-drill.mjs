@@ -10,6 +10,7 @@ import { assertLiveRuntimeSourceReady } from './runtime-source-readiness.mjs';
 import { validateOneShotProof } from './runtime-one-shot.mjs';
 import { validateCleanupEvidence } from './runtime-one-shot-logs.mjs';
 import { isDeepStrictEqual } from 'node:util';
+import { ADMISSION_MODE_PARAMETER, parseAdmissionMode } from './beta-admission-mode.mjs';
 import { testerHash } from './runtime-window-controls.mjs';
 
 const exec = promisify(execFile);
@@ -458,29 +459,31 @@ function verifyWindowEvidence(window, scope, helperTasks) {
     || window.restored !== true || window.phase !== 'restored' || !Array.isArray(window.write_ledger) || window.write_ledger.length < 3) {
     throw new Error('Admission ledger lacks exact restored run/user binding');
   }
-  const keys = ['intake_open', 'tester_allowlist', 'admission_suspended'];
+  // One mode parameter: `set-testers` moves the tester list and `suspend`/`resume` move
+  // the mode, so each ledger entry carries exactly one parameter's version increment.
+  const keys = ['admission_mode', 'tester_allowlist'];
   let versions = window.baseline_versions;
-  const lastConfigure = window.write_ledger.findLast((entry) => entry.action === 'configure-testers');
+  const lastSetTesters = window.write_ledger.findLast((entry) => entry.action === 'set-testers');
   let activated = false;
   for (const entry of window.write_ledger) {
     if (entry.run_scope !== scope.runScope || !isDeepStrictEqual(entry.before_versions, versions)) throw new Error('Foreign run or discontinuous admission write ledger');
-    const deltas = entry.action === 'configure-testers' ? [0, 1, 2] : [0, 0, 1];
-    if (!['configure-testers', 'close', 'open'].includes(entry.action) || keys.some((key, offset) =>
+    const deltas = entry.action === 'set-testers' ? [0, 1] : [1, 0];
+    if (!['set-testers', 'suspend', 'resume'].includes(entry.action) || keys.some((key, offset) =>
       !Number.isInteger(versions?.[key]) || versions[key] < 1 || entry.after_versions?.[key] !== versions[key] + deltas[offset])) {
       throw new Error('Admission write ledger has non-nominal versions');
     }
     const payload = entry.extraction?.command?.[3] ?? '';
     validateOneShotProof(entry.extraction, scope, 'lifecycle', payload, entry.action);
-    if (entry.action === 'configure-testers') {
+    if (entry.action === 'set-testers') {
       const emails = JSON.parse(payload);
       if (!Array.isArray(emails) || emails.some((email) => typeof email !== 'string') || testerHash(emails) !== entry.tester_hash
-        || (entry !== lastConfigure && payload !== JSON.stringify([scope.email]))
-        || (entry === lastConfigure && entry.tester_hash !== window.baseline_audit?.policy?.tester_allowlist_hash)) {
+        || (entry !== lastSetTesters && payload !== JSON.stringify([scope.email]))
+        || (entry === lastSetTesters && entry.tester_hash !== window.baseline_audit?.policy?.tester_allowlist_hash)) {
         throw new Error('Admission tester writes are not bound to synthetic activation or exact baseline restoration');
       }
     }
-    if (!activated && entry.action !== 'close') {
-      if (entry.action !== 'configure-testers' || payload !== JSON.stringify([scope.email])) throw new Error('Admission did not begin with the exact run-owned tester');
+    if (!activated && entry.action !== 'suspend') {
+      if (entry.action !== 'set-testers' || payload !== JSON.stringify([scope.email])) throw new Error('Admission did not begin with the exact run-owned tester');
       activated = true;
     }
     helperTasks.push(entry.extraction.task_arn);
@@ -490,9 +493,9 @@ function verifyWindowEvidence(window, scope, helperTasks) {
   for (const audit of [window.baseline_audit, window.final_audit]) {
     const request = { runScope: scope.runScope, mode: 'window-preflight' };
     if (audit?.source !== 'durable-runtime-window-audit' || audit.schema_version !== 1
-      || !isDeepStrictEqual(audit.binding, request) || audit.policy?.intake_open !== false
+      || !isDeepStrictEqual(audit.binding, request)
       || !Number.isFinite(Date.parse(audit.observed_at)) || !Number.isFinite(Date.parse(audit.policy.updated_at))
-      || typeof audit.policy.admission_suspended !== 'boolean' || !/^[a-f0-9]{64}$/.test(audit.policy.tester_allowlist_hash ?? '')
+      || !['closed', 'testers'].includes(audit.policy.admission_mode) || !/^[a-f0-9]{64}$/.test(audit.policy.tester_allowlist_hash ?? '')
       || !Number.isInteger(audit.policy.tester_count) || audit.policy.tester_count < 0 || audit.policy.tester_count > 50
       || ['active_tasks', 'unpublished_outbox', 'manual_intervention_outbox'].some((key) => audit.current_rows?.[key] !== 0)) {
       throw new Error('Admission requires exact before/after empty durable census');
@@ -501,9 +504,11 @@ function verifyWindowEvidence(window, scope, helperTasks) {
     helperTasks.push(audit.extraction.task_arn);
   }
   if (!isDeepStrictEqual(window.baseline_audit.policy, window.final_audit.policy)) {
-    const { updated_at: ignoredBefore, ...before } = window.baseline_audit.policy;
-    const { updated_at: ignoredAfter, ...after } = window.final_audit.policy;
-    void ignoredBefore; void ignoredAfter;
+    // The mode record's bound is generated by the writer, so restoring a decision cannot
+    // reproduce its instant; the decision and the tester list are what must match.
+    const { updated_at: ignoredBefore, admission_window_expires_at: ignoredBoundBefore, ...before } = window.baseline_audit.policy;
+    const { updated_at: ignoredAfter, admission_window_expires_at: ignoredBoundAfter, ...after } = window.final_audit.policy;
+    void ignoredBefore; void ignoredAfter; void ignoredBoundBefore; void ignoredBoundAfter;
     if (!isDeepStrictEqual(before, after)) throw new Error('Original private admission policy was not restored');
   }
 }
@@ -583,8 +588,9 @@ async function collectPreflight(config, compatibility) {
       throw new Error(`Beta ECS service ${service.serviceName ?? 'unknown'} is not running`);
     }
   }
-  const intake = await awsJson(['ssm', 'get-parameter', '--name', '/anywear/beta/intake_open']);
-  const intakeOpen = intake.Parameter?.Value === 'true';
+  const admission = await awsJson(['ssm', 'get-parameter', '--name', ADMISSION_MODE_PARAMETER]);
+  const admissionMode = parseAdmissionMode(admission.Parameter?.Value);
+  if (!admissionMode) throw new Error('Runtime drills require a reader-valid Beta admission window record');
   const queues = {};
   for (const [name, url] of Object.entries(stack.queues)) {
     queues[name] = await awsJson(['sqs', 'get-queue-attributes', '--queue-url', url, '--attribute-names', 'All']);
@@ -600,12 +606,11 @@ async function collectPreflight(config, compatibility) {
     }, compatibility),
     stack,
     services: services.services ?? [],
-    intake_open: intakeOpen,
+    admission_mode: admissionMode.mode,
     queues,
     notes: [
       'Preflight is read-only and does not restart ECS tasks, publish SQS messages, or mutate database state.',
-      'Task-bearing runtime drills require a reserved private-only Beta window: /anywear/beta/intake_open=false and one exact run-owned tester.',
-      ...(intakeOpen ? ['Public intake is open; runtime execution is refused.'] : []),
+      `Task-bearing runtime drills open their own run-owned tester window from /anywear/beta/admission_mode=${admissionMode.mode} and restore that decision and the tester list afterwards.`,
       'A passing preflight is not runtime reliability evidence.',
     ],
   };
@@ -641,7 +646,7 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
   const providerFixture = await fixtureReader(environment.RUNTIME_DRILL_PROVIDER_FAILURE_FIXTURE);
   const fencingCi = await fencingReader(environment, compatibility.service.sha);
   const preflight = await preflightCollector(config, compatibility);
-  if (preflight.intake_open !== false) throw new Error('Runtime drills require private-only /anywear/beta/intake_open=false');
+  if (!['closed', 'testers'].includes(preflight.admission_mode)) throw new Error('Runtime drills require a reader-valid /anywear/beta/admission_mode record');
 
   let scope;
   let result;
