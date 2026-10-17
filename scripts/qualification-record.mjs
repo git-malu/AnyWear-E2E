@@ -3,6 +3,7 @@ import {
   parseStrictJson, requireId, requireHash, validateCompatibility,
 } from './evidence-contract.mjs';
 import { assertDeploymentBinding } from './trusted-deployment-inputs.mjs';
+import { assertQualificationEnvironment } from './beta-sizing-environment.mjs';
 import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment } from './vendor/deployment-contract.mjs';
 
 const commitPattern = /^[0-9a-f]{40}$/;
@@ -143,10 +144,16 @@ export function validateInfraEvidence(evidence, compatibility, executor) {
   return evidence;
 }
 
-export function buildQualificationRecord(input, compatibility, evidence, now = new Date()) {
+// The environment verdict is a required argument, not an option: this is the only path
+// that writes `qualification-record.json`, and a passing suite measured across two worker
+// task definitions measured neither of them, so it cannot issue a qualification record.
+// The assertion denies by default, so no caller can build a record without stating the
+// environment gate it consulted.
+export function buildQualificationRecord(input, compatibility, evidence, now = new Date(), environment) {
   if (input.result !== 'passed') {
     throw new Error('Only a completed passing test run can issue a qualification record');
   }
+  assertQualificationEnvironment(environment);
 
   validateCompatibility(compatibility);
   exactKeys(evidence, ['before', 'after'], 'qualification observations');

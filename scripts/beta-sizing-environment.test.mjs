@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SIZING_TASK_RECOVERY_FLOOR_MS, SIZING_TAGGING_TERMINAL_WAIT_MS, SIZING_VTO_TERMINAL_WAIT_MS,
-  assertTerminalWaitCoversRecoveryFloor, compareWorkerIdentity, environmentVerdict,
-  readOptionalEnvironmentJson, terminalWaitMs, unavailableWorkerIdentityComparison,
+import { fileURLToPath } from 'node:url';
+import { ENVIRONMENT_VERDICT_PATH, SIZING_TASK_RECOVERY_FLOOR_MS, SIZING_TAGGING_TERMINAL_WAIT_MS, SIZING_VTO_TERMINAL_WAIT_MS,
+  assertQualificationEnvironment, assertTerminalWaitCoversRecoveryFloor, compareWorkerIdentity, environmentVerdict,
+  qualificationRefusalMessage, readOptionalEnvironmentJson, terminalWaitMs, unavailableWorkerIdentityComparison,
   validateWorkerIdentity, workerIdentitySnapshot } from './beta-sizing-environment.mjs';
 import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
 import { sizingVtoCases } from './beta-sizing-workload.mjs';
@@ -145,6 +147,201 @@ test('keeps a product failure when the worker identity is unchanged', () => {
   assert.equal(compareWorkerIdentity(redefined.before, redefined.after).verdict, 'changed');
   // A passing suite is never attributed at all.
   assert.equal(environmentVerdict({ comparison, suiteOutcome: 'success' }).attribution, 'none');
+});
+
+test('describes an added-only worker change as a scale-out, not a replacement', () => {
+  const window = suiteWindow({ afterTasks: [workerTask('a'), workerTask('b'), workerTask('c')] });
+  const comparison = compareWorkerIdentity(window.before, window.after);
+  assert.equal(comparison.verdict, 'changed');
+  assert.equal(comparison.reason,
+    'The worker set serving Beta scaled out during the suite: 2 worker task(s) appeared');
+  assert.equal(comparison.added_task_arns.length, 2);
+  assert.deepEqual(comparison.added_task_arns, [taskArn('b'), taskArn('c')]);
+  assert.deepEqual(comparison.removed_task_arns, []);
+  assert.equal(comparison.removed_task_arns.length, 0);
+  assert.equal(comparison.task_definition_changed, false);
+  // "Replaced" is only true when a worker that was serving Beta left the set.
+  assert.doesNotMatch(comparison.reason, /replaced/);
+});
+
+test('reads a removal as a replacement and reports the counts its reason names', () => {
+  const removedOnly = suiteWindow({ beforeTasks: [workerTask('a'), workerTask('b')], afterTasks: [workerTask('a')] });
+  const removal = compareWorkerIdentity(removedOnly.before, removedOnly.after);
+  assert.equal(removal.reason,
+    'The workers serving Beta were replaced during the suite: 1 worker task(s) disappeared');
+  assert.deepEqual(removal.removed_task_arns, [taskArn('b')]);
+  assert.deepEqual(removal.added_task_arns, []);
+  assert.equal(removal.task_definition_changed, false);
+
+  const both = suiteWindow({ beforeTasks: [workerTask('a'), workerTask('b'), workerTask('c')],
+    afterTasks: [workerTask('a'), workerTask('d')] });
+  const replaced = compareWorkerIdentity(both.before, both.after);
+  assert.equal(replaced.reason,
+    'The workers serving Beta were replaced during the suite: 2 worker task(s) disappeared and 1 worker task(s) appeared');
+  assert.deepEqual(replaced.removed_task_arns, [taskArn('b'), taskArn('c')]);
+  assert.deepEqual(replaced.added_task_arns, [taskArn('d')]);
+  assert.equal(replaced.task_definition_changed, false);
+  assert.match(replaced.reason, new RegExp(`${replaced.removed_task_arns.length} worker task\\(s\\) disappeared`));
+  assert.match(replaced.reason, new RegExp(`${replaced.added_task_arns.length} worker task\\(s\\) appeared`));
+});
+
+test('names a changed worker task definition and never calls it a replacement', () => {
+  // The same task ARN set under a new task definition: a redeployment the ARN set
+  // cannot show, and the case the qualification gate must block.
+  const byteIdentical = suiteWindow({ afterDefinition: NEXT_WORKER_DEFINITION,
+    afterTasks: [workerTask('a', NEXT_WORKER_DEFINITION)] });
+  const redefined = compareWorkerIdentity(byteIdentical.before, byteIdentical.after);
+  assert.equal(redefined.verdict, 'changed');
+  assert.equal(redefined.task_definition_changed, true);
+  assert.equal(redefined.reason, 'The worker task definition serving Beta changed during the suite');
+  assert.deepEqual(redefined.added_task_arns, []);
+  assert.deepEqual(redefined.removed_task_arns, []);
+  assert.doesNotMatch(redefined.reason, /replaced|scaled out/);
+
+  const withAddition = suiteWindow({ afterDefinition: NEXT_WORKER_DEFINITION,
+    afterTasks: [workerTask('a', NEXT_WORKER_DEFINITION), workerTask('b', NEXT_WORKER_DEFINITION)] });
+  const added = compareWorkerIdentity(withAddition.before, withAddition.after);
+  assert.equal(added.reason,
+    'The worker task definition serving Beta changed during the suite: 1 worker task(s) appeared');
+  assert.deepEqual(added.added_task_arns, [taskArn('b')]);
+  assert.deepEqual(added.removed_task_arns, []);
+  assert.equal(added.task_definition_changed, true);
+
+  const withRemovals = suiteWindow({ beforeTasks: [workerTask('a'), workerTask('b'), workerTask('c')],
+    afterDefinition: NEXT_WORKER_DEFINITION, afterTasks: [workerTask('a', NEXT_WORKER_DEFINITION)] });
+  const shrunk = compareWorkerIdentity(withRemovals.before, withRemovals.after);
+  assert.equal(shrunk.reason,
+    'The worker task definition serving Beta changed during the suite: 2 worker task(s) disappeared');
+  assert.deepEqual(shrunk.removed_task_arns, [taskArn('b'), taskArn('c')]);
+  assert.deepEqual(shrunk.added_task_arns, []);
+  assert.doesNotMatch(shrunk.reason, /replaced/);
+});
+
+test('refuses a qualification whose passing suite spanned two worker task definitions', () => {
+  const window = suiteWindow({ afterDefinition: NEXT_WORKER_DEFINITION,
+    afterTasks: [workerTask('a', NEXT_WORKER_DEFINITION)] });
+  const record = environmentVerdict({ comparison: compareWorkerIdentity(window.before, window.after),
+    suiteOutcome: 'success' });
+  assert.equal(record.verdict, 'environment-changed');
+  let refusal;
+  try { assertQualificationEnvironment({ record, problem: null }); } catch (error) { refusal = error; }
+  assert.ok(refusal, 'a passing suite across two worker task definitions must not qualify');
+  assert.equal(refusal.message, 'A passing suite measured across two worker task definitions cannot issue a '
+    + `qualification record: ${record.reason}. Worker tasks added: 0; removed: 0. `
+    + 'Re-run the qualification on one stable worker task definition.');
+  assert.equal(qualificationRefusalMessage(record), refusal.message);
+  assert.doesNotMatch(refusal.message, /replaced/);
+  assert.match(refusal.message, /Worker tasks added: 0; removed: 0/);
+  assert.doesNotMatch(refusal.message, /[\r\n]/);
+});
+
+test('records an ARN rotation and a non-passing definition change but still qualifies them', () => {
+  const rotated = suiteWindow({ afterTasks: [workerTask('a'), workerTask('b')] });
+  const rotation = environmentVerdict({ comparison: compareWorkerIdentity(rotated.before, rotated.after),
+    suiteOutcome: 'success' });
+  assert.equal(rotation.verdict, 'environment-changed');
+  assert.equal(rotation.comparison.task_definition_changed, false);
+  assert.doesNotThrow(() => assertQualificationEnvironment({ record: rotation, problem: null }));
+
+  // A definition change under a suite that already failed or never completed blocks
+  // nothing: no passing record was possible there either way.
+  const redefined = suiteWindow({ afterDefinition: NEXT_WORKER_DEFINITION,
+    afterTasks: [workerTask('a', NEXT_WORKER_DEFINITION)] });
+  const comparison = compareWorkerIdentity(redefined.before, redefined.after);
+  assert.equal(comparison.task_definition_changed, true);
+  for (const suiteOutcome of ['failure', 'incomplete']) {
+    assert.doesNotThrow(() => assertQualificationEnvironment({
+      record: environmentVerdict({ comparison, suiteOutcome }), problem: null,
+    }));
+  }
+
+  // A structurally valid verdict whose comparison is unavailable establishes no task
+  // definition change, so it is recorded rather than blocked.
+  const unavailable = environmentVerdict({
+    comparison: compareWorkerIdentity(null, null, { problem: 'Both captures are missing' }), suiteOutcome: 'success',
+  });
+  assert.equal(unavailable.verdict, 'unavailable');
+  assert.doesNotThrow(() => assertQualificationEnvironment({ record: unavailable, problem: null }));
+});
+
+test('refuses a qualification when the environment verdict cannot be consulted', () => {
+  const valid = environmentVerdict({
+    comparison: compareWorkerIdentity(null, null, { problem: 'Both captures are missing' }), suiteOutcome: 'success',
+  });
+  const unknownField = structuredClone(valid); unknownField.unexpected = true;
+  const missingField = structuredClone(valid); delete missingField.comparison.removed_task_arns;
+  const wrongType = structuredClone(valid); wrongType.comparison.task_definition_changed = 'no';
+  const unknownOutcome = structuredClone(valid); unknownOutcome.suite_outcome = 'cancelled';
+  const cases = [
+    ['missing', { record: null, problem: `${ENVIRONMENT_VERDICT_PATH} is missing` }],
+    ['unreadable', { record: null, problem: `${ENVIRONMENT_VERDICT_PATH} is not valid JSON` }],
+    ['absent', { record: null, problem: null }],
+    ['not an object', { record: [1], problem: null }],
+    ['truncated', { record: { record_type: 'beta-environment-verdict' }, problem: null }],
+    ['unknown field', { record: unknownField, problem: null }],
+    ['missing comparison field', { record: missingField, problem: null }],
+    ['wrong comparison type', { record: wrongType, problem: null }],
+    ['unknown suite outcome', { record: unknownOutcome, problem: null }],
+    ['not provided', undefined],
+  ];
+  for (const [name, environment] of cases) {
+    let refusal;
+    try { assertQualificationEnvironment(environment); } catch (error) { refusal = error; }
+    assert.ok(refusal, `${name} must refuse`);
+    assert.match(refusal.message, /could not be established/);
+    assert.match(refusal.message, /no qualification record is issued/);
+    assert.ok(refusal.message.includes(ENVIRONMENT_VERDICT_PATH), `${name} must name the expected verdict path`);
+  }
+  // The message names the path the caller actually read.
+  let renamed;
+  try { assertQualificationEnvironment({ record: null, problem: 'elsewhere.json is missing' }, { source: 'elsewhere.json' }); }
+  catch (error) { renamed = error; }
+  assert.match(renamed.message, /The Beta environment verdict at elsewhere\.json could not be established/);
+});
+
+test('the qualification-gate command fails the run for a definition change and passes the rotation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'anywear-env-gate-'));
+  const repository = fileURLToPath(new URL('..', import.meta.url));
+  const summary = join(directory, 'step-summary.md');
+  let written = 0;
+  const gate = async (record) => {
+    const verdictPath = join(directory, `verdict-${written += 1}.json`);
+    await writeFile(verdictPath, `${JSON.stringify(record, null, 2)}\n`);
+    const result = spawnSync(process.execPath, ['scripts/beta-sizing-environment.mjs', 'qualification-gate',
+      '--output', verdictPath], { cwd: repository, encoding: 'utf8',
+      env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
+    assert.equal(result.error, undefined);
+    return result;
+  };
+  try {
+    const redefined = suiteWindow({ afterDefinition: NEXT_WORKER_DEFINITION,
+      afterTasks: [workerTask('a', NEXT_WORKER_DEFINITION)] });
+    const changed = environmentVerdict({ comparison: compareWorkerIdentity(redefined.before, redefined.after),
+      suiteOutcome: 'success' });
+    const refused = await gate(changed);
+    assert.equal(refused.status, 1);
+    assert.ok(refused.stderr.includes('::error title=Worker task definition changed during the suite::'
+      + qualificationRefusalMessage(changed)));
+    assert.match(await readFile(summary, 'utf8'), /^### Qualification refused across two worker task definitions$/m);
+
+    const rotated = suiteWindow({ afterTasks: [workerTask('a'), workerTask('b')] });
+    const rotation = environmentVerdict({ comparison: compareWorkerIdentity(rotated.before, rotated.after),
+      suiteOutcome: 'success' });
+    assert.equal(rotation.verdict, 'environment-changed');
+    const qualified = await gate(rotation);
+    assert.equal(qualified.status, 0);
+    assert.doesNotMatch(`${qualified.stdout}${qualified.stderr}`, /cannot issue a qualification record/);
+
+    const unavailable = environmentVerdict({
+      comparison: compareWorkerIdentity(null, null, { problem: 'Both captures are missing' }), suiteOutcome: 'success',
+    });
+    assert.equal(unavailable.verdict, 'unavailable');
+    const recorded = await gate(unavailable);
+    assert.equal(recorded.status, 0);
+    assert.doesNotMatch(recorded.stderr, /::error/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('records an unusable identity pair as unavailable without inventing a change', () => {

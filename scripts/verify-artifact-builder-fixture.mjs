@@ -86,7 +86,7 @@ export async function verifyArtifactBuilderFixture(artifactDirectory, infraDirec
     evidence.authenticated.schema.verification.executor = priorVerification.executor;
     evidence.authenticated.schema.verification.task_arn = priorVerification.task_arn;
   }
-  const record = buildQualificationRecord(fixture.input, compatibility, fixture.evidence, new Date('2026-10-08T00:20:00Z'));
+  const record = buildQualificationRecord(fixture.input, compatibility, fixture.evidence, new Date('2026-10-08T00:20:00Z'), fixture.environment);
   verifyQualificationRecord(record);
   // Exercise forward compatibility using the actual complete SQL-hash prefix.
   // The appended migration/current version are explicitly hypothetical inputs.

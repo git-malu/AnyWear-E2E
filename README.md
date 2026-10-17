@@ -45,7 +45,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 23 current offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 24 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -82,14 +82,20 @@ qualification. Until that split is wired, `pnpm test` still collects the sizing
 measurement with the business scenarios and a sizing failure still fails the
 qualification step; the inventory marks the invocations that change that.
 
-The 23 routine core files retain account-budget, Cognito cleanup, qualification
+The 24 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
-`trusted-deployment-inputs.test.mjs` contracts. The latter protect pinned source,
-committed selection, direct native release verification, deployment identity and execution validation; their
-offline assertions remain required by `check` without claiming actual publication or
-qualification.
+`trusted-deployment-inputs.test.mjs` contracts. `test:core` also owns
+`scripts/beta-cleanup-diagnostic.test.mjs`, which asserts the cleanup diagnostic's
+`DIAGNOSTIC_EXPECTED` evidence record offline, without credentials, cloud calls or
+deployed reads; it belongs with its `cleanup-acceptance.test.mjs`,
+`service-cleanup-operation.test.mjs` and `worker-cleanup.test.mjs` neighbours, and its
+production module is consumed by `scripts/account-recovery-inputs.mjs` and
+`scripts/cleanup-worker-accounts.mjs`. The infra contracts protect pinned source,
+committed selection, direct native release verification, deployment identity and
+execution validation; their offline assertions remain required by `check` without
+claiming actual publication or qualification.
 
 The tool workflow watches the registered tests, their implementation and fixture
 dependencies, shared evidence/source contracts, vendored direct-release validators and
@@ -103,7 +109,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit 23 core test files, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit 24 core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -140,7 +146,8 @@ already-deployed Beta environment. It reads the reviewed full SHAs from
 `compatibility.json`, verifies those identities against the deployed Client
 `build-metadata.json` and Service `/health`, runs the release-gating deployed selection, rechecks both
 identities and the Service image digest, and uploads a checksummed qualification record.
-A failed, mismatched, or changed deployment cannot issue a passing record. The workflow
+A failed, mismatched, or changed deployment, or a worker task definition that changed during
+the suite, cannot issue a passing record. The workflow
 requests 90-day artifact retention, subject to GitHub's configured
 repository or organization ceiling; durable release-ledger storage remains
 out of scope for the initial Production launch. The finite GitHub retention window is an
@@ -518,7 +525,8 @@ comparison rules while the spec keeps recording what it observed.
 - `test-results/beta-environment-verdict.json` is the verdict: `environment-changed`,
   `unchanged`, or `unavailable` when an input is missing or malformed, with
   `product_failure_asserted` and the exact worker task ARNs that appeared and
-  disappeared.
+  disappeared. When the suite passed and `comparison.task_definition_changed` is true,
+  this same verdict is what refuses the qualification.
 - `test-results/beta-sizing-workload.json` records the identity the workload started in
   (`worker_identity_before_sha256`), and the verdict reports whether the two agree.
 
@@ -536,13 +544,21 @@ the captures bracket the suite and cannot say when a rotation happened relative 
 interrupted case - so a genuine product failure that coincides with a worker replacement
 is reported as an environment change and must be re-adjudicated by a re-run.
 
-The verdict annotates a run; it is not itself a qualification gate. A suite that **passed**
-while the workers were replaced still creates its qualification record, because what it
-observed was the product behaving correctly, and the deployed tuple it qualifies is
-rechecked independently by `Confirm deployed identities remained stable`. A rotation with
-an unchanged Client, Service and image is recorded as `environment-changed` evidence in
-the verdict rather than acted on; only a change to the deployed tuple fails that recheck.
-A redeployment that replaces the tuple therefore still cannot qualify the release.
+The verdict is a qualification gate on one branch only: the passing path. A suite that
+**passed** while the worker task definition serving Beta changed cannot issue a
+qualification - the record path refuses before it writes `qualification-record.json`, and
+the `Refuse a qualification measured across two worker definitions` step fails the run with
+the same sanitized sentence. The reason for the distinction is what the run measured: a
+suite that spanned two task definitions measured neither of them, while a rotation of task
+ARNs on one unchanged definition leaves the configuration under test intact. That rotation
+is recorded and does not block, so a passing suite on one unchanged definition is still
+qualified, and the reason line says which of the two happened: an added-only change reads as
+a scale-out, not as workers being replaced. Run
+[38879938899](https://github.com/git-malu/AnyWear-E2E/actions/runs/38879938899) is that
+rotation - its suite passed, the verdict recorded 2 worker task(s) appeared and none removed
+with the task definition unchanged, and the run still created its qualification record. A
+redeployment that replaces the deployed tuple is still caught separately by
+`Confirm deployed identities remained stable`.
 
 The capture is unconditional for every qualification run, not only for the opt-in sizing
 stage, because a deployment change cannot qualify release evidence of any kind. The
