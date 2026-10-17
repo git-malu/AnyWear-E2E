@@ -21,32 +21,57 @@ export const ADMISSION_WINDOW_CEILING_MS = 240 * 60_000;
 export const ADMISSION_WINDOW_SKEW_MS = 60_000;
 
 /** The exact key set each declared mode carries; an extra key is not this record. */
-const RECORD_KEYS = { closed: ['mode'], testers: ['mode', 'expires_at'] };
+/** The exact key set each declared mode carries, and the only two accepted mode words. */
+const MODE_KEYS = { closed: ['mode'], testers: ['mode', 'expires_at'] };
+const MODE_VALUES = ['closed', 'testers'];
 
 /**
  * The record's declared mode, or `null` when no reader would accept the record.
  *
- * Rejection here is structural: JSON validity (through the strict parser, which refuses
+ * Rejection is structural: JSON validity (through the strict parser, which refuses
  * duplicate keys that `JSON.parse` would silently collapse to the last one), object
- * shape, exact key set, a known mode, and an instant in the exact canonical form the
- * writer emits. `Date.parse` alone is not enough: it accepts date-only values, slashes,
- * naive timestamps read in the reader's own zone, and impossible dates that roll over
- * (for example `2030-02-30T00:00:00.000Z`). Round-tripping through `toISOString` proves
- * both the syntax and that the calendar fields are real.
+ * shape, a mode that is *one of the two strings*, the exact key set for that mode, the
+ * canonical serialization, and an instant in the exact canonical form the writer emits.
+ *
+ * Two rules carry more weight than they look:
+ *
+ * - The mode is matched by value, never by property-key lookup. A key lookup coerces its
+ *   operand, so `{"mode":["testers"],…}` would index the `testers` key and be accepted as
+ *   open, and `{"mode":{"toString":0},…}` would throw `TypeError` out of a check that is
+ *   supposed to refuse. `MODE_VALUES.includes(record.mode)` uses strict equality, so a
+ *   non-string mode is refused with no coercion at all.
+ * - `JSON.stringify(record) === value` is the canonical-bytes rule the Service reader and
+ *   the Infra reader both apply. It refuses whitespace, trailing bytes, escaped spellings
+ *   such as `"test\u0065rs"`, and reordered keys in one rule instead of four.
+ *
+ * `Date.parse` alone is not enough either: it accepts date-only values, slashes, naive
+ * timestamps read in the reader's own zone, and impossible dates that roll over (for
+ * example `2030-02-30T00:00:00.000Z`). Round-tripping through `toISOString` proves both
+ * the syntax and that the calendar fields are real.
  *
  * Whether a declared `testers` window is still inside its bound is a separate question
  * that `effectiveAdmissionMode` answers, because a well-formed record can already be
  * past it.
  */
 export function parseAdmissionMode(value) {
+  // A reader refuses; it must never crash. A thrown `TypeError` out of the pre-flight
+  // reads as a broken check rather than a closed environment, so any unexpected shape
+  // still ends as `null`.
+  try { return readAdmissionMode(value); }
+  catch { return null; }
+}
+
+function readAdmissionMode(value) {
   if (typeof value !== 'string') return null;
   let record;
   try { record = parseStrictJson(value); }
   catch { return null; }
-  if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
-  if (!Object.hasOwn(RECORD_KEYS, record.mode)) return null;
+  if (!record || typeof record !== 'object') return null;
+  if (!MODE_VALUES.includes(record.mode)) return null;
+  const expected = MODE_KEYS[record.mode];
   const keys = Object.keys(record);
-  if (keys.length !== RECORD_KEYS[record.mode].length || RECORD_KEYS[record.mode].some((key) => !keys.includes(key))) return null;
+  if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) return null;
+  if (JSON.stringify(record) !== value) return null;
   if (record.mode === 'closed') return { mode: 'closed' };
   const instant = record.expires_at;
   if (typeof instant !== 'string') return null;

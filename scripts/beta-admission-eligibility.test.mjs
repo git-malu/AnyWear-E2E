@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { effectiveAdmissionMode, parseAdmissionMode } from './beta-admission-mode.mjs';
 import { validateBetaAdmissionPolicy, verifyBetaAdmissionEligibility } from './beta-admission-eligibility.mjs';
 
 const sourceSha = 'a'.repeat(40);
@@ -104,9 +105,10 @@ test('the qualification requires explicitly configured two workers before any SS
 test('a closed record and a passed window both refuse qualification without any policy mutation', () => {
   for (const [patch, message] of [
     [{ admission_mode: JSON.stringify({ mode: 'closed' }) }, /admission is suspended/],
-    [{ admission_mode: JSON.stringify({ mode: 'closed' }) }, /authorized admission window/],
     [{ admission_mode: JSON.stringify({ mode: 'testers', expires_at: instant(-1_000) }) }, /authorized admission window/],
     [{ admission_mode: JSON.stringify({ mode: 'testers', expires_at: instant(-hour) }) }, /authorized admission window/],
+    // A bound beyond the 240-minute ceiling plus the read's skew is not open either.
+    [{ admission_mode: JSON.stringify({ mode: 'testers', expires_at: instant(5 * hour) }) }, /authorized admission window/],
   ]) {
     const io = reader(JSON.stringify(response(patch)));
     assert.throws(() => verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }), message);
@@ -139,7 +141,11 @@ test('admission mode conformance table: only the writer-canonical record is read
     // Syntax and shape.
     ['', /malformed admission mode record/],
     ['not json', /malformed admission mode record/],
+    // A JSON array carries no `mode` string, so the mode-membership check refuses it even
+    // though `typeof [] === 'object'`.
     ['[1]', /malformed admission mode record/],
+    ['[]', /malformed admission mode record/],
+    [`[{"mode":"testers","expires_at":"${live}"}]`, /malformed admission mode record/],
     ['null', /malformed admission mode record/],
     ['"testers"', /malformed admission mode record/],
     ['{}', /malformed admission mode record/],
@@ -151,6 +157,25 @@ test('admission mode conformance table: only the writer-canonical record is read
     [JSON.stringify({ mode: 'Testers', expires_at: live }), /malformed admission mode record/],
     [JSON.stringify({ mode: 'testers', expires_at: live, expires: live }), /malformed admission mode record/],
     [JSON.stringify({ mode: 'closed', extra: true }), /malformed admission mode record/],
+    // A mode that is not one of the two strings. The array and object rows are the ones a
+    // property-key lookup would have coerced into `testers` (or crashed on); the reader
+    // matches by value, so they are refused.
+    [JSON.stringify({ mode: ['testers'], expires_at: live }), /malformed admission mode record/],
+    ['{"mode":{"toString":0},"expires_at":"' + live + '"}', /malformed admission mode record/],
+    [JSON.stringify({ mode: 1, expires_at: live }), /malformed admission mode record/],
+    [JSON.stringify({ mode: null }), /malformed admission mode record/],
+    [JSON.stringify({ mode: true }), /malformed admission mode record/],
+    [JSON.stringify({ mode: { mode: 'testers' }, expires_at: live }), /malformed admission mode record/],
+    // The canonical-bytes rule. Each of these parses to the same object but is not the
+    // serialization the writer emits, and the Service reader refuses it too.
+    [`{"mode": "testers", "expires_at": "${live}"}`, /malformed admission mode record/],
+    [`{"mode": "closed"}`, /malformed admission mode record/],
+    [`${JSON.stringify({ mode: 'testers', expires_at: live })}\n`, /malformed admission mode record/],
+    [` ${JSON.stringify({ mode: 'testers', expires_at: live })}`, /malformed admission mode record/],
+    [`{"mode":"test\\u0065rs","expires_at":"${live}"}`, /malformed admission mode record/],
+    [`{"mode":"testers","expires_at":"2026-10-17T08:30:00.000\\u005A"}`, /malformed admission mode record/],
+    [`{"mode":"testers","expires\\u005Fat":"${live}"}`, /malformed admission mode record/],
+    [`{"mode":"closed","mode":"closed"}`, /malformed admission mode record/],
     // A bound is required on `testers` and forbidden on `closed`.
     [JSON.stringify({ mode: 'testers' }), /malformed admission mode record/],
     [JSON.stringify({ mode: 'testers', expires_at: null }), /malformed admission mode record/],
@@ -168,6 +193,21 @@ test('admission mode conformance table: only the writer-canonical record is read
     const outcome = read(value);
     if (expected === 'open') assert.equal(outcome, 'open', value);
     else assert.match(outcome, expected, value);
+  }
+});
+
+test('the reader refuses every non-string or unwritable shape instead of throwing', () => {
+  // Callers normally pass `Parameter.Value`, so these rows drive the reader's own input
+  // guard directly rather than through the pre-flight.
+  for (const value of [undefined, null, 0, 5, true, {}, [], ['testers'], Buffer.from('{"mode":"closed"}'), () => 'closed']) {
+    assert.equal(parseAdmissionMode(value), null, String(value));
+    assert.deepEqual(effectiveAdmissionMode(value), { mode: 'closed' }, String(value));
+  }
+  // Shapes whose `mode` cannot be used as a key or coerced into one are refused, not
+  // thrown: a TypeError out of the pre-flight reads as a crashed check, not a closed Beta.
+  for (const value of ['{"mode":{"toString":0}}', '{"mode":{"valueOf":0},"expires_at":"x"}',
+    '{"mode":["testers"]}', '[']) {
+    assert.equal(parseAdmissionMode(value), null, value);
   }
 });
 
