@@ -166,6 +166,32 @@ test('rejects unknown, duplicate and every producer/runtime binding drift', () =
   assert.throws(() => parseStrictJson(Buffer.from(duplicate)), /Duplicate JSON key/);
 });
 
+// #163: Infra replaces `beta-deploy.yml` with `mutate.yml` but deliberately keeps the
+// operation record's family name `beta-deploy`. The diagnostic accepts both producer paths,
+// keeps the historical evidence readable, and refuses a record that mixes them or names a
+// path outside the transition allow-list.
+test('#163 accepts the historical beta-deploy path and the new mutate path, but no mix', () => {
+  const historical = diagnosticFixture();
+  assert.strictEqual(validateDiagnosticRecord(historical.record, historical.expected), historical.record);
+
+  const expected = expectedFixture();
+  expected.infra.workflow_path = '.github/workflows/mutate.yml';
+  expected.infra.workflow_ref = `git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main`;
+  const replacement = diagnosticFixture(expected);
+  assert.equal(replacement.operation.family, 'beta-deploy');
+  assert.strictEqual(validateDiagnosticRecord(replacement.record, replacement.expected), replacement.record);
+  assert.strictEqual(assertDiagnosticRun({ ...diagnosticRun(), path: expected.infra.workflow_path }, replacement.expected).path,
+    '.github/workflows/mutate.yml');
+
+  const mixed = structuredClone(replacement.record);
+  mixed.observation.schema.verification.executor.workflow_path = '.github/workflows/beta-deploy.yml';
+  assert.throws(() => validateDiagnosticRecord(mixed, replacement.expected), /does not match the diagnostic producer/);
+
+  const foreign = expectedFixture();
+  foreign.infra.workflow_path = '.github/workflows/runtime.yml';
+  assert.throws(() => validateDiagnosticRecord(diagnosticFixture(foreign).record, foreign), /transition allow-list/);
+});
+
 test('loader reads only pinned bytes, release metadata and HTTP health', async () => {
   const fixture = diagnosticFixture();
   let selectionBytes = Buffer.from(canonicalJson(fixture.selector)); fixture.expected.selection.raw_sha256 = byteHash(selectionBytes); fixture.expected.selection.blob_sha256 = sha('f'); fixture.record.selection.raw_sha256 = fixture.expected.selection.raw_sha256; fixture.observation.selection.sha256 = fixture.expected.selection.raw_sha256; fixture.operation.selection.sha256 = fixture.expected.selection.raw_sha256;

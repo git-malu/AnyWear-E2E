@@ -29,6 +29,7 @@ const evidence = {
 };
 const input = {
   result: 'passed',
+  operation: 'full',
   e2eSha: 'd'.repeat(40),
   repository: 'git-malu/AnyWear-E2E',
   runId: '123',
@@ -81,6 +82,7 @@ test('creates and verifies a checksummed passing record', () => {
   const record = buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
     new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
   assert.equal(record.qualification_id, 'beta-123-1');
+  assert.equal(record.operation, 'full');
   assert.deepEqual(record.test.scenarios, [
     { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 },
@@ -94,8 +96,30 @@ test('creates and verifies a checksummed passing record', () => {
   assert.throws(() => verifyQualificationRecord(tampered), /checksum mismatch/);
 });
 
-test('accepts stable deployment identities before and after qualification', () => {
-  assert.doesNotThrow(() => assertStableDeploymentEvidence(evidence, structuredClone(evidence)));
+// #163: one dispatch surface now carries full, smoke, measure and recover. The record binds
+// the operation it was dispatched for and only `full` can reach the record path, so the
+// other three operations can neither produce nor withhold a qualification.
+test('binds the dispatched full operation and refuses every other operation', () => {
+  const fixture = qualificationFixture();
+  const build = (operation) => buildQualificationRecord({ ...fixture.input, operation }, fixture.compatibility, fixture.evidence,
+    new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
+  const record = build('full');
+  assert.equal(record.operation, 'full');
+  assert.equal(verifyQualificationRecord(record), true);
+  for (const operation of ['smoke', 'measure', 'recover', undefined]) {
+    let refusal;
+    try { build(operation); } catch (error) { refusal = error; }
+    assert.ok(refusal, `${operation} must not issue a record`);
+    assert.match(refusal.message, /full qualification operation/);
+  }
+  // A hand-edited record that names another operation and recomputes its checksum is still
+  // refused: the verifier re-checks the signed operation, not the checksum alone.
+  const tampered = structuredClone(record);
+  tampered.operation = 'measure';
+  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /operation must be full/);
+});
+
+test('accepts stable deployment identities before and after qualification', () => {  assert.doesNotThrow(() => assertStableDeploymentEvidence(evidence, structuredClone(evidence)));
 });
 
 test('rejects an image or client rebuild that changes during qualification', () => {

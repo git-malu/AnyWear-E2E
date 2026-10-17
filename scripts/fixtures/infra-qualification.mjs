@@ -100,7 +100,7 @@ export function qualificationFixture({ forwardSchema = false, imageAhead = false
     deployment: { repository: 'git-malu/AnyWear-Infra', workflow_path: '.github/workflows/runtime.yml', run_id: 30, run_attempt: 2, artifact_id: 40, record_sha256: byteHash(`${JSON.stringify(deployment, null, 2)}\n`) },
   };
   const input = {
-    result: 'passed', e2eSha: sha('d'), repository: 'git-malu/AnyWear-E2E', runId: '123', runAttempt: '1', serverUrl: 'https://github.com',
+    result: 'passed', operation: 'full', e2eSha: sha('d'), repository: 'git-malu/AnyWear-E2E', runId: '123', runAttempt: '1', serverUrl: 'https://github.com',
     awsAccountId: '650880818323', awsRegion: 'ap-east-1', workflowPath: '.github/workflows/beta-qualification.yml',
     workflowRef: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main',
   };

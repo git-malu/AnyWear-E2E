@@ -506,19 +506,22 @@ test('original operation evidence is consumed and source/version/request drift r
 test('required source CI and protected recovery carry explicit attempt and artifact inputs before credentials', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(packageJson.scripts['test:core'].includes('scripts/service-cleanup-operation.test.mjs'));
-  const workflow = await readFile(new URL('../.github/workflows/account-recovery.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH:.*original_operation_path/);
-  assert.match(workflow, /recovery_attempt:/);
-  assert.match(workflow, /previous_recovery_run_id:/);
-  assert.match(workflow, /E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH:/);
-  assert.ok(workflow.indexOf('--validate-inputs') < workflow.indexOf('Configure Beta AWS credentials'));
-  assert.ok(workflow.indexOf('Verify exact original E2E owner and previous recovery artifact') < workflow.indexOf('Configure Beta AWS credentials'));
-  assert.match(workflow, /retry_failed_execution:/);
-  for (const name of ['integration', 'beta-qualification']) {
-    const owner = await readFile(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
-    assert.match(owner, /worker_slot_offset:/);
-    assert.match(owner, /E2E_WORKER_SLOT_OFFSET:.*inputs.worker_slot_offset/);
-  }
+  const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  // #163: account recovery is the `recover` operation of the single qualify entry.
+  const recover = workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'));
+  assert.ok(recover.length > 0, 'the qualify entry must declare a recover job');
+  assert.match(recover, /E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH:.*original_operation_path/);
+  // The absorbed account-recovery inputs are workflow-level now that the operations share one
+  // dispatch surface; the recover job is the only consumer.
+  assert.match(workflow, /^ {6}recovery_attempt:$/m);
+  assert.match(workflow, /^ {6}previous_recovery_run_id:$/m);
+  assert.match(recover, /E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH:/);
+  assert.ok(recover.indexOf('--validate-inputs') < recover.indexOf('Configure Beta AWS credentials'));
+  assert.ok(recover.indexOf('Verify exact original E2E owner and previous recovery artifact') < recover.indexOf('Configure Beta AWS credentials'));
+  assert.match(workflow, /^ {6}retry_failed_execution:$/m);
+  const owner = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  assert.match(owner, /worker_slot_offset:/);
+  assert.match(owner, /E2E_WORKER_SLOT_OFFSET:.*inputs.worker_slot_offset/);
 });
 
 function refusalIo(patch = {}) {

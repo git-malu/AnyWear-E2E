@@ -13,6 +13,13 @@ import { loadDiagnosticEvidence } from './beta-cleanup-diagnostic.mjs';
 const CAPTURED_SUBJECT = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const RECOVERABLE_STATUSES = new Set(['reserved', 'provisioning', 'in_use', 'cleanup_pending']);
 
+// #163 transition allow-list. Recover now runs as an operation of the single `qualify` entry,
+// so a new recovery run (and a new original smoke/full run) names `beta-qualification.yml`.
+// Historical `integration.yml` originals and `account-recovery.yml` predecessors remain
+// readable so an in-flight recovery can still consume the evidence it was captured under.
+export const ORIGINAL_OWNER_WORKFLOWS = Object.freeze(['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml']);
+export const RECOVERY_WORKFLOWS = Object.freeze(['.github/workflows/beta-qualification.yml', '.github/workflows/account-recovery.yml']);
+
 export function assertRecoveryArtifact(artifact, run, recovery = false) {
   const started = Date.parse(run.run_started_at);
   const completed = Date.parse(run.updated_at);
@@ -56,7 +63,7 @@ export function assertPreviousRecovery(run, selection, files, originalFiles) {
   requireCommit(run.head_sha, 'Previous recovery source');
   if (run.id !== selection.previousRunId || run.run_attempt !== selection.previousRunAttempt
     || run.repository?.full_name !== repositories.e2e || run.head_branch !== 'main' || run.event !== 'workflow_dispatch'
-    || run.path !== '.github/workflows/account-recovery.yml' || run.status !== 'completed'
+    || !RECOVERY_WORKFLOWS.includes(run.path) || run.status !== 'completed'
     || !['success', 'failure', 'cancelled', 'timed_out'].includes(run.conclusion)) throw new Error('Previous recovery is not a completed trusted main run');
   for (const name of ['original-account-budget.json', 'original-service-cleanup-operation.json', 'original-owner.json']) {
     if (!files[name] || files[name] !== originalFiles[name]) throw new Error('Previous recovery changes canonical original owner/request evidence');
@@ -97,7 +104,7 @@ export function prepareAccountRecovery(manifest, run, sourceRunId, sourceAttempt
   requireCommit(run.head_sha, 'Original trusted E2E source');
   if (run.id !== sourceRunId || run.run_attempt !== sourceAttempt
     || run.repository?.full_name !== repositories.e2e || run.head_branch !== 'main' || run.event !== 'workflow_dispatch'
-    || !['.github/workflows/integration.yml', '.github/workflows/beta-qualification.yml'].includes(run.path)
+    || !ORIGINAL_OWNER_WORKFLOWS.includes(run.path)
     || run.status !== 'completed' || !['success', 'failure', 'cancelled', 'timed_out'].includes(run.conclusion)) throw new Error('Original E2E run is not a completed trusted account owner');
   if (manifest.version !== 1 || !new RegExp(`^${sourceRunId}-${sourceAttempt}-[a-f0-9]{16}$`).test(manifest.runScope)
     || !Array.isArray(manifest.accounts) || manifest.accounts.length > 50) throw new Error('Account manifest does not belong to the exact original run/attempt');

@@ -388,7 +388,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   assert.throws(() => assertTestSelection(nothing), /requires at least one scenario that executed/);
 });
 
-test('the qualification workflow writes the report the record reads, in both artifact lists', () => {
+test('the qualification workflow writes the report the record reads, in every artifact list', () => {
   const configured = workflow.split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line.startsWith(`${QUALIFICATION_REPORT_ENV}:`))
@@ -397,7 +397,9 @@ test('the qualification workflow writes the report the record reads, in both art
   // One declaration drives both ends: the workflow's reporter output and the module default.
   assert.equal(qualificationReportPath(), resolve(repositoryRoot, QUALIFICATION_REPORT_PATH));
 
-  for (const upload of ['Upload qualification evidence', 'Upload qualification diagnostics']) {
+  // #163: the full job hands the report to the credential-free record job, which attaches
+  // the released artifact; the diagnostics list retains it beside them.
+  for (const upload of ['Upload the qualification record handoff', 'Upload qualification diagnostics', 'Attach the qualification evidence']) {
     const start = workflow.indexOf(`- name: ${upload}`);
     assert.ok(start > 0, `${upload} step is missing`);
     const next = workflow.indexOf('- name: ', start + 1);

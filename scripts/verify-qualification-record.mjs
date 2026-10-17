@@ -16,6 +16,9 @@ if (process.argv.includes('--promotion')) {
   console.log(`Verified trusted qualification publication ${record.qualification_id}`);
 } else {
   verifyQualificationRecord(record, { trustedRun });
+  // The record's `operation` binds the dispatch event's operation; the verifier re-checks
+  // that it is `full`, so a record produced under any other operation of the shared
+  // `qualify` entry is refused here (#163).
   // The workflow's own next step. The record states the report digest and one outcome per
   // selected spec, and both are re-derived from the report the suite just wrote, so a record
   // edited between generate and upload is refused before the artifact is published. Only the

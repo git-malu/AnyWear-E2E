@@ -159,9 +159,24 @@ export function validateInfraEvidence(evidence, compatibility, executor) {
 // collected and skipped, and none of that can be inferred from a suite that merely ended
 // green. The report is where the record's `test` member comes from, so a caller that does
 // not hold it cannot state what it measured.
+// #163: the record is produced only by the `full` operation of the single `qualify` entry.
+// The operation is read from the dispatch event (`E2E_OPERATION`) rather than inferred from
+// the workflow file, and it is written into the payload so the validator and the Infra-side
+// executor allow-list can re-check the binding. `smoke`, `measure` and `recover` share the
+// dispatch surface but cannot reach this function with a recordable operation.
+//
+// The `operation` member is additive to the v2 record, not a v3 bump. Infra's
+// `scripts/production-preflight.mjs` requires a flat `anywear_beta_qualification` v2 record
+// (`payload === undefined`) and validates its named fields rather than an exact top-level
+// key set, so an added member stays compatible with the current consumer. A v3 bump would
+// make every existing v2 consumer reject the record and would need a matching Infra change;
+// #163 therefore records the decision as additive v2.
 export function buildQualificationRecord(input, compatibility, evidence, now = new Date(), environment, reportBytes) {
   if (input.result !== 'passed') {
     throw new Error('Only a completed passing test run can issue a qualification record');
+  }
+  if (input.operation !== 'full') {
+    throw new Error('Only the full qualification operation can issue a qualification record');
   }
   assertQualificationEnvironment(environment);
   if (reportBytes === undefined || reportBytes === null) {
@@ -189,6 +204,7 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
     record_type: 'anywear_beta_qualification',
     qualification_id: `beta-${requireValue(input.runId, 'GITHUB_RUN_ID')}-${requireValue(input.runAttempt, 'GITHUB_RUN_ATTEMPT')}`,
     result: 'passed',
+    operation: 'full',
     qualified_at: now.toISOString(),
     environment: {
       stage: 'beta',
@@ -252,7 +268,7 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
   if (record.schema_version !== 2 || record.record_type !== 'anywear_beta_qualification') {
     throw new Error('Unsupported qualification record schema');
   }
-  exactKeys(record, ['schema_version', 'record_type', 'qualification_id', 'result', 'qualified_at', 'environment', 'revisions', 'compatibility', 'service_artifacts', 'deployment', 'observations', 'test', 'workflow', 'integrity'], 'qualification');
+  exactKeys(record, ['schema_version', 'record_type', 'qualification_id', 'result', 'operation', 'qualified_at', 'environment', 'revisions', 'compatibility', 'service_artifacts', 'deployment', 'observations', 'test', 'workflow', 'integrity'], 'qualification');
   exactKeys(record.test, TEST_KEYS, 'test result');
   exactKeys(record.test.selection, SELECTION_KEYS, 'test selection');
   if (!Array.isArray(record.test.scenarios) || record.test.scenarios.length === 0) {
@@ -265,6 +281,9 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
   if (record.result !== 'passed' || record.test.runner !== 'playwright' || !RECORDABLE_RESULTS.includes(record.test.result)) {
     throw new Error('Qualification record is not passing');
   }
+  // The signed operation is re-checked here, not trusted from the payload: a record that
+  // names any operation other than `full` cannot qualify regardless of its checksum.
+  if (record.operation !== 'full') throw new Error('Qualification record operation must be full');
   exactKeys(record.integrity, ['algorithm', 'payload_sha256'], 'qualification integrity');
   requireHash(record.integrity.payload_sha256, 'Qualification payload checksum');
   if (record.integrity.algorithm !== 'sha256') {

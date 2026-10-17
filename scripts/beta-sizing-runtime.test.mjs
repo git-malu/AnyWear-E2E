@@ -3,22 +3,39 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { sizingRuntimeSnapshot } from './beta-sizing-runtime.mjs';
 
-test('the instrumentation workflow checks the selected sizing tuple before starting Playwright', () => {
-  const workflow = readFileSync(new URL('../.github/workflows/beta-instrumentation.yml', import.meta.url), 'utf8');
-  const preflight = workflow.indexOf('      - name: Capture the sizing task inventory the workload is measured on');
-  const workload = workflow.indexOf('      - name: Run the instrumentation workload');
+function jobSection(workflow, name) {
+  const marker = `\n  ${name}:\n`;
+  const start = workflow.indexOf(marker);
+  if (start < 0) return '';
+  const rest = workflow.slice(start + marker.length);
+  const next = rest.search(/\n {2}[a-z][a-z0-9-]*:\n/);
+  return marker + (next < 0 ? rest : rest.slice(0, next));
+}
+
+test('the measure operation checks the selected sizing tuple before starting Playwright', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  const measure = jobSection(workflow, 'measure');
+  assert.ok(measure.length > 0, 'the qualify entry must declare a measure job');
+  const preflight = measure.indexOf('      - name: Capture the sizing task inventory the workload is measured on');
+  const workload = measure.indexOf('      - name: Run the instrumentation workload');
   assert.notEqual(preflight, -1);
   assert.notEqual(workload, -1);
   assert.ok(preflight < workload);
-  assert.match(workflow.slice(preflight, workload), /run: node scripts\/beta-sizing-runtime\.mjs/);
-  // The measurement runs outside the qualification workflow, so its outcome cannot
-  // become the qualification run's conclusion, which is the only thing a release
-  // consumer accepts a record from.
-  const qualification = readFileSync(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
-  assert.doesNotMatch(qualification, /beta-sizing-runtime\.mjs/);
-  assert.doesNotMatch(qualification, /test:instrumentation/);
-  assert.doesNotMatch(qualification, /BETA_SIZING_STAGE/);
-  assert.doesNotMatch(qualification, /sizing_stage/);
+  assert.match(measure.slice(preflight, workload), /run: node scripts\/beta-sizing-runtime\.mjs/);
+  assert.match(measure, /BETA_SIZING_STAGE: \$\{\{ inputs\.sizing_stage \}\}/);
+  // #163: measure shares the qualify entry with full, smoke and recover, so separation moved
+  // from the workflow file to the signed operation. Only measure carries the sizing stage and
+  // the instrumentation invocation; the full job keeps the release-gating suite alone and the
+  // record job never generates a record.
+  const full = jobSection(workflow, 'full');
+  assert.doesNotMatch(full, /beta-sizing-runtime\.mjs/);
+  assert.doesNotMatch(full, /test:instrumentation/);
+  assert.doesNotMatch(full, /BETA_SIZING_STAGE/);
+  assert.doesNotMatch(full, /sizing_stage/);
+  const record = jobSection(workflow, 'record');
+  assert.doesNotMatch(record, /qualification:generate/);
+  assert.doesNotMatch(record, /test:instrumentation/);
+  assert.doesNotMatch(record, /BETA_SIZING_STAGE/);
 });
 
 function fixture(stageId = 'S1') {
