@@ -409,10 +409,10 @@ enter the legacy normal retry/no-commit path. Partial Cognito reconciliation nev
 canonical cleanup request. Shared account-pool concurrency does not establish a
 cross-repository writer allocation; that remains an operational preflight gate.
 
-Integration and Qualification accept `worker_slot_offset` (default `0`) for a
-pair of stable Chromium identities allocated to the run. Account allocation and
-admission eligibility use the same validated offset; for example `2` selects slots
-2 and 3 without reusing slots 0 and 1. Recovery always uses the exact captured
+Integration and Qualification accept `worker_slot_offset` (default `0`) for
+allocating the run's worker slots; for example `2` selects slots 2 and 3 without
+reusing slots 0 and 1. Admission eligibility does not use the offset.
+Recovery always uses the exact captured
 original emails/subjects, independent of later slot allocations. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: verify
 outstanding executions, tasks and manifests are reconciled before reuse.
