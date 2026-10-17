@@ -201,8 +201,9 @@ producer-side fix is approved. C's post-C Platform deploy removes every
 `PublishOutput*` output, and the release-slice deploy's last eleven weak reads
 (nine cleanup values and two isolated-subnet values) are being converted into
 stage-contract parameters. The Service record's `inputs[]` grows to whatever the
-deployed phase reads — expected 39 for resident active `roles-added` (35 stage
-parameters + 4 reused values). This consumer accepts the recorded, sorted and
+deployed phase reads — expected 38 for resident active `roles-added` (34
+stage-base parameters + 4 reused values; the stopped-only `isolated_subnet_ids`
+is not read at that phase). This consumer accepts the recorded, sorted and
 unique list without a count or name assertion, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer
 matters. Until the deferred Foundation/Platform round supplies those parameters

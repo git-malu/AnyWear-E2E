@@ -312,8 +312,9 @@ producer-side extension is **approved and in progress**. C's post-C Platform
 deploy removes every `PublishOutput*` output, and the release-slice deploy's last
 eleven weak reads (nine cleanup values and two isolated-subnet values) are being
 converted into stage-contract parameters. The Service record's `inputs[]` grows
-to whatever the deployed phase reads — expected 39 for resident active
-`roles-added` (35 stage parameters + 4 reused values). E2E hardcodes neither the
+to whatever the deployed phase reads — expected 38 for resident active
+`roles-added` (34 stage-base parameters + 4 reused values; the stopped-only
+`isolated_subnet_ids` is not read at that phase). E2E hardcodes neither the
 count nor the names: it accepts the producer's recorded, sorted and unique list
 and derives the schema hash from it. Once both stacks read pure SSM parameters,
 deploy order no longer matters. Until the deferred Foundation/Platform round
