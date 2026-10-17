@@ -8,12 +8,6 @@ on:
         required: false
         default: 0
         type: number
-      sizing_stage:
-        description: Opt-in paid representative sizing workload; reviewed tuple and authorized window required
-        required: false
-        default: disabled
-        type: choice
-        options: [disabled, S1, S2, S3]
 
 permissions:
   contents: read
@@ -50,7 +44,6 @@ jobs:
       # One lease per attempt: 2 workers x 3 attempts (initial + two CI retries).
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 6
       E2E_MAX_QUARANTINED_ACCOUNTS: 2
-      BETA_SIZING_STAGE: ${{ inputs.sizing_stage }}
 
     steps:
       - name: Checkout E2E sources
@@ -174,15 +167,10 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install chromium --with-deps
 
-      - name: Capture opt-in sizing task inventory
-        if: ${{ inputs.sizing_stage != 'disabled' }}
-        run: node scripts/beta-sizing-runtime.mjs
-
-      # Captured immediately before the suite, for every qualification run and not
-      # only for the opt-in sizing stage: a deployment change cannot qualify a
-      # release, so which workers were serving Beta at suite start belongs in every
-      # run's evidence. A capture that cannot be taken fails here rather than
-      # letting the run proceed without the ability to attribute its own outcome.
+      # Captured immediately before the suite for every qualification run: a deployment
+      # change cannot qualify a release, so which workers were serving Beta at suite start
+      # belongs in every run's evidence. A capture that cannot be taken fails here rather
+      # than letting the run proceed without the ability to attribute its own outcome.
       - name: Capture Beta worker identity before the suite
         run: node scripts/beta-sizing-environment.mjs capture --phase before
 
@@ -292,8 +280,6 @@ jobs:
             test-results/beta-environment-verdict.json
             github-cli-version.txt
             test-results/**/error-context.md
-            .qualification-inputs/beta-sizing-runtime-before.json
-            test-results/beta-sizing-workload.json
           retention-days: 90
           include-hidden-files: true
           if-no-files-found: ignore

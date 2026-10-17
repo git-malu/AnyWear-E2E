@@ -136,7 +136,7 @@ function observeAuthUi(): void {
   };
 }
 
-test.describe('Session startup @smoke @full-stack', () => {
+test.describe('Session startup @smoke @regression @full-stack', () => {
   test('restores the real session across documents and clears it after logout', async ({ page, context, workerAccount }, testInfo) => {
     declareNoBusinessCleanup(testInfo, { teardownResult: 'passed', reason: 'this attempt creates no business resources' });
     test.setTimeout(120_000);

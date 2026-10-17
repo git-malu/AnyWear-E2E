@@ -45,7 +45,7 @@ interface SizingWorkloadRecord {
   route_samples_ms: Record<string, number[]>;
 }
 
-test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
+test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentation', () => {
   test.describe.configure({ retries: 0 });
   test.skip(!['S1', 'S2', 'S3'].includes(process.env.BETA_SIZING_STAGE ?? ''), 'Manager-selected sizing workload is disabled');
 
@@ -152,8 +152,11 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing', () => {
   test('runs the frozen 12 uploads and 8 VTO cases once', async ({ page }) => {
     test.setTimeout(2_700_000);
     assertE2EExecution();
-    if (process.env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main') {
-      throw new Error('Paid sizing workload requires the protected Beta Qualification workflow');
+    // The measurement is its own protected dispatch. It runs outside the qualification
+    // workflow so that its outcome can never change the qualification run's conclusion,
+    // which is the only thing a release consumer accepts a record from.
+    if (process.env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-E2E/.github/workflows/beta-instrumentation.yml@refs/heads/main') {
+      throw new Error('Paid sizing workload requires the protected Beta instrumentation workflow');
     }
     const frozen = await loadSizingFixtures(new URL('./fixtures/beta-sizing/', import.meta.url));
     // The complete plan of what this run submits, built before any upload is sent.

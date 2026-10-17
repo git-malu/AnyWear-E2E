@@ -24,7 +24,7 @@ interface WardrobeItem extends WardrobeStatus {
   category: string;
 }
 
-test.describe('Wardrobe Management @full-stack', () => {
+test.describe('Wardrobe Management @regression @full-stack', () => {
   // This scenario invokes the external VLM. A failed attempt must not be
   // repeated automatically; protected recovery owns non-terminal resources.
   test.describe.configure({ retries: 0 });
