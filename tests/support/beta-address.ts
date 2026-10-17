@@ -17,8 +17,8 @@
  * once, so allocation and every captured-identity consumer cannot drift apart.
  *
  * The two stable allowlist rows are no longer required by any admission check: the
- * E2E admission-eligibility pre-flight requires an open admission window and the tester
- * list's own validity, not any membership. Removing them from the live allowlist is a Beta
+ * E2E admission-eligibility pre-flight asserts admission state and the tester list's
+ * own validity, not any membership. Removing them from the live allowlist is a Beta
  * mutation outside this work.
  * They are only ever accepted here as *historical* artifacts: an account
  * manifest written before this change still names them, and account recovery

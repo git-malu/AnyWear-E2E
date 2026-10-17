@@ -6,7 +6,6 @@ import { parseRuntimeRecovery } from './runtime-recovery.mjs';
 import { MAX_RECOVERY_SNAPSHOTS } from './runtime-recovery-snapshots.mjs';
 import { LIVE_RUNTIME_SOURCE_READY } from './runtime-source-readiness.mjs';
 import { oneShotHarness } from './fixtures/runtime-one-shot-harness.mjs';
-import { parseAdmissionMode } from './beta-admission-mode.mjs';
 
 function verifySnapshots(h) {
   let maxBytes = 0;
@@ -31,23 +30,10 @@ function verifyRestored(h, record) {
   assert.equal(record.runtime_window.restored, true);
   assert.equal(record.owned_cleanup_completed, true);
   assert.ok(record.one_shots.every((operation) => operation.deregistered));
-  // `resume` writes a fresh bound, so the restored mode record is compared by decision;
-  // the tester list is written by this run and must match byte for byte.
-  assert.equal(h.policy.tester_allowlist.Value, h.baselinePolicy.tester_allowlist.Value);
-  assert.equal(parseAdmissionMode(h.policy.admission_mode.Value).mode,
-    parseAdmissionMode(h.baselinePolicy.admission_mode.Value).mode);
+  for (const key of Object.keys(h.policy)) assert.equal(h.policy[key].Value, h.baselinePolicy[key].Value);
   for (const { taskDefinition, tags } of h.definitions.values()) {
     if (tags.length) assert.equal(taskDefinition.status, 'INACTIVE');
   }
-}
-
-// The durable-save budget is exact, so the interruption point is derived from the run
-// rather than remembered: it is the first save of the admission-window restoration
-// phase, which one more snapshot then interrupts.
-async function restorationBoundary(suspended) {
-  const probe = runtimeCloudHarness({ suspended });
-  await probe.execute();
-  return probe.writes.length - probe.phases.at(-1).saves;
 }
 
 for (const suspended of [false, true]) {
@@ -57,10 +43,10 @@ for (const suspended of [false, true]) {
     assert.equal(verifyRuntimeDrillEvidence(result, h.compatibility).passed, true);
     const final = parseRuntimeRecovery(h.writes.at(-1).json);
     verifyRestored(h, final);
-    assert.equal(h.writes.length, suspended ? 220 : 249);
+    assert.equal(h.writes.length, suspended ? 203 : 198);
     assert.equal(h.uploads.length, h.writes.length);
     assert.ok(h.uploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
-    assert.equal(final.one_shots.length, suspended ? 35 : 40);
+    assert.equal(final.one_shots.length, suspended ? 32 : 31);
     assert.equal(h.uploads.at(-1).name, `beta-runtime-recovery-123-1-${h.writes.length}`);
     assert.equal(LIVE_RUNTIME_SOURCE_READY, true);
     let cumulative = 0;
@@ -69,22 +55,21 @@ for (const suspended of [false, true]) {
       phases: h.phases.map((entry) => ({ ...entry, cumulative: cumulative += entry.saves })) }));
   });
 
-  test(`restoration-boundary interruption restores from last immutable artifact in a fresh run (suspended=${suspended})`, async (context) => {
-    const boundary = await restorationBoundary(suspended);
-    const h = runtimeCloudHarness({ suspended, originalUploadLimit: boundary });
+  test(`snapshot 150 interruption restores from last immutable artifact in a fresh run (suspended=${suspended})`, async (context) => {
+    const h = runtimeCloudHarness({ suspended, originalUploadLimit: 150 });
     await assert.rejects(h.execute(), (error) => {
       assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
       assert.match(error.cause.message, /Mocked original snapshot upload exhausted/);
       return true;
     });
-    assert.equal(h.uploads.length, boundary);
+    assert.equal(h.uploads.length, 150);
     const record = parseRuntimeRecovery(h.uploads.at(-1).json);
     const recovery = h.makeAdapter({ ...h.environment, GITHUB_RUN_ID: '124' });
     const beforeWrites = h.writes.length;
     const result = await recovery.adapter.recoverOwnedRuntime(record);
     assert.deepEqual(result, { recovered: true, run_scope: h.environment.RUNTIME_DRILL_RUN_SCOPE });
     const saves = h.writes.length - beforeWrites;
-    assert.equal(saves, suspended ? 80 : 99);
+    assert.equal(saves, suspended ? 109 : 86);
     const recoveryUploads = h.uploads.filter((upload) => upload.name.startsWith('beta-runtime-recovery-124-1-'));
     assert.equal(recoveryUploads.length, saves);
     assert.ok(recoveryUploads.length + 1 <= MAX_RECOVERY_SNAPSHOTS + 1);
@@ -92,20 +77,19 @@ for (const suspended of [false, true]) {
     assert.equal(recoveryUploads.at(-1).name, `beta-runtime-recovery-124-1-${String(saves).padStart(3, '0')}`);
     const final = parseRuntimeRecovery(h.writes.at(-1).json);
     verifyRestored(h, final);
-    assert.equal(final.one_shots.length, suspended ? 37 : 42);
-    context.diagnostic(JSON.stringify({ boundary, saves, helpers: final.one_shots.length,
+    assert.equal(final.one_shots.length, suspended ? 41 : 37);
+    context.diagnostic(JSON.stringify({ saves, helpers: final.one_shots.length,
       bytes: Buffer.byteLength(h.writes.at(-1).json), maxBytes: verifySnapshots(h) }));
   });
 
   test(`durable artifact response loss still recovers exact helper proof in a fresh run (suspended=${suspended})`, async (context) => {
-    const boundary = await restorationBoundary(suspended);
-    const h = runtimeCloudHarness({ suspended, originalUploadResponseLossAt: boundary + 1 });
+    const h = runtimeCloudHarness({ suspended, originalUploadResponseLossAt: 151 });
     await assert.rejects(h.execute(), (error) => {
       assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
       assert.match(error.cause.message, /durable snapshot upload response lost/);
       return true;
     });
-    assert.equal(h.uploads.at(-1).name, `beta-runtime-recovery-123-1-${String(boundary + 1).padStart(3, '0')}`);
+    assert.equal(h.uploads.at(-1).name, 'beta-runtime-recovery-123-1-151');
     const record = parseRuntimeRecovery(h.uploads.at(-1).json);
     const before = h.uploads.length;
     const recovery = h.makeAdapter({ ...h.environment, GITHUB_RUN_ID: '125' });
@@ -124,7 +108,7 @@ test('hard snapshot exhaustion refuses file writes, uploads and subsequent owned
   const { scope } = oneShotHarness();
   for (let number = 0; number < MAX_RECOVERY_SNAPSHOTS; number++) await h.io.saveRecovery(scope);
   const beforeMutations = h.mutations.length;
-  await assert.rejects(h.io.runLifecycle({ scope, action: 'suspend', payload: '' }), /snapshot budget exhausted/);
+  await assert.rejects(h.io.runLifecycle({ scope, action: 'close', payload: '' }), /snapshot budget exhausted/);
   assert.equal(h.writes.length, MAX_RECOVERY_SNAPSHOTS);
   assert.equal(h.uploads.length, MAX_RECOVERY_SNAPSHOTS);
   assert.equal(h.uploads.at(-1).name, 'beta-runtime-recovery-123-1-400');
@@ -137,7 +121,7 @@ test('an awaited recovery upload failure prevents starting the next owned helper
   const h = runtimeCloudHarness({ originalUploadLimit: 1 });
   const { scope } = oneShotHarness();
   await h.io.saveRecovery(scope);
-  await assert.rejects(h.io.runLifecycle({ scope, action: 'suspend', payload: '' }), /snapshot upload exhausted/);
+  await assert.rejects(h.io.runLifecycle({ scope, action: 'close', payload: '' }), /snapshot upload exhausted/);
   assert.equal(h.uploads.length, 1);
   assert.equal(h.mutations.length, 0);
   verifySnapshots(h);
@@ -145,7 +129,7 @@ test('an awaited recovery upload failure prevents starting the next owned helper
 
 for (const boundary of ['retained-after-delete', 'post-delete-lookup-error', 'initially-absent-then-reappeared']) {
   test(`production recovery keeps Beta suspended without baseline restore on ${boundary}`, async () => {
-    const h = runtimeCloudHarness({ originalUploadLimit: await restorationBoundary(false) });
+    const h = runtimeCloudHarness({ originalUploadLimit: 150 });
     await assert.rejects(h.execute(), (error) => {
       assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
       assert.match(error.cause.message, /Mocked original snapshot upload exhausted/);
@@ -176,7 +160,7 @@ for (const boundary of ['retained-after-delete', 'post-delete-lookup-error', 'in
     assert.equal(lookups, 2);
     assert.equal(deletes, boundary === 'initially-absent-then-reappeared' ? 0 : 1);
     assert.equal(h.mutations.length, terminalMutationCount);
-    assert.equal(parseAdmissionMode(h.policy.admission_mode.Value).mode, 'closed');
+    assert.equal(h.policy.admission_suspended.Value, 'true');
     const final = parseRuntimeRecovery(h.uploads.at(-1).json);
     assert.equal(final.owned_cleanup_completed, false);
     assert.equal(final.runtime_window.restored, false);

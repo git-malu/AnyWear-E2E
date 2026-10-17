@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { effectiveAdmissionMode } from './beta-admission-mode.mjs';
 import { captureAutoscaling, cloneFixtureDefinition, guardAutoscaling, normalizeFixtureDefinition, prepareNonPaidRuntime, recoverFixtureRegistrations, restoreNonPaidRuntime } from './nonpaid-runtime-controls.mjs';
 import { testerHash } from './runtime-window-controls.mjs';
 
@@ -165,8 +164,7 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
   const calls = [];
   const records = [];
   const definitions = new Map();
-  const admissionRecord = (mode) => JSON.stringify(mode === 'closed' ? { mode } : { mode, expires_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString() });
-  const policy = { admission_mode: { value: admissionRecord(initiallyOpen ? 'testers' : 'closed'), version: 1 },
+  const policy = { intake_open: { value: 'false', version: 1 }, admission_suspended: { value: initiallyOpen ? 'false' : 'true', version: 1 },
     tester_allowlist: { value: '[]', version: 1 } };
   let workerDefinition = definitionArn;
   let drift = false;
@@ -180,19 +178,18 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
     async saveRecovery(scope) { if (scope.runtimeControl) records.push(JSON.parse(JSON.stringify(scope.runtimeControl))); },
     async auditRuntimeWindow({ scope, request }) { return { schema_version: 1, source: 'durable-runtime-window-audit', binding: request,
       observed_at: '2026-10-05T01:00:00Z', current_rows: { active_tasks: 0, unpublished_outbox: 0, manual_intervention_outbox: 0 },
-      policy: { admission_mode: effectiveAdmissionMode(policy.admission_mode.value).mode,
+      policy: { intake_open: false, admission_suspended: policy.admission_suspended.value === 'true',
         tester_count: JSON.parse(policy.tester_allowlist.value).length, tester_allowlist_hash: testerHash(JSON.parse(policy.tester_allowlist.value)),
         updated_at: '2026-10-05T01:00:00Z' }, scope };
     },
     async runLifecycle({ action, payload }) {
       calls.push(['lifecycle', action]);
-      if (action === 'set-testers') {
+      if (action === 'configure-testers') {
         policy.tester_allowlist.value = payload;
         policy.tester_allowlist.version += 1;
-      } else {
-        policy.admission_mode.value = admissionRecord(action === 'suspend' ? 'closed' : 'testers');
-        policy.admission_mode.version += 1;
-      }
+        policy.admission_suspended.value = 'false';
+        policy.admission_suspended.version += 2;
+      } else { policy.admission_suspended.value = 'true'; policy.admission_suspended.version += 1; }
     },
     async aws(args) {
       calls.push(args);
@@ -218,7 +215,7 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
         taskArn: id, taskDefinitionArn: id.startsWith('api') ? apiDefinitionArn : workerDefinition,
         lastStatus: 'RUNNING', containers: [{ name: 'WorkerContainer', imageDigest: digest }] })) };
       if (args[1] === 'register-task-definition') {
-        assert.equal(JSON.parse(policy.admission_mode.value).mode, 'closed');
+        assert.equal(policy.admission_suspended.value, 'true');
         const arn = `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-nonpaid-${runScope}:1`;
         const registered = { ...JSON.parse(args[args.indexOf('--cli-input-json') + 1]), taskDefinitionArn: arn };
         definitions.set(arn, registered);
@@ -346,9 +343,9 @@ test('restoration stability failure propagates and recovery can resume an alread
 test('initial private admission closes before worker registration and deregistration requires INACTIVE readback', async () => {
   const paused = controlHarness({ initiallyOpen: true });
   await prepareNonPaidRuntime({ scope: paused.scope, fixture: paused.fixture }, paused.io, paused.environment, paused.wait);
-  const closed = paused.calls.findIndex((args) => args[0] === 'lifecycle' && args[1] === 'suspend');
+  const closed = paused.calls.findIndex((args) => args[0] === 'lifecycle' && args[1] === 'close');
   const registered = paused.calls.findIndex((args) => args[1] === 'register-task-definition');
-  const ownTester = paused.calls.findIndex((args) => args[0] === 'lifecycle' && args[1] === 'set-testers');
+  const ownTester = paused.calls.findIndex((args) => args[0] === 'lifecycle' && args[1] === 'configure-testers');
   assert.ok(closed >= 0 && closed < registered && ownTester > registered);
   const failed = controlHarness({ failDeregister: true });
   await prepareNonPaidRuntime({ scope: failed.scope, fixture: failed.fixture }, failed.io, failed.environment, failed.wait);

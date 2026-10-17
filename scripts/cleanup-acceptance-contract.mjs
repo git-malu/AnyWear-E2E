@@ -1,6 +1,5 @@
 import { assertEqual, byteHash, exactKeys, parseStrictJson, repositories, requireCommit,
   requireHash, requireId, requireImageDigest } from './evidence-contract.mjs';
-import { effectiveAdmissionMode, parseAdmissionMode } from './beta-admission-mode.mjs';
 import { configuredStack, configuredStackNames } from './vendor/operation-stacks.mjs';
 
 export const ACCEPTANCE_WORKFLOW = '.github/workflows/beta-cleanup-acceptance.yml';
@@ -259,39 +258,6 @@ function assertTaskProofs(tasks, bootstrap, input, success) {
   if (new Set(tasks.map(task => task.kind)).size !== 2) throw new Error('Task purposes are duplicated');
 }
 
-/**
- * The operation's admission snapshot must prove closure in exactly one vocabulary.
- *
- * `final.admission` is produced by the cleanup-acceptance origin, not by this repository,
- * so it is version-aware: a record captured before issue #132 reports the boolean pair and
- * a re-run reports `admission_mode`. The legacy branch is *stored evidence* — nothing in
- * the current contract writes `/anywear/beta/admission_suspended` or `intake_open` — and it
- * is kept so a record already written remains verifiable. The current branch accepts the
- * bare `closed` decision or the mirror's record, which reads closed once its bound has
- * passed. A block with neither vocabulary, with both, with only part of the pair, or that
- * merely fails to look open is refused: this is a closure proof, not an absence of proof.
- */
-function assertClosedAdmission(admission) {
-  if (!admission || typeof admission !== 'object' || Array.isArray(admission)) throw new Error('Fixture admission is not closed/suspended');
-  const legacyKeys = ['admission_suspended', 'intake_open'].filter((key) => Object.hasOwn(admission, key)).length;
-  const current = Object.hasOwn(admission, 'admission_mode');
-  if (legacyKeys === 2 && !current) {
-    if (admission.admission_suspended !== true || admission.intake_open !== false) throw new Error('Fixture admission is not closed/suspended');
-    return;
-  }
-  if (legacyKeys === 0 && current && admissionModeProvesClosure(admission.admission_mode)) return;
-  throw new Error('Fixture admission is not closed/suspended');
-}
-
-// The reported value is either the effective decision or the mirror's raw record.
-function admissionModeProvesClosure(value) {
-  if (value === 'closed') return true;
-  if (value === 'testers') return false;
-  const raw = typeof value === 'string' ? value
-    : value && typeof value === 'object' && !Array.isArray(value) ? JSON.stringify(value) : null;
-  return raw !== null && parseAdmissionMode(raw) !== null && effectiveAdmissionMode(raw).mode === 'closed';
-}
-
 export function assertFixtureRecord(record, origin, bootstrap, bootstrapOrigin, action) {
   // Schema v3 fixture records carry `stack_manifest`; historical dual-run records
   // carry `reviewed_stack_sources`. Exactly one provenance carrier is accepted.
@@ -329,7 +295,7 @@ export function assertFixtureRecord(record, origin, bootstrap, bootstrapOrigin, 
   const workload = sources.find(row => row.stack_name === 'AnyWearWorkloadStack-beta');
   if (workload.source_repository !== repositories.infra || workload.source_sha !== tuple.fixture_source_sha) throw new Error('Fixture Workload producer changed');
   assertEqual(record.original, record.final, 'Fixture preserves environment');
-  assertClosedAdmission(record.final.admission);
+  if (record.final.admission?.admission_suspended !== true || record.final.admission?.intake_open !== false) throw new Error('Fixture admission is not closed/suspended');
   if (record.final.definition?.taskDefinitionArn !== tuple.fixture_task_definition_arn) throw new Error('Fixture observed definition mismatch');
   requireHash(record.launch_input_sha256, 'Fixture launch input');
   if (!/^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/.test(record.task_arn)) throw new Error('Fixture task identity unavailable');
@@ -359,7 +325,8 @@ export function assertFixtureRecord(record, origin, bootstrap, bootstrapOrigin, 
   return result;
 }
 
-export function assertFixtureSnapshot(rows, bootstrap) {  if (!Array.isArray(rows) || rows.length !== 2) throw new Error('Fixture snapshot is incomplete');
+export function assertFixtureSnapshot(rows, bootstrap) {
+  if (!Array.isArray(rows) || rows.length !== 2) throw new Error('Fixture snapshot is incomplete');
   rows.forEach((row, index) => {
     exactKeys(row, ['role', 'slot', 'user_id', 'email', 'absent', 'user', 'item', 'task', 'outbox'], 'Fixture snapshot');
     if (row.slot !== index + 2 || row.role !== (index === 0 ? 'primary' : 'sentinel') || row.user_id !== bootstrap.identities[index].sub

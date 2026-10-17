@@ -112,7 +112,7 @@ function fixtureRecord(f) {
   const origin = { ...f.origin, repository: 'git-malu/AnyWear-Infra', source_sha: '9'.repeat(40), run_id: 300, artifact_id: 300 };
   const tuple = f.bootstrap.frozen_tuple, snapshots = refusalState(f).state.operations.fixture_baseline;
   const taskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'6'.repeat(32)}`;
-  const environment = { admission: { admission_mode: 'closed' }, definition: { taskDefinitionArn: tuple.fixture_task_definition_arn } };
+  const environment = { admission: { admission_suspended: true, intake_open: false }, definition: { taskDefinitionArn: tuple.fixture_task_definition_arn } };
   const record = { schema_version: 1, record_type: 'anywear_beta_cleanup_acceptance_operation', result: 'committed-result-and-preserved-state-verified',
     executor: { repository: origin.repository, source_sha: origin.source_sha, workflow_ref: `${origin.repository}/${origin.workflow_path}@refs/heads/main`,
       run_id: String(origin.run_id), run_attempt: String(origin.run_attempt) }, fixture_source_sha: tuple.fixture_source_sha,
@@ -161,46 +161,6 @@ test('fixture records bind raw stack source hash, all explicit producers and act
     r => r.task_observation.overrides.inferenceAcceleratorOverrides = ['foreign']]) {
     const changed = structuredClone(record); change(changed);
     assert.throws(() => assertFixtureRecord(changed, origin, f.bootstrap, f.origin, 'inspect'));
-  }
-});
-
-test('fixture admission proves closure in exactly one vocabulary: the legacy pair or the current mode', () => {
-  const f = cleanupAcceptanceFixture(), { origin, record } = fixtureRecord(f);
-  const withAdmission = (admission) => {
-    const changed = structuredClone(record);
-    // `original` and `final` must stay equal so the environment-preservation assertion is
-    // not what refuses the record: the admission proof is the subject here.
-    for (const environment of [changed.original, changed.final]) {
-      if (admission === undefined) delete environment.admission;
-      else environment.admission = admission;
-    }
-    return changed;
-  };
-  // Current vocabulary: the effective decision, the mirror's record, and a window record
-  // whose bound has passed — all of them the decision that admits nothing.
-  for (const value of ['closed', JSON.stringify({ mode: 'closed' }), { mode: 'closed' },
-    JSON.stringify({ mode: 'testers', expires_at: new Date(Date.now() - 1_000).toISOString() })]) {
-    assertFixtureRecord(withAdmission({ admission_mode: value }), origin, f.bootstrap, f.origin, 'inspect');
-  }
-  // Stored evidence from before the rename. Nothing writes `/anywear/beta/admission_suspended`
-  // or `/anywear/beta/intake_open` any more, so only a record captured under them carries them.
-  assertFixtureRecord(withAdmission({ admission_suspended: true, intake_open: false }), origin, f.bootstrap, f.origin, 'inspect');
-  for (const admission of [
-    undefined, {},                                                          // neither vocabulary
-    { admission_mode: 'testers' },                                          // the open decision
-    { admission_mode: JSON.stringify({ mode: 'testers', expires_at: new Date(Date.now() + 60_000).toISOString() }) }, // live window
-    { admission_mode: 'open' },                                             // the value #132 removed
-    { admission_mode: JSON.stringify({ mode: 'testers' }) },                // a record with no bound
-    { admission_mode: 'not-json' },                                         // unreadable, not "not clearly open"
-    { admission_suspended: true },                                          // partially populated legacy pair
-    { intake_open: false },                                                 // partially populated legacy pair
-    { admission_suspended: false, intake_open: false },                     // legacy that does not prove closure
-    { admission_suspended: 'true', intake_open: 'false' },                  // legacy with wrong types
-    { admission_mode: 'closed', admission_suspended: true },                // mixture of both vocabularies
-    { admission_suspended: true, intake_open: false, admission_mode: 'closed' }, // mixture that "proves" closure
-  ]) {
-    assert.throws(() => assertFixtureRecord(withAdmission(admission), origin, f.bootstrap, f.origin, 'inspect'),
-      /Fixture admission is not closed\/suspended/, JSON.stringify(admission));
   }
 });
 

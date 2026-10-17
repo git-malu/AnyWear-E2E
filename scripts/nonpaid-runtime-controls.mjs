@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { effectiveAdmissionMode } from './beta-admission-mode.mjs';
 import { FIXTURE_DELAY_MS, FIXTURE_KEY, FIXTURE_PORTS, fixtureProcessSource } from './nonpaid-provider-fixture.mjs';
 import { activateRuntimeWindow, captureRuntimeWindow, guardRuntimeWindow, pauseRuntimeWindow } from './runtime-window-controls.mjs';
 
@@ -264,9 +263,7 @@ export async function switchNonPaidMode(scope, mode, io, waitStable) {
   const control = scope.runtimeControl;
   if (!control || !scope.runtimeDefinitions?.[mode]) throw new Error('Non-paid runtime is not prepared');
   await guardRuntimeWindow(io, scope, { requireEmpty: true });
-  // The worker fixture switch is safe when admission is closed in fact, which an
-  // expired window already is even though its raw record still says `testers`.
-  if (effectiveAdmissionMode(scope.runtimeWindow.expected.admission_mode.value).mode !== 'closed') throw new Error('Worker fixture switch requires admission paused');
+  if (scope.runtimeWindow.expected.admission_suspended.value !== 'true') throw new Error('Worker fixture switch requires admission paused');
   await guardAutoscaling(io, scope);
   await verifyRevision(io, scope.stack, scope.stack.workerService, control.expected_worker_task_definition, control.baseline_worker_config);
   const intent = { mode, definition_hash: hash(scope.runtimeDefinitions[mode]), registered: false };
