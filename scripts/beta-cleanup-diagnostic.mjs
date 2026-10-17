@@ -262,6 +262,35 @@ function validateCapability(capability, expected) {
   return capability;
 }
 
+const CLIENT_HEALTH_KEYS = Object.freeze(['schema_version', 'component', 'source_commit', 'built_at']);
+const CLIENT_INTERFACE_KEYS = Object.freeze(['api_base_url', 'cognito_user_pool_id', 'cognito_client_id']);
+
+// The deployed Client's build-metadata identity. Schema 1 is exactly the four identity
+// fields. Schema 2 (AnyWear-Client#21) keeps those four unchanged and adds one `interface`
+// object, so both released shapes are accepted strictly: no other version, no unknown key
+// in either shape, no missing or empty interface member, and the `source_commit` binding to
+// the observed Client revision is unchanged from schema 1.
+function validateClientHealth(health, expected) {
+  if (!health || typeof health !== 'object' || Array.isArray(health)) throw new Error('Diagnostic Client health must be an object');
+  if (health.schema_version === 2) {
+    exactKeys(health, [...CLIENT_HEALTH_KEYS, 'interface'], 'Diagnostic Client health');
+    exactKeys(health.interface, CLIENT_INTERFACE_KEYS, 'Diagnostic Client interface');
+    for (const key of CLIENT_INTERFACE_KEYS) {
+      if (typeof health.interface[key] !== 'string' || health.interface[key].length === 0) {
+        throw new Error(`Diagnostic Client interface.${key} must be a non-empty string`);
+      }
+    }
+  } else if (health.schema_version === 1) {
+    exactKeys(health, CLIENT_HEALTH_KEYS, 'Diagnostic Client health');
+  } else {
+    throw new Error('Diagnostic Client health schema version is unsupported');
+  }
+  if (health.component !== 'AnyWear-Client' || health.source_commit !== expected.runtime.client_sha) {
+    throw new Error('Diagnostic Client health identity mismatch');
+  }
+  return health;
+}
+
 export function validateDiagnosticRecord(record, expected = DIAGNOSTIC_EXPECTED) {
   requireTransitionWorkflow(expected.infra.workflow_path);
   exactKeys(record, ['schema_version', 'record_type', 'producer', 'artifacts', 'selection', 'service', 'runtime', 'capability', 'observation', 'operation'], 'Diagnostic record');
@@ -280,9 +309,9 @@ export function validateDiagnosticRecord(record, expected = DIAGNOSTIC_EXPECTED)
     || record.runtime.api_endpoint !== expected.runtime.api_endpoint || record.runtime.client_endpoint !== expected.runtime.client_endpoint || record.runtime.api_task_definition !== expected.runtime.api_task_definition
     || record.runtime.worker_task_definition !== expected.runtime.worker_task_definition || record.runtime.rollout_state !== expected.runtime.rollout_state || record.runtime.schema_version !== expected.runtime.schema_version) throw new Error('Diagnostic runtime binding mismatch');
   exactKeys(record.runtime.health, ['client', 'service'], 'Diagnostic health');
-  exactKeys(record.runtime.health.client, ['schema_version', 'component', 'source_commit', 'built_at'], 'Diagnostic Client health');
+  validateClientHealth(record.runtime.health.client, expected);
   exactKeys(record.runtime.health.service, ['status', 'service_commit', 'image_digest', 'minimum_schema_version'], 'Diagnostic Service health');
-  if (record.runtime.health.client.schema_version !== 1 || record.runtime.health.client.component !== 'AnyWear-Client' || record.runtime.health.client.source_commit !== expected.runtime.client_sha || record.runtime.health.service.status !== 'ok'
+  if (record.runtime.health.service.status !== 'ok'
     || record.runtime.health.service.service_commit !== expected.service.source_sha || record.runtime.health.service.image_digest !== expected.service.image_digest
     || record.runtime.health.service.minimum_schema_version !== expected.service.schema_version) throw new Error('Diagnostic HTTP health mismatch');
   validateCapability(record.capability, expected);

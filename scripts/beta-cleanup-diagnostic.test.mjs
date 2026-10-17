@@ -152,6 +152,48 @@ test('validates the diagnostic envelope and keeps formal deployment contracts cl
   assert.throws(() => validateDeploymentRecord(fixture.record), /Unknown deployment schema|Invalid deployment record fields/);
 });
 
+// AnyWear-Client#21 released build-metadata schema 2: the four schema-1 identity fields are
+// unchanged and one `interface` object is added. The diagnostic must accept both released
+// shapes strictly, keep the source_revision binding exact, and refuse a partial or unknown
+// shape rather than ignoring it.
+test('accepts Client build-metadata schema 1 and schema 2 and refuses every other shape', () => {
+  const fixture = diagnosticFixture();
+  const identity = {
+    schema_version: 1,
+    component: 'AnyWear-Client',
+    source_commit: fixture.expected.runtime.client_sha,
+    built_at: '2026-10-12T22:00:00.000Z',
+  };
+  const schema2 = {
+    ...identity,
+    schema_version: 2,
+    interface: { api_base_url: 'https://api.example.invalid', cognito_user_pool_id: 'pool-id', cognito_client_id: 'client-id' },
+  };
+  const withClient = (client) => {
+    const candidate = structuredClone(fixture);
+    candidate.record.runtime.health.client = client;
+    return candidate;
+  };
+  for (const [label, client] of [['schema 1', identity], ['schema 2', schema2]]) {
+    const candidate = withClient(client);
+    assert.strictEqual(validateDiagnosticRecord(candidate.record, fixture.expected), candidate.record, label);
+  }
+  for (const [label, client, expected] of [
+    ['schema 2 missing interface', { ...identity, schema_version: 2 }, /Diagnostic Client health\.interface is required/],
+    ['schema 2 extra top-level key', { ...schema2, extra: true }, /Diagnostic Client health\.extra is unknown/],
+    ['unknown schema version', { ...schema2, schema_version: 3 }, /schema version is unsupported/],
+    ['schema 2 missing interface member', { ...schema2, interface: { api_base_url: schema2.interface.api_base_url, cognito_user_pool_id: schema2.interface.cognito_user_pool_id } }, /Diagnostic Client interface\.cognito_client_id is required/],
+    ['schema 2 unknown interface member', { ...schema2, interface: { ...schema2.interface, extra: 'x' } }, /Diagnostic Client interface\.extra is unknown/],
+    ['schema 2 empty interface member', { ...schema2, interface: { ...schema2.interface, cognito_client_id: '' } }, /Diagnostic Client interface\.cognito_client_id must be a non-empty string/],
+    ['schema 2 non-string interface member', { ...schema2, interface: { ...schema2.interface, api_base_url: 7 } }, /Diagnostic Client interface\.api_base_url must be a non-empty string/],
+    ['schema 2 foreign client source', { ...schema2, source_commit: sha('f') }, /Diagnostic Client health identity mismatch/],
+    ['schema 1 carrying the schema 2 interface', { ...identity, interface: schema2.interface }, /Diagnostic Client health\.interface is unknown/],
+  ]) {
+    const candidate = withClient(client);
+    assert.throws(() => validateDiagnosticRecord(candidate.record, fixture.expected), expected, label);
+  }
+});
+
 test('rejects unknown, duplicate and every producer/runtime binding drift', () => {
   const base = diagnosticFixture();
   const mutations = [
