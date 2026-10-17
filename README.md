@@ -45,7 +45,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # compatibility, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 25 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 26 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -79,6 +79,7 @@ scenario must satisfy.
 | `test:instrumentation` | E2E maintainers; explicit opt-in through the protected Beta Instrumentation dispatch | A measurement workload with paid provider spend and its own cleanup contract, reported as a measurement; it can neither satisfy nor fail release qualification |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario, the measurement included; not a release-gating selection on its own |
 | `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
+| `compatibility:pin` | E2E maintainers, used by the maintainer accountable for a change that moved the deployed tuple | Offline byte-hash and binding comparison of the committed pin against a downloaded deployment record and the previous pin; no credentials, cloud calls or deployed reads |
 
 The release-gating selection and the measurement are separated by a workflow boundary, not
 by a step or a job. A release consumer accepts a qualification record only from a
@@ -88,7 +89,7 @@ from its own protected dispatch, `beta-instrumentation.yml`, with the same evide
 and cleanup controls. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 25 registered core files retain account-budget, Cognito cleanup, qualification
+The 26 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the current
 `infra-source.test.mjs`, `infra-qualification.test.mjs` and
@@ -115,7 +116,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Quality workflow runs compatibility validation, the explicit 25 core test files, lint, type checking, and
+Quality workflow runs compatibility validation, the explicit 26 core test files, lint, type checking, and
 Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -251,24 +252,17 @@ A reviewed v2 compatibility file has these additional identities:
 }
 ```
 
-The placeholders above are rejected by validation. Keep the committed
-`compatibility.json` at v1 until a real post-input Infra deployment record exists.
-Then run `node scripts/migrate-compatibility.mjs --deployment-record
-<downloaded-deployment-record.json> --output <reviewed-v2.json>`. The migration
-always reads the committed v1 file as its baseline; there is no alternate-pin
-override. Prepare
-`.infra-source` as a clean checkout of the record's exact Infra SHA from its
-expected origin. Supply the Infra reader as `GH_TOKEN`, the Service reader as
-`SERVICE_ARTIFACT_READ_TOKEN`, and a Client-only Contents read token as
-`CLIENT_CONTENTS_READ_TOKEN` for remote commit checks. The command checks remote
-commit availability, uniquely resolves the genuine Infra artifact for the bound
-completed run attempt, hashes the exact supplied record bytes, and retrieves the
-trusted deployment artifact and sealed Service manifest through the existing
-reader. It validates the pinned Infra committed selection and writes a new
-candidate file with exclusive creation; it never modifies `compatibility.json`,
-infers any pin, dispatches workflows, or runs a suite. The candidate is suitable
-for review only after the exact deployment and its record have passed these
-checks. The final #54 tuple must pin the deployment record produced **after the
+The placeholders above are rejected by validation. The committed
+`compatibility.json` is already v2, and the v1-only
+`scripts/migrate-compatibility.mjs` and `scripts/build-v2-candidate.mjs` refuse
+it. Moving the pin is an operational routine with a stated owner, a start
+condition and a checklist: follow
+[`docs/compatibility-pin.md`](docs/compatibility-pin.md). It observes the
+deployed tuple once with a qualified `runtime.yml` run, moves the four identity
+members together from that record, and refuses a partial pin offline before the
+commit exists.
+
+The final #54 tuple must pin the deployment record produced **after the
 authorized Beta maintenance migration and restart**; a rehearsal record cannot
 substitute.
 
