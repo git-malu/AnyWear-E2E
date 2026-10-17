@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ADMISSION_WINDOW_MINUTES, admissionWindowPayload, parseAdmissionWindowPayload } from './admission-window.mjs';
 import { oneShotHarness } from './fixtures/runtime-one-shot-harness.mjs';
-import { cleanupOneShotDefinitions, expectedCommand, payloadHash, recoverOneShotRegistrations, runOwnedOneShot, validateOperationBinding, verifyOneShotTask } from './runtime-one-shot.mjs';
+import { cleanupOneShotDefinitions, recoverOneShotRegistrations, runOwnedOneShot, verifyOneShotTask } from './runtime-one-shot.mjs';
 import { readOneShotLog, validateCleanupEvidence } from './runtime-one-shot-logs.mjs';
 import { cleanupFixture } from './fixtures/runtime-evidence.mjs';
 
@@ -90,8 +89,8 @@ test('irreversible DLQ deletion followed by rollback never qualifies as committe
 });
 
 test('actual Service-approved helper blueprint accepts all owned purposes and documented ECS defaults', async () => {
-  for (const [purpose, action, payload] of [['task-audit', '', undefined], ['lifecycle', 'suspend', ''],
-    ['lifecycle', 'resume', admissionWindowPayload()], ['lifecycle', 'set-testers', '[]'], ['tester-cleanup', '', undefined]]) {
+  for (const [purpose, action, payload] of [['task-audit', '', undefined], ['lifecycle', 'close', ''],
+    ['lifecycle', 'open', ''], ['lifecycle', 'configure-testers', '[]'], ['tester-cleanup', '', undefined]]) {
     const h = oneShotHarness();
     const request = purpose === 'tester-cleanup' ? JSON.stringify({ runScope: h.scope.runScope, users: [{ sub: h.scope.subject, email: h.scope.email }] })
       : JSON.stringify({ runScope: h.scope.runScope, mode: 'window-preflight' });
@@ -107,45 +106,6 @@ test('actual Service-approved helper blueprint accepts all owned purposes and do
     definition.deregisteredAt = new Date();
     definition.deleteRequestedAt = new Date();
     await verifyOneShotTask(h.io, h.scope, operation);
-  }
-});
-
-test('a resume helper carries one bounded window payload and refuses every other request', async () => {
-  const h = oneShotHarness();
-  const payload = admissionWindowPayload();
-  assert.equal(payload, `{"window_minutes":${ADMISSION_WINDOW_MINUTES.default}}`);
-  const { operation } = await runOwnedOneShot(h.io, h.scope, 'lifecycle', 'resume', payload, h.runner);
-  // The Service refuses the request before writing unless the command carries this exact
-  // object, so the retained proof must show it in the actual task command.
-  assert.deepEqual(operation.proof.command, ['node', 'dist/ops/beta-lifecycle.js', 'resume', payload]);
-  // Only the two payload-carrying actions append bytes; `suspend` is a bare action.
-  assert.deepEqual(expectedCommand({ purpose: 'lifecycle', action: 'resume', request_payload: payload }),
-    ['node', 'dist/ops/beta-lifecycle.js', 'resume', payload]);
-  assert.deepEqual(expectedCommand({ purpose: 'lifecycle', action: 'suspend', request_payload: '' }),
-    ['node', 'dist/ops/beta-lifecycle.js', 'suspend']);
-  assert.equal(parseAdmissionWindowPayload(operation.request_payload), ADMISSION_WINDOW_MINUTES.default);
-  await verifyOneShotTask(h.io, h.scope, operation);
-  for (const minutes of [ADMISSION_WINDOW_MINUTES.minimum, ADMISSION_WINDOW_MINUTES.maximum]) {
-    assert.equal(parseAdmissionWindowPayload(admissionWindowPayload(minutes)), minutes);
-  }
-  for (const minutes of [0, 14, 241, -1, 60.5, '60', null]) {
-    assert.throws(() => admissionWindowPayload(minutes), /integer minute bound/, String(minutes));
-  }
-  // Absent, wrongly typed, out-of-range, extra-key and non-canonical payloads must not
-  // reach a helper at all: the refusal is the Service's, so it has to be this side's too.
-  for (const refused of ['', '{}', '[]', '60', '{"window_minutes":true}', '{"window_minutes":14}',
-    '{"window_minutes":241}', '{"window_minutes":60.5}', '{"window_minutes":"60"}',
-    '{"window_minutes":60,"minutes":60}', '{"window_minutes":60,"window_minutes":60}',
-    '{"window_minutes": 60}', '{"windowMinutes":60}', 'not json']) {
-    assert.equal(parseAdmissionWindowPayload(refused), null, refused);
-    const invalid = { run_scope: h.scope.runScope, purpose: 'lifecycle', action: 'resume',
-      request_payload: refused, payload_sha256: payloadHash(refused) };
-    assert.throws(() => validateOperationBinding(h.scope, invalid), /Invalid lifecycle admission window payload/, refused);
-  }
-  // The other lifecycle actions do not accept a window request.
-  for (const action of ['suspend', 'set-testers']) {
-    const invalid = { run_scope: h.scope.runScope, purpose: 'lifecycle', action, request_payload: payload, payload_sha256: payloadHash(payload) };
-    assert.throws(() => validateOperationBinding(h.scope, invalid), /Unexpected lifecycle payload|Invalid lifecycle tester payload/, action);
   }
 });
 

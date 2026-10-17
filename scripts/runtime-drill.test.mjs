@@ -228,7 +228,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     cleaned = scope.owned === true && marker === executionEnvironment.RUNTIME_DRILL_ID;
   };
   const preflight = {
-    admission_mode: 'closed',
+    intake_open: false,
     stack: { cluster: 'beta', apiService: 'api', workerService: 'worker' },
     deployment: {
       client: { source_commit: compatibility.client.sha },
@@ -387,7 +387,7 @@ test('runtime verifier refuses foreign run/user/family, reused task/item, missin
   }
 });
 
-test('complete mocked executor retains bound audit/window/cleanup evidence and refuses an unreadable admission window before account creation', async () => {
+test('complete mocked executor retains bound audit/window/cleanup evidence and refuses public intake before account creation', async () => {
   const record = validEvidence();
   const runEnvironment = { ...environment, GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: 'a'.repeat(40),
     RUNTIME_DRILL_CONCURRENCY: 'anywear-beta-runtime', RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill', RUNTIME_DRILL_ID: record.drill_id,
@@ -410,12 +410,10 @@ test('complete mocked executor retains bound audit/window/cleanup evidence and r
       expected: Object.fromEntries(Object.entries(record.window_control.final_versions).map(([key, version]) => [key, { version }])) };
   };
   const options = { fixtureReader: async () => ({}), fencingReader: async () => record.fencing_ci,
-    preflightCollector: async () => ({ admission_mode: 'closed', stack: {}, deployment: { client: { source_commit: compatibility.client.sha }, service: scope.deployment.service } }) };
+    preflightCollector: async () => ({ intake_open: false, stack: {}, deployment: { client: { source_commit: compatibility.client.sha }, service: scope.deployment.service } }) };
   assert.equal(verifyRuntimeDrillEvidence(await executeRuntimeDrill(runEnvironment, compatibility, adapter, options), compatibility).passed, true);
   calls.length = 0;
-  for (const preflight of [{}, { admission_mode: 'open' }, { admission_mode: undefined }]) {
-    await assert.rejects(executeRuntimeDrill(runEnvironment, compatibility, adapter, { ...options,
-      preflightCollector: async () => preflight }), /reader-valid \/anywear\/beta\/admission_mode/);
-  }
+  await assert.rejects(executeRuntimeDrill(runEnvironment, compatibility, adapter, { ...options,
+    preflightCollector: async () => ({ intake_open: true }) }), /private-only/);
   assert.deepEqual(calls, []);
 });
