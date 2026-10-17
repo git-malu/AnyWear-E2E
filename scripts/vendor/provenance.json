@@ -1,10 +1,9 @@
 {
   "source_repository": "git-malu/AnyWear-Infra",
-  "source_sha": "bab0b6a69ad27f86f405c80f34f588044f28adc4",
-  "final_c_sha": "fc0e23a7efc832562559ae465d06f68a7bf94126",
-  "source_note": "Contract files are byte-identical between bab0b6a and the final C commit fc0e23a; the approved stage-contract parameter-list extension is a separate change and does not alter these three files. The Infra observer is not vendored.",
+  "source_sha": "61a3f61ded06699cd1e10039cd2f3c53bf3a7f7d",
+  "source_note": "Final Infra C contract source. Every file below is an exact byte copy from that commit; the loader assertion hashes the files it imports and refuses a mismatch. The approved stage-contract parameter-list extension changes the recorded input names (35 stage parameters plus the four reused values at resident active roles-added), not this v3 record shape. The Infra observer is not vendored.",
   "files": {
-    "deployment-contract.mjs": "307dfdf5b69be2c74e61685ac076ae7f4de72a4f5ec0b1665e10f5d7c191cd59",
+    "deployment-contract.mjs": "e43b0f0213fbbf391849d6f816a6bf7f44edd8318e07cba2d31fcb6a9a7dab80",
     "json-contract.mjs": "c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047",
     "operation-stacks.mjs": "6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023"
   },

@@ -9,8 +9,7 @@ import { assertVendoredProvenance, loadVendoredProvenance } from './vendored-con
 test('the vendored v3 contract matches its pinned producer commit and file hashes', async () => {
   const provenance = await loadVendoredProvenance();
   assert.equal(provenance.source_repository, 'git-malu/AnyWear-Infra');
-  assert.equal(provenance.source_sha, 'bab0b6a69ad27f86f405c80f34f588044f28adc4');
-  assert.equal(provenance.final_c_sha, 'fc0e23a7efc832562559ae465d06f68a7bf94126');
+  assert.equal(provenance.source_sha, '61a3f61ded06699cd1e10039cd2f3c53bf3a7f7d');
   assert.deepEqual(Object.keys(provenance.files).sort(), ['deployment-contract.mjs', 'json-contract.mjs', 'operation-stacks.mjs']);
   assert.deepEqual(await assertVendoredProvenance(), provenance);
 });
@@ -33,7 +32,7 @@ async function withVendoredCopy(action) {
 test('a modified vendored module is refused with the producer identity and actual hash', async () => {
   await withVendoredCopy(async ({ directory, root }) => {
     await writeFile(join(directory, 'deployment-contract.mjs'), 'export const tampered = true;\n');
-    await assert.rejects(assertVendoredProvenance({ root }), /deployment-contract\.mjs differs from git-malu\/AnyWear-Infra@bab0b6a/);
+    await assert.rejects(assertVendoredProvenance({ root }), /deployment-contract\.mjs differs from git-malu\/AnyWear-Infra@61a3f61/);
   });
 });
 

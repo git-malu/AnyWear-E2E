@@ -2,15 +2,14 @@
 
 These files are exact byte copies of the public v3 deployment contract from
 [`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`bab0b6a69ad27f86f405c80f34f588044f28adc4`. The final C commit
-`fc0e23a7efc832562559ae465d06f68a7bf94126` carries byte-identical copies of these
-three files; the approved stage-contract parameter-list extension is a separate
-change and does not alter them. The Infra observer was rewritten separately and is
-not vendored.
+`61a3f61ded06699cd1e10039cd2f3c53bf3a7f7d`, the final C contract source. The
+approved stage-contract parameter-list extension changes the recorded input
+names, not the v3 record shape. The Infra observer was rewritten separately and
+is not vendored.
 
 | E2E file | Producer path in Infra | Raw SHA-256 |
 | --- | --- | --- |
-| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `307dfdf5b69be2c74e61685ac076ae7f4de72a4f5ec0b1665e10f5d7c191cd59` |
+| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `e43b0f0213fbbf391849d6f816a6bf7f44edd8318e07cba2d31fcb6a9a7dab80` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
 | `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023` |
 

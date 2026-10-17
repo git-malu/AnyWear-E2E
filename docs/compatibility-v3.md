@@ -165,9 +165,8 @@ producer side. C's post-C Platform deploy removes every `PublishOutput*` output,
 and the release-slice deploy's last eleven weak reads (nine cleanup values and
 two isolated-subnet values) are being converted into stage-contract parameters.
 The Service record's `inputs[]` therefore grows to whatever the deployed phase
-actually reads — expected 38 for resident active `roles-added` (25 stage
-parameters + 9 cleanup + 4 reused values), or 39 if `isolated_subnet_ids` is also
-published and read at that phase. E2E does not hardcode a count or a name list:
+actually reads — expected 39 for resident active `roles-added` (35 stage
+parameters + 4 reused values). E2E does not hardcode a count or a name list:
 it accepts the producer's recorded, sorted and unique list within the contract's
 bound, and derives the schema hash from it, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer

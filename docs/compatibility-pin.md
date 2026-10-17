@@ -201,13 +201,12 @@ producer-side fix is approved. C's post-C Platform deploy removes every
 `PublishOutput*` output, and the release-slice deploy's last eleven weak reads
 (nine cleanup values and two isolated-subnet values) are being converted into
 stage-contract parameters. The Service record's `inputs[]` grows to whatever the
-deployed phase reads — expected 38 for resident active `roles-added` (25 stage
-parameters + 9 cleanup + 4 reused values), or 39 if `isolated_subnet_ids` is also
-published and read. This consumer accepts the recorded, sorted and unique list
-without a count or name assertion, so no schema or format change follows. Once
-both stacks read pure SSM parameters, deploy order no longer matters. Until the
-deferred Foundation/Platform round supplies those parameters and the first
-records, there is no live qualification and no Workload deploy.
+deployed phase reads — expected 39 for resident active `roles-added` (35 stage
+parameters + 4 reused values). This consumer accepts the recorded, sorted and
+unique list without a count or name assertion, so no schema or format change
+follows. Once both stacks read pure SSM parameters, deploy order no longer
+matters. Until the deferred Foundation/Platform round supplies those parameters
+and the first records, there is no live qualification and no Workload deploy.
 
 ## The offline validator
 

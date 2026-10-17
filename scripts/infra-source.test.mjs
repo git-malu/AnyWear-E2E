@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reviewedInfraSource } from './infra-source.mjs';
+import { byteHash } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 import { pinnedInfraObserver } from './infra-observation.mjs';
 
@@ -23,7 +24,16 @@ async function withInfraFixture(action, additionalSources = {}) {
     for (const [name, contents] of Object.entries(additionalSources)) await writeFile(join(directory, 'scripts', name), contents);
     git(['add', 'scripts']); git(['commit', '--quiet', '-m', 'Offline fixture']);
     const fixture = qualificationFixture();
-    const compatibility = fixture.compatibility; compatibility.infra.sha = git(['rev-parse', 'HEAD']);
+    const compatibility = fixture.compatibility;
+    // The v3 observer CLI requires the expected record's producer to equal the
+    // observer source SHA: E2E checks out the producer revision it observes.
+    const commit = git(['rev-parse', 'HEAD']);
+    compatibility.infra.sha = commit;
+    compatibility.platform.producer_sha = commit;
+    fixture.platformRecord.producer.sha = commit;
+    for (const row of fixture.platformRecord.stacks) row.producer_sha = commit;
+    fixture.bytes.platform = Buffer.from(`${JSON.stringify(fixture.platformRecord, null, 2)}\n`);
+    compatibility.platform.record.record_sha256 = byteHash(fixture.bytes.platform);
     await action({ directory, git, filename, source, compatibility, fixture, env: { QUALIFICATION_INFRA_DIR: directory } });
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -46,11 +56,13 @@ test('pinned source guard refuses subdirectories, wrong origins and hidden track
 
 const scopedReaderAssertions = `
 import assert from 'node:assert/strict';
-function requireObservationEnvironment(env, infraSha) {
-  assert.equal(env.GITHUB_SHA, infraSha);
-  assert.equal(env.GITHUB_REPOSITORY, 'git-malu/AnyWear-E2E');
-  assert.equal(env.GITHUB_WORKFLOW_REF, 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main');
-  assert.ok(env.QUALIFICATION_INFRA_DIR);
+const argument = name => process.argv[process.argv.indexOf(name) + 1];
+function requireObservationEnvironment(infraSha) {
+  assert.equal(process.env.GITHUB_REPOSITORY, 'git-malu/AnyWear-E2E');
+  assert.equal(process.env.GITHUB_WORKFLOW_REF, 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main');
+  assert.ok(process.env.QUALIFICATION_INFRA_DIR);
+  assert.equal(argument('--infra-sha'), infraSha);
+  assert.equal(argument('--trusted-infra-root'), process.env.QUALIFICATION_INFRA_DIR);
 }
 `;
 
@@ -63,14 +75,13 @@ function readerEnvironment(directory) {
 }
 
 const observerFixture = `${scopedReaderAssertions}
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-export async function observeDeployment({ infraSha, env }) {
-  requireObservationEnvironment(env, infraSha);
-  const platform = JSON.parse(readFileSync(join(env.QUALIFICATION_INPUTS_DIR, 'platform-deployment-record.json')));
-  assert.equal(platform.record_type, 'anywear_infra_deployment');
-  return { stacks: platform.stacks, inputs: platform.inputs, observed: platform.observed, schema: platform.schema };
-}
+import { readFileSync, writeFileSync } from 'node:fs';
+export async function observeDeployment({ infraSha, env }) { return null; }
+const platform = JSON.parse(readFileSync(argument('--expected')));
+requireObservationEnvironment(platform.producer.sha);
+assert.equal(platform.record_type, 'anywear_infra_deployment');
+const body = { stacks: platform.stacks, inputs: platform.inputs, observed: platform.observed, schema: platform.schema };
+writeFileSync(argument('--output'), JSON.stringify(body));
 `;
 
 test('pinned observer receives both producer records and no retired selection input', async () => {
