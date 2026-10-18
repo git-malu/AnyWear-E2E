@@ -2,7 +2,7 @@
 
 These files are the public v4 deployment contract from
 [`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`367292167ef6c4a4e3425a6f5c4ba268ef39bfd5`. The contract keeps the seven-member
+`fa3723324ce7d95b4f3977c4c04f363cba770e08`. The contract keeps the seven-member
 v3 record core, and the Service `anywear_service_deployment` record is schema
 version 4 with a required `gate` block. The Infra `anywear_infra_deployment`
 record stays schema version 3 and never carries a gate.
@@ -39,11 +39,11 @@ change or a doctored file is refused before the consumer imports the contract.
 | Member | Value |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.2.0` |
+| Version | `0.2.1` |
 | Source | `packages/stage-contracts` |
-| Tarball SHA-256 | `6cbe78e0e310eff050b2eb574054ab753e7b0d48d5ca44bd2085e6b23b88938b` |
+| Tarball SHA-256 | `58234d231aa8f5a3ae798561449cb5c220868ad82977e8bf692ff11c4f191a89` |
 
-The tarball is the packed `git-malu-stage-contracts-0.2.0.tgz` for consumers that
+The tarball is the packed `git-malu-stage-contracts-0.2.1.tgz` for consumers that
 install the package. This repository does not commit the tarball and adds no
 dependency: `stage-contracts.mjs` is the same package entry in install-free form.
 `provenance.json` is the machine-readable pin of both forms.

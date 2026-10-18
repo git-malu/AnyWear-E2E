@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { byteHash } from './evidence-contract.mjs';
 import { assertVendoredProvenance, loadVendoredProvenance } from './vendored-contract.mjs';
 
-const SOURCE_SHA = '367292167ef6c4a4e3425a6f5c4ba268ef39bfd5';
+const SOURCE_SHA = 'fa3723324ce7d95b4f3977c4c04f363cba770e08';
 
 test('the vendored v4 contract matches its pinned producer commit and file hashes', async () => {
   const provenance = await loadVendoredProvenance();
@@ -20,7 +20,7 @@ test('the vendored v4 contract matches its pinned producer commit and file hashe
     'deployment-contract.mjs': [{ from: "from '@git-malu/stage-contracts'", to: "from './stage-contracts.mjs'" }],
   });
   assert.equal(provenance.package.name, '@git-malu/stage-contracts');
-  assert.equal(provenance.package.version, '0.2.0');
+  assert.equal(provenance.package.version, '0.2.1');
   assert.deepEqual(await assertVendoredProvenance(), provenance);
 });
 
