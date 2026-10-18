@@ -63,17 +63,17 @@ test('the committed pin records both producer deployment identities', async () =
   }
   assert.match(pin.deployment.record_sha256, /^[0-9a-f]{64}$/);
   // The platform record this pin binds: the reviewed Infra observation run
-  // 39104244598 attempt 1, artifact infra-deployment-39104244598-1 and the exact
+  // 39135072915 attempt 1, artifact infra-deployment-39135072915-1 and the exact
   // deployment-record.json bytes. `platform.producer_sha` must be the run head the
   // record's producer names, not the separately reviewed `infra.sha`.
   assert.equal(pin.platform.record.status, 'recorded');
   assert.equal(pin.platform.record.producer, pin.platform.producer);
   assert.equal(pin.platform.record.workflow_path, '.github/workflows/runtime.yml');
-  assert.equal(pin.platform.producer_sha, '5420469f8a4a717c62397ed0f4f692219a18dc57');
-  assert.equal(pin.platform.record.run_id, 39104244598);
+  assert.equal(pin.platform.producer_sha, 'e5dcabe82f01a5a0a06e9c179903612e0ceb5e4f');
+  assert.equal(pin.platform.record.run_id, 39135072915);
   assert.equal(pin.platform.record.run_attempt, 1);
-  assert.equal(pin.platform.record.artifact_id, 12128200024);
-  assert.equal(pin.platform.record.record_sha256, '0c63e881dbda263f87ca8cde822d4256155e36cdd40cdf9594ff398701130278');
+  assert.equal(pin.platform.record.artifact_id, 12139039476);
+  assert.equal(pin.platform.record.record_sha256, 'ba95ab21917aa10c917a79b545eb736fa9734c3015ba14f7918a406674d95ad5');
 });
 
 test('the coherent pair passes and reports both producer records and moved members', async (t) => {
