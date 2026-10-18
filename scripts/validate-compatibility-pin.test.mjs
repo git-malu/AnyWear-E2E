@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { byteHash } from './evidence-contract.mjs';
+import { byteHash, parseStrictJson, validateCompatibility } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 import { assertCompatibilityPin, validatorArguments } from './validate-compatibility-pin.mjs';
 
@@ -46,6 +46,25 @@ async function prepare() {
   input.close = () => rm(directory, { recursive: true, force: true });
   return input;
 }
+
+// The committed pin is the reviewed tuple, not a fixture: it must stay v3, keep
+// the recorded Workload deployment identity the move pinned, and state why the
+// Platform record is still deferred. A later move updates this expectation with
+// the pin.
+test('the committed pin records the workload deployment identity and keeps the platform record deferred', async () => {
+  const pin = validateCompatibility(parseStrictJson(await readFile(new URL('../compatibility.json', import.meta.url))));
+  assert.equal(pin.version, 3);
+  assert.equal(pin.deployment.status, 'recorded');
+  assert.equal(pin.deployment.producer, pin.workload.producer);
+  assert.equal(pin.deployment.workflow_path, '.github/workflows/service-artifacts.yml');
+  for (const field of ['run_id', 'run_attempt', 'artifact_id']) {
+    assert.ok(Number.isSafeInteger(pin.deployment[field]) && pin.deployment[field] >= 1, `deployment.${field} must be a positive integer`);
+  }
+  assert.match(pin.deployment.record_sha256, /^[0-9a-f]{64}$/);
+  assert.equal(pin.platform.record.status, 'deferred');
+  assert.match(pin.platform.record.reason, /platform record/);
+  assert.match(pin.platform.record.reason, /change set/);
+});
 
 test('the coherent pair passes and reports both producer records and moved members', async (t) => {
   const input = await prepare();

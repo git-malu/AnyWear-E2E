@@ -147,32 +147,41 @@ deployment exists. A compatibility pin therefore must be able to name the
 producer without inventing a run. The deferred shape does exactly that:
 
 - `validateCompatibility` accepts a deferred record and rejects any other member
-  of the identity shape.
-- Every live path fails closed with `deployment evidence deferred` before it
-  downloads, observes or qualifies anything. It never falls back to a historical
-  Infra `runtime.yml` tuple and never treats a Service publication run as a
-  deployment.
+  of the identity shape. Each identity is validated on its own, so one producer's
+  record can be pinned while the other stays deferred.
+- Every live path fails closed with `deployment evidence deferred` for the
+  deferred identity before it downloads, observes or qualifies anything. It never
+  falls back to a historical Infra `runtime.yml` tuple and never treats a Service
+  publication run as a deployment.
 - `validate-compatibility-pin` refuses to move a pin while either record is
   deferred, so a deferred pin cannot be relabelled as a recorded one offline.
 
 A deferred pin is coherent and reviewable; it is not qualification authority.
-The first authorized deployment/observe round supplies the two records and the
-pin moves to the recorded shape through
+The committed pin is in that mixed state. Its `deployment` identity is recorded
+from the Service release-chain run `39098055973` attempt `1`, artifact
+`service-deployment-39098055973-1` (artifact id `12124879790`) and the SHA-256 of
+the exact `service-deployment.json` bytes. Its `platform.record` is deferred
+because the Beta Platform stack was applied by change set from `da67841f`, not
+through `mutate.yml`: no reviewed Infra run has written a v3 platform record, and
+the most recent Infra deployment artifacts are v2 records. The first authorized
+platform observe at the deployed Platform revision supplies that record and the
+pin moves to the fully recorded shape through
 [compatibility-pin.md](compatibility-pin.md).
 
 One cross-repository dependency is recorded here and has now been approved for the
 producer side. C's post-C Platform deploy removes every `PublishOutput*` output,
 and the release-slice deploy's last eleven weak reads (nine cleanup values and
-two isolated-subnet values) are being converted into stage-contract parameters.
-The Service record's `inputs[]` therefore grows to whatever the deployed phase
-actually reads — expected 38 for resident active `roles-added` (34 stage-base
+two isolated-subnet values) became stage-contract parameters. The Service
+record's `inputs[]` therefore grows to whatever the deployed phase actually reads
+— 38 for resident active `roles-added` in the deployed record (34 stage-base
 parameters + 4 reused values; the stopped-only `isolated_subnet_ids` is not read
 at that phase). E2E does not hardcode a count or a name list:
 it accepts the producer's recorded, sorted and unique list within the contract's
 bound, and derives the schema hash from it, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer
-matters. Until the deferred Foundation/Platform round supplies the parameters and
-the first records, there is no live qualification and no Workload deploy.
+matters. The conversion has landed and one authorized Workload deploy completed
+from it; live qualification is still closed by the deferred `platform.record`,
+which is the remaining evidence gap.
 
 ## Migration
 
