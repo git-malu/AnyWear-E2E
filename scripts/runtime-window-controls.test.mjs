@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { admissionWindowPayload } from './admission-window.mjs';
 import { effectiveAdmissionMode } from './beta-admission-mode.mjs';
 import { activateRuntimeWindow, captureRuntimeWindow, guardRuntimeWindow, pauseRuntimeWindow, restoreRuntimeWindow, testerHash } from './runtime-window-controls.mjs';
 import { assertLiveRuntimeSourceReady, LIVE_RUNTIME_SOURCE_READY } from './runtime-source-readiness.mjs';
 
-// A reader decides against its own clock, so a fixture window that models an open
-// admission window must be live: its bound is measured from now.
-const admissionRecord = (mode) => JSON.stringify(mode === 'closed' ? { mode } : { mode, expires_at: new Date(Date.now() + 60 * 60_000).toISOString() });
+// Admission is one windowless mode record: `closed` or `testers`, with no bound to measure
+// against a clock.
+const admissionRecord = (mode) => JSON.stringify({ mode });
 
 function windowHarness({ backlog = 0, dbMismatch = false, extraVersion = false, baselineMode = 'closed', baselineRecord } = {}) {
   const policy = { admission_mode: { value: baselineRecord ?? admissionRecord(baselineMode), version: 4 },
@@ -45,10 +44,10 @@ test('private window uses one run-owned tester, nominal mode deltas, and exact o
   await activateRuntimeWindow(io, scope);
   assert.deepEqual(JSON.parse(policy.tester_allowlist.value), [scope.email]);
   // The tester write does not open admission; only `resume` does, it writes the mode once,
-  // and it carries the bounded window request the Service requires.
+  // and it carries no payload.
   assert.deepEqual(calls, ['set-testers', 'resume']);
-  assert.deepEqual(payloads, [['set-testers', JSON.stringify([scope.email])], ['resume', admissionWindowPayload()]]);
-  assert.equal(scope.runtimeWindow.write_ledger[1].request_payload, admissionWindowPayload());
+  assert.deepEqual(payloads, [['set-testers', JSON.stringify([scope.email])], ['resume', '']]);
+  assert.equal(scope.runtimeWindow.write_ledger[1].request_payload, '');
   assert.equal(scope.runtimeWindow.write_ledger[0].after_versions.admission_mode, 4);
   assert.equal(scope.runtimeWindow.write_ledger[0].after_versions.tester_allowlist, 3);
   assert.equal(scope.runtimeWindow.write_ledger[1].after_versions.admission_mode, 5);
@@ -65,7 +64,7 @@ test('private window uses one run-owned tester, nominal mode deltas, and exact o
   assert.deepEqual(calls, ['set-testers', 'resume', 'suspend', 'set-testers']);
 });
 
-test('a baseline admission window is restored as the same decision and exact tester list', async () => {
+test('a baseline open admission decision is restored as the same decision and exact tester list', async () => {
   const { scope, io, policy, calls } = windowHarness({ baselineMode: 'testers' });
   await captureRuntimeWindow(io, scope);
   await activateRuntimeWindow(io, scope);
@@ -76,7 +75,7 @@ test('a baseline admission window is restored as the same decision and exact tes
   assert.equal(policy.tester_allowlist.value, '["original@example.com"]');
   assert.equal(JSON.parse(policy.admission_mode.value).mode, 'testers');
   assert.equal(scope.runtimeWindow.restored, true);
-  // Re-entry compares the restored decision and must not reopen or re-close the window.
+  // Re-entry compares the restored decision and must not reopen or re-close admission.
   await restoreRuntimeWindow(io, scope);
   assert.deepEqual(calls, ['set-testers', 'resume', 'suspend', 'set-testers', 'resume']);
 });
@@ -99,24 +98,29 @@ test('DB backlog, DB/SSM mismatch, foreign write, and ambiguous non-nominal SDK 
   assert.deepEqual(ambiguous.scope.runtimeWindow.write_ledger.map((entry) => entry.action), ['set-testers']);
 });
 
-test('an abandoned window reads closed on both surfaces and pausing it writes nothing', async () => {
-  // The mirror still carries `testers` with a bound that has passed. Every gate reads
-  // closed, the Service reports closed, so the drift check agrees and no write is needed.
-  const { scope, io, policy, calls } = windowHarness({
+test('a bounded legacy record is not reader-valid and can never be captured as a baseline', async () => {
+  const { scope, io, calls } = windowHarness({
     baselineRecord: JSON.stringify({ mode: 'testers', expires_at: new Date(Date.now() - 1_000).toISOString() }) });
-  await captureRuntimeWindow(io, scope);
-  assert.equal(scope.runtimeWindow.baseline_mode, 'closed');
-  await pauseRuntimeWindow(io, scope);
+  await assert.rejects(captureRuntimeWindow(io, scope), /not a reader-valid record/);
   assert.deepEqual(calls, []);
-  await activateRuntimeWindow(io, scope);
+});
+
+test('an open admission decision is closed only by an explicit suspend, never by time', async () => {
+  // The baseline record is exactly `testers`: no bound exists that could close it, so
+  // pausing the run must write the explicit close and restoration must reopen it because
+  // that open decision is what the run found.
+  const { scope, io, policy, calls } = windowHarness({ baselineMode: 'testers' });
+  await captureRuntimeWindow(io, scope);
+  assert.equal(scope.runtimeWindow.baseline_mode, 'testers');
   await pauseRuntimeWindow(io, scope);
-  assert.deepEqual(calls, ['set-testers', 'resume', 'suspend']);
+  assert.deepEqual(calls, ['suspend']);
+  assert.equal(JSON.parse(policy.admission_mode.value).mode, 'closed');
   scope.ownedCleanupCompleted = true;
   await restoreRuntimeWindow(io, scope);
   assert.equal(scope.runtimeWindow.restored, true);
   assert.equal(policy.tester_allowlist.value, '["original@example.com"]');
-  // Restoring a decision the run found closed never reopens it.
-  assert.deepEqual(calls, ['set-testers', 'resume', 'suspend', 'set-testers']);
+  assert.equal(JSON.parse(policy.admission_mode.value).mode, 'testers');
+  assert.deepEqual(calls, ['suspend', 'set-testers', 'resume']);
 });
 
 test('independently reviewed source checkpoint permits protected execution', () => {

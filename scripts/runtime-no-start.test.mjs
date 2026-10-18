@@ -146,8 +146,8 @@ test('fresh recovery handles intent-before-helper, helper-intent and definition-
     assert.ok(final.runtime_window.write_ledger.some((entry) => entry.not_started));
     assert.equal(final.runtime_window.pending_write, undefined);
     assert.ok(h.tasks.size > originalTaskCount);
-    // A mode record's bound is written fresh by `resume`, so restoration is proven on
-    // the decision and the exact tester list rather than on the baseline's instant.
+    // Admission is a windowless mode record, so restoration is proven on the decision and
+    // the exact tester list.
     assert.equal(h.policy.tester_allowlist.Value, h.baselinePolicy.tester_allowlist.Value);
     assert.equal(parseAdmissionMode(h.policy.admission_mode.Value).mode,
       parseAdmissionMode(h.baselinePolicy.admission_mode.Value).mode);
