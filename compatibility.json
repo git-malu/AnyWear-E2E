@@ -2,46 +2,46 @@
   "version": 3,
   "client": {
     "repository": "git-malu/AnyWear-Client",
-    "sha": "7b92ace1719b1ed53eb5a7cce2bfe32ef327410a"
+    "sha": "68fc1d068ef1c5a98335003e19a251e1d990597c"
   },
   "service": {
     "repository": "git-malu/AnyWear-Service",
-    "sha": "ef21aaa6e918e99d4099c776a48319ff36d623b6"
+    "sha": "731c7a97ad2dd2959559e0df9d3ee493509353ef"
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "da67841fad96ad360618929c3b579fb0a8bc42aa"
+    "sha": "e5dcabe82f01a5a0a06e9c179903612e0ceb5e4f"
   },
   "platform": {
     "producer": "git-malu/AnyWear-Infra",
-    "producer_sha": "5420469f8a4a717c62397ed0f4f692219a18dc57",
+    "producer_sha": "e5dcabe82f01a5a0a06e9c179903612e0ceb5e4f",
     "record": {
       "producer": "git-malu/AnyWear-Infra",
       "workflow_path": ".github/workflows/runtime.yml",
       "status": "recorded",
-      "run_id": 39104244598,
+      "run_id": 39135072915,
       "run_attempt": 1,
-      "artifact_id": 12128200024,
-      "record_sha256": "0c63e881dbda263f87ca8cde822d4256155e36cdd40cdf9594ff398701130278"
+      "artifact_id": 12139039476,
+      "record_sha256": "ba95ab21917aa10c917a79b545eb736fa9734c3015ba14f7918a406674d95ad5"
     }
   },
   "workload": {
     "producer": "git-malu/AnyWear-Service",
-    "producer_sha": "5af797f99d97fc9ebb0a95b521979747aa3192e3"
+    "producer_sha": "731c7a97ad2dd2959559e0df9d3ee493509353ef"
   },
   "deployment": {
     "producer": "git-malu/AnyWear-Service",
     "workflow_path": ".github/workflows/service-artifacts.yml",
     "status": "recorded",
-    "run_id": 39098055973,
+    "run_id": 39132942247,
     "run_attempt": 1,
-    "artifact_id": 12124879790,
-    "record_sha256": "b7b52eeffdeba3ef541be0d26fa868789f8f5d376eeb5c7853b41dcccd545316"
+    "artifact_id": 12138844363,
+    "record_sha256": "f35283401ea32667031574c9d5e50258bf4aa4d8bdd8513a5d6964eab9aaedee"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
-    "release_id": 415718734,
-    "manifest_asset_id": 650123026,
-    "manifest_sha256": "ef7db62820cb39f92aa04ad68e4e16a997e4d0b8b273f84ae9449b22beaca80a"
+    "release_id": 416474212,
+    "manifest_asset_id": 653584820,
+    "manifest_sha256": "7242dd49848664f27f4925d4ff9538da6b148eba4b6d1e4e67ee4dca020a4f34"
   }
 }

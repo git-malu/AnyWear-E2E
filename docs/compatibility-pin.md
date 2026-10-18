@@ -160,27 +160,29 @@ validator refuses to move a pin while either identity is deferred, so a deferred
 pin can never be relabelled as recorded offline. A deferred pin is coherent and
 reviewable, but it is not qualification authority.
 
-The committed pin no longer uses the shape: both identities are recorded. The
-first authorized platform observe at the deployed Platform revision supplied the
-Platform record, so the pin now records both producers:
+The committed pin records both producer identities from the deployed tuple. The
+last move followed the routine above in one commit:
 
-- The Platform identity is reviewed Infra observation run `39104244598` attempt
-  `1`, artifact `infra-deployment-39104244598-1` (artifact id `12128200024`) and
-  the SHA-256 of the exact `deployment-record.json` bytes (`0c63e881…`).
-  `platform.producer_sha` is `5420469f…`, the run's `head_sha` and the record's
-  `producer.sha`. `infra.sha` stays `da67841f…`, the reviewed observation source.
-- The Workload identity is Service release-chain run `39098055973` attempt `1`,
-  artifact `service-deployment-39098055973-1` (artifact id `12124879790`) and the
-  SHA-256 of the exact `service-deployment.json` bytes (`b7b52eef…`). That value
-  is the hash of the downloaded record bytes; the record's own
-  `schema.content_sha256` (`83ef1e7e…`) is a different, derived value and is never
-  the pin's `record_sha256`.
+- The Platform identity is reviewed Infra observation run `39135072915` attempt
+  `1`, artifact `infra-deployment-39135072915-1` (artifact id `12139039476`) and
+  the SHA-256 of the exact `deployment-record.json` bytes (`ba95ab21…`). Its
+  `producer.sha` is `e5dcabe8…`, which is also the pin's `infra.sha`, the reviewed
+  observation source. It covers `AnyWearFoundationStack`,
+  `AnyWearPlatformStack-beta` and `AnyWearBillingStack-beta`; `client.sha` moves
+  to the record's `observed.client_sha` (`68fc1d06…`).
+- The Workload identity is the first gated v4 Service deployment: release-chain
+  run `39132942247` attempt `1`, artifact `service-deployment-39132942247-1`
+  (artifact id `12138844363`) and the SHA-256 of the exact
+  `service-deployment.json` bytes (`f3528340…`). The record is `schema_version 4`
+  and carries the passed 600-second six-signal bake gate bound to
+  `observed.service_sha` / `observed.image_digest` (`731c7a97…` /
+  `sha256:05b77d57…`); its `producer.sha` is also the pin's
+  `workload.producer_sha`. `service_artifacts` is the sealed release the image
+  belongs to: release `416474212`, manifest asset `653584820`, manifest SHA-256
+  `7242dd49…`.
 
-The recorded Workload identity predates the #162 v4 gate: the release chain that
-wrote it used the v3 producer. The vendored v4 contract refuses a v3 Service
-record, so the first gated v4 deploy must supply a re-recorded Workload identity
-through this routine before qualification can pass. The routine only moves a
-recorded pin from real downloaded v4 record bytes; do not hand-edit the values.
+The routine only moves a recorded pin from real downloaded record bytes; do not
+hand-edit the values.
 
 ## The two-record rule
 
