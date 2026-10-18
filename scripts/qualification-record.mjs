@@ -34,6 +34,13 @@ function requireImageDigest(value) {
   return value;
 }
 
+function requireNonNegativeSafeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
 function requireHttpsUrl(value, label) {
   const url = new URL(requireValue(value, label));
   if (url.protocol !== 'https:') throw new Error(`${label} must use HTTPS`);
@@ -74,6 +81,28 @@ export async function collectDeploymentEvidence(input, compatibility, fetcher = 
   }
   if (serviceCommit !== compatibility.service.sha) {
     throw new Error('Deployed Service does not match compatibility.json');
+  }
+  // The supported-Client floor is enforced against the live deployments, not inferred
+  // from the pin: the Client states the version it built, and the Service states the
+  // floor it is enforcing. The member is optional until the post-deployment pin move,
+  // so smoke and measure keep working against the current pin; `full` requires it in
+  // `buildQualificationRecord`. The values are checked here and not written into the
+  // record, whose member set stays unchanged.
+  const minimumSupportedClient = compatibility.minimum_supported_client;
+  if (minimumSupportedClient !== undefined) {
+    requireNonNegativeSafeInteger(minimumSupportedClient.version, 'compatibility.minimum_supported_client.version');
+    requireCommit(minimumSupportedClient.sha, 'compatibility.minimum_supported_client.sha');
+    if (clientMetadata.schema_version !== 3) {
+      throw new Error('Deployed Client build metadata must use schema_version 3 when compatibility.minimum_supported_client is pinned');
+    }
+    const clientVersion = requireNonNegativeSafeInteger(clientMetadata.client_version, 'Deployed Client client_version');
+    if (clientVersion < minimumSupportedClient.version) {
+      throw new Error(`Deployed Client client_version ${clientVersion} is below compatibility.minimum_supported_client.version ${minimumSupportedClient.version}`);
+    }
+    const serviceMinimumClientVersion = requireNonNegativeSafeInteger(serviceHealth.minimum_client_version, 'Deployed Service minimum_client_version');
+    if (serviceMinimumClientVersion !== minimumSupportedClient.version) {
+      throw new Error(`Deployed Service minimum_client_version ${serviceMinimumClientVersion} differs from compatibility.minimum_supported_client.version ${minimumSupportedClient.version}`);
+    }
   }
 
   return {
@@ -200,6 +229,16 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
   }
 
   validateCompatibility(compatibility);
+  // Qualification is the one path that writes the release record, and it now also covers
+  // the oldest supported Client. A pin without the floor cannot name the oldest Client the
+  // record is meant to qualify, so `full` refuses to produce a record until the reviewed
+  // pin has moved after the deployment that first enforces the floor. `smoke` and `measure`
+  // never reach this function and keep working against the current pin.
+  if (compatibility.minimum_supported_client === undefined) {
+    throw new Error('Qualification requires compatibility.minimum_supported_client { version, sha } naming the oldest supported Client');
+  }
+  requireNonNegativeSafeInteger(compatibility.minimum_supported_client.version, 'compatibility.minimum_supported_client.version');
+  requireCommit(compatibility.minimum_supported_client.sha, 'compatibility.minimum_supported_client.sha');
   exactKeys(evidence, ['before', 'after'], 'qualification observations');
   if (input.repository !== repositories.e2e || input.workflowPath !== '.github/workflows/beta-qualification.yml'
     || input.workflowRef !== `${repositories.e2e}/.github/workflows/beta-qualification.yml@refs/heads/main`) throw new Error('Only protected Beta Qualification can issue v2 records');

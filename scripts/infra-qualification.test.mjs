@@ -71,6 +71,45 @@ test('historical v1/v2 pins are readable offline but cannot authorize qualificat
   }
 });
 
+test('the minimum Client pin is optional, strictly shaped, and bound to the workload record floor', () => {
+  const f = qualificationFixture();
+  assert.doesNotThrow(() => validateCompatibility(f.compatibility));
+  const withoutFloor = structuredClone(f.compatibility);
+  delete withoutFloor.minimum_supported_client;
+  // The committed pre-deployment pin has no member and must stay valid for `pnpm check`.
+  assert.doesNotThrow(() => validateCompatibility(withoutFloor));
+  for (const mutate of [
+    (c) => { c.minimum_supported_client = {}; },
+    (c) => { delete c.minimum_supported_client.sha; },
+    (c) => { c.minimum_supported_client.version = -1; },
+    (c) => { c.minimum_supported_client.version = 1.5; },
+    (c) => { c.minimum_supported_client.version = '1'; },
+    (c) => { c.minimum_supported_client.version = Number.MAX_SAFE_INTEGER + 1; },
+    (c) => { c.minimum_supported_client.sha = 'main'; },
+    (c) => { c.minimum_supported_client.sha = 'a'.repeat(39); },
+    (c) => { c.minimum_supported_client.extra = true; },
+  ]) {
+    const c = structuredClone(f.compatibility);
+    mutate(c);
+    assert.throws(() => validateCompatibility(c));
+  }
+  // The shipped pin binds the deployed Service record's observed floor, and `full` refuses
+  // to issue a record until the pin carries the member.
+  assert.doesNotThrow(() => assertDeploymentBinding(f.workloadRecord, f.compatibility));
+  const wrongFloor = structuredClone(f.compatibility);
+  wrongFloor.minimum_supported_client.version = 1;
+  assert.throws(() => assertDeploymentBinding(f.workloadRecord, wrongFloor),
+    /observed minimum_client_version 0 differs from compatibility\.minimum_supported_client\.version 1/);
+  const missingObservedFloor = structuredClone(f.workloadRecord);
+  delete missingObservedFloor.observed.minimum_client_version;
+  assert.throws(() => assertDeploymentBinding(missingObservedFloor, f.compatibility),
+    /Invalid workload observed tuple fields/);
+  const noPinFloor = structuredClone(f.compatibility);
+  delete noPinFloor.minimum_supported_client;
+  assert.throws(() => buildQualificationRecord(f.input, noPinFloor, f.evidence, now, f.environment, f.report),
+    /Qualification requires compatibility\.minimum_supported_client/);
+});
+
 test('qualification accepts an independently observed stable v3 tuple', () => {
   const record = qualify(qualificationFixture());
   assert.equal(record.schema_version, 2);

@@ -186,6 +186,7 @@ function records({ sha, hash, platformProducerSha, workloadProducerSha }) {
     observed: {
       service_sha: sha('b'),
       image_digest: image,
+      minimum_client_version: 0,
       ecs: Object.fromEntries(['api', 'worker'].map((purpose) => [purpose, {
         service_arn: `arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}`,
         task_definition_arn: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:1`,
@@ -215,6 +216,7 @@ export function qualificationFixture({ deferred = false } = {}) {
   const compatibility = {
     version: 3,
     client: { repository: 'git-malu/AnyWear-Client', sha: sha('a') },
+    minimum_supported_client: { version: 0, sha: sha('c') },
     service: { repository: 'git-malu/AnyWear-Service', sha: sha('b') },
     infra: { repository: 'git-malu/AnyWear-Infra', sha: sha('e') },
     platform: {
