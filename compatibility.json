@@ -14,12 +14,15 @@
   },
   "platform": {
     "producer": "git-malu/AnyWear-Infra",
-    "producer_sha": "da67841fad96ad360618929c3b579fb0a8bc42aa",
+    "producer_sha": "5420469f8a4a717c62397ed0f4f692219a18dc57",
     "record": {
       "producer": "git-malu/AnyWear-Infra",
       "workflow_path": ".github/workflows/runtime.yml",
-      "status": "deferred",
-      "reason": "no Infra v3 platform record exists yet: the Beta Platform stack was applied by change set, not through mutate.yml, so no reviewed Infra run has written a platform record; pin the first authorized platform observe at the deployed Platform revision"
+      "status": "recorded",
+      "run_id": 39104244598,
+      "run_attempt": 1,
+      "artifact_id": 12128200024,
+      "record_sha256": "0c63e881dbda263f87ca8cde822d4256155e36cdd40cdf9594ff398701130278"
     }
   },
   "workload": {

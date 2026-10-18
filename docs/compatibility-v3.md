@@ -126,9 +126,12 @@ The two records are deliberately not one record:
   and the Client endpoint). The Service record observes the Workload tuple (the
   Service commit, the image digest, the two ECS service identities and the API
   endpoint). Neither record is a substitute for the other.
-- The Infra producer is checked out at `infra.sha` as the reviewed observation
-  source. `platform.producer_sha` may move independently because a platform stack
-  can be deployed from an earlier reviewed commit than the observer.
+- The Infra producer record is written by the run whose `producer.sha` is
+  `platform.producer_sha`; that is the platform record producer, and the pin binds
+  the record, its run and its artifact to it. `infra.sha` is a different pin: the
+  reviewed Infra revision E2E checks out as the observation source. The two may
+  differ because a platform stack can be deployed from an earlier reviewed commit
+  than the observation helper, so `compatibility.json` keeps both.
 - The Service producer is the release chain that owns the Workload stack. The
   same run builds the image, verifies the sealed release, deploys the slice and
   writes the record, so no committed `selection` and no cross-repository native
@@ -140,15 +143,16 @@ before it deploys, so E2E no longer downloads or parses that release with the
 retired Service parser. The pin still binds the release identity to the deployed
 `service.sha` through the Service record's `observed.service_sha`.
 
-## Deferred records
+## Deferred records (contract history)
 
-C removes the Infra Workload deploy path before the first Service release-chain
-deployment exists. A compatibility pin therefore must be able to name the
-producer without inventing a run. The deferred shape does exactly that:
+The deferred identity shape stays part of the v3 contract as history. It exists
+because C removed the Infra Workload deploy path before the first Service
+release-chain deployment existed, so a pin could name a producer without
+inventing a run:
 
 - `validateCompatibility` accepts a deferred record and rejects any other member
   of the identity shape. Each identity is validated on its own, so one producer's
-  record can be pinned while the other stays deferred.
+  record could be pinned while the other stayed deferred.
 - Every live path fails closed with `deployment evidence deferred` for the
   deferred identity before it downloads, observes or qualifies anything. It never
   falls back to a historical Infra `runtime.yml` tuple and never treats a Service
@@ -157,16 +161,18 @@ producer without inventing a run. The deferred shape does exactly that:
   deferred, so a deferred pin cannot be relabelled as a recorded one offline.
 
 A deferred pin is coherent and reviewable; it is not qualification authority.
-The committed pin is in that mixed state. Its `deployment` identity is recorded
-from the Service release-chain run `39098055973` attempt `1`, artifact
-`service-deployment-39098055973-1` (artifact id `12124879790`) and the SHA-256 of
-the exact `service-deployment.json` bytes. Its `platform.record` is deferred
-because the Beta Platform stack was applied by change set from `da67841f`, not
-through `mutate.yml`: no reviewed Infra run has written a v3 platform record, and
-the most recent Infra deployment artifacts are v2 records. The first authorized
-platform observe at the deployed Platform revision supplies that record and the
-pin moves to the fully recorded shape through
-[compatibility-pin.md](compatibility-pin.md).
+The committed pin no longer uses the shape: both records are recorded through the
+routine in [compatibility-pin.md](compatibility-pin.md).
+
+The committed `deployment` identity is recorded from the Service release-chain run
+`39098055973` attempt `1`, artifact `service-deployment-39098055973-1` (artifact
+id `12124879790`) and the SHA-256 of the exact `service-deployment.json` bytes.
+The committed `platform.record` is recorded from the reviewed Infra observation
+run `39104244598` attempt `1`, artifact `infra-deployment-39104244598-1` (artifact
+id `12128200024`) and the SHA-256 of the exact `deployment-record.json` bytes
+(`0c63e881…`). `platform.producer_sha` is `5420469f…`, the run's `head_sha` and the
+record's `producer.sha`. `infra.sha` stays `da67841f…`: it names the reviewed
+observation source E2E executes, which is not the platform record producer.
 
 One cross-repository dependency is recorded here and has now been approved for the
 producer side. C's post-C Platform deploy removes every `PublishOutput*` output,
@@ -180,8 +186,8 @@ it accepts the producer's recorded, sorted and unique list within the contract's
 bound, and derives the schema hash from it, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer
 matters. The conversion has landed and one authorized Workload deploy completed
-from it; live qualification is still closed by the deferred `platform.record`,
-which is the remaining evidence gap.
+from it; the platform record is now pinned, so both producers' records are
+recorded and the deferred evidence gap is closed.
 
 ## Migration
 
