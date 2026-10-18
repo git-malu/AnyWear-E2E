@@ -31,8 +31,8 @@ function verifyRestored(h, record) {
   assert.equal(record.runtime_window.restored, true);
   assert.equal(record.owned_cleanup_completed, true);
   assert.ok(record.one_shots.every((operation) => operation.deregistered));
-  // `resume` writes a fresh bound, so the restored mode record is compared by decision;
-  // the tester list is written by this run and must match byte for byte.
+  // The admission record is windowless, so the restored decision and the tester list are
+  // compared directly and must match the baseline.
   assert.equal(h.policy.tester_allowlist.Value, h.baselinePolicy.tester_allowlist.Value);
   assert.equal(parseAdmissionMode(h.policy.admission_mode.Value).mode,
     parseAdmissionMode(h.baselinePolicy.admission_mode.Value).mode);
@@ -42,8 +42,8 @@ function verifyRestored(h, record) {
 }
 
 // The durable-save budget is exact, so the interruption point is derived from the run
-// rather than remembered: it is the first save of the admission-window restoration
-// phase, which one more snapshot then interrupts.
+// rather than remembered: it is the first save of the admission restoration phase, which
+// one more snapshot then interrupts.
 async function restorationBoundary(suspended) {
   const probe = runtimeCloudHarness({ suspended });
   await probe.execute();
@@ -77,7 +77,7 @@ for (const suspended of [false, true]) {
     const boundary = await restorationBoundary(suspended);
     const h = runtimeCloudHarness({ suspended, originalUploadLimit: boundary });
     await assert.rejects(h.execute(), (error) => {
-      assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
+      assert.match(error.message, /Runtime execution failed in: admission restoration/);
       assert.match(error.cause.message, /Mocked original snapshot upload exhausted/);
       return true;
     });
@@ -105,7 +105,7 @@ for (const suspended of [false, true]) {
     const boundary = await restorationBoundary(suspended);
     const h = runtimeCloudHarness({ suspended, originalUploadResponseLossAt: boundary + 1 });
     await assert.rejects(h.execute(), (error) => {
-      assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
+      assert.match(error.message, /Runtime execution failed in: admission restoration/);
       assert.match(error.cause.message, /durable snapshot upload response lost/);
       return true;
     });
@@ -151,7 +151,7 @@ for (const boundary of ['retained-after-delete', 'post-delete-lookup-error', 'in
   test(`production recovery keeps Beta suspended without baseline restore on ${boundary}`, async () => {
     const h = runtimeCloudHarness({ originalUploadLimit: await restorationBoundary(false) });
     await assert.rejects(h.execute(), (error) => {
-      assert.match(error.message, /Runtime execution failed in: admission-window restoration/);
+      assert.match(error.message, /Runtime execution failed in: admission restoration/);
       assert.match(error.cause.message, /Mocked original snapshot upload exhausted/);
       return true;
     });

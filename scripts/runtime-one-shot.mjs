@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { parseAdmissionWindowPayload } from './admission-window.mjs';
 
 const DEFINITION_ARN = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/beta-anywear-(task-audit|lifecycle|tester-cleanup):[1-9][0-9]*$/;
 const TASK_ARN = /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/[a-f0-9]{32}$/;
@@ -16,10 +15,10 @@ export function payloadHash(payload) { return createHash('sha256').update(payloa
 // `suspend`, `resume` and `set-testers` leaves no `tester-`/`close-` family to match,
 // and a prefix rule would silently accept a foreign action here.
 const LIFECYCLE_ACTIONS = ['set-testers', 'suspend', 'resume'];
-// Two actions carry a payload, and they carry different ones: `set-testers` the canonical
-// tester array, `resume` the bounded `{"window_minutes":n}` request the Service requires
-// before it will open a window.
-const PAYLOAD_LIFECYCLE_ACTIONS = ['set-testers', 'resume'];
+// One action carries a payload: `set-testers` carries the canonical tester array.
+// `suspend` and `resume` are mode writes with no request bytes, because admission has no
+// window to request (issue #159).
+const PAYLOAD_LIFECYCLE_ACTIONS = ['set-testers'];
 
 export function expectedCommand(operation) {
   if (operation.purpose === 'task-audit') return ['node', 'dist/ops/beta-task-audit.js', operation.request_payload];
@@ -39,10 +38,6 @@ export function validateOperationBinding(scope, operation) {
     if (operation.action === 'set-testers') {
       const emails = JSON.parse(operation.request_payload);
       if (!Array.isArray(emails) || emails.length > 50 || emails.some((email) => typeof email !== 'string')) throw new Error('Invalid lifecycle tester payload');
-    } else if (operation.action === 'resume') {
-      // The Service refuses the request before writing unless the payload is exactly the
-      // bounded window request, so an unvalidated payload would only fail in a live run.
-      if (parseAdmissionWindowPayload(operation.request_payload) === null) throw new Error('Invalid lifecycle admission window payload');
     } else if (operation.request_payload !== '') throw new Error('Unexpected lifecycle payload');
     return;
   }

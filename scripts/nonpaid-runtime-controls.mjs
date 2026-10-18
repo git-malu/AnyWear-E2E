@@ -264,8 +264,9 @@ export async function switchNonPaidMode(scope, mode, io, waitStable) {
   const control = scope.runtimeControl;
   if (!control || !scope.runtimeDefinitions?.[mode]) throw new Error('Non-paid runtime is not prepared');
   await guardRuntimeWindow(io, scope, { requireEmpty: true });
-  // The worker fixture switch is safe when admission is closed in fact, which an
-  // expired window already is even though its raw record still says `testers`.
+  // The worker fixture switch is safe only when admission is explicitly closed. A
+  // `testers` record admits until an explicit close, so there is no expiry that could
+  // have closed it for us.
   if (effectiveAdmissionMode(scope.runtimeWindow.expected.admission_mode.value).mode !== 'closed') throw new Error('Worker fixture switch requires admission paused');
   await guardAutoscaling(io, scope);
   await verifyRevision(io, scope.stack, scope.stack.workerService, control.expected_worker_task_definition, control.baseline_worker_config);

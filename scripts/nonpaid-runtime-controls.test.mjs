@@ -165,7 +165,7 @@ function controlHarness({ dirtyQueue = false, foreignDrift = false, failStabilit
   const calls = [];
   const records = [];
   const definitions = new Map();
-  const admissionRecord = (mode) => JSON.stringify(mode === 'closed' ? { mode } : { mode, expires_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString() });
+  const admissionRecord = (mode) => JSON.stringify({ mode });
   const policy = { admission_mode: { value: admissionRecord(initiallyOpen ? 'testers' : 'closed'), version: 1 },
     tester_allowlist: { value: '[]', version: 1 } };
   let workerDefinition = definitionArn;

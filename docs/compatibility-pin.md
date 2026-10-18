@@ -37,8 +37,8 @@ actions, so nobody infers that the batch is finished because work went quiet.
 
 ## When the routine starts
 
-The routine starts when a deployment, a configuration or admission window, or a
-recovery changed the deployed tuple while no qualification was in flight.
+The routine starts when a deployment, a configuration or admission state change,
+or a recovery changed the deployed tuple while no qualification was in flight.
 
 Nothing fails at that moment. The environment is serving a coherent, working tuple
 and only the evidence path is stale. The failure surfaces the next time

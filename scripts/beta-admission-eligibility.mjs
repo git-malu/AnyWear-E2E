@@ -11,7 +11,7 @@ const qualificationWorkflow = 'git-malu/AnyWear-E2E/.github/workflows/beta-quali
 // Match the Infra tester producer's accepted email syntax and normalization.
 const emailPattern = /^[a-z0-9.!#$%&'+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
-export function validateBetaAdmissionPolicy(response, { now = Date.now() } = {}) {
+export function validateBetaAdmissionPolicy(response) {
   if (!response || !Array.isArray(response.Parameters) || response.Parameters.length !== parameterNames.length
     || (response.InvalidParameters !== undefined
       && (!Array.isArray(response.InvalidParameters) || response.InvalidParameters.length !== 0))) {
@@ -29,16 +29,13 @@ export function validateBetaAdmissionPolicy(response, { now = Date.now() } = {})
   }
   const policy = Object.fromEntries(policyNames.map(name => [name, read.get(parameters[name])]));
   // The mode record states its own condition, so the pre-flight names one requirement
-  // instead of remembering two booleans: admission is effectively `testers` right now.
+  // instead of remembering two booleans: admission is `testers`. The record is windowless,
+  // so a closed decision stays closed until an operator opens it explicitly; nothing
+  // expires, and no bound can make an open record refuse.
   const declared = parseAdmissionMode(policy.admission_mode.Value);
   if (!declared) throw new Error('Beta admission eligibility received a malformed admission mode record');
-  if (declared.mode === 'closed') {
-    throw new Error('Beta admission is suspended; an authorized admission window is required before qualification');
-  }
-  // A `testers` record whose bound has passed (or is beyond the read's window) is closed
-  // to every reader, so the pre-flight refuses it at the moment it runs.
-  if (effectiveAdmissionMode(policy.admission_mode.Value, now).mode !== 'testers') {
-    throw new Error('Beta admission window is not open; an authorized admission window is required before qualification');
+  if (effectiveAdmissionMode(policy.admission_mode.Value).mode !== 'testers') {
+    throw new Error('Beta admission is closed; it must be explicitly opened (open-admission / lifecycle resume) before qualification');
   }
   let testers;
   try { testers = parseStrictJson(policy.tester_allowlist.Value); }
@@ -60,7 +57,7 @@ export function validateBetaAdmissionPolicy(response, { now = Date.now() } = {})
 export function verifyBetaAdmissionEligibility(environment = process.env, { execute = execFileSync, sourceSha } = {}) {
   assertE2EExecution(environment, { sourceSha });
   // #163: full and smoke qualify with two workers, measure runs the single-slot workload,
-  // and all three read the admission window from the one qualify entry. The worker count is
+  // and all three read the admission mode from the one qualify entry. The worker count is
   // part of the operation's shape, so the exact entry is no longer enough on its own.
   const expectedWorkers = environment.E2E_OPERATION === 'measure' ? '1' : '2';
   if (environment.GITHUB_WORKFLOW_REF !== qualificationWorkflow || environment.E2E_WORKERS !== expectedWorkers) {
@@ -83,5 +80,5 @@ export function verifyBetaAdmissionEligibility(environment = process.env, { exec
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length !== 2) throw new Error('Unknown Beta admission eligibility option');
   verifyBetaAdmissionEligibility();
-  console.log('Verified an open Beta admission window for the qualification run.');
+  console.log('Verified explicitly open Beta admission for the qualification run.');
 }

@@ -243,7 +243,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
   const execute = () => executeRuntimeDrill(executionEnvironment, compatibility, adapter, options);
   await assert.rejects(execute(), (error) => {
     assert.equal(error.message,
-      'Runtime execution failed in: accepted wardrobe API flow; non-paid runtime restoration; admission-window restoration. Inspect available recovery artifacts before retrying.');
+      'Runtime execution failed in: accepted wardrobe API flow; non-paid runtime restoration; admission restoration. Inspect available recovery artifacts before retrying.');
     assert.doesNotMatch(error.message, /sensitive/);
     assert.ok(error.cause instanceof AggregateError);
     assert.deepEqual(error.cause.errors, [operationFailure, restorationFailure, policyFailure]);
@@ -254,7 +254,7 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
   adapter.restoreNonPaidRuntime = async () => undefined;
   adapter.restoreRuntimeWindow = async () => undefined;
   for (const [hook, phase] of [
-    ['pauseRuntimeWindow', 'admission-window pause; run-owned resource cleanup'],
+    ['pauseRuntimeWindow', 'admission pause; run-owned resource cleanup'],
     ['cleanupOwnedResources', 'run-owned resource cleanup'],
   ]) {
     const original = adapter[hook];
@@ -282,6 +282,27 @@ test('runtime executor cleans the owned scope after an adapter failure', async (
     return true;
   });
   assert.equal(cleaned, false);
+
+  // Admission has no expiry, so the teardown must attempt the explicit close even when the
+  // operation throws immediately after opening it. Nothing else would ever close it.
+  const teardown = [];
+  adapter.createSyntheticAccount = async () => ({ owned: true });
+  adapter.prepareNonPaidRuntime = async ({ scope }) => {
+    scope.runtimeWindow = { run_scope: scope.runScope, phase: 'private-owned-tester' };
+    teardown.push('admission-opened');
+    throw new Error('sensitive setup detail');
+  };
+  adapter.pauseRuntimeWindow = async () => { teardown.push('pause'); };
+  adapter.cleanupOwnedResources = async () => { teardown.push('cleanup'); };
+  adapter.restoreNonPaidRuntime = async () => { teardown.push('restore non-paid'); };
+  adapter.restoreRuntimeWindow = async () => { teardown.push('restore admission'); };
+  await assert.rejects(execute(), (error) => {
+    assert.equal(error.message,
+      'Runtime execution failed in: non-paid worker runtime setup. Inspect available recovery artifacts before retrying.');
+    assert.doesNotMatch(error.message, /sensitive/);
+    return true;
+  });
+  assert.deepEqual(teardown, ['admission-opened', 'pause', 'cleanup', 'restore non-paid', 'restore admission']);
 });
 
 test('runtime plan names bounded drills and cleanup controls', () => {
@@ -387,7 +408,7 @@ test('runtime verifier refuses foreign run/user/family, reused task/item, missin
   }
 });
 
-test('complete mocked executor retains bound audit/window/cleanup evidence and refuses an unreadable admission window before account creation', async () => {
+test('complete mocked executor retains mode-only audit/window/cleanup evidence and refuses an unreadable admission record before account creation', async () => {
   const record = validEvidence();
   const runEnvironment = { ...environment, GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: 'a'.repeat(40),
     RUNTIME_DRILL_CONCURRENCY: 'anywear-beta-runtime', RUNTIME_DRILL_CONFIRM: 'beta-runtime-drill', RUNTIME_DRILL_ID: record.drill_id,
