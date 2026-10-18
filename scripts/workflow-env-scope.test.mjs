@@ -20,7 +20,9 @@ import { repositoryRoot } from './test-selection.mjs';
 // step that does must declare the attestation read scope.
 
 const workflowDirectory = join(repositoryRoot, '.github', 'workflows');
-const files = readdirSync(workflowDirectory).filter((name) => name.endsWith('.yml')).sort();
+// GitHub Actions accepts both workflow extensions. Scan both, so a `.yaml` workflow cannot
+// escape the environment-scope guard by its suffix.
+const files = readdirSync(workflowDirectory).filter((name) => /\.ya?ml$/.test(name)).sort();
 const read = (name) => readFileSync(join(workflowDirectory, name), 'utf8');
 
 // The names that exist only on the protected environment (or would only be correct there).

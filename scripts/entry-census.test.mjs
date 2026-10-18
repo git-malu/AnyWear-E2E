@@ -11,7 +11,9 @@ import { repositoryRoot } from './test-selection.mjs';
 // assertions so the next change cannot drift the entry face without failing `pnpm check`.
 
 const directory = join(repositoryRoot, '.github', 'workflows');
-const entries = readdirSync(directory).filter((name) => name.endsWith('.yml')).sort();
+// GitHub Actions accepts both workflow extensions. Enumerate both, so a `.yaml` entry
+// cannot appear beside the tracked `.yml` files without changing the census.
+const entries = readdirSync(directory).filter((name) => /\.ya?ml$/.test(name)).sort();
 const read = (name) => readFileSync(join(directory, name), 'utf8');
 
 function jobSection(workflow, name) {
