@@ -70,7 +70,7 @@ test('the qualify chain keeps one credential job per operation and a credential-
     const section = job(operation);
     assert.ok(section.length > 0, `the qualify entry must declare ${operation}`);
     assert.match(section, /needs: preflight/);
-    assert.match(section, new RegExp(`if: github\\.ref == 'refs/heads/main' && inputs\\.operation == '${operation}'`));
+    assert.match(section, new RegExp(`if: github\\.ref == 'refs/heads/main' && needs\\.preflight\\.outputs\\.operation == '${operation}'`));
     assert.match(section, /environment: beta/);
     assert.match(section, /id-token: write/);
     assert.equal([...section.matchAll(/configure-aws-credentials/g)].length, 1, `${operation} has exactly one AWS credential step`);
@@ -80,8 +80,8 @@ test('the qualify chain keeps one credential job per operation and a credential-
   // record; the record job validates and attaches it.
   const record = job('record');
   assert.ok(record.length > 0);
-  assert.match(record, /needs: full/);
-  assert.match(record, /if: github\.ref == 'refs\/heads\/main' && inputs\.operation == 'full'/);
+  assert.match(record, /needs: \[preflight, full\]/);
+  assert.match(record, /if: github\.ref == 'refs\/heads\/main' && needs\.preflight\.outputs\.operation == 'full'/);
   assert.match(record, /permissions:\n {6}contents: read\n/);
   assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
   assert.match(job('full'), /qualification:generate/);
