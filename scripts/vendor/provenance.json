@@ -1,12 +1,12 @@
 {
   "source_repository": "git-malu/AnyWear-Infra",
-  "source_sha": "fa3723324ce7d95b4f3977c4c04f363cba770e08",
+  "source_sha": "0e9034332681c86c75b508dbd9edf2eb857a8000",
   "source_note": "v4 Service deployment-record and bake-gate contract source. stage-contracts.mjs, json-contract.mjs and operation-stacks.mjs are exact byte copies from that commit. deployment-contract.mjs is the raw producer file with exactly one declared import rewrite, recorded in import_rewrites: the bare package specifier is replaced with the vendored package entry because this repository consumes the dependency-free package source instead of installing a tarball. The loader reverses the declared rewrite, asserts the raw producer hash from producer_files and refuses any other difference.",
   "files": {
     "deployment-contract.mjs": "0a5dce23d6cd6947595c49cce282477d34c49110a186f01feb9b16dc22c3990a",
     "json-contract.mjs": "c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047",
     "operation-stacks.mjs": "6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023",
-    "stage-contracts.mjs": "7d5216ab0aa4c5870e6787af855617d87ef9a713a7ded3e2dbb979d6db58f67c"
+    "stage-contracts.mjs": "6af31a91990a96ca5eadb366f80aba2018221d6bc73a8e957d03c895fde51287"
   },
   "producer_files": {
     "deployment-contract.mjs": "972c1fbe8896f53c3046c5c3f67543c87cc550bb973a0a87f47b722a413fa06a"
@@ -21,10 +21,10 @@
   },
   "package": {
     "name": "@git-malu/stage-contracts",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "source": "packages/stage-contracts",
-    "sha256": "58234d231aa8f5a3ae798561449cb5c220868ad82977e8bf692ff11c4f191a89",
-    "note": "Packed 0.2.1 tarball pin for consumers that install @git-malu/stage-contracts. The vendored entry carries the two-sourced SQS age read (AWS/SQS ApproximateAgeOfOldestMessage CloudWatch metric plus the three valid GetQueueAttributes depth names); this repository adds no dependency or tarball and records the tarball hash the entry comes from."
+    "sha256": "465b25fc16306cead891ff09d3d0c2e0d6d7d3d1488535eb6f3eca7ec367b514",
+    "note": "Packed 0.2.2 tarball pin for consumers that install @git-malu/stage-contracts. Version 0.2.2 adds the required observed.minimum_client_version floor to the v4 Service deployment record: the deploy job reads it back from the deployed API /health and the pinned validator requires a non-negative safe integer, so a producer that did not read the live value cannot write a record. This repository adds no dependency or tarball and records the tarball hash the entry comes from."
   },
   "retired": {
     "artifact-consumer.mjs": "the v2 selection consumer is removed with the selection contract",

@@ -63,17 +63,17 @@ test('the committed pin records both producer deployment identities', async () =
   }
   assert.match(pin.deployment.record_sha256, /^[0-9a-f]{64}$/);
   // The platform record this pin binds: the reviewed Infra observation run
-  // 39135072915 attempt 1, artifact infra-deployment-39135072915-1 and the exact
+  // 39149536582 attempt 1, artifact infra-deployment-39149536582-1 and the exact
   // deployment-record.json bytes. `platform.producer_sha` must be the run head the
   // record's producer names, not the separately reviewed `infra.sha`.
   assert.equal(pin.platform.record.status, 'recorded');
   assert.equal(pin.platform.record.producer, pin.platform.producer);
   assert.equal(pin.platform.record.workflow_path, '.github/workflows/runtime.yml');
-  assert.equal(pin.platform.producer_sha, 'e5dcabe82f01a5a0a06e9c179903612e0ceb5e4f');
-  assert.equal(pin.platform.record.run_id, 39135072915);
+  assert.equal(pin.platform.producer_sha, '0e9034332681c86c75b508dbd9edf2eb857a8000');
+  assert.equal(pin.platform.record.run_id, 39149536582);
   assert.equal(pin.platform.record.run_attempt, 1);
-  assert.equal(pin.platform.record.artifact_id, 12139039476);
-  assert.equal(pin.platform.record.record_sha256, 'ba95ab21917aa10c917a79b545eb736fa9734c3015ba14f7918a406674d95ad5');
+  assert.equal(pin.platform.record.artifact_id, 12144078595);
+  assert.equal(pin.platform.record.record_sha256, 'c94c40645dc66896457b414a2c6c7d9cab637cec2776368b0ae25b25cd5c2c9a');
 });
 
 test('the coherent pair passes and reports both producer records and moved members', async (t) => {
@@ -106,6 +106,34 @@ test('each record-bound member mutation fails against the downloaded records', a
     } finally {
       await input.close();
     }
+  }
+});
+
+test('a pin move must include the minimum Client floor and bind it to the workload record', async () => {
+  const missing = await prepare();
+  try {
+    delete missing.pin.minimum_supported_client;
+    await assert.rejects(assertCompatibilityPin(await missing.write()), /must include minimum_supported_client/);
+  } finally {
+    await missing.close();
+  }
+  const mismatched = await prepare();
+  try {
+    mismatched.pin.minimum_supported_client.version = 1;
+    await assert.rejects(assertCompatibilityPin(await mismatched.write()),
+      /observed minimum_client_version 0 differs from compatibility\.minimum_supported_client\.version 1/);
+  } finally {
+    await mismatched.close();
+  }
+  // The committed pin has no member yet; adding it on the move is itself a moved identity
+  // member, so the previous pin stays valid and the move is not a no-op.
+  const added = await prepare();
+  try {
+    delete added.previous.minimum_supported_client;
+    const summary = await assertCompatibilityPin(await added.write());
+    assert.ok(summary.moved_members.includes('minimum_supported_client'));
+  } finally {
+    await added.close();
   }
 });
 

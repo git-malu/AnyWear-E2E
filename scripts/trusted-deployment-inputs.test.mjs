@@ -276,6 +276,23 @@ test('deployment binding names the producer and the differing field', () => {
   assert.throws(() => assertDeploymentBinding(f.platformRecord, deferred), /Deployment evidence deferred/);
 });
 
+test('a minimum Client pin binds to the workload record observed floor and fails closed', () => {
+  const f = qualificationFixture();
+  assert.doesNotThrow(() => assertDeploymentBinding(f.workloadRecord, f.compatibility));
+  const wrongFloor = structuredClone(f.compatibility);
+  wrongFloor.minimum_supported_client.version = 1;
+  assert.throws(() => assertDeploymentBinding(f.workloadRecord, wrongFloor),
+    /observed minimum_client_version 0 differs from compatibility\.minimum_supported_client\.version 1/);
+  const missingObserved = structuredClone(f.workloadRecord);
+  delete missingObserved.observed.minimum_client_version;
+  assert.throws(() => assertDeploymentBinding(missingObserved, f.compatibility),
+    /Invalid workload observed tuple fields/);
+  const noPinFloor = structuredClone(f.compatibility);
+  delete noPinFloor.minimum_supported_client;
+  // The pre-deployment pin (no member) still accepts the same record for smoke/measure.
+  assert.doesNotThrow(() => assertDeploymentBinding(f.workloadRecord, noPinFloor));
+});
+
 test('the Service record fixture is a v4 record with one passed beta bake gate', () => {
   const f = qualificationFixture();
   assert.equal(f.workloadRecord.schema_version, 4);

@@ -2,7 +2,7 @@
 
 These files are the public v4 deployment contract from
 [`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`fa3723324ce7d95b4f3977c4c04f363cba770e08`. The contract keeps the seven-member
+`0e9034332681c86c75b508dbd9edf2eb857a8000`. The contract keeps the seven-member
 v3 record core, and the Service `anywear_service_deployment` record is schema
 version 4 with a required `gate` block. The Infra `anywear_infra_deployment`
 record stays schema version 3 and never carries a gate.
@@ -16,7 +16,7 @@ the dependency-free package source instead of installing a tarball:
 | `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `972c1fbe8896f53c3046c5c3f67543c87cc550bb973a0a87f47b722a413fa06a` | `0a5dce23d6cd6947595c49cce282477d34c49110a186f01feb9b16dc22c3990a` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
 | `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023` | `6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023` |
-| `stage-contracts.mjs` | `packages/stage-contracts/index.mjs` | `1ef2596c258a9b65349023dd2492909a478a09ca3e7cdc1f7968e2fe82e96b5b` | `1ef2596c258a9b65349023dd2492909a478a09ca3e7cdc1f7968e2fe82e96b5b` |
+| `stage-contracts.mjs` | `packages/stage-contracts/index.mjs` | `6af31a91990a96ca5eadb366f80aba2018221d6bc73a8e957d03c895fde51287` | `6af31a91990a96ca5eadb366f80aba2018221d6bc73a8e957d03c895fde51287` |
 
 ## The one declared rewrite
 
@@ -39,14 +39,16 @@ change or a doctored file is refused before the consumer imports the contract.
 | Member | Value |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.2.1` |
+| Version | `0.2.2` |
 | Source | `packages/stage-contracts` |
-| Tarball SHA-256 | `58234d231aa8f5a3ae798561449cb5c220868ad82977e8bf692ff11c4f191a89` |
+| Tarball SHA-256 | `465b25fc16306cead891ff09d3d0c2e0d6d7d3d1488535eb6f3eca7ec367b514` |
 
-The tarball is the packed `git-malu-stage-contracts-0.2.1.tgz` for consumers that
+The tarball is the packed `git-malu-stage-contracts-0.2.2.tgz` for consumers that
 install the package. This repository does not commit the tarball and adds no
 dependency: `stage-contracts.mjs` is the same package entry in install-free form.
-`provenance.json` is the machine-readable pin of both forms.
+`provenance.json` is the machine-readable pin of both forms. Version 0.2.2 makes
+`observed.minimum_client_version` a required non-negative safe integer in the v4
+Service record.
 
 ## What the contract validates
 
@@ -62,8 +64,9 @@ dispatches on `record_type` and accepts exactly one producer's record:
 - `anywear_service_deployment` — schema version 4, producer
   `git-malu/AnyWear-Service`, workflow `.github/workflows/service-artifacts.yml`.
   The record lists exactly `AnyWearWorkloadStack-beta`. Its `observed` is the
-  Workload tuple: the Service commit, the image digest, the two ECS service
-  identities and the API endpoint.
+  Workload tuple: the Service commit, the image digest, the minimum Client
+  version floor the deployed Service enforces, the two ECS service identities and
+  the API endpoint.
 - The Service `gate` is a required top-level member. It records one passed
   `<stage>-anywear-deployment-bake` window of exactly 600 seconds, the probe
   budget (`15`-second interval, 30–40 probes, request floor 30), and the six

@@ -55,7 +55,7 @@ if (qualificationReport && !listOnly) reporter.push(['json', { outputFile: quali
 export default defineConfig({
   testDir: './tests',
   globalSetup: './tests/support/deployed-environment.ts',
-  outputDir: 'test-results',
+  outputDir: process.env.E2E_PLAYWRIGHT_OUTPUT_DIR ?? 'test-results',
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,

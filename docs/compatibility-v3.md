@@ -26,6 +26,7 @@ Service v3 records were never produced, so there is no Service v3 window to keep
 {
   "version": 3,
   "client": { "repository": "git-malu/AnyWear-Client", "sha": "<40 hex>" },
+  "minimum_supported_client": { "version": 0, "sha": "<40 hex>" },
   "service": { "repository": "git-malu/AnyWear-Service", "sha": "<40 hex>" },
   "infra": { "repository": "git-malu/AnyWear-Infra", "sha": "<40 hex>" },
   "platform": {
@@ -46,6 +47,18 @@ Service v3 records were never produced, so there is no Service v3 window to keep
   }
 }
 ```
+
+`minimum_supported_client` names the oldest Client revision the deployed Service still supports,
+and the floor it enforces. `version` is a non-negative safe integer and `sha` is a full
+lowercase 40-character Client commit. Version `0` is the unversioned Client: a build that
+predates `client-version.json` is version `0` by definition, so the oldest leg accepts such
+a schema 1/2 build with no `client_version` when the floor is `0`. `client.sha` stays the newest deployed Client the
+platform record observed; the two may name the same commit when only one Client version is
+supported. The member is required at qualification and on a pin move, but the committed pin
+moves **after** the deployment that first serves the floor: until that move the committed
+pin has no `minimum_supported_client` member, `pnpm check` (which only validates the shape) still
+accepts it, and `full` refuses to write a qualification record. `smoke` and `measure` do not
+require it.
 
 A **deployment record** (produced by Infra or Service, consumed by E2E) shares a
 seven-member core. The two producers share that core but never the stack list or
@@ -93,6 +106,7 @@ top-level `gate`:
   "observed": {
     "service_sha": "<40 hex>",
     "image_digest": "sha256:<64 hex>",
+    "minimum_client_version": 0,
     "ecs": { "…api and worker identities…" },
     "endpoints": { "api": "<url>" }
   },
@@ -115,6 +129,14 @@ top-level `gate`:
 string; `value_sha256` is the hash of the value the run read. `schema.content_sha256`
 is derived from those inputs (parameter names and versions), so a reader can
 recompute it instead of trusting a cross-repository pin.
+
+`observed.minimum_client_version` is the minimum supported Client floor the deployed
+Service enforces, read back from its live `/health` response at deploy time. The
+`@git-malu/stage-contracts` 0.2.2 validator requires a non-negative safe integer there, so
+a producer that did not read the live value cannot write a v4 record. `assertDeploymentBinding`
+requires it to equal `compatibility.minimum_supported_client.version` when the pin carries the member.
+The Service `observed` tuple therefore names both the Service/image it deployed and the
+oldest Client that deployment still serves.
 
 The gate is evidence for one deployment only. Its window must be exactly 600
 seconds (`ended_at - started_at`), its probe budget is a 15-second interval with
@@ -297,7 +319,34 @@ For each record, qualification re-downloads the exact artifact bytes and checks:
    observed tuple;
 8. the Service `service_artifacts` release/asset identities and manifest bytes
    match the pinned four-field identity, and the manifest image source/digest
-   match the Service record's observed tuple.
+   match the Service record's observed tuple;
+9. when the pin carries `minimum_supported_client`, the workload record's
+   `observed.minimum_client_version` equals `minimum_supported_client.version`, the live
+   Service `/health.minimum_client_version` equals the same floor, and the live
+   deployed Client `build-metadata.json` uses schema 3 and states a
+   `client_version` greater than or equal to the floor. These comparisons are
+   enforced by `collectDeploymentEvidence` in
+   `scripts/qualification-record.mjs`, called by
+   `scripts/collect-deployment-evidence.mjs` for `qualification:collect`, so they
+   fail before and after the suite, and the record's member set does not gain a copy
+   of either live value.
+
+For operation `full`, a second release-gating leg runs after the newest deployed leg and
+its gates: it checks out `minimum_supported_client.sha` as `AnyWear-Client-oldest`, installs and
+builds it with `SOURCE_COMMIT_SHA` set to that commit and the deployed Service URL, then
+requires its `dist/build-metadata.json` to state `schema_version: 3`,
+`client_version: minimum_supported_client.version` and the pinned source commit. The built Client is
+served on `http://127.0.0.1:<port>` and the suite runs against it with the deployed Service
+still reached over HTTPS, writing
+`test-results/qualification-report-oldest-client.json` while its Playwright output
+directory is `test-results/oldest-client`, so the second run cannot clean the primary
+`test-results` inputs the record reads, and using its own cleanup run scope. The job fails
+if either leg fails. The second report and the built `build-metadata.json` are uploaded as
+evidence. The qualification record's `test` member continues to derive from the primary
+deployed report, and the second leg is not a record member: a Client that cannot even parse
+the deployed Service contract fails the leg, while the oldest supported Client's behavior
+is evidenced by the uploaded report and the workflow's own assertions. This leg does not
+run for `smoke`, `measure` or `recover`.
 
 E2E then independently observes the live stage base from AWS and requires the
 authenticated body (three Infra stacks, their deployed `Original` template

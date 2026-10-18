@@ -12,6 +12,14 @@ written so a maintainer can perform a move without rediscovering the procedure,
 and every step names the command to run or the exact field to read. The v3 shape
 itself is documented in [compatibility-v3.md](compatibility-v3.md).
 
+A move also pins the oldest supported Client: `minimum_supported_client: { version, sha }`.
+The floor is the deployed Service's live `/health.minimum_client_version`; the SHA is the
+Client commit whose `client-version.json` declares that version. `version` and `sha` are
+required by `scripts/validate-compatibility-pin.mjs` on every move. The committed pin
+deliberately moves **after** the deployment that first serves the floor: before that move
+it has no member, `pnpm check` still accepts it, and operation `full` refuses to write a
+qualification record until the member exists.
+
 ## Who owns moving it
 
 The owner is the **`AnyWear-E2E` maintainers**. For one move, the owner is the
@@ -64,15 +72,19 @@ tuple being pinned; one producer's record cannot stand in for the other.
    (`service-artifacts.yml`, operation `deploy`) for the exact deployed Service
    commit. It builds and verifies the sealed release, deploys
    `AnyWearWorkloadStack-beta` and writes the workload deployment record covering
-   only that stack. The record must be schema version 4 and carry the passed
-   600-second six-signal bake gate; a record without it cannot be pinned.
+   only that stack. The record must be schema version 4, carry the passed
+   600-second six-signal bake gate, and record the live
+   `observed.minimum_client_version` it read back from the deployed Service
+   `/health`; a record without any of them cannot be pinned.
 3. **Download both artifacts.** The platform artifact is
    `infra-deployment-<run_id>-<run_attempt>` and contains exactly
    `deployment-record.json`. The workload artifact is
    `service-deployment-<run_id>-<run_attempt>` and contains exactly
    `service-deployment.json`.
 4. **Move the identity members in one commit**, each value read from those two
-   records.
+   records, including `minimum_supported_client.version` from the workload record's
+   `observed.minimum_client_version` and `minimum_supported_client.sha` from the oldest
+   supported Client commit.
 5. **Validate offline.** The offline validator must pass before the commit exists.
 6. **Commit, open the PR, review, merge.** The PR states, for each producer, the
    run/attempt/artifact and the record hash, and the value of each moved member:
@@ -104,6 +116,8 @@ two per-producer identities; `deployment` is the workload record identity.
 | Member | Field path | Producer |
 | --- | --- | --- |
 | `client.sha` | platform record `observed.client_sha`; it must equal the HTTP Client build metadata | Infra |
+| `minimum_supported_client.version` | workload record `observed.minimum_client_version`; it must equal the deployed Service `/health.minimum_client_version` | Service |
+| `minimum_supported_client.sha` | the Client commit whose build states that version; it must exist on the Client remote and is built by the second qualification leg. For version `0` an unversioned build that predates `client-version.json` counts as version `0` | Client |
 | `service.sha` | workload record `observed.service_sha`; it must equal the HTTP Service health identity | Service |
 | `infra.sha` | the reviewed Infra revision the E2E observation checks out | Infra |
 | `platform.producer_sha` | platform record `producer.sha` | Infra |
@@ -190,7 +204,9 @@ hand-edit the values.
 A pin describes one tuple. The tuple has four application/system parts plus two
 recorded producer runs: a Client revision, a Service revision, an Infra observation
 revision, the Service release the image belongs to, the platform record and the
-workload record. One tuple, with no partial form.
+workload record. It also names the oldest supported Client floor
+(`minimum_supported_client.version`) and the Client commit that declares it
+(`minimum_supported_client.sha`). One tuple, with no partial form.
 
 > A change that moves one of these without the others leaves the pin describing a
 > tuple that was never deployed. It will not pass, and it must not be committed.
@@ -199,15 +215,55 @@ The committed pin carries both records: neither identity is deferred, so the
 tuple it names is fully recorded and live qualification can proceed against it.
 It is coherent and reviewable, and the tuple members it names all moved in one
 commit. The deferred shape it replaced remains described under [deferred
-records](#deferred-records-contract-history) as contract history.
+records](#deferred-records-contract-history) as contract history. The
+`minimum_supported_client` member is added by the post-deployment move described above;
+the pre-deployment committed pin does not have it, and `full` stays closed until
+that move lands.
 
-Three places bind it, by symbol:
+Four places bind it, by symbol:
 
 | Code | What it binds |
 | --- | --- |
 | `assertDeploymentBinding` in `scripts/trusted-deployment-inputs.mjs` | Begins with the exact shared-contract validation — the Infra v3 record, and the Service v4 record including its passed bake gate bound to the observed Service/image — then binds the record's producer (repository, commit, workflow, run and attempt), its per-stack producer identities, its observed Client (Infra) or Service/image (Service), the pinned producer, and the exact pin identity. |
-| `validateInfraEvidence` in `scripts/qualification-record.mjs` | Re-asserts both records and the authenticated stage-base body at qualification time, before and after the suite; each record is validated for its own producer, and the HTTP identity binds the Client and Service pins to the two producers' observed tuples. |
+| `validateInfraEvidence` in `scripts/qualification-record.mjs` | Re-asserts both records and the authenticated stage-base body at qualification time, before and after the suite; each record is validated for its own producer, and the HTTP identity binds the Client and Service pins to the two producers' observed tuples. When the pin carries `minimum_supported_client`, `collectDeploymentEvidence` also requires the live Service `/health.minimum_client_version` to equal the pin floor and the live Client `build-metadata.json` to state `client_version` at or above it. |
+| `scripts/validate-compatibility-pin.mjs` | Refuses a pin move without `minimum_supported_client`, and requires the workload record's observed floor to equal the new pin's floor through `assertDeploymentBinding`. |
 | the rest of `scripts/trusted-deployment-inputs.mjs` | Refuses a deferred identity, an expired or differently shaped artifact, and a run that is not the reviewed producer before the suite. |
+
+## The second qualification leg (oldest supported Client)
+
+Operation `full` runs two release-gating legs against the same deployed Service. The first
+is the hosted deployed-Client leg documented above. The second is the oldest supported
+Client:
+
+1. The workflow reads `minimum_supported_client.sha` and `minimum_supported_client.version` from the committed
+   pin and fails closed when either is missing or malformed.
+2. It checks out that exact Client commit into `AnyWear-Client-oldest`, installs with
+   `pnpm install --frozen-lockfile`, and builds with the deployed Service URL, the Beta
+   Cognito pool/client loaded earlier from SSM, and `SOURCE_COMMIT_SHA` set to the oldest
+   Client commit.
+3. It asserts the built `dist/build-metadata.json` binds the pinned source commit and
+   states the pinned floor. For a floor above `0` that means `schema_version: 3` with
+   `client_version` equal to the floor; for floor `0` either a schema-3 build with
+   `client_version: 0` or an unversioned schema 1/2 build with no `client_version`
+   (version `0` by definition) is accepted.
+4. It serves the built files on `http://127.0.0.1:<port>` and runs the same release-gating
+   suite with `E2E_CLIENT_URL` on that loopback origin, `E2E_SERVICE_URL` still the
+   deployed HTTPS URL, and
+   `E2E_QUALIFICATION_REPORT=test-results/qualification-report-oldest-client.json`
+   with its Playwright output directory under `test-results/oldest-client`, so the second
+   run cleans only its own output and leaves the primary `test-results` inputs the record
+   reads intact.
+   `tests/support/deployed-environment.ts` admits loopback only for Beta, only with
+   `E2E_ALLOW_LOOPBACK_CLIENT=true`, and never for `E2E_SERVICE_URL`.
+5. The leg uses its own cleanup run scope and account-budget manifest, cleans up its own
+   worker identities, and uploads its report and built metadata. The job fails if either
+   leg fails.
+
+The second leg is evidence, not a new record member: the qualification record's `test`
+member still derives from the primary deployed report, and the oldest leg's report is
+retained beside it. `smoke`, `measure` and `recover` never run the second leg, and
+`collectDeploymentEvidence` checks the live Service floor and the deployed Client's
+`client_version` whenever the pin carries `minimum_supported_client`.
 
 ## What is not a substitute
 
@@ -280,22 +336,29 @@ node scripts/validate-compatibility-pin.mjs \
 What it asserts, in order:
 
 1. The pin is v3 and neither record identity is deferred.
-2. Each record's byte hash equals its `record_sha256`. Files are read as bytes and
+2. The new pin names `minimum_supported_client { version, sha }`; a move without it is refused. The
+   member is validated as a non-negative safe integer and a full lowercase 40-character
+   commit.
+3. Each record's byte hash equals its `record_sha256`. Files are read as bytes and
    never re-serialised, pretty-printed or parse-then-hashed.
-3. `assertDeploymentBinding` holds for both records — producer, per-stack
+4. `assertDeploymentBinding` holds for both records — producer, per-stack
    producer identities, the observed Client and Service, the v4 Service record's
    passed bake gate (600-second window, six fixed signals, gate Service/image equal
-   to the observed tuple), and the platform/workload producer pins.
-4. Each record's producer identity (repository, commit, workflow, run and
+   to the observed tuple), the workload record's observed
+   `minimum_client_version` equal to `minimum_supported_client.version`, and the
+   platform/workload producer pins.
+5. Each record's producer identity (repository, commit, workflow, run and
    attempt), stack set, stage-input set and observed identity match the pin. The
    two records are validated separately: their `observed` tuples are disjoint, so
    neither is compared with the other.
-5. Against the previous pin: the pin moved (at least one of `client`, `service`,
-   `infra`, `platform`, `workload`, `service_artifacts`, `deployment` changed).
-   A changed record identity must move forward (a greater `run_id`, or the same
-   `run_id` with a greater `run_attempt`); an unchanged identity is allowed when
-   another member moved.
-6. A v2 previous pin is read as the historical input of the strict v2 → v3
+6. Against the previous pin: the pin moved (at least one of `client`, `service`,
+   `infra`, `platform`, `workload`, `service_artifacts`, `deployment`,
+   `minimum_supported_client` changed). A changed record identity must move forward (a greater
+   `run_id`, or the same `run_id` with a greater `run_attempt`); an unchanged identity is
+   allowed when another member moved. A committed pre-deployment pin without
+   `minimum_supported_client` is a valid previous pin, so adding the member on the move counts as
+   the move itself.
+7. A v2 previous pin is read as the historical input of the strict v2 → v3
    migration; it imposes no run-order comparison across producers.
 
 The documented hole: neither record carries its artifact id, so no offline input
@@ -316,24 +379,24 @@ One pass, end to end. Every step carries the command or the exact field to read.
 
 1. Confirm the move has an owner and the window is over; the window closes only on the user's word. If either is missing, stop.
 2. Run the reviewed Infra observation on reviewed Infra `main` at the Platform producer revision. Record its run id and attempt.
-3. Run the Service release chain's `deploy` operation for the deployed Service commit. Record its run id and attempt.
+3. Run the Service release chain's `deploy` operation for the deployed Service commit. Record its run id and attempt, and read the live floor it recorded from `/health` (`observed.minimum_client_version`).
 4. Download both artifacts:
    `gh run download <platform_run_id> --repo git-malu/AnyWear-Infra --name infra-deployment-<platform_run_id>-<platform_run_attempt> --dir .qualification-inputs`
    and
    `gh run download <workload_run_id> --repo git-malu/AnyWear-Service --name service-deployment-<workload_run_id>-<workload_run_attempt> --dir .qualification-inputs`.
 5. Read the exact byte hashes: `sha256sum .qualification-inputs/deployment-record.json .qualification-inputs/*service-deployment*.json`. Never reformat the files.
 6. Read the producer and observed identities:
-   `jq '{producer: .producer, stacks: [.stacks[] | {name, producer_repository, producer_sha}], observed: {service_sha: .observed.service_sha, client_sha: .observed.client_sha, image_digest: .observed.image_digest}}' .qualification-inputs/deployment-record.json` and the same for the Service record. For the Service record also read the gate:
+   `jq '{producer: .producer, stacks: [.stacks[] | {name, producer_repository, producer_sha}], observed: {service_sha: .observed.service_sha, client_sha: .observed.client_sha, image_digest: .observed.image_digest, minimum_client_version: .observed.minimum_client_version}}' .qualification-inputs/deployment-record.json` and the same for the Service record. For the Service record also read the gate:
    `jq '.gate | {name, result, duration_seconds, service_sha, image_digest, probe, signals: [.signals[] | {name, state}]}' .qualification-inputs/*service-deployment*.json`; it must be the passed 600-second beta bake with the six fixed signals `not-breaching`, and its Service/image must equal `observed`.
 7. Read each artifact id from its run page:
    `gh api repos/git-malu/AnyWear-Infra/actions/runs/<platform_run_id>/artifacts --jq '.artifacts[] | select(.name == "infra-deployment-<platform_run_id>-<platform_run_attempt>") | .id'`
    and
    `gh api repos/git-malu/AnyWear-Service/actions/runs/<workload_run_id>/artifacts --jq '.artifacts[] | select(.name == "service-deployment-<workload_run_id>-<workload_run_attempt>") | .id'`.
 8. Save the pin as committed before the change: `git fetch origin`, then `git show origin/main:compatibility.json > .qualification-inputs/previous-compatibility.json`.
-9. Move `client.sha`, `service.sha`, `infra.sha`, `platform`, `workload`, the four `service_artifacts` fields, `deployment` and `platform.record` in one commit. The producer SHAs and run/attempt values come from each record's `producer` member; `infra.sha` is the reviewed observation source. Leave `version` alone.
-10. Run the validator and require exit 0: `node scripts/validate-compatibility-pin.mjs --platform-record .qualification-inputs/platform-deployment-record.json --deployment-record .qualification-inputs/deployment-record.json --previous .qualification-inputs/previous-compatibility.json`.
+9. Move `client.sha`, `service.sha`, `infra.sha`, `platform`, `workload`, the four `service_artifacts` fields, `deployment`, `platform.record` and `minimum_supported_client` in one commit. The producer SHAs and run/attempt values come from each record's `producer` member; `infra.sha` is the reviewed observation source; `minimum_supported_client.version` is the workload record's `observed.minimum_client_version`; `minimum_supported_client.sha` is the reviewed oldest supported Client commit. Leave `version` alone.
+10. Run the validator and require exit 0: `node scripts/validate-compatibility-pin.mjs --platform-record .qualification-inputs/platform-deployment-record.json --deployment-record .qualification-inputs/deployment-record.json --previous .qualification-inputs/previous-compatibility.json`. A candidate without `minimum_supported_client`, or whose floor differs from the workload record, is refused.
 11. Commit, open the PR, review and merge; the PR states the source and value of each moved member and links both producer runs. Record both runs and the pin commit on the work item that owns the move.
-12. Run qualification on the merged pin: `gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main -f operation=full -f worker_slot_offset=<first of an unused captured worker-slot pair>`. Record that run's id on the same work item, so the move, the pin and the qualification are one trail.
+12. Run qualification on the merged pin: `gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main -f operation=full -f worker_slot_offset=<first of an unused captured worker-slot pair>`. Operation `full` runs both legs, including the oldest supported Client build at `minimum_supported_client.sha`; record that run's id on the same work item, so the move, the pin, both legs and the qualification are one trail.
 
 Do not move one producer at a time — the identity members move in one commit.
 
