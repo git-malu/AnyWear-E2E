@@ -176,6 +176,14 @@ export function assertDeploymentBinding(record, compatibility) {
       throw new Error(`Deployment record observed Service ${record.observed?.service_sha} differs from compatibility.service.sha ${compatibility.service.sha}`);
     }
     requireImageDigest(record.observed?.image_digest);
+    // The newest Client is pinned by `client.sha` and observed by the platform record;
+    // the oldest Client is pinned by `minimum_supported_client.sha` and built by the second
+    // qualification leg. The deployed Service record owns the floor itself, so a pin
+    // that names a floor the deployed Service did not enforce is refused here.
+    if (compatibility.minimum_supported_client !== undefined
+      && record.observed?.minimum_client_version !== compatibility.minimum_supported_client.version) {
+      throw new Error(`Deployment record observed minimum_client_version ${record.observed?.minimum_client_version} differs from compatibility.minimum_supported_client.version ${compatibility.minimum_supported_client.version}`);
+    }
   }
   return record;
 }

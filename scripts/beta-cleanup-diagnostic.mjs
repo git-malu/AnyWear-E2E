@@ -282,12 +282,24 @@ const CLIENT_INTERFACE_KEYS = Object.freeze(['api_base_url', 'cognito_user_pool_
 
 // The deployed Client's build-metadata identity. Schema 1 is exactly the four identity
 // fields. Schema 2 (AnyWear-Client#21) keeps those four unchanged and adds one `interface`
-// object, so both released shapes are accepted strictly: no other version, no unknown key
-// in either shape, no missing or empty interface member, and the `source_commit` binding to
-// the observed Client revision is unchanged from schema 1.
+// object. Schema 3 (#160) keeps that shape and adds the `client_version` the Client build
+// states, so every released shape is accepted strictly: no other version, no unknown key
+// in any shape, no missing or empty interface member, and the `source_commit` binding to
+// the observed Client revision unchanged across all three.
 function validateClientHealth(health, expected) {
   if (!health || typeof health !== 'object' || Array.isArray(health)) throw new Error('Diagnostic Client health must be an object');
-  if (health.schema_version === 2) {
+  if (health.schema_version === 3) {
+    exactKeys(health, [...CLIENT_HEALTH_KEYS, 'client_version', 'interface'], 'Diagnostic Client health');
+    exactKeys(health.interface, CLIENT_INTERFACE_KEYS, 'Diagnostic Client interface');
+    for (const key of CLIENT_INTERFACE_KEYS) {
+      if (typeof health.interface[key] !== 'string' || health.interface[key].length === 0) {
+        throw new Error(`Diagnostic Client interface.${key} must be a non-empty string`);
+      }
+    }
+    if (!Number.isSafeInteger(health.client_version) || health.client_version < 0) {
+      throw new Error('Diagnostic Client client_version must be a non-negative safe integer');
+    }
+  } else if (health.schema_version === 2) {
     exactKeys(health, [...CLIENT_HEALTH_KEYS, 'interface'], 'Diagnostic Client health');
     exactKeys(health.interface, CLIENT_INTERFACE_KEYS, 'Diagnostic Client interface');
     for (const key of CLIENT_INTERFACE_KEYS) {
@@ -325,7 +337,12 @@ export function validateDiagnosticRecord(record, expected = DIAGNOSTIC_EXPECTED)
     || record.runtime.worker_task_definition !== expected.runtime.worker_task_definition || record.runtime.rollout_state !== expected.runtime.rollout_state || record.runtime.schema_version !== expected.runtime.schema_version) throw new Error('Diagnostic runtime binding mismatch');
   exactKeys(record.runtime.health, ['client', 'service'], 'Diagnostic health');
   validateClientHealth(record.runtime.health.client, expected);
-  exactKeys(record.runtime.health.service, ['status', 'service_commit', 'image_digest', 'minimum_schema_version'], 'Diagnostic Service health');
+  exactKeys(record.runtime.health.service, ['status', 'service_commit', 'image_digest', 'minimum_schema_version'], 'Diagnostic Service health', ['minimum_client_version']);
+  if (Object.hasOwn(record.runtime.health.service, 'minimum_client_version')
+    && (!Number.isSafeInteger(record.runtime.health.service.minimum_client_version)
+      || record.runtime.health.service.minimum_client_version < 0)) {
+    throw new Error('Diagnostic Service minimum_client_version must be a non-negative safe integer');
+  }
   if (record.runtime.health.service.status !== 'ok'
     || record.runtime.health.service.service_commit !== expected.service.source_sha || record.runtime.health.service.image_digest !== expected.service.image_digest
     || record.runtime.health.service.minimum_schema_version !== expected.service.schema_version) throw new Error('Diagnostic HTTP health mismatch');

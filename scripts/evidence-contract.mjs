@@ -205,9 +205,19 @@ export function validateCompatibility(manifest, { allowLegacy = false } = {}) {
     for (const component of ['client', 'service']) requireRepositoryPin(manifest, component);
     return manifest;
   }
+  const optionalMembers = manifest.version === 3 ? ['minimum_supported_client'] : [];
   exactKeys(manifest, manifest.version === 2
     ? ['version', 'client', 'service', 'infra', 'service_artifacts', 'deployment']
-    : ['version', 'client', 'service', 'infra', 'platform', 'workload', 'deployment', 'service_artifacts'], 'compatibility');
+    : ['version', 'client', 'service', 'infra', 'platform', 'workload', 'deployment', 'service_artifacts'], 'compatibility', optionalMembers);
+  // The supported-Client floor is an optional v3 member until the reviewed pin moves after
+  // the deployment that first enforces it. It is never accepted on a historical v1/v2 pin.
+  if (manifest.version === 3 && manifest.minimum_supported_client !== undefined) {
+    exactKeys(manifest.minimum_supported_client, ['version', 'sha'], 'minimum_supported_client');
+    if (!Number.isSafeInteger(manifest.minimum_supported_client.version) || manifest.minimum_supported_client.version < 0) {
+      throw new Error('minimum_supported_client.version must be a non-negative safe integer');
+    }
+    requireCommit(manifest.minimum_supported_client.sha, 'minimum_supported_client.sha');
+  }
   for (const component of ['client', 'service', 'infra']) requireRepositoryPin(manifest, component);
   const assets = exactKeys(manifest.service_artifacts, ['repository', 'release_id', 'manifest_asset_id', 'manifest_sha256'], 'service_artifacts');
   if (assets.repository !== repositories.service) throw new Error('service_artifacts.repository is unexpected');

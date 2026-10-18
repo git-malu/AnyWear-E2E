@@ -302,3 +302,63 @@ test('rejects a deployed revision that differs from the reviewed compatibility s
     /Client does not match compatibility.json/,
   );
 });
+
+// #160: when the reviewed pin names the supported-Client floor, collection reads that
+// floor back from the live Service and the built version from the live Client. The
+// comparison is enforced at collection so smoke, measure and full all see the same live
+// truth; the evidence member set stays unchanged.
+test('enforces the pinned minimum Client floor on the live Client and Service', async () => {
+  const fixture = qualificationFixture();
+  const live = {
+    client: {
+      schema_version: 3, component: 'AnyWear-Client', source_commit: fixture.compatibility.client.sha,
+      built_at: '2026-10-07T00:00:00.000Z', client_version: 0,
+      interface: { api_base_url: 'https://api.example.invalid', cognito_user_pool_id: 'pool', cognito_client_id: 'client' },
+    },
+    service: {
+      status: 'ok', service_commit: fixture.compatibility.service.sha,
+      image_digest: fixture.workloadRecord.observed.image_digest, minimum_schema_version: 17, minimum_client_version: 0,
+    },
+  };
+  const fetcherFor = (client, service) => async (url) => new Response(JSON.stringify(
+    url.pathname === '/build-metadata.json' ? client : service), { status: 200 });
+  const collect = (client = live.client, service = live.service, pin = fixture.compatibility) => collectDeploymentEvidence({
+    clientUrl: 'https://client123.cloudfront.net',
+    serviceUrl: 'https://api123.cloudfront.net',
+    runId: '123',
+  }, pin, fetcherFor(client, service));
+
+  const collected = await collect();
+  assert.equal(collected.client.source_commit, fixture.compatibility.client.sha);
+  assert.equal(collected.service.image_digest, live.service.image_digest);
+  await assert.doesNotReject(collect({ ...live.client, client_version: 1 }));
+  await assert.rejects(collect(live.client, { ...live.service, minimum_client_version: 1 }),
+    /Deployed Service minimum_client_version 1 differs from compatibility\.minimum_supported_client\.version 0/);
+  await assert.rejects(collect({ ...live.client, schema_version: 2, client_version: undefined }),
+    /must use schema_version 3 when compatibility\.minimum_supported_client is pinned/);
+  await assert.rejects(collect({ ...live.client, client_version: -1 }),
+    /client_version must be a non-negative safe integer/);
+  await assert.rejects(collect({ ...live.client, client_version: '0' }),
+    /client_version must be a non-negative safe integer/);
+  const { minimum_client_version: ignored, ...withoutFloor } = live.service;
+  void ignored;
+  await assert.rejects(collect(live.client, withoutFloor),
+    /minimum_client_version must be a non-negative safe integer/);
+  const floorOne = structuredClone(fixture.compatibility);
+  floorOne.minimum_supported_client.version = 1;
+  await assert.rejects(collect(live.client, live.service, floorOne),
+    /Deployed Client client_version 0 is below compatibility\.minimum_supported_client\.version 1/);
+});
+
+test('refuses to write a qualification record without the minimum Client pin', () => {
+  const fixture = qualificationFixture();
+  const withoutFloor = structuredClone(fixture.compatibility);
+  delete withoutFloor.minimum_supported_client;
+  let refusal;
+  try {
+    buildQualificationRecord(fixture.input, withoutFloor, fixture.evidence,
+      new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
+  } catch (error) { refusal = error; }
+  assert.ok(refusal, 'a full qualification without the minimum_supported_client member must not issue a record');
+  assert.match(refusal.message, /Qualification requires compatibility\.minimum_supported_client/);
+});

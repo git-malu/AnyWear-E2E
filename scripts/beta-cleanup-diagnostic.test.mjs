@@ -135,7 +135,7 @@ function diagnosticFixture(expected = expectedFixture()) {
   const selector = selectionFixture(expected);
   const observation = observationFixture(expected, selector);
   const operation = operationFixture(expected, observation);
-  const health = { client: { schema_version: 1, component: 'AnyWear-Client', source_commit: expected.runtime.client_sha, built_at: '2026-10-12T22:00:00.000Z' }, service: { status: 'ok', service_commit: expected.service.source_sha, image_digest: image, minimum_schema_version: expected.service.schema_version } };
+  const health = { client: { schema_version: 1, component: 'AnyWear-Client', source_commit: expected.runtime.client_sha, built_at: '2026-10-12T22:00:00.000Z' }, service: { status: 'ok', service_commit: expected.service.source_sha, image_digest: image, minimum_schema_version: expected.service.schema_version, minimum_client_version: 0 } };
   const record = { schema_version: 1, record_type: 'anywear_beta_cleanup_diagnostic', producer: { account_id: expected.account_id, region: expected.region, ...expected.infra, operation: 'deploy-workload' }, artifacts: expected.artifacts,
     selection: { file: expected.selection.file, blob_sha256: expected.selection.blob_sha256, raw_sha256: expected.selection.raw_sha256, stack_map_file: expected.selection.stack_map_file, stack_map_sha256: expected.selection.stack_map_sha256 },
     service: { source_sha: expected.service.source_sha, release: expected.selection.release.id, manifest_sha256: expected.selection.release.manifest_sha256, image_digest: expected.service.image_digest },
@@ -161,10 +161,11 @@ test('validates the diagnostic envelope and keeps formal deployment contracts cl
 });
 
 // AnyWear-Client#21 released build-metadata schema 2: the four schema-1 identity fields are
-// unchanged and one `interface` object is added. The diagnostic must accept both released
-// shapes strictly, keep the source_revision binding exact, and refuse a partial or unknown
-// shape rather than ignoring it.
-test('accepts Client build-metadata schema 1 and schema 2 and refuses every other shape', () => {
+// unchanged and one `interface` object is added. #160 released schema 3: the same shape with
+// the built `client_version` added. The diagnostic must accept all three released shapes
+// strictly, keep the source revision binding exact, and refuse a partial or unknown shape
+// rather than ignoring it.
+test('accepts Client build-metadata schema 1, 2 and 3 and refuses every other shape', () => {
   const fixture = diagnosticFixture();
   const identity = {
     schema_version: 1,
@@ -172,32 +173,71 @@ test('accepts Client build-metadata schema 1 and schema 2 and refuses every othe
     source_commit: fixture.expected.runtime.client_sha,
     built_at: '2026-10-12T22:00:00.000Z',
   };
+  const interfaceFixture = { api_base_url: 'https://api.example.invalid', cognito_user_pool_id: 'pool-id', cognito_client_id: 'client-id' };
   const schema2 = {
     ...identity,
     schema_version: 2,
-    interface: { api_base_url: 'https://api.example.invalid', cognito_user_pool_id: 'pool-id', cognito_client_id: 'client-id' },
+    interface: interfaceFixture,
   };
+  const schema3 = {
+    ...schema2,
+    schema_version: 3,
+    client_version: 1,
+  };
+  const schema3WithoutInterface = { ...schema3 };
+  delete schema3WithoutInterface.interface;
   const withClient = (client) => {
     const candidate = structuredClone(fixture);
     candidate.record.runtime.health.client = client;
     return candidate;
   };
-  for (const [label, client] of [['schema 1', identity], ['schema 2', schema2]]) {
+  for (const [label, client] of [['schema 1', identity], ['schema 2', schema2], ['schema 3', schema3]]) {
     const candidate = withClient(client);
     assert.strictEqual(validateDiagnosticRecord(candidate.record, fixture.expected), candidate.record, label);
   }
   for (const [label, client, expected] of [
     ['schema 2 missing interface', { ...identity, schema_version: 2 }, /Diagnostic Client health\.interface is required/],
     ['schema 2 extra top-level key', { ...schema2, extra: true }, /Diagnostic Client health\.extra is unknown/],
-    ['unknown schema version', { ...schema2, schema_version: 3 }, /schema version is unsupported/],
+    ['schema 3 missing interface', schema3WithoutInterface, /Diagnostic Client health\.interface is required/],
+    ['schema 3 missing client_version', { schema_version: 3, component: schema3.component, source_commit: schema3.source_commit, built_at: schema3.built_at, interface: interfaceFixture }, /Diagnostic Client health\.client_version is required/],
+    ['schema 3 string client_version', { ...schema3, client_version: '1' }, /Diagnostic Client client_version must be a non-negative safe integer/],
+    ['schema 3 negative client_version', { ...schema3, client_version: -1 }, /Diagnostic Client client_version must be a non-negative safe integer/],
+    ['schema 3 fractional client_version', { ...schema3, client_version: 1.5 }, /Diagnostic Client client_version must be a non-negative safe integer/],
+    ['schema 3 extra top-level key', { ...schema3, extra: true }, /Diagnostic Client health\.extra is unknown/],
+    ['unknown schema version', { ...schema3, schema_version: 4 }, /schema version is unsupported/],
     ['schema 2 missing interface member', { ...schema2, interface: { api_base_url: schema2.interface.api_base_url, cognito_user_pool_id: schema2.interface.cognito_user_pool_id } }, /Diagnostic Client interface\.cognito_client_id is required/],
     ['schema 2 unknown interface member', { ...schema2, interface: { ...schema2.interface, extra: 'x' } }, /Diagnostic Client interface\.extra is unknown/],
     ['schema 2 empty interface member', { ...schema2, interface: { ...schema2.interface, cognito_client_id: '' } }, /Diagnostic Client interface\.cognito_client_id must be a non-empty string/],
     ['schema 2 non-string interface member', { ...schema2, interface: { ...schema2.interface, api_base_url: 7 } }, /Diagnostic Client interface\.api_base_url must be a non-empty string/],
     ['schema 2 foreign client source', { ...schema2, source_commit: sha('f') }, /Diagnostic Client health identity mismatch/],
     ['schema 1 carrying the schema 2 interface', { ...identity, interface: schema2.interface }, /Diagnostic Client health\.interface is unknown/],
+    ['schema 2 carrying the schema 3 client_version', { ...schema2, client_version: 1 }, /Diagnostic Client health\.client_version is unknown/],
   ]) {
     const candidate = withClient(client);
+    assert.throws(() => validateDiagnosticRecord(candidate.record, fixture.expected), expected, label);
+  }
+});
+
+// #160: the deployed Service /health now states the minimum Client version floor beside the
+// historical identity and schema fields. The diagnostic accepts the new shape and the
+// historical shape without the member, and still validates that any recorded floor is a
+// non-negative safe integer rather than ignoring an arbitrary value.
+test('accepts the new Service health floor and validates it when present', () => {
+  const fixture = diagnosticFixture();
+  const serviceHealth = fixture.record.runtime.health.service;
+  assert.equal(serviceHealth.minimum_client_version, 0);
+  assert.strictEqual(validateDiagnosticRecord(fixture.record, fixture.expected), fixture.record);
+  const withoutFloor = structuredClone(fixture);
+  delete withoutFloor.record.runtime.health.service.minimum_client_version;
+  assert.strictEqual(validateDiagnosticRecord(withoutFloor.record, fixture.expected), withoutFloor.record);
+  for (const [label, value, expected] of [
+    ['negative', -1, /minimum_client_version must be a non-negative safe integer/],
+    ['fractional', 0.5, /minimum_client_version must be a non-negative safe integer/],
+    ['string', '0', /minimum_client_version must be a non-negative safe integer/],
+    ['unsafe', Number.MAX_SAFE_INTEGER + 1, /minimum_client_version must be a non-negative safe integer/],
+  ]) {
+    const candidate = structuredClone(fixture);
+    candidate.record.runtime.health.service.minimum_client_version = value;
     assert.throws(() => validateDiagnosticRecord(candidate.record, fixture.expected), expected, label);
   }
 });

@@ -109,6 +109,34 @@ test('each record-bound member mutation fails against the downloaded records', a
   }
 });
 
+test('a pin move must include the minimum Client floor and bind it to the workload record', async () => {
+  const missing = await prepare();
+  try {
+    delete missing.pin.minimum_supported_client;
+    await assert.rejects(assertCompatibilityPin(await missing.write()), /must include minimum_supported_client/);
+  } finally {
+    await missing.close();
+  }
+  const mismatched = await prepare();
+  try {
+    mismatched.pin.minimum_supported_client.version = 1;
+    await assert.rejects(assertCompatibilityPin(await mismatched.write()),
+      /observed minimum_client_version 0 differs from compatibility\.minimum_supported_client\.version 1/);
+  } finally {
+    await mismatched.close();
+  }
+  // The committed pin has no member yet; adding it on the move is itself a moved identity
+  // member, so the previous pin stays valid and the move is not a no-op.
+  const added = await prepare();
+  try {
+    delete added.previous.minimum_supported_client;
+    const summary = await assertCompatibilityPin(await added.write());
+    assert.ok(summary.moved_members.includes('minimum_supported_client'));
+  } finally {
+    await added.close();
+  }
+});
+
 test('a re-serialised record fails on its byte hash, never on parsing', async () => {
   const fixture = qualificationFixture();
   for (const [platform, deployment] of [

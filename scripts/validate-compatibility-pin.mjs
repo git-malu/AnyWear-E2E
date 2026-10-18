@@ -22,7 +22,7 @@ import { assertDeploymentBinding } from './trusted-deployment-inputs.mjs';
 
 // The reviewed identity members a pin move has to justify as a set. A move that
 // leaves all of them equal is a no-op re-pin, not a decision.
-export const IDENTITY_MEMBERS = Object.freeze(['client', 'service', 'infra', 'platform', 'workload', 'service_artifacts', 'deployment']);
+export const IDENTITY_MEMBERS = Object.freeze(['client', 'service', 'infra', 'platform', 'workload', 'service_artifacts', 'deployment', 'minimum_supported_client']);
 export const OPTIONS = Object.freeze(['--platform-record', '--deployment-record', '--previous', '--compatibility']);
 
 const defaultCompatibility = fileURLToPath(new URL('../compatibility.json', import.meta.url));
@@ -62,6 +62,14 @@ export async function assertCompatibilityPin({ platformRecord, deploymentRecord,
     throw new Error('Both deployment record paths and a previous pin path are required');
   }
   const pin = validateCompatibility(parseStrictJson(await readFile(compatibility)));
+  // A move after the minimum-client deployment has to pin the supported-Client floor as
+  // well. The committed pre-deployment pin is allowed to lack it, but this validator is
+  // only used to justify a move, and a moved pin without the member would leave the
+  // oldest supported Client unnamed. `assertDeploymentBinding` below then requires the
+  // workload record's observed floor to equal the new pin's floor.
+  if (pin.minimum_supported_client === undefined) {
+    throw new Error('Compatibility pin move must include minimum_supported_client { version, sha } naming the oldest supported Client');
+  }
   // A v2 previous pin is the historical input of the strict v2 -> v3 migration.
   const previousPin = validateCompatibility(parseStrictJson(await readFile(previous)), { allowLegacy: true });
   // A deferred record is coherent but has no evidence to validate; the pin cannot
