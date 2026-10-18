@@ -338,7 +338,7 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   // The record is produced only by full, bound to its dispatched operation, and the record
   // job only validates and attaches it. Neither smoke, measure nor recover can write one.
   assert.ok(record.length > 0, 'the qualify entry must declare a record job');
-  assert.match(record, /needs: full/);
+  assert.match(record, /needs: \[preflight, full\]/);
   assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
   assert.match(full, /qualification:generate/);
   for (const [name, job] of [['smoke', smoke], ['measure', measure], ['recover', workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'))], ['record', record]]) {

@@ -69,6 +69,15 @@ on:
 permissions:
   contents: read
 
+# The single protected deployment account. These are workflow constants, not
+# environment-scoped repository variables: the environment-free `preflight` and its
+# execution guard resolve the account and region before any job enters the `beta`
+# environment. No job may shadow them, and environment-only values stay in the jobs that
+# declare `environment: beta`.
+env:
+  AWS_ACCOUNT_ID: '650880818323'
+  AWS_REGION: 'ap-east-1'
+
 concurrency:
   group: beta-e2e-account-pool
   cancel-in-progress: false
@@ -84,18 +93,17 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      # The gate that authorizes the credential jobs is the gate that validated the
+      # operation: the operation jobs read this output, not the raw dispatch input.
+      operation: ${{ steps.operation-scope.outputs.operation }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       E2E_STAGE: beta
       E2E_OPERATION: ${{ inputs.operation }}
       E2E_EXTERNAL_SERVERS: true
-      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
-      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
-      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
 
     steps:
       - name: Checkout E2E sources
@@ -122,6 +130,7 @@ jobs:
       # required by measure and refused by every other operation; the recovery inputs are
       # rejected by every operation but recover.
       - name: Validate the dispatch operation and its input scope
+        id: operation-scope
         shell: bash
         env:
           OPERATION: ${{ inputs.operation }}
@@ -158,6 +167,9 @@ jobs:
               exit 1
             fi
           fi
+          # Publish the validated operation. The credential jobs gate on this output, so the
+          # job that authorizes them is the job that checked the operation and its inputs.
+          echo "operation=$OPERATION" >> "$GITHUB_OUTPUT"
 
       - name: Check E2E source and reviewed compatibility set
         run: pnpm check
@@ -212,7 +224,7 @@ jobs:
   full:
     name: Qualify reviewed revisions on Beta
     needs: preflight
-    if: github.ref == 'refs/heads/main' && inputs.operation == 'full'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: beta
@@ -226,8 +238,6 @@ jobs:
       E2E_EXTERNAL_SERVERS: true
       E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
@@ -314,8 +324,8 @@ jobs:
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
-          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify dedicated E2E principal
         shell: bash
@@ -510,7 +520,7 @@ jobs:
   smoke:
     name: Reviewed revisions on deployed Beta
     needs: preflight
-    if: github.ref == 'refs/heads/main' && inputs.operation == 'smoke'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'smoke'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: beta
@@ -524,8 +534,6 @@ jobs:
       E2E_EXTERNAL_SERVERS: true
       E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
@@ -673,8 +681,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
-          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify dedicated E2E principal
         shell: bash
@@ -775,7 +783,7 @@ jobs:
   measure:
     name: Measure the representative Beta sizing workload
     needs: preflight
-    if: github.ref == 'refs/heads/main' && inputs.operation == 'measure'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'measure'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: beta
@@ -789,8 +797,6 @@ jobs:
       E2E_EXTERNAL_SERVERS: true
       E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
@@ -873,8 +879,8 @@ jobs:
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
-          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify dedicated E2E principal
         shell: bash
@@ -972,7 +978,7 @@ jobs:
   recover:
     name: Recover exact E2E identities and owned resources
     needs: preflight
-    if: github.ref == 'refs/heads/main' && inputs.operation == 'recover'
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'recover'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: beta
@@ -984,8 +990,6 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       E2E_STAGE: beta
       E2E_OPERATION: ${{ inputs.operation }}
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
       E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
@@ -1057,8 +1061,8 @@ jobs:
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
-          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify dedicated E2E principal
         shell: bash
@@ -1130,8 +1134,8 @@ jobs:
   # neither produce nor withhold it.
   record:
     name: Validate and attach the qualification record
-    needs: full
-    if: github.ref == 'refs/heads/main' && inputs.operation == 'full'
+    needs: [preflight, full]
+    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
