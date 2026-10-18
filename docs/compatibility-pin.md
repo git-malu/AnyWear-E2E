@@ -117,7 +117,7 @@ two per-producer identities; `deployment` is the workload record identity.
 | --- | --- | --- |
 | `client.sha` | platform record `observed.client_sha`; it must equal the HTTP Client build metadata | Infra |
 | `minimum_supported_client.version` | workload record `observed.minimum_client_version`; it must equal the deployed Service `/health.minimum_client_version` | Service |
-| `minimum_supported_client.sha` | the Client commit whose `client-version.json` declares that version; it must exist on the Client remote and is built by the second qualification leg | Client |
+| `minimum_supported_client.sha` | the Client commit whose build states that version; it must exist on the Client remote and is built by the second qualification leg. For version `0` an unversioned build that predates `client-version.json` counts as version `0` | Client |
 | `service.sha` | workload record `observed.service_sha`; it must equal the HTTP Service health identity | Service |
 | `infra.sha` | the reviewed Infra revision the E2E observation checks out | Infra |
 | `platform.producer_sha` | platform record `producer.sha` | Infra |
@@ -241,8 +241,11 @@ Client:
    `pnpm install --frozen-lockfile`, and builds with the deployed Service URL, the Beta
    Cognito pool/client loaded earlier from SSM, and `SOURCE_COMMIT_SHA` set to the oldest
    Client commit.
-3. It asserts the built `dist/build-metadata.json` states `schema_version: 3`,
-   `client_version` equal to the pinned floor, and the pinned source commit.
+3. It asserts the built `dist/build-metadata.json` binds the pinned source commit and
+   states the pinned floor. For a floor above `0` that means `schema_version: 3` with
+   `client_version` equal to the floor; for floor `0` either a schema-3 build with
+   `client_version: 0` or an unversioned schema 1/2 build with no `client_version`
+   (version `0` by definition) is accepted.
 4. It serves the built files on `http://127.0.0.1:<port>` and runs the same release-gating
    suite with `E2E_CLIENT_URL` on that loopback origin, `E2E_SERVICE_URL` still the
    deployed HTTPS URL, and

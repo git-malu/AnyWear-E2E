@@ -486,7 +486,8 @@ jobs:
           repository: git-malu/AnyWear-Client
           ref: ${{ steps.minimum-supported-client.outputs.sha }}
           path: AnyWear-Client-oldest
-          submodules: recursive
+          # The token is scoped to AnyWear-Client alone, and the source build does not
+          # read the API-specification submodule, so fetch the Client sources only.
           token: ${{ steps.client-token.outputs.token }}
           persist-credentials: false
 
@@ -503,10 +504,24 @@ jobs:
           export VITE_COGNITO_USER_POOL_ID="${VITE_COGNITO_USER_POOL_ID:?the Beta Cognito user pool was not loaded}"
           export VITE_COGNITO_CLIENT_ID="${VITE_COGNITO_CLIENT_ID:?the Beta Cognito client was not loaded}"
           pnpm build
-          if ! jq -e --argjson version "$MINIMUM_SUPPORTED_CLIENT_VERSION" --arg sha "$MINIMUM_SUPPORTED_CLIENT_SHA" \
-            '.schema_version == 3 and .client_version == $version and .source_commit == $sha' \
-            dist/build-metadata.json > /dev/null; then
-            echo "::error::the oldest supported Client build metadata does not state schema 3, client_version $MINIMUM_SUPPORTED_CLIENT_VERSION and source $MINIMUM_SUPPORTED_CLIENT_SHA"
+          recorded_schema_version="$(jq -r '.schema_version // empty' dist/build-metadata.json)"
+          recorded_client_version="$(jq -r '.client_version // empty' dist/build-metadata.json)"
+          recorded_source_commit="$(jq -r '.source_commit // empty' dist/build-metadata.json)"
+          oldest_metadata_ok=false
+          # Version 0 is the unversioned Client: an oldest supported Client pinned at
+          # floor 0 may predate client-version.json, so a schema 1/2 build without
+          # client_version is version 0 by definition. A floor above 0 must be stated
+          # by a schema-3 build.
+          case "$MINIMUM_SUPPORTED_CLIENT_VERSION:$recorded_schema_version" in
+            0:3) [[ "$recorded_client_version" == 0 ]] && oldest_metadata_ok=true ;;
+            0:1|0:2) [[ -z "$recorded_client_version" ]] && oldest_metadata_ok=true ;;
+            *) [[ "$recorded_schema_version" == 3 && "$recorded_client_version" == "$MINIMUM_SUPPORTED_CLIENT_VERSION" ]] && oldest_metadata_ok=true ;;
+          esac
+          if [[ "$recorded_source_commit" != "$MINIMUM_SUPPORTED_CLIENT_SHA" ]]; then
+            oldest_metadata_ok=false
+          fi
+          if [[ "$oldest_metadata_ok" != true ]]; then
+            echo "::error::the oldest supported Client build metadata does not bind source $MINIMUM_SUPPORTED_CLIENT_SHA to client_version $MINIMUM_SUPPORTED_CLIENT_VERSION"
             jq '{schema_version, client_version, source_commit}' dist/build-metadata.json || true
             exit 1
           fi
@@ -516,8 +531,9 @@ jobs:
             echo "Oldest supported Client build verified"
             echo
             echo "- Source commit: \`$MINIMUM_SUPPORTED_CLIENT_SHA\`"
-            echo "- client_version: \`$MINIMUM_SUPPORTED_CLIENT_VERSION\`"
-            echo "- schema_version: 3"
+            echo "- Floor: \`$MINIMUM_SUPPORTED_CLIENT_VERSION\`"
+            echo "- Recorded schema_version: \`$recorded_schema_version\`"
+            echo "- Recorded client_version: \`${recorded_client_version:-unversioned (0)}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set the oldest-client leg cleanup run scope

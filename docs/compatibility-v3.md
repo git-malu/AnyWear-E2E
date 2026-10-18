@@ -50,7 +50,9 @@ Service v3 records were never produced, so there is no Service v3 window to keep
 
 `minimum_supported_client` names the oldest Client revision the deployed Service still supports,
 and the floor it enforces. `version` is a non-negative safe integer and `sha` is a full
-lowercase 40-character Client commit. `client.sha` stays the newest deployed Client the
+lowercase 40-character Client commit. Version `0` is the unversioned Client: a build that
+predates `client-version.json` is version `0` by definition, so the oldest leg accepts such
+a schema 1/2 build with no `client_version` when the floor is `0`. `client.sha` stays the newest deployed Client the
 platform record observed; the two may name the same commit when only one Client version is
 supported. The member is required at qualification and on a pin move, but the committed pin
 moves **after** the deployment that first serves the floor: until that move the committed
