@@ -12,6 +12,14 @@ The contract answers one question: which exact producer produced the deployed
 system this suite qualifies, and which exact record bytes say so. Qualification
 refuses anything else.
 
+The record version is per producer. The Infra `anywear_infra_deployment` record
+stays **schema version 3** with the seven-member core. The Service
+`anywear_service_deployment` record is **schema version 4**: the same core plus a
+required top-level `gate` that records the passed 600-second deployment bake.
+Historical v2 Infra records stay readable only through the frozen envelope check
+in `scripts/trusted-deployment-inputs.mjs`; they are never a live input. Pre-gate
+Service v3 records were never produced, so there is no Service v3 window to keep.
+
 ## Shape
 
 ```json
@@ -39,9 +47,9 @@ refuses anything else.
 }
 ```
 
-A **deployment record** (produced by Infra or Service, consumed by E2E) has this
-shape. The two producers share the envelope but never the stack list or the
-observed tuple:
+A **deployment record** (produced by Infra or Service, consumed by E2E) shares a
+seven-member core. The two producers share that core but never the stack list or
+the observed tuple. The Infra record stays schema version 3:
 
 ```json
 {
@@ -68,10 +76,56 @@ observed tuple:
 }
 ```
 
+The Service record is schema version 4: the same seven members plus a required
+top-level `gate`:
+
+```json
+{
+  "schema_version": 4,
+  "record_type": "anywear_service_deployment",
+  "producer": { "…Service producer…" },
+  "stacks": [
+    { "name": "AnyWearWorkloadStack-beta", "region": "ap-east-1",
+      "producer_repository": "git-malu/AnyWear-Service", "producer_sha": "<40 hex>",
+      "template_sha256": "<64 hex>" }
+  ],
+  "inputs": [ { "parameter": "/anywear/beta/vpc_id", "version": "3", "value_sha256": "<64 hex>" } ],
+  "observed": {
+    "service_sha": "<40 hex>",
+    "image_digest": "sha256:<64 hex>",
+    "ecs": { "…api and worker identities…" },
+    "endpoints": { "api": "<url>" }
+  },
+  "schema": { "content_sha256": "<64 hex>" },
+  "gate": {
+    "name": "beta-anywear-deployment-bake",
+    "result": "passed",
+    "started_at": "2026-10-18T00:00:00.000Z",
+    "ended_at": "2026-10-18T00:10:00.000Z",
+    "duration_seconds": 600,
+    "service_sha": "<40 hex>",
+    "image_digest": "sha256:<64 hex>",
+    "probe": { "interval_seconds": 15, "probes_sent": 40, "request_floor": 30 },
+    "signals": [ "…the six fixed ordered signals…" ]
+  }
+}
+```
+
 `inputs[]` is sorted by parameter name; `version` is the SSM version as a decimal
 string; `value_sha256` is the hash of the value the run read. `schema.content_sha256`
 is derived from those inputs (parameter names and versions), so a reader can
 recompute it instead of trusting a cross-repository pin.
+
+The gate is evidence for one deployment only. Its window must be exactly 600
+seconds (`ended_at - started_at`), its probe budget is a 15-second interval with
+30–40 probes and a request floor of 30, and its six fixed ordered signals are
+`alb_5xx_rate`, `alb_p95_latency`, `ecs_running_not_desired`,
+`sqs_oldest_message_age`, `sqs_dlq_depth` and `outbox_oldest_age`. Every signal
+must be `not-breaching` and carry its exact value, threshold and comparison, the
+deployed alarm names and observed states, and its exact read identity and minimum
+data points. `gate.service_sha` and `gate.image_digest` must equal
+`observed.service_sha` and `observed.image_digest`, so a passed gate from another
+run cannot be reused. The Infra v3 record never carries a gate.
 
 A **deployment identity** in `compatibility.json` is one of two strict shapes. The
 deferred shape records that the producer is named but no record has been pinned
@@ -115,12 +169,18 @@ every run/attempt/artifact id is a positive safe integer.
 
 The two records are deliberately not one record:
 
-- Every v3 record has a top-level `producer {repository, sha, workflow_path,
+- Every record has a top-level `producer {repository, sha, workflow_path,
   workflow_ref, run_id, run_attempt}` and lists only the stacks that producer
   deployed. The Infra record covers `AnyWearFoundationStack`,
   `AnyWearPlatformStack-beta` and `AnyWearBillingStack-beta`; the Service record
   covers only `AnyWearWorkloadStack-beta`. A record that claims another
   repository's stack is refused.
+- The record versions differ deliberately: the Infra record is schema version 3
+  and never carries a gate; the Service record is schema version 4 and its
+  top-level `gate` is part of the deployment it names. A Service record without a
+  passed gate, or a gate bound to another observed Service commit or image digest,
+  is refused. Pre-gate Service v3 records are historical only and were never
+  produced.
 - The two `observed` tuples are also disjoint. The Infra record observes the
   Platform tuple (the two Lambdas, the queue configuration hash, the Client commit
   and the Client endpoint). The Service record observes the Workload tuple (the
@@ -167,6 +227,10 @@ routine in [compatibility-pin.md](compatibility-pin.md).
 The committed `deployment` identity is recorded from the Service release-chain run
 `39098055973` attempt `1`, artifact `service-deployment-39098055973-1` (artifact
 id `12124879790`) and the SHA-256 of the exact `service-deployment.json` bytes.
+That record predates the #162 v4 gate: the release chain that wrote it used the
+v3 producer. The vendored v4 contract refuses a v3 Service record, so the pin must
+be re-recorded from the first gated v4 deploy before qualification can pass; the
+offline routine only moves a recorded pin from real downloaded v4 record bytes.
 The committed `platform.record` is recorded from the reviewed Infra observation
 run `39104244598` attempt `1`, artifact `infra-deployment-39104244598-1` (artifact
 id `12128200024`) and the SHA-256 of the exact `deployment-record.json` bytes
@@ -187,19 +251,21 @@ bound, and derives the schema hash from it, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer
 matters. The conversion has landed and one authorized Workload deploy completed
 from it; the platform record is now pinned, so both producers' records are
-recorded and the deferred evidence gap is closed.
+recorded and the deferred evidence gap is closed. That Workload record predates
+the #162 v4 gate, so a gated v4 re-pin remains before qualification can pass.
 
 ## Migration
 
 `scripts/migrate-compatibility.mjs` owns the offline transition:
 
 - **v2 → v3 is strict.** Both a valid v2 pin (read as the previous pin) and both
-  v3 records are required. The migration copies `client`, `service`, `infra` and
-  `service_artifacts` from the v2 pin, checks the records' `observed` Client and
-  Service commits against those pins, and writes the platform/workload producer
-  identities and deployment identities from the records. A record from the wrong
-  producer, a record covering another producer's stack, or a record whose
-  observed application tuple differs from the v2 pin is refused.
+  producer records (Infra v3 and Service v4) are required. The migration copies
+  `client`, `service`, `infra` and `service_artifacts` from the v2 pin, checks the
+  records' `observed` Client and Service commits against those pins, and writes
+  the platform/workload producer identities and deployment identities from the
+  records. A record from the wrong producer, a record covering another producer's
+  stack, a Service record without its passed bake gate, or a record whose observed
+  application tuple differs from the v2 pin is refused.
 - **v3 → v3 fills or refreshes the deferred identity.** A committed deferred pin
   is upgraded member by member from the supplied records; a recorded pin moves
   forward only through the offline validator's run/attempt ordering.
@@ -216,7 +282,10 @@ For each record, qualification re-downloads the exact artifact bytes and checks:
    `workflow_dispatch` at the pinned `producer_sha` and the pinned run/attempt;
 2. the artifact is the pinned, unexpired artifact of that run/attempt;
 3. the downloaded record's byte hash equals `record_sha256`;
-4. the vendored v3 contract validates the record shape and derives the stage
+4. the vendored contract validates the record shape — the seven-member v3 core
+   for both producers, and for the v4 Service record the passed 600-second bake
+   gate with its exact probe budget, six ordered signals, thresholds,
+   comparisons, alarm names and read identities — and derives the stage
    contract schema hash from the recorded inputs;
 5. the record's `producer` equals the pinned producer (repository, commit,
    workflow, run and attempt);
@@ -224,6 +293,8 @@ For each record, qualification re-downloads the exact artifact bytes and checks:
    producer repository and the record producer's commit on every row;
 7. its `observed` identity equals the compatibility pins: the Infra record's
    Client commit, and the Service record's Service commit and OCI image digest;
+   the Service gate's `service_sha` and `image_digest` must match that same
+   observed tuple;
 8. the Service `service_artifacts` release/asset identities and manifest bytes
    match the pinned four-field identity, and the manifest image source/digest
    match the Service record's observed tuple.

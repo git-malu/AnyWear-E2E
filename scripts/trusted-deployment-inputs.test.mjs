@@ -276,6 +276,47 @@ test('deployment binding names the producer and the differing field', () => {
   assert.throws(() => assertDeploymentBinding(f.platformRecord, deferred), /Deployment evidence deferred/);
 });
 
+test('the Service record fixture is a v4 record with one passed beta bake gate', () => {
+  const f = qualificationFixture();
+  assert.equal(f.workloadRecord.schema_version, 4);
+  assert.equal(f.workloadRecord.gate.name, 'beta-anywear-deployment-bake');
+  assert.equal(f.workloadRecord.gate.result, 'passed');
+  assert.equal(f.workloadRecord.gate.duration_seconds, 600);
+  assert.deepEqual(f.workloadRecord.gate.signals.map((signal) => signal.name), [
+    'alb_5xx_rate', 'alb_p95_latency', 'ecs_running_not_desired',
+    'sqs_oldest_message_age', 'sqs_dlq_depth', 'outbox_oldest_age',
+  ]);
+  assert.ok(f.workloadRecord.gate.signals.every((signal) => signal.state === 'not-breaching'));
+  assert.doesNotThrow(() => assertDeploymentBinding(f.workloadRecord, f.compatibility));
+});
+
+test('a pre-gate v3 Service record is a historical shape and is refused as a live input', () => {
+  const f = qualificationFixture();
+  const sevenMember = structuredClone(f.workloadRecord);
+  sevenMember.schema_version = 3;
+  delete sevenMember.gate;
+  assert.throws(() => assertDeploymentBinding(sevenMember, f.compatibility), /Invalid deployment record fields/);
+  // Smuggling a gate onto a version-3 envelope still does not make it a v4 record.
+  const wrongVersion = structuredClone(f.workloadRecord);
+  wrongVersion.schema_version = 3;
+  assert.throws(() => assertDeploymentBinding(wrongVersion, f.compatibility), /Unknown anywear_service_deployment schema/);
+});
+
+test('a gate that disagrees with the observed Service or image is refused', () => {
+  const f = qualificationFixture();
+  const wrongService = structuredClone(f.workloadRecord);
+  wrongService.gate.service_sha = 'f'.repeat(40);
+  assert.throws(() => assertDeploymentBinding(wrongService, f.compatibility),
+    /Deployment gate Service differs from the observed Service/);
+  const wrongImage = structuredClone(f.workloadRecord);
+  wrongImage.gate.image_digest = `sha256:${'f'.repeat(64)}`;
+  assert.throws(() => assertDeploymentBinding(wrongImage, f.compatibility),
+    /Deployment gate image differs from the observed image/);
+  const failed = structuredClone(f.workloadRecord);
+  failed.gate.result = 'failed';
+  assert.throws(() => assertDeploymentBinding(failed, f.compatibility), /Deployment gate did not pass/);
+});
+
 test('trusted run/artifact bindings require the exact producer workflow attempt and lifetime', () => {
   const f = qualificationFixture();
   const platformSha = f.compatibility.platform.producer_sha;

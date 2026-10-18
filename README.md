@@ -107,13 +107,14 @@ deployed reads; it belongs with its `service-cleanup-operation.test.mjs` and
 `worker-cleanup.test.mjs` neighbours, and its
 production module is consumed by `scripts/account-recovery-inputs.mjs` and
 `scripts/cleanup-worker-accounts.mjs`. The infra contracts protect pinned source,
-the two v3 producer record identities, deployment identity and execution
+the two producer record identities, deployment identity and execution
 validation; their offline assertions remain required by `check` without
 claiming actual publication or qualification.
 
 The automatic `Check` entry's `tool-regressions` job runs the retained tool tests, their
 implementation and fixture dependencies, shared evidence/source contracts, the
-vendored v3 deployment contract with its provenance assertion, and
+vendored deployment contract (the v3 core plus the v4 Service bake gate) with its
+provenance assertion, and
 compatibility/lockfile inputs. `quality.yml` carried no path
 filter, so that job now runs on every check rather than only on its former path set; the
 cost is recorded in the PR body for #163. Both jobs have only `contents: read` and no
@@ -249,8 +250,8 @@ to that stable `https://<distribution>.cloudfront.net` endpoint before qualifica
 ## CI Model
 
 `compatibility.json` is the CI source of truth for the Client and Service
-revisions under test and for the two deployment producers that wrote the v3
-records. It accepts only full commit SHAs; branch and tag names are
+revisions under test and for the two deployment producers that wrote the
+deployment records. It accepts only full commit SHAs; branch and tag names are
 rejected. When invoked, the `smoke` operation of the `qualify` entry checks out those exact
 private repositories, including their recursive API submodules, and records every tested
 revision as an artifact.
@@ -344,14 +345,16 @@ deployment succeeded, and the platform record is now pinned; neither producer's
 record is deferred.
 
 `scripts/migrate-compatibility.mjs` owns the offline transition. v2 → v3 is
-strict: a valid v2 previous pin plus both v3 records, with each record's producer,
-stack set and observed application tuple checked before the candidate is written.
-v1 → v2 is historical only and is never accepted as a live migration input by the
-CLI. `scripts/validate-compatibility-pin.mjs` re-reads both exact record byte
-streams and refuses a deferred or non-forward pin. The vendored contract is an
-exact byte copy of `AnyWear-Infra` at the pinned commit; its source SHA and file
-hashes are in [vendor provenance](scripts/vendor/README.md) and enforced by
-`scripts/vendored-contract.mjs`.
+strict: a valid v2 previous pin plus both producer records (Infra v3 and Service
+v4 with its passed bake gate), with each record's producer, stack set and observed
+application tuple checked before the candidate is written. v1 → v2 is historical
+only and is never accepted as a live migration input by the CLI.
+`scripts/validate-compatibility-pin.mjs` re-reads both exact record byte streams
+and refuses a deferred or non-forward pin. The vendored contract is the v4 Service
+record and bake-gate contract from `AnyWear-Infra` at the pinned commit, with one
+declared import rewrite in place of the package specifier; its source SHA, file
+hashes and that rewrite are in [vendor provenance](scripts/vendor/README.md) and
+enforced by `scripts/vendored-contract.mjs`.
 
 Private retrieval uses separate GitHub App readers: Infra-only Contents/Actions read
 through `GH_TOKEN`, and Service-only Contents/Actions read through

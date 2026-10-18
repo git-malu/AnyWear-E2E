@@ -1,11 +1,30 @@
 {
   "source_repository": "git-malu/AnyWear-Infra",
-  "source_sha": "61a3f61ded06699cd1e10039cd2f3c53bf3a7f7d",
-  "source_note": "Final Infra C contract source. Every file below is an exact byte copy from that commit; the loader assertion hashes the files it imports and refuses a mismatch. The approved stage-contract parameter-list extension changes the recorded input names (34 stage-base parameters plus the four reused values at resident active roles-added), not this v3 record shape. The Infra observer is not vendored.",
+  "source_sha": "367292167ef6c4a4e3425a6f5c4ba268ef39bfd5",
+  "source_note": "v4 Service deployment-record and bake-gate contract source. stage-contracts.mjs, json-contract.mjs and operation-stacks.mjs are exact byte copies from that commit. deployment-contract.mjs is the raw producer file with exactly one declared import rewrite, recorded in import_rewrites: the bare package specifier is replaced with the vendored package entry because this repository consumes the dependency-free package source instead of installing a tarball. The loader reverses the declared rewrite, asserts the raw producer hash from producer_files and refuses any other difference.",
   "files": {
-    "deployment-contract.mjs": "e43b0f0213fbbf391849d6f816a6bf7f44edd8318e07cba2d31fcb6a9a7dab80",
+    "deployment-contract.mjs": "0a5dce23d6cd6947595c49cce282477d34c49110a186f01feb9b16dc22c3990a",
     "json-contract.mjs": "c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047",
-    "operation-stacks.mjs": "6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023"
+    "operation-stacks.mjs": "6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023",
+    "stage-contracts.mjs": "1ef2596c258a9b65349023dd2492909a478a09ca3e7cdc1f7968e2fe82e96b5b"
+  },
+  "producer_files": {
+    "deployment-contract.mjs": "972c1fbe8896f53c3046c5c3f67543c87cc550bb973a0a87f47b722a413fa06a"
+  },
+  "import_rewrites": {
+    "deployment-contract.mjs": [
+      {
+        "from": "from '@git-malu/stage-contracts'",
+        "to": "from './stage-contracts.mjs'"
+      }
+    ]
+  },
+  "package": {
+    "name": "@git-malu/stage-contracts",
+    "version": "0.2.0",
+    "source": "packages/stage-contracts",
+    "sha256": "6cbe78e0e310eff050b2eb574054ab753e7b0d48d5ca44bd2085e6b23b88938b",
+    "note": "Packed 0.2.0 tarball pin for consumers that install @git-malu/stage-contracts. This repository vendors the package entry as stage-contracts.mjs and adds no dependency or tarball; the tarball hash records the packed artifact the vendored entry comes from."
   },
   "retired": {
     "artifact-consumer.mjs": "the v2 selection consumer is removed with the selection contract",
