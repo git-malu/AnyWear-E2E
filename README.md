@@ -268,8 +268,9 @@ slice in one run. E2E follows that split: the deployed tuple is qualified by two
 per-producer deployment records, not by one Infra record covering every stack and
 not by a committed cross-repository `selection`.
 
-The full v3 shape, the two record identities, the deferred state and the checks
-each record passes are in [docs/compatibility-v3.md](docs/compatibility-v3.md).
+The full v3 shape, the two record identities, the deferred shape (contract
+history) and the checks each record passes are in
+[docs/compatibility-v3.md](docs/compatibility-v3.md).
 The committed v3 pin names two producers:
 
 ```json
@@ -299,28 +300,49 @@ The committed v3 pin names two producers:
 
 A deployment identity is either `status: deferred` — the producer and workflow are
 named, no run is claimed — or `status: recorded` with `run_id`, `run_attempt`,
-`artifact_id` and the exact record byte hash. The committed pin is currently
-deferred for both producers because C removes the Infra Workload deploy path
-before the first Service release-chain deployment exists. Every live operation
-fails closed with `deployment evidence deferred`; no historical Infra `runtime.yml`
-run and no Service publication run is relabelled as a deployment. The first
-authorized deployment and platform-observe rounds supply the two records, and
-[`docs/compatibility-pin.md`](docs/compatibility-pin.md) moves the pin to the
-recorded shape.
+`artifact_id` and the exact record byte hash. The deferred shape survives only as
+contract history; the committed pin records both producer deployment identities:
 
-The Platform → Workload deploy ordering is not claimed safe yet, but the
-producer-side extension is **approved and in progress**. C's post-C Platform
-deploy removes every `PublishOutput*` output, and the release-slice deploy's last
-eleven weak reads (nine cleanup values and two isolated-subnet values) are being
-converted into stage-contract parameters. The Service record's `inputs[]` grows
-to whatever the deployed phase reads — expected 38 for resident active
-`roles-added` (34 stage-base parameters + 4 reused values; the stopped-only
-`isolated_subnet_ids` is not read at that phase). E2E hardcodes neither the
-count nor the names: it accepts the producer's recorded, sorted and unique list
-and derives the schema hash from it. Once both stacks read pure SSM parameters,
-deploy order no longer matters. Until the deferred Foundation/Platform round
-supplies those parameters and the first records, there is no live qualification
-and no Workload deploy.
+- `platform.producer_sha` is `5420469f`, the commit whose reviewed Infra
+  `runtime.yml` observation run wrote the platform record, and that run's
+  `head_sha`. `infra.sha` stays `da67841f`, the reviewed observation source the
+  suite checks out; it is a different pin and the two may differ.
+- `platform.record` records run `39104244598` attempt `1`, artifact
+  `infra-deployment-39104244598-1` (artifact id `12128200024`), and the SHA-256 of
+  the exact `deployment-record.json` bytes (`0c63e881…`).
+- `workload.producer_sha` is `5af797f9`, the Service release-chain commit the
+  `service-artifacts.yml` deploy run executed at `main`.
+- `deployment` records run `39098055973` attempt `1`, artifact
+  `service-deployment-39098055973-1` (artifact id `12124879790`), and the
+  SHA-256 of the exact `service-deployment.json` bytes (`b7b52eef…`).
+- `service.sha` is `ef21aaa6`, the deployed Service source named by the record's
+  `observed.service_sha`. That is deliberately distinct from
+  `workload.producer_sha`, the release-chain commit that ran the deploy: the
+  record observed the sealed release's source, not the run's head.
+- `service_artifacts` is sealed release `415718734`, whose manifest image source
+  and digest are exactly the record's observed Service commit and image.
+
+No historical Infra `runtime.yml` run and no Service publication run is
+relabelled as a deployment.
+
+`client.sha` does not move: the deployed Client still serves `7b92ace1` through
+its `build-metadata.json`, and no Client publish ran after the previous pin.
+
+[`docs/compatibility-pin.md`](docs/compatibility-pin.md) is the routine that moves
+the pin; a move carries both records, never one producer at a time.
+
+The Platform → Workload deploy ordering is not claimed safe in general, but the
+producer-side extension has landed. C's post-C Platform deploy removes every
+`PublishOutput*` output, and the release-slice deploy's last eleven weak reads
+(nine cleanup values and two isolated-subnet values) became stage-contract
+parameters. The deployed Service record's `inputs[]` carries 38 entries for
+resident active `roles-added` (34 stage-base parameters + 4 reused values; the
+stopped-only `isolated_subnet_ids` is not read at that phase). E2E hardcodes
+neither the count nor the names: it accepts the producer's recorded, sorted and
+unique list and derives the schema hash from it. Once both stacks read pure SSM
+parameters, deploy order no longer matters. One authorized Platform → Workload
+deployment succeeded, and the platform record is now pinned; neither producer's
+record is deferred.
 
 `scripts/migrate-compatibility.mjs` owns the offline transition. v2 → v3 is
 strict: a valid v2 previous pin plus both producer records (Infra v3 and Service

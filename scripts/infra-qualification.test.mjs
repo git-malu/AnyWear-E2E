@@ -296,7 +296,7 @@ test('the stage-contract schema hash is content identity derived from the inputs
   assert.notEqual(stageContractSchemaHash(versionChanged), stageContractSchemaHash(inputs));
 });
 
-test('the committed pin is deferred and every live path refuses it by name', () => {
+test('a deferred record identity is refused by name on every live path', () => {
   const f = qualificationFixture({ deferred: true });
   assert.throws(() => assertDeploymentBinding(f.platformRecord, f.compatibility), /Deployment evidence deferred for git-malu\/AnyWear-Infra/);
   assert.throws(() => assertDeploymentBinding(f.workloadRecord, f.compatibility), /Deployment evidence deferred for git-malu\/AnyWear-Service/);

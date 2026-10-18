@@ -186,9 +186,12 @@ The two records are deliberately not one record:
   and the Client endpoint). The Service record observes the Workload tuple (the
   Service commit, the image digest, the two ECS service identities and the API
   endpoint). Neither record is a substitute for the other.
-- The Infra producer is checked out at `infra.sha` as the reviewed observation
-  source. `platform.producer_sha` may move independently because a platform stack
-  can be deployed from an earlier reviewed commit than the observer.
+- The Infra producer record is written by the run whose `producer.sha` is
+  `platform.producer_sha`; that is the platform record producer, and the pin binds
+  the record, its run and its artifact to it. `infra.sha` is a different pin: the
+  reviewed Infra revision E2E checks out as the observation source. The two may
+  differ because a platform stack can be deployed from an earlier reviewed commit
+  than the observation helper, so `compatibility.json` keeps both.
 - The Service producer is the release chain that owns the Workload stack. The
   same run builds the image, verifies the sealed release, deploys the slice and
   writes the record, so no committed `selection` and no cross-repository native
@@ -200,44 +203,56 @@ before it deploys, so E2E no longer downloads or parses that release with the
 retired Service parser. The pin still binds the release identity to the deployed
 `service.sha` through the Service record's `observed.service_sha`.
 
-## Deferred records
+## Deferred records (contract history)
 
-The committed pin is deferred for both producers until the first authorized
-deployment/observe rounds exist, and the Service side waits for a real v4 record:
-the release chain writes it only after the 600-second six-signal bake passes, so
-the first authorized gated deploy supplies the record identity. A compatibility
-pin therefore must be able to name the producer without inventing a run. The
-deferred shape does exactly that:
+The deferred identity shape stays part of the v3 contract as history. It exists
+because C removed the Infra Workload deploy path before the first Service
+release-chain deployment existed, so a pin could name a producer without
+inventing a run:
 
 - `validateCompatibility` accepts a deferred record and rejects any other member
-  of the identity shape.
-- Every live path fails closed with `deployment evidence deferred` before it
-  downloads, observes or qualifies anything. It never falls back to a historical
-  Infra `runtime.yml` tuple and never treats a Service publication run as a
-  deployment.
+  of the identity shape. Each identity is validated on its own, so one producer's
+  record could be pinned while the other stayed deferred.
+- Every live path fails closed with `deployment evidence deferred` for the
+  deferred identity before it downloads, observes or qualifies anything. It never
+  falls back to a historical Infra `runtime.yml` tuple and never treats a Service
+  publication run as a deployment.
 - `validate-compatibility-pin` refuses to move a pin while either record is
   deferred, so a deferred pin cannot be relabelled as a recorded one offline.
 
 A deferred pin is coherent and reviewable; it is not qualification authority.
-The first authorized deployment/observe round supplies the two records and the
-pin moves to the recorded shape through
-[compatibility-pin.md](compatibility-pin.md). The deferred `deployment.reason`
-names the missing v4 Service record explicitly; the pin can only ever be filled
-from real downloaded record bytes.
+The committed pin no longer uses the shape: both records are recorded through the
+routine in [compatibility-pin.md](compatibility-pin.md).
+
+The committed `deployment` identity is recorded from the Service release-chain run
+`39098055973` attempt `1`, artifact `service-deployment-39098055973-1` (artifact
+id `12124879790`) and the SHA-256 of the exact `service-deployment.json` bytes.
+That record predates the #162 v4 gate: the release chain that wrote it used the
+v3 producer. The vendored v4 contract refuses a v3 Service record, so the pin must
+be re-recorded from the first gated v4 deploy before qualification can pass; the
+offline routine only moves a recorded pin from real downloaded v4 record bytes.
+The committed `platform.record` is recorded from the reviewed Infra observation
+run `39104244598` attempt `1`, artifact `infra-deployment-39104244598-1` (artifact
+id `12128200024`) and the SHA-256 of the exact `deployment-record.json` bytes
+(`0c63e881…`). `platform.producer_sha` is `5420469f…`, the run's `head_sha` and the
+record's `producer.sha`. `infra.sha` stays `da67841f…`: it names the reviewed
+observation source E2E executes, which is not the platform record producer.
 
 One cross-repository dependency is recorded here and has now been approved for the
 producer side. C's post-C Platform deploy removes every `PublishOutput*` output,
 and the release-slice deploy's last eleven weak reads (nine cleanup values and
-two isolated-subnet values) are being converted into stage-contract parameters.
-The Service record's `inputs[]` therefore grows to whatever the deployed phase
-actually reads — expected 38 for resident active `roles-added` (34 stage-base
+two isolated-subnet values) became stage-contract parameters. The Service
+record's `inputs[]` therefore grows to whatever the deployed phase actually reads
+— 38 for resident active `roles-added` in the deployed record (34 stage-base
 parameters + 4 reused values; the stopped-only `isolated_subnet_ids` is not read
 at that phase). E2E does not hardcode a count or a name list:
 it accepts the producer's recorded, sorted and unique list within the contract's
 bound, and derives the schema hash from it, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer
-matters. Until the deferred Foundation/Platform round supplies the parameters and
-the first gated records, there is no live qualification and no Workload deploy.
+matters. The conversion has landed and one authorized Workload deploy completed
+from it; the platform record is now pinned, so both producers' records are
+recorded and the deferred evidence gap is closed. That Workload record predates
+the #162 v4 gate, so a gated v4 re-pin remains before qualification can pass.
 
 ## Migration
 

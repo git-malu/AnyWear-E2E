@@ -146,6 +146,41 @@ test('retrieves both producer records and the immutable Service release before a
   });
 });
 
+test('the platform pin binds run.head_sha, workflow path, run/attempt, artifact id and exact record bytes', async () => {
+  const harness = inputHarness();
+  const { platform } = harness.compatibility;
+  // The mock run and artifact pages the consumer must reach are the ones the pin
+  // names, and the record's producer is the run's head.
+  assert.equal(harness.platformRecord.producer.sha, platform.producer_sha);
+  assert.equal(harness.platformRecord.producer.run_id, platform.record.run_id);
+  assert.equal(harness.platformRecord.producer.run_attempt, platform.record.run_attempt);
+  assert.equal(harness.platformRecord.producer.workflow_path, platform.record.workflow_path);
+  await withDirectory(async (directory) => {
+    const result = await loadTrustedInputs(harness.compatibility, directory, harness.io);
+    assert.equal(result.platform.producer.sha, platform.producer_sha);
+    assert.ok(harness.requests.some(({ path }) => path === `repos/git-malu/AnyWear-Infra/actions/runs/${platform.record.run_id}/attempts/${platform.record.run_attempt}`),
+      'the platform run must be read at the pinned run and attempt');
+    assert.ok(harness.requests.some(({ path }) => path === `repos/git-malu/AnyWear-Infra/actions/artifacts/${platform.record.artifact_id}`),
+      'the platform artifact must be read at the pinned artifact id');
+    assert.equal(byteHash(await readFile(join(directory, 'platform-deployment-record.json'))), platform.record.record_sha256);
+  });
+  // A stale pin is one whose record identity no longer matches the reviewed run,
+  // workflow, attempt, artifact or exact bytes. Each must fail offline, before the
+  // suite downloads, observes or qualifies anything.
+  for (const [member, mutate, expected] of [
+    ['platform.producer_sha (run head)', (pin) => { pin.platform.producer_sha = 'f'.repeat(40); }, /Trusted workflow run/],
+    ['platform.record.workflow_path', (pin) => { pin.platform.record.workflow_path = '.github/workflows/mutate.yml'; }, /Trusted workflow run/],
+    ['platform.record.run_attempt', (pin) => { pin.platform.record.run_attempt = 1; }, /Unexpected fixture API request/],
+    ['platform.record.artifact_id', (pin) => { pin.platform.record.artifact_id += 1; }, /Unexpected fixture API request/],
+    ['platform.record.record_sha256', (pin) => { pin.platform.record.record_sha256 = 'f'.repeat(64); }, /exact-byte checksum/],
+  ]) {
+    const stale = inputHarness();
+    mutate(stale.compatibility);
+    await withDirectory((directory) => assert.rejects(loadTrustedInputs(stale.compatibility, directory, stale.io), expected,
+      `a stale ${member} pin must fail`));
+  }
+});
+
 test('each producer read uses only its own reader token', async () => {
   const h = inputHarness();
   await withDirectory((directory) => loadTrustedInputs(h.compatibility, directory, h.io));
@@ -291,7 +326,7 @@ test('trusted run/artifact bindings require the exact producer workflow attempt 
   const expected = { repository: 'git-malu/AnyWear-Infra', workflow_path: '.github/workflows/runtime.yml',
     run_id: 30, run_attempt: 2, sha: platformSha };
   assert.doesNotThrow(() => assertTrustedRun(run, expected));
-  for (const patch of [{ conclusion: 'failure' }, { status: 'in_progress' }, { run_attempt: 1 }, { head_branch: 'topic' }, { path: '.github/workflows/other.yml' }, { repository: { full_name: 'other/Infra' } }]) {
+  for (const patch of [{ conclusion: 'failure' }, { status: 'in_progress' }, { run_attempt: 1 }, { head_sha: 'a'.repeat(40) }, { head_branch: 'topic' }, { path: '.github/workflows/other.yml' }, { repository: { full_name: 'other/Infra' } }]) {
     assert.throws(() => assertTrustedRun({ ...run, ...patch }, expected));
   }
   const now = new Date('2026-10-08T00:20:00Z').getTime();

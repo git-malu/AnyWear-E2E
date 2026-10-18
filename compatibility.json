@@ -6,36 +6,42 @@
   },
   "service": {
     "repository": "git-malu/AnyWear-Service",
-    "sha": "56387c30623a85249b0b714ff2c852a865f8ba3d"
+    "sha": "ef21aaa6e918e99d4099c776a48319ff36d623b6"
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "c7691379a37f242a57e65c3c37441fa4862faf9e"
+    "sha": "da67841fad96ad360618929c3b579fb0a8bc42aa"
   },
   "platform": {
     "producer": "git-malu/AnyWear-Infra",
-    "producer_sha": "c7691379a37f242a57e65c3c37441fa4862faf9e",
+    "producer_sha": "5420469f8a4a717c62397ed0f4f692219a18dc57",
     "record": {
       "producer": "git-malu/AnyWear-Infra",
       "workflow_path": ".github/workflows/runtime.yml",
-      "status": "deferred",
-      "reason": "no Infra v3 platform record exists yet; pin the first authorized platform observe"
+      "status": "recorded",
+      "run_id": 39104244598,
+      "run_attempt": 1,
+      "artifact_id": 12128200024,
+      "record_sha256": "0c63e881dbda263f87ca8cde822d4256155e36cdd40cdf9594ff398701130278"
     }
   },
   "workload": {
     "producer": "git-malu/AnyWear-Service",
-    "producer_sha": "56387c30623a85249b0b714ff2c852a865f8ba3d"
+    "producer_sha": "5af797f99d97fc9ebb0a95b521979747aa3192e3"
   },
   "deployment": {
     "producer": "git-malu/AnyWear-Service",
     "workflow_path": ".github/workflows/service-artifacts.yml",
-    "status": "deferred",
-    "reason": "no Service release-chain v4 deployment record exists yet; the first authorized gated deploy supplies the passed 600 s six-signal bake gate and the record identity (run_id, run_attempt, artifact_id, record_sha256)"
+    "status": "recorded",
+    "run_id": 39098055973,
+    "run_attempt": 1,
+    "artifact_id": 12124879790,
+    "record_sha256": "b7b52eeffdeba3ef541be0d26fa868789f8f5d376eeb5c7853b41dcccd545316"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
-    "release_id": 414921320,
-    "manifest_asset_id": 647218560,
-    "manifest_sha256": "ce09ddcb387fcec612cb4707ac9ee069a7025c094f0ab5c0231d914cb20488ce"
+    "release_id": 415718734,
+    "manifest_asset_id": 650123026,
+    "manifest_sha256": "ef7db62820cb39f92aa04ad68e4e16a997e4d0b8b273f84ae9449b22beaca80a"
   }
 }
