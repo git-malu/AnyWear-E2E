@@ -212,6 +212,10 @@ jobs:
           token: ${{ steps.evidence-token.outputs.token }}
           persist-credentials: false
 
+      - name: Install the reviewed Infra observation dependencies
+        working-directory: .infra-source
+        run: npm ci
+
       - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
           GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
@@ -314,6 +318,10 @@ jobs:
           path: .infra-source
           token: ${{ steps.evidence-token.outputs.token }}
           persist-credentials: false
+
+      - name: Install the reviewed Infra observation dependencies
+        working-directory: .infra-source
+        run: npm ci
 
       - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
@@ -831,6 +839,10 @@ jobs:
           token: ${{ steps.infra-evidence-token.outputs.token }}
           persist-credentials: false
 
+      - name: Install the reviewed Infra observation dependencies
+        working-directory: .infra-source
+        run: npm ci
+
       - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
           GH_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
@@ -1043,6 +1055,10 @@ jobs:
           path: .infra-source
           token: ${{ steps.evidence-token.outputs.token }}
           persist-credentials: false
+
+      - name: Install the reviewed Infra observation dependencies
+        working-directory: .infra-source
+        run: npm ci
 
       - name: Verify trusted platform and workload deployment records and the immutable Service release
         env:
