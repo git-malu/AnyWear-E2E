@@ -267,8 +267,9 @@ slice in one run. E2E follows that split: the deployed tuple is qualified by two
 per-producer deployment records, not by one Infra record covering every stack and
 not by a committed cross-repository `selection`.
 
-The full v3 shape, the two record identities, the deferred state and the checks
-each record passes are in [docs/compatibility-v3.md](docs/compatibility-v3.md).
+The full v3 shape, the two record identities, the deferred shape (contract
+history) and the checks each record passes are in
+[docs/compatibility-v3.md](docs/compatibility-v3.md).
 The committed v3 pin names two producers:
 
 ```json
@@ -298,11 +299,16 @@ The committed v3 pin names two producers:
 
 A deployment identity is either `status: deferred` — the producer and workflow are
 named, no run is claimed — or `status: recorded` with `run_id`, `run_attempt`,
-`artifact_id` and the exact record byte hash. The committed pin records the
-Workload deployment identity and keeps the Platform record deferred, because the
-Beta Platform stack was applied by change set rather than through an Infra
-workflow run:
+`artifact_id` and the exact record byte hash. The deferred shape survives only as
+contract history; the committed pin records both producer deployment identities:
 
+- `platform.producer_sha` is `5420469f`, the commit whose reviewed Infra
+  `runtime.yml` observation run wrote the platform record, and that run's
+  `head_sha`. `infra.sha` stays `da67841f`, the reviewed observation source the
+  suite checks out; it is a different pin and the two may differ.
+- `platform.record` records run `39104244598` attempt `1`, artifact
+  `infra-deployment-39104244598-1` (artifact id `12128200024`), and the SHA-256 of
+  the exact `deployment-record.json` bytes (`0c63e881…`).
 - `workload.producer_sha` is `5af797f9`, the Service release-chain commit the
   `service-artifacts.yml` deploy run executed at `main`.
 - `deployment` records run `39098055973` attempt `1`, artifact
@@ -314,16 +320,15 @@ workflow run:
   record observed the sealed release's source, not the run's head.
 - `service_artifacts` is sealed release `415718734`, whose manifest image source
   and digest are exactly the record's observed Service commit and image.
-- `platform.record` stays deferred with its reason, so every live operation still
-  fails closed with `deployment evidence deferred` for the platform identity and
-  the pin is not qualification authority yet. No historical Infra `runtime.yml`
-  run and no Service publication run is relabelled as a deployment.
+
+No historical Infra `runtime.yml` run and no Service publication run is
+relabelled as a deployment.
 
 `client.sha` does not move: the deployed Client still serves `7b92ace1` through
 its `build-metadata.json`, and no Client publish ran after the previous pin.
 
-[`docs/compatibility-pin.md`](docs/compatibility-pin.md) moves the pin to the
-fully recorded shape once the platform record exists.
+[`docs/compatibility-pin.md`](docs/compatibility-pin.md) is the routine that moves
+the pin; a move carries both records, never one producer at a time.
 
 The Platform → Workload deploy ordering is not claimed safe in general, but the
 producer-side extension has landed. C's post-C Platform deploy removes every
@@ -335,8 +340,8 @@ stopped-only `isolated_subnet_ids` is not read at that phase). E2E hardcodes
 neither the count nor the names: it accepts the producer's recorded, sorted and
 unique list and derives the schema hash from it. Once both stacks read pure SSM
 parameters, deploy order no longer matters. One authorized Platform → Workload
-deployment succeeded, but live qualification stays closed by the deferred
-platform record, not by the parameter conversion.
+deployment succeeded, and the platform record is now pinned; neither producer's
+record is deferred.
 
 `scripts/migrate-compatibility.mjs` owns the offline transition. v2 → v3 is
 strict: a valid v2 previous pin plus both v3 records, with each record's producer,

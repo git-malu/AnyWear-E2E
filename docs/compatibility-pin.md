@@ -127,13 +127,18 @@ the two differ when the chain promotes an already-published release.
 deployed pin uses `5af797f9` for the producer and `ef21aaa6` for the deployed
 source.
 
-## Deferred records
+`infra.sha` and `platform.producer_sha` are not the same field either.
+`infra.sha` is the reviewed Infra revision the observation helper is checked out
+at; `platform.producer_sha` is the commit whose run wrote the platform record and
+is bound to that record's `producer.sha`. The deployed pin uses `da67841f` for the
+observation source and `5420469f` for the record producer.
 
-The committed v3 pin records the Workload deployment identity and keeps
-`platform.record` deferred. The Beta Platform stack was applied by change set,
-not through `mutate.yml`, so no reviewed Infra run has written a v3 platform
-record and the deferred shape names the producer and its reviewed workflow
-without claiming a run:
+## Deferred records (contract history)
+
+The deferred identity shape stays part of the v3 contract as history. It was
+introduced because the Beta Platform stack had been applied by change set rather
+than through a reviewed Infra workflow run, so the pin named the producer and its
+workflow without claiming a run:
 
 ```json
 "platform": {
@@ -148,20 +153,27 @@ without claiming a run:
 }
 ```
 
-`validateCompatibility` accepts that identity, and every live path still fails
-closed with `deployment evidence deferred` naming the platform record, so the pin
-is not qualification authority. The offline validator refuses to move a pin while
-either identity is deferred: because `platform.record` is deferred it refuses
-this pin even though the Workload identity is recorded. Producing the platform
-record is the remaining step; the first authorized platform observe at the
-deployed Platform revision fills it, and both identities then move together.
+`validateCompatibility` accepts that identity, and every live path fails closed
+with `deployment evidence deferred` naming the deferred record. The offline
+validator refuses to move a pin while either identity is deferred, so a deferred
+pin can never be relabelled as recorded offline. A deferred pin is coherent and
+reviewable, but it is not qualification authority.
 
-The recorded Workload identity is Service release-chain run `39098055973` attempt
-`1`, artifact `service-deployment-39098055973-1` (artifact id `12124879790`) and
-the SHA-256 of the exact `service-deployment.json` bytes (`b7b52eef…`). That
-value is the hash of the downloaded record bytes; the record's own
-`schema.content_sha256` (`83ef1e7e…`) is a different, derived value and is never
-the pin's `record_sha256`.
+The committed pin no longer uses the shape: both identities are recorded. The
+first authorized platform observe at the deployed Platform revision supplied the
+Platform record, so the pin now records both producers:
+
+- The Platform identity is reviewed Infra observation run `39104244598` attempt
+  `1`, artifact `infra-deployment-39104244598-1` (artifact id `12128200024`) and
+  the SHA-256 of the exact `deployment-record.json` bytes (`0c63e881…`).
+  `platform.producer_sha` is `5420469f…`, the run's `head_sha` and the record's
+  `producer.sha`. `infra.sha` stays `da67841f…`, the reviewed observation source.
+- The Workload identity is Service release-chain run `39098055973` attempt `1`,
+  artifact `service-deployment-39098055973-1` (artifact id `12124879790`) and the
+  SHA-256 of the exact `service-deployment.json` bytes (`b7b52eef…`). That value
+  is the hash of the downloaded record bytes; the record's own
+  `schema.content_sha256` (`83ef1e7e…`) is a different, derived value and is never
+  the pin's `record_sha256`.
 
 ## The two-record rule
 
@@ -173,11 +185,11 @@ workload record. One tuple, with no partial form.
 > A change that moves one of these without the others leaves the pin describing a
 > tuple that was never deployed. It will not pass, and it must not be committed.
 
-The committed pin is the interim state described under [deferred
-records](#deferred-records): it carries the workload record and leaves
-`platform.record` deferred, so live qualification stays closed until the platform
-record exists. It is coherent and reviewable, but it is not qualification
-authority, and the tuple members it names all moved in one commit.
+The committed pin carries both records: neither identity is deferred, so the
+tuple it names is fully recorded and live qualification can proceed against it.
+It is coherent and reviewable, and the tuple members it names all moved in one
+commit. The deferred shape it replaced remains described under [deferred
+records](#deferred-records-contract-history) as contract history.
 
 Three places bind it, by symbol:
 
