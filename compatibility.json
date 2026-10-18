@@ -33,10 +33,10 @@
     "producer": "git-malu/AnyWear-Service",
     "workflow_path": ".github/workflows/service-artifacts.yml",
     "status": "recorded",
-    "run_id": 39132942247,
+    "run_id": 39137577023,
     "run_attempt": 1,
-    "artifact_id": 12138844363,
-    "record_sha256": "f35283401ea32667031574c9d5e50258bf4aa4d8bdd8513a5d6964eab9aaedee"
+    "artifact_id": 12140890924,
+    "record_sha256": "9e673ea8cb67f1879827217278f2e1d004d6543fe26e496eb03f8b23490bb5a1"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",

@@ -170,16 +170,17 @@ last move followed the routine above in one commit:
   observation source. It covers `AnyWearFoundationStack`,
   `AnyWearPlatformStack-beta` and `AnyWearBillingStack-beta`; `client.sha` moves
   to the record's `observed.client_sha` (`68fc1d06…`).
-- The Workload identity is the first gated v4 Service deployment: release-chain
-  run `39132942247` attempt `1`, artifact `service-deployment-39132942247-1`
-  (artifact id `12138844363`) and the SHA-256 of the exact
-  `service-deployment.json` bytes (`f3528340…`). The record is `schema_version 4`
-  and carries the passed 600-second six-signal bake gate bound to
-  `observed.service_sha` / `observed.image_digest` (`731c7a97…` /
+- The Workload identity is the Service deployment that followed the controlled
+  fault drill: release-chain run `39137577023` attempt `1`, artifact
+  `service-deployment-39137577023-1` (artifact id `12140890924`) and the SHA-256
+  of the exact `service-deployment.json` bytes (`9e673ea8…`). The record is
+  `schema_version 4` and carries the passed 600-second six-signal bake gate bound
+  to `observed.service_sha` / `observed.image_digest` (`731c7a97…` /
   `sha256:05b77d57…`); its `producer.sha` is also the pin's
   `workload.producer_sha`. `service_artifacts` is the sealed release the image
   belongs to: release `416474212`, manifest asset `653584820`, manifest SHA-256
-  `7242dd49…`.
+  `7242dd49…`. The drill's own failing run (`39136327956`) produced no record by
+  design and cannot be pinned.
 
 The routine only moves a recorded pin from real downloaded record bytes; do not
 hand-edit the values.
