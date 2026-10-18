@@ -116,28 +116,52 @@ two per-producer identities; `deployment` is the workload record identity.
 | `service_artifacts` | the sealed release/asset identity the workload record's image belongs to | Service |
 
 The artifact ids are read by hand from each run page; the records do not carry
-them. The record hash is the hash of the exact downloaded bytes: the producers
-write single-line canonical JSON, so reformatting a file changes the hash.
+them. The record hash is the hash of the exact downloaded bytes, so reformatting
+or pretty-printing a file changes the hash.
+
+`service.sha` and `workload.producer_sha` are not the same field. The record's
+`producer.sha` is the release-chain commit the deploy run executed at; its
+`observed.service_sha` is the sealed release's source that the run deployed, so
+the two differ when the chain promotes an already-published release.
+`workload.producer_sha` takes the former and `service.sha` the latter. The
+deployed pin uses `5af797f9` for the producer and `ef21aaa6` for the deployed
+source.
 
 ## Deferred records
 
-The committed v3 pin is **deferred** for both producers until the first authorized
-deployment/observe rounds exist. The deferred shape names the producer and its
-reviewed workflow but claims no run:
+The committed v3 pin records the Workload deployment identity and keeps
+`platform.record` deferred. The Beta Platform stack was applied by change set,
+not through `mutate.yml`, so no reviewed Infra run has written a v3 platform
+record and the deferred shape names the producer and its reviewed workflow
+without claiming a run:
 
 ```json
-"deployment": {
-  "producer": "git-malu/AnyWear-Service",
-  "workflow_path": ".github/workflows/service-artifacts.yml",
-  "status": "deferred",
-  "reason": "no Service release-chain deployment record exists yet; pin the first authorized Service release-chain deploy"
+"platform": {
+  "producer": "git-malu/AnyWear-Infra",
+  "producer_sha": "<40 hex>",
+  "record": {
+    "producer": "git-malu/AnyWear-Infra",
+    "workflow_path": ".github/workflows/runtime.yml",
+    "status": "deferred",
+    "reason": "…why no platform record exists yet…"
+  }
 }
 ```
 
-A deferred pin is honest and reviewable, but it is not qualification authority:
-every live path fails closed with `deployment evidence deferred`, and the offline
-validator refuses to move a deferred pin. The first move fills both identities
-with the recorded shape.
+`validateCompatibility` accepts that identity, and every live path still fails
+closed with `deployment evidence deferred` naming the platform record, so the pin
+is not qualification authority. The offline validator refuses to move a pin while
+either identity is deferred: because `platform.record` is deferred it refuses
+this pin even though the Workload identity is recorded. Producing the platform
+record is the remaining step; the first authorized platform observe at the
+deployed Platform revision fills it, and both identities then move together.
+
+The recorded Workload identity is Service release-chain run `39098055973` attempt
+`1`, artifact `service-deployment-39098055973-1` (artifact id `12124879790`) and
+the SHA-256 of the exact `service-deployment.json` bytes (`b7b52eef…`). That
+value is the hash of the downloaded record bytes; the record's own
+`schema.content_sha256` (`83ef1e7e…`) is a different, derived value and is never
+the pin's `record_sha256`.
 
 ## The two-record rule
 
@@ -148,6 +172,12 @@ workload record. One tuple, with no partial form.
 
 > A change that moves one of these without the others leaves the pin describing a
 > tuple that was never deployed. It will not pass, and it must not be committed.
+
+The committed pin is the interim state described under [deferred
+records](#deferred-records): it carries the workload record and leaves
+`platform.record` deferred, so live qualification stays closed until the platform
+record exists. It is coherent and reviewable, but it is not qualification
+authority, and the tuple members it names all moved in one commit.
 
 Three places bind it, by symbol:
 
@@ -196,18 +226,18 @@ and writes the record after `cdk deploy` from `ssm get-parameters` and
 Both artifacts are retained for ninety days and the live binding refuses an
 expired one, so the pin must move while both records still exist.
 
-The Platform → Workload deploy ordering is **not claimed safe yet**, but the
-producer-side fix is approved. C's post-C Platform deploy removes every
+The Platform → Workload deploy ordering is **not claimed safe in general**, but
+the producer-side fix has landed. C's post-C Platform deploy removes every
 `PublishOutput*` output, and the release-slice deploy's last eleven weak reads
-(nine cleanup values and two isolated-subnet values) are being converted into
-stage-contract parameters. The Service record's `inputs[]` grows to whatever the
-deployed phase reads — expected 38 for resident active `roles-added` (34
-stage-base parameters + 4 reused values; the stopped-only `isolated_subnet_ids`
-is not read at that phase). This consumer accepts the recorded, sorted and
-unique list without a count or name assertion, so no schema or format change
-follows. Once both stacks read pure SSM parameters, deploy order no longer
-matters. Until the deferred Foundation/Platform round supplies those parameters
-and the first records, there is no live qualification and no Workload deploy.
+(nine cleanup values and two isolated-subnet values) became stage-contract
+parameters. The deployed Service record's `inputs[]` carries 38 entries for
+resident active `roles-added` (34 stage-base parameters + 4 reused values; the
+stopped-only `isolated_subnet_ids` is not read at that phase). This consumer
+accepts the recorded, sorted and unique list without a count or name assertion,
+so no schema or format change follows. Once both stacks read pure SSM
+parameters, deploy order no longer matters. One authorized Platform → Workload
+deployment succeeded, but live qualification stays closed by the deferred
+`platform.record`, which is the remaining evidence gap.
 
 ## The offline validator
 
