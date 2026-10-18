@@ -2,46 +2,50 @@
   "version": 3,
   "client": {
     "repository": "git-malu/AnyWear-Client",
+    "sha": "91cc46a3fc0e8185007d7166409b4098aaa8c9b3"
+  },
+  "minimum_supported_client": {
+    "version": 0,
     "sha": "68fc1d068ef1c5a98335003e19a251e1d990597c"
   },
   "service": {
     "repository": "git-malu/AnyWear-Service",
-    "sha": "731c7a97ad2dd2959559e0df9d3ee493509353ef"
+    "sha": "ff260cadb21b6f3282cab0f64f5e0d839d060afa"
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "e5dcabe82f01a5a0a06e9c179903612e0ceb5e4f"
+    "sha": "0e9034332681c86c75b508dbd9edf2eb857a8000"
   },
   "platform": {
     "producer": "git-malu/AnyWear-Infra",
-    "producer_sha": "e5dcabe82f01a5a0a06e9c179903612e0ceb5e4f",
+    "producer_sha": "0e9034332681c86c75b508dbd9edf2eb857a8000",
     "record": {
       "producer": "git-malu/AnyWear-Infra",
       "workflow_path": ".github/workflows/runtime.yml",
       "status": "recorded",
-      "run_id": 39135072915,
+      "run_id": 39149536582,
       "run_attempt": 1,
-      "artifact_id": 12139039476,
-      "record_sha256": "ba95ab21917aa10c917a79b545eb736fa9734c3015ba14f7918a406674d95ad5"
+      "artifact_id": 12144078595,
+      "record_sha256": "c94c40645dc66896457b414a2c6c7d9cab637cec2776368b0ae25b25cd5c2c9a"
     }
   },
   "workload": {
     "producer": "git-malu/AnyWear-Service",
-    "producer_sha": "731c7a97ad2dd2959559e0df9d3ee493509353ef"
+    "producer_sha": "ff260cadb21b6f3282cab0f64f5e0d839d060afa"
   },
   "deployment": {
     "producer": "git-malu/AnyWear-Service",
     "workflow_path": ".github/workflows/service-artifacts.yml",
     "status": "recorded",
-    "run_id": 39137577023,
+    "run_id": 39145092892,
     "run_attempt": 1,
-    "artifact_id": 12140890924,
-    "record_sha256": "9e673ea8cb67f1879827217278f2e1d004d6543fe26e496eb03f8b23490bb5a1"
+    "artifact_id": 12143108280,
+    "record_sha256": "d21faa03ba80aabcd9dcd426e461f5603949a455537c12c54901301ef52ecea8"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
-    "release_id": 416474212,
-    "manifest_asset_id": 653584820,
-    "manifest_sha256": "7242dd49848664f27f4925d4ff9538da6b148eba4b6d1e4e67ee4dca020a4f34"
+    "release_id": 416562965,
+    "manifest_asset_id": 653920284,
+    "manifest_sha256": "7b7ee7f2a7bb17a19745240a15f350da2f95ed68a1e1a18dde5051a111c47ee0"
   }
 }
