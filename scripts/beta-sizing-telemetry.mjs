@@ -2,8 +2,12 @@ import { hashBytes } from './beta-sizing-workload.mjs';
 
 const finite = value => Number.isFinite(value) && value >= 0;
 const one = items => items.length === 1 ? items[0] : undefined;
+// A sanitized code is one the run actually observed. Anything else - a missing
+// field, an empty string, a made-up label - stays null rather than becoming a
+// free-text failure code.
+const observedFailureCode = value => typeof value === 'string' && value.trim() ? value : null;
 
-export function correlateSizingTask(resourceId, events) {
+export function correlateSizingTask(resourceId, events, { failureCode } = {}) {
   const acceptance = one(events.filter(event => event.event === 'task_acceptance_precommit' && event.resourceId === resourceId));
   if (!acceptance?.taskId) return { gap: 'Unique accepted task/resource correlation missing' };
   const related = events.filter(event => event.taskId === acceptance.taskId);
@@ -12,6 +16,20 @@ export function correlateSizingTask(resourceId, events) {
   const send = one(related.filter(event => event.event === 'task_outbox_send_started'));
   const ack = one(related.filter(event => event.event === 'task_outbox_send_acknowledged'));
   const config = one(related.filter(event => event.event === 'provider_configuration'));
+  // A failed execution is observed evidence, not a missing-success gap. The code is
+  // the one the caller observed on the resource (the workload artifact records
+  // `taggingErrorCode`); this function never guesses it from a provider-call code.
+  // The counts are what the telemetry shows: a deterministic input failure must show
+  // one execution and zero provider calls, and a retry shows more than one.
+  if (related.some(event => event.event === 'task_processing_timing')
+    && related.filter(event => event.event === 'task_processing_timing').every(event => event.outcome === 'failed')) {
+    const timings = related.filter(event => event.event === 'task_processing_timing');
+    return { task_id: acceptance.taskId, resource_id: resourceId,
+      failure_code: observedFailureCode(failureCode),
+      attempts: related.filter(event => event.event === 'task_execution_started').length,
+      provider_waits: related.filter(event => event.event === 'provider_wait_finished').length,
+      started_at: started?.observedAt, finished_at: timings.at(-1)?.observedAt };
+  }
   if (!processing || !started || !send || !ack || !config
     || processing.outcome !== 'completed' || processing.executionToken !== 1 || started.executionToken !== 1
     || send.attemptCount !== 1 || ack.awsSdkAttempts !== 1 || send.outboxId !== ack.outboxId || !ack.awsRequestId
@@ -51,12 +69,20 @@ export function correlateSizingTask(resourceId, events) {
 export function correlateSizingWorkload(workload, events) {
   const gaps = [];
   const timings = [];
+  const failures = [];
   const configuration = [];
   const result = {};
   for (const kind of ['uploads', 'vto']) {
     result[kind] = workload[kind].map(item => {
-      const task = correlateSizingTask(item.resource_id, events);
+      const task = correlateSizingTask(item.resource_id, events, { failureCode: item.failure_code });
       if (task.gap) { gaps.push({ resource_id: item.resource_id, reason: task.gap }); return item; }
+      if (task.failure_code !== undefined && task.attempts !== undefined) {
+        // Observed failure: keep it out of the successful timings the accepted
+        // tasks require, and carry its code and counts as its own evidence.
+        failures.push({ case_id: item.case_id, task_id: task.task_id, failure_code: task.failure_code,
+          attempts: task.attempts, provider_waits: task.provider_waits });
+        return { ...item, task_id: task.task_id };
+      }
       timings.push(task.timing);
       configuration.push({ case_id: item.case_id, ...task.provider_configuration });
       return { ...item, task_id: task.task_id, worker_task_arn: task.worker_task_arn,
@@ -76,6 +102,6 @@ export function correlateSizingWorkload(workload, events) {
     if (upload && generation.task_id) result.overlap.push({ upload_task_id: upload.task_id, vto_task_id: generation.task_id });
   }
   configuration.sort((a, b) => a.case_id.localeCompare(b.case_id));
-  return { workload: result, task_timings: timings, gaps,
+  return { workload: result, task_timings: timings, failures, gaps,
     provider_configuration: configuration, provider_configuration_sha256: hashBytes(JSON.stringify(configuration)) };
 }

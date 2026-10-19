@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { assertSizingCompatibilityEqual, validateSizingSource } from './beta-sizing-source.mjs';
-import { S1_INPUT_BYTES_MAX } from './beta-sizing-envelope.mjs';
+import { S1_INPUT_BYTES_MAX, S1_GARMENT_PNG_FIXTURE, S1_WIDENING_CANDIDATE,
+  SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, SIZING_ENVELOPE_MODES,
+  assertSizingEnvelopeMode, sizingCaseInputBound, sizingEnvelopeRecord } from './beta-sizing-envelope.mjs';
 import { sizingVtoCases } from './beta-sizing-workload.mjs';
 
 const STAGE_DEFINITIONS = Object.freeze([
@@ -30,8 +32,9 @@ export const SIZING_WORKLOAD = Object.freeze({
   submission_modes: Object.freeze(['sequential', 'burst']),
   // The reviewed matrix had a second `near-supported-limit` class. Those inputs
   // were above the demonstrated S1 envelope, so the class is not part of the
-  // submitted set: `sizingUploadCases()` may only build cases from these classes
-  // and `loadSizingFixtures` rejects any fixture above `S1_INPUT_BYTES_MAX`.
+  // submitted set: `sizingUploadCases()` may only build cases from these classes.
+  // The restored exact fixture is committed for the widening candidate, but only
+  // the candidate case IDs may submit it (see `S1_WIDENING_CANDIDATE`).
   size_classes: Object.freeze(['ordinary']),
   // The bound is per submitted input. A VTO generation aggregates the base photo
   // plus the garments; that aggregate is recorded per observation and is not
@@ -56,7 +59,8 @@ const fixtureManifestBytes = readFileSync(new URL('../tests/fixtures/beta-sizing
 const fixtureManifestSha256 = createHash('sha256').update(fixtureManifestBytes).digest('hex');
 const frozenFixtures = new Map(JSON.parse(fixtureManifestBytes).fixtures.map(fixture => [fixture.id, fixture]));
 
-export function sizingUploadCases() {
+export function sizingUploadCases(mode = SIZING_ENVELOPE_MODE_DEMONSTRATED) {
+  assertSizingEnvelopeMode(mode);
   const cases = [];
   const extraGarments = ['trousers', 'jacket', 'shoes', 'bag'];
   let extra = 0;
@@ -66,7 +70,14 @@ export function sizingUploadCases() {
         for (let repeat = 0; repeat < 2; repeat += 1) {
           const fixture = size === 'ordinary' && ext === 'jpg'
             ? `${extraGarments[extra++]}-ordinary.jpg`
-            : `sweater-${size === 'ordinary' ? 'ordinary' : 'large'}.${ext}`;
+            // The exact fixture is submitted ONLY by the two burst PNG cases, and
+            // ONLY under the widening-candidate mode. Every other PNG case submits
+            // the garment variant, so the demonstrated run refuses the exact bytes.
+            : ext === 'png' && mode === SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE && submission === 'burst'
+              ? S1_WIDENING_CANDIDATE.fixture
+              : ext === 'png'
+                ? S1_GARMENT_PNG_FIXTURE
+                : `sweater-${size === 'ordinary' ? 'ordinary' : 'large'}.${ext}`;
           cases.push({ case_id: `${submission}-${size}-${ext}-${repeat}`, fixture, submission, size_class: size });
         }
       }
@@ -74,6 +85,15 @@ export function sizingUploadCases() {
   }
   if (cases.length !== SIZING_WORKLOAD.upload_tagging_cases) {
     throw new Error(`Upload matrix has ${cases.length} cases, not the reviewed ${SIZING_WORKLOAD.upload_tagging_cases}`);
+  }
+  // A candidate that names the exact fixture under any other case would widen the
+  // matrix rather than re-submit the failed case; the reviewed case IDs are the
+  // whole allowance.
+  for (const item of cases) {
+    if (item.fixture === S1_WIDENING_CANDIDATE.fixture
+      && !S1_WIDENING_CANDIDATE.case_ids.includes(item.case_id)) {
+      throw new Error(`Upload case ${item.case_id} may not submit the widening candidate ${item.fixture}`);
+    }
   }
   return cases;
 }
@@ -96,9 +116,11 @@ function exactStage(stage, expected, label) {
   }
 }
 
-export function createSizingPlan({ fixtureManifestSha256, compatibilitySha } = {}) {
+export function createSizingPlan({ fixtureManifestSha256, compatibilitySha,
+  envelopeMode = SIZING_ENVELOPE_MODE_DEMONSTRATED } = {}) {
   if (!HASH.test(fixtureManifestSha256)) fail('fixtureManifestSha256 must be a full SHA-256');
   if (!SHA.test(compatibilitySha)) fail('compatibilitySha must be a full commit SHA');
+  assertSizingEnvelopeMode(envelopeMode);
   return {
     schema_version: 1,
     issue: 95,
@@ -106,7 +128,9 @@ export function createSizingPlan({ fixtureManifestSha256, compatibilitySha } = {
     compatibility_sha: compatibilitySha,
     runtime_baseline: 'S1',
     stages: STAGE_DEFINITIONS.map((stage) => structuredClone(stage)),
-    workload: structuredClone(SIZING_WORKLOAD),
+    // The workload records the mode it runs under and both bounds, so a plan's
+    // envelope is never inferred from the fixture bytes alone.
+    workload: { ...structuredClone(SIZING_WORKLOAD), ...sizingEnvelopeRecord(envelopeMode) },
     limits: structuredClone(SIZING_LIMITS),
   };
 }
@@ -126,6 +150,13 @@ export function validateSizingPlan(plan) {
     || JSON.stringify(plan.workload.image_formats) !== JSON.stringify(SIZING_WORKLOAD.image_formats)
     || JSON.stringify(plan.workload.size_classes) !== JSON.stringify(SIZING_WORKLOAD.size_classes)
     || JSON.stringify(plan.workload.vto_shapes) !== JSON.stringify(SIZING_WORKLOAD.vto_shapes)) fail('Sizing workload does not match the reviewed representative set');
+  const mode = plan.workload.envelope_mode;
+  if (!SIZING_ENVELOPE_MODES.includes(mode)) fail('Sizing plan must record its reviewed envelope mode');
+  const envelope = sizingEnvelopeRecord(mode);
+  if (plan.workload.candidate_bound_bytes !== envelope.candidate_bound_bytes
+    || plan.workload.prior_bound_bytes !== envelope.prior_bound_bytes) {
+    fail('Sizing plan envelope bounds must match the recorded mode');
+  }
   for (const [key, value] of Object.entries(SIZING_LIMITS)) {
     if (plan.limits?.[key] !== value) fail(`Sizing decision limit ${key} changed`);
   }
@@ -173,12 +204,31 @@ function queueBounds(item) {
     publish_to_execution: [0, execution - sendStart + error] };
 }
 
+// A timing entry with a sanitized failure code describes an observed failure (for
+// example the diagnostic probe), not an accepted task. The benchmark separates the
+// two so failure evidence cannot stand in for a missing success.
+const hasFailureCode = item => typeof item?.failure_code === 'string' && item.failure_code.length > 0;
+const successfulTaskTimings = measurements => (measurements?.task_timings ?? []).filter(item => !hasFailureCode(item));
+
 function evidenceGap(result, stage) {
   const binding = result.binding;
   if (!binding || !HASH.test(binding.fixture_manifest_sha256) || !HASH.test(binding.supported_input_envelope_sha256)
     || !HASH.test(binding.provider_configuration_sha256) || !HASH.test(binding.deployment_record_sha256)
     || !SHA.test(binding.client_sha) || !SHA.test(binding.service_sha) || !SHA.test(binding.infra_sha)
     || !SHA.test(binding.e2e_sha) || !/^sha256:[a-f0-9]{64}$/.test(binding.image_digest)) return 'Exact workload and deployed input bindings are incomplete';
+  // The envelope mode is part of the record, not an inference: a result that does
+  // not say which bound it measured under cannot qualify, and only S1 may carry the
+  // widening candidate.
+  const envelopeMode = result.workload?.envelope_mode;
+  if (!SIZING_ENVELOPE_MODES.includes(envelopeMode)) return 'The workload must record its reviewed S1 envelope mode';
+  const envelope = sizingEnvelopeRecord(envelopeMode);
+  if (result.workload.candidate_bound_bytes !== envelope.candidate_bound_bytes
+    || result.workload.prior_bound_bytes !== envelope.prior_bound_bytes) {
+    return 'The workload envelope bound record changed';
+  }
+  if (envelopeMode === SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE && stage.id !== 'S1') {
+    return 'The widening-candidate envelope is only measurable at stage S1';
+  }
   try {
     validateSizingSource(result.source_proof, { e2eSha: binding.e2e_sha, runId: result.run_id, runAttempt: result.run_attempt });
     const compatibility = result.source_proof.compatibility;
@@ -200,7 +250,7 @@ function evidenceGap(result, stage) {
   const uploads = result.workload?.uploads;
   if (!Array.isArray(uploads) || uploads.length !== SIZING_WORKLOAD.upload_tagging_cases) return 'Representative upload/tagging coverage is incomplete';
   if (binding.fixture_manifest_sha256 !== fixtureManifestSha256) return 'Upload fixture manifest differs from the frozen source';
-  const cases = new Map(sizingUploadCases().map(item => [item.case_id, item]));
+  const cases = new Map(sizingUploadCases(envelopeMode).map(item => [item.case_id, item]));
   if (new Set(uploads.map(item => item.case_id)).size !== cases.size) return 'Upload matrix requires unique canonical case IDs';
   for (const item of uploads) {
     const expected = cases.get(item.case_id);
@@ -212,7 +262,11 @@ function evidenceGap(result, stage) {
       || item.fixture_dimensions[0] !== fixture.width || item.fixture_dimensions[1] !== fixture.height) {
       return 'Upload matrix or frozen fixture binding differs from the reviewed case';
     }
-    if (item.fixture_bytes > S1_INPUT_BYTES_MAX) return `Upload input ${item.case_id} exceeds the demonstrated S1 input envelope`;
+    // Only the reviewed candidate case IDs may report an above-demonstrated input;
+    // every other upload stays on the demonstrated bound.
+    if (item.fixture_bytes > sizingCaseInputBound(envelopeMode, item.case_id, item.fixture)) {
+      return `Upload input ${item.case_id} exceeds the ${envelopeMode} S1 input envelope`;
+    }
   }
   const vto = result.workload?.vto;
   if (!Array.isArray(vto) || vto.length !== SIZING_WORKLOAD.vto_generations) return 'Representative VTO coverage is incomplete';
@@ -291,8 +345,19 @@ function evidenceGap(result, stage) {
   const routes = measurements.route_samples_ms;
   if (!routes || Object.keys(routes).length !== ROUTES.size || Object.keys(routes).some((route) => !ROUTES.has(route))
     || [...ROUTES].some((route) => !Array.isArray(routes[route]) || routes[route].length < SIZING_WORKLOAD.paced_requests_per_route)) return 'At least 100 measured requests are required for each ordinary route';
-  const timings = measurements.task_timings;
-  if (!Array.isArray(timings) || timings.length !== ids.length || new Set(timings.map((item) => item.task_id)).size !== ids.length
+  // Observed failures are recorded in `task_timings` with their sanitized code and
+  // observed execution/provider-call counts. They are evidence rather than accepted
+  // tasks, so they are validated separately from the successful per-task timings the
+  // workload's accepted tasks require.
+  if (!Array.isArray(measurements.task_timings)) return 'Provider-separated task timings are missing';
+  const failureTimings = measurements.task_timings.filter(item => hasFailureCode(item));
+  if (failureTimings.some(item => typeof item.failure_code !== 'string' || !item.failure_code
+    || !Number.isInteger(item.attempts) || item.attempts < 1
+    || !Number.isInteger(item.provider_waits) || item.provider_waits < 0)) {
+    return 'Observed failure timings must record their sanitized code, execution count and provider-call count';
+  }
+  const timings = successfulTaskTimings(measurements);
+  if (timings.length !== ids.length || new Set(timings.map((item) => item.task_id)).size !== ids.length
     || timings.some((item) => !ids.includes(item.task_id) || item.provider_separated !== true
       || ['local_processing_ms', 'provider_ms'].some((field) => !Number.isFinite(item[field]) || item[field] < 0)
       || !queueBounds(item))) return 'Provider-separated local and clock-verified correlated queue evidence are required for every accepted task';
@@ -302,15 +367,16 @@ function evidenceGap(result, stage) {
 function summary(result) {
   const measurements = result.measurements;
   const tasks = measurements.tasks;
+  const timings = successfulTaskTimings(measurements);
   return {
     api_peak_mib: Math.max(...measurements.container_peaks.filter((peak) => tasks.some((task) => task.task_arn === peak.task_arn && task.service === 'api')).map((peak) => peak.peak_mib)),
     worker_peak_mib: Math.max(...measurements.container_peaks.filter((peak) => tasks.some((task) => task.task_arn === peak.task_arn && task.service === 'worker')).map((peak) => peak.peak_mib)),
     route_p95_ms: Object.fromEntries([...ROUTES].map((route) => [route, percentile95(measurements.route_samples_ms[route], `${route} latency`)])),
-    local_processing_p95_ms: percentile95(measurements.task_timings.map((item) => item.local_processing_ms), 'local processing'),
+    local_processing_p95_ms: percentile95(timings.map((item) => item.local_processing_ms), 'local processing'),
     queue: Object.fromEntries(['commit_to_publish', 'publish_to_execution'].map((interval) => [interval, {
-      lower_p95_ms: percentile95(measurements.task_timings.map((item) => queueBounds(item)[interval][0]), `${interval} lower bound`),
-      upper_p95_ms: percentile95(measurements.task_timings.map((item) => queueBounds(item)[interval][1]), `${interval} upper bound`),
-      exact: measurements.task_timings.every((item) => item.queue.kind === 'exact-common-clock'),
+      lower_p95_ms: percentile95(timings.map((item) => queueBounds(item)[interval][0]), `${interval} lower bound`),
+      upper_p95_ms: percentile95(timings.map((item) => queueBounds(item)[interval][1]), `${interval} upper bound`),
+      exact: timings.every((item) => item.queue.kind === 'exact-common-clock'),
     }])),
   };
 }

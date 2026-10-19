@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,8 +10,10 @@ import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, order
   sizingVtoGarmentUploadCases, sequentialGarmentUploads,
   S1_VTO_GARMENT_POOL, VTO_GARMENT_FORMATS } from './beta-sizing-workload.mjs';
 import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
-import { S1_INPUT_BYTES_MAX, S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_DEFERRED_VTO_SHAPE,
-  S1_VTO_SHAPE_NAMING, assertCaseInputsWithinEnvelope, assertSizingInputEnvelope } from './beta-sizing-envelope.mjs';
+import { S1_DEFERRED_VTO_SHAPE, S1_DIAGNOSTIC_PROBE, S1_GARMENT_PNG_FIXTURE, S1_INPUT_BYTES_MAX,
+  S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_VTO_SHAPE_NAMING, S1_WIDENING_CANDIDATE,
+  SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, assertCaseInputsWithinEnvelope,
+  assertSizingInputEnvelope } from './beta-sizing-envelope.mjs';
 
 function logs() {
   const common = { taskId: 'task', workerTaskArn: 'worker', processInstance: 'process', serviceSha: 'b'.repeat(40),
@@ -37,6 +39,47 @@ test('correlates first execution on one Worker clock even when it starts before 
   assert.equal(result.timing.queue.send_acknowledged_ms, 900);
   assert.match(result.timing.queue.clock_evidence_sha256, /^[a-f0-9]{64}$/);
   assert.equal(result.timing.queue.send_sdk_attempts, 1);
+});
+
+test('correlates a failed execution to its sanitized code instead of an evidence gap', () => {
+  const failed = () => {
+    const common = { taskId: 'task', workerTaskArn: 'worker', processInstance: 'process', serviceSha: 'b'.repeat(40),
+      observedAt: '2026-10-10T00:01:00Z', monotonicMs: 800, workerId: 'worker-process' };
+    return [
+      { ...common, event: 'task_acceptance_precommit', resourceId: 'resource', workerTaskArn: 'api', processInstance: 'api' },
+      { ...common, event: 'task_execution_started', executionToken: 1, startedMonotonicMs: 750, monotonicMs: 750 },
+      { ...common, event: 'task_processing_timing', executionToken: 1, outcome: 'failed', durationMs: 300,
+        localProcessingMs: 300, providerMs: 0 },
+    ];
+  };
+  const task = correlateSizingTask('resource', failed(), { failureCode: 'input_image_decode_failed' });
+  assert.equal(task.gap, undefined);
+  assert.equal(task.failure_code, 'input_image_decode_failed');
+  assert.equal(task.attempts, 1);
+  assert.equal(task.provider_waits, 0);
+  assert.equal(task.task_id, 'task');
+  // A retry is observed as more than one execution, and a provider call as more than
+  // zero waits; neither count is inferred from the code.
+  const retried = failed();
+  retried.push({ ...retried[2], executionToken: 2, observedAt: '2026-10-10T00:02:00Z' });
+  retried.push({ ...retried[1], executionToken: 2, startedMonotonicMs: 900, monotonicMs: 900 });
+  retried.push({ event: 'provider_wait_finished', taskId: 'task', workerTaskArn: 'worker',
+    processInstance: 'process', serviceSha: 'b'.repeat(40), observedAt: '2026-10-10T00:02:01Z',
+    monotonicMs: 950, outcome: 'failed', failureCode: 'provider_call_timeout', timeoutMs: 60_000, durationMs: 60_000 });
+  const retriedTask = correlateSizingTask('resource', retried, { failureCode: 'auto_tagging_vlm_error' });
+  assert.equal(retriedTask.attempts, 2);
+  assert.equal(retriedTask.provider_waits, 1);
+  // The code is what the caller observed, never a provider-call code read off a wait
+  // and never an invented value. Without an observation it stays null.
+  assert.equal(retriedTask.failure_code, 'auto_tagging_vlm_error');
+  const unobserved = correlateSizingTask('resource', failed());
+  assert.ok('failure_code' in unobserved);
+  assert.equal(unobserved.failure_code, null);
+  // A successful execution keeps returning its timing and never a failure record.
+  const success = correlateSizingTask('resource', logs());
+  assert.equal(success.failure_code, undefined);
+  assert.equal(success.attempts, undefined);
+  assert.equal(success.timing.provider_separated, true);
 });
 
 test('successful SQS ACK after SDK resend or without attempts metadata cannot prove first publication', () => {
@@ -135,7 +178,9 @@ test('orders VTO garments smallest-first and reports the aggregate the per-input
   }
   assert.equal(orderedSizingGarments(frozen.fixtures, 1)[0].id, 'trousers-ordinary.jpg');
   assert.equal(orderedSizingGarments(frozen.fixtures, 3).map(item => item.id).join(),
-    'trousers-ordinary.jpg,jacket-ordinary.jpg,sweater-ordinary.png');
+    'trousers-ordinary.jpg,jacket-ordinary.jpg,sweater-ordinary-garment.png');
+  assert.equal(vtoAggregateSubmittedBytes(frozen.fixtures, 'base-photo-ordinary.jpg',
+    ['trousers-ordinary.jpg', 'jacket-ordinary.jpg', S1_GARMENT_PNG_FIXTURE]), 2_294_523);
   assert.throws(() => orderedSizingGarments(frozen.fixtures, 4), /between 1 and 3 garments/);
 });
 
@@ -166,11 +211,16 @@ test('resolves every VTO garment from the submission plan, not from the uploads 
       `${burstOnly} must be burst-only, or the pool rule no longer describes the plan`);
     assert.ok(!S1_VTO_GARMENT_POOL.includes(burstOnly));
   }
-  // `sweater-ordinary.png` is a SEQUENTIAL upload - run 38844432804 recorded its
-  // 696,168-byte case as `sequential-ordinary-png-0` - so it is a pool garment.
-  assert.ok(uploads.some(item => item.fixture === 'sweater-ordinary.png' && item.submission === 'sequential'
+  // The PNG pool garment is the GARMENT VARIANT `sweater-ordinary-garment.png` -
+  // run 38844432804 recorded its 696,168-byte case as `sequential-ordinary-png-0` -
+  // so it is submitted before the VTO loop. The restored exact
+  // `sweater-ordinary.png` is burst-only and must NEVER be a pool garment: its
+  // 3,742,711 bytes would move the three-garment aggregate off 2,294,523 B.
+  assert.ok(uploads.some(item => item.fixture === S1_GARMENT_PNG_FIXTURE && item.submission === 'sequential'
     && item.case_id === 'sequential-ordinary-png-0'));
-  assert.ok(S1_VTO_GARMENT_POOL.includes('sweater-ordinary.png'));
+  assert.ok(S1_VTO_GARMENT_POOL.includes(S1_GARMENT_PNG_FIXTURE));
+  assert.ok(!S1_VTO_GARMENT_POOL.includes(S1_WIDENING_CANDIDATE.fixture));
+  assert.ok(uploads.filter(item => item.fixture === S1_WIDENING_CANDIDATE.fixture).every(item => item.submission === 'burst'));
   assert.ok(S1_VTO_GARMENT_POOL.every(fixture => uploads.some(item => item.fixture === fixture)));
   for (const entry of sizingVtoCases()) {
     for (const fixture of entry.garment_fixtures) {
@@ -219,7 +269,7 @@ test('records the deferred five-garment 4K VTO shape rather than dropping it', a
   const deferred = S1_DEFERRED_VTO_SHAPE;
   assert.equal(deferred.garment_count, 5);
   assert.equal(deferred.advanced_settings.size, '4K');
-  assert.equal(deferred.reason, 'deferred_to_140');
+  assert.equal(deferred.reason, 'deferred_to_172_vto_base64_payload');
   assert.equal(deferred.garment_fixtures.length, deferred.garment_count);
   // Recomputed, never restated: the recorded figures must still describe the frozen
   // bytes. A re-encode that moved them would fail here and in the loader.
@@ -263,7 +313,7 @@ test('states that the large-base shape names are historical, not descriptive', a
 
 // The manifest is the only place a future fixture size can enter the workload, so
 // the loader itself must refuse an over-bound input rather than trusting the set.
-test('refuses a manifest fixture or case input above the demonstrated envelope', async () => {
+test('refuses a manifest fixture or case input outside its reviewed envelope', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sizing-envelope-'));
   try {
     const accepted = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
@@ -271,12 +321,24 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
       width: 879, height: 761 });
     // Mirrors the reviewed exclusion record's shape, with a synthetic id and byte
     // count so this test can place any fixture in the excluded list.
-    const excludedRecord = (id, bytes) => ({ id, bytes, sha256: 'b'.repeat(64), reason: 'input_bytes_above_envelope' });
+    const excludedRecord = (id, bytes, reason) => ({ id, bytes, sha256: 'b'.repeat(64),
+      reason: reason ?? (bytes > S1_WIDENING_CANDIDATE.bound_bytes
+        ? 'input_bytes_above_envelope' : 'not_in_reviewed_case_matrix') });
     const frozenEntry = (id, bytes) => ({ ...shape(id), bytes: bytes.length, sha256: hashBytes(bytes) });
     const writeFixture = async (id, bytes) => {
       await writeFile(join(directory, id), bytes);
       return frozenEntry(id, bytes);
     };
+    // A synthetic probe: valid PNG signature, no IEND. The loader binds its bytes and
+    // validates the truncation property rather than trusting the record.
+    const diagnosticBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('truncated-body')]);
+    await mkdir(join(directory, 'diagnostic'), { recursive: true });
+    await writeFile(join(directory, 'diagnostic', 'truncated.png'), diagnosticBytes);
+    const diagnosticRecord = { case_id: S1_DIAGNOSTIC_PROBE.case_id, id: 'diagnostic-truncated.png',
+      file: S1_DIAGNOSTIC_PROBE.fixture, mime: S1_DIAGNOSTIC_PROBE.mime, bytes: diagnosticBytes.length,
+      sha256: hashBytes(diagnosticBytes), expected_failure_code: S1_DIAGNOSTIC_PROBE.expected_failure_code,
+      qualifying: false };
     // The fresh manifest records the deferred shape's byte figures from the fixtures
     // it actually freezes, so the record is truthful for these bytes. The loader
     // compares the record against the reviewed constant, so this test cannot use the
@@ -288,7 +350,8 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
       return { garment_only_bytes: garments, base_photo_bytes: bytesOf('base-photo-ordinary.jpg'),
         aggregate_submitted_bytes: garments + bytesOf('base-photo-ordinary.jpg') }[field];
     };
-    const manifest = (fixtures, { excluded, deferred } = {}) => ({ schema_version: 1, fixtures,
+    const manifest = (fixtures, { excluded, deferred, candidate, diagnostic } = {}) => ({ schema_version: 1, fixtures,
+      diagnostic: diagnostic ?? diagnosticRecord,
       s1_input_envelope: { reference: S1_INPUT_ENVELOPE.reference, run_url: S1_INPUT_ENVELOPE.run_url,
         stage: S1_INPUT_ENVELOPE.stage, e2e_sha: S1_INPUT_ENVELOPE.e2e_sha,
         input_bytes_max: S1_INPUT_BYTES_MAX, largest_served_bytes: S1_INPUT_BYTES_MAX,
@@ -296,6 +359,8 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
         measured_inputs_basis: S1_INPUT_ENVELOPE.measured_inputs_basis,
         vto_aggregate_limit: S1_INPUT_ENVELOPE.vto_aggregate_limit,
         vto_shape_naming: S1_INPUT_ENVELOPE.vto_shape_naming,
+        widening_candidate: candidate ?? { ...S1_WIDENING_CANDIDATE,
+          case_ids: [...S1_WIDENING_CANDIDATE.case_ids] },
         deferred_vto_shape: deferred ?? S1_DEFERRED_VTO_SHAPE,
         measured_inputs: S1_INPUT_ENVELOPE.measured_inputs,
         excluded_fixtures: excluded ?? S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes)) } });
@@ -314,20 +379,56 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
     assert.equal(inEnvelope.length, accepted.fixtures.size);
     await write(manifest(inEnvelope));
     assert.equal((await loadSizingFixtures(directoryUrl)).fixtures.size, inEnvelope.length);
+    assert.equal((await loadSizingFixtures(directoryUrl, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE)).fixtures.size,
+      inEnvelope.length);
 
-    // A frozen fixture above the bound is refused, even though the manifest and the
-    // file bytes agree with each other.
-    // Named replacement, so the over-bound entry is the same slot the case set uses.
+    // A frozen fixture above its reviewed bound is refused, even though the manifest
+    // and the file bytes agree with each other. Only the candidate fixture may exceed
+    // the demonstrated bound, and then only up to the candidate bound.
     const replace = entry => inEnvelope.map(item => item.id === entry.id ? entry : item);
-    const oversize = await writeFixture('sweater-ordinary.png', Buffer.alloc(S1_INPUT_BYTES_MAX + 1, 7));
-    await write(manifest(replace(oversize)));
+    const oversizedWebp = await writeFixture('sweater-ordinary.webp', Buffer.alloc(S1_INPUT_BYTES_MAX + 1, 7));
+    await write(manifest(replace(oversizedWebp)));
     await assert.rejects(() => loadSizingFixtures(directoryUrl), /above the demonstrated S1 input envelope/);
+    // Restore the file the later manifests describe, so each rejection is isolated.
+    await writeFile(join(directory, 'sweater-ordinary.webp'), Buffer.alloc(1_000, 7));
+    const overCandidate = await writeFixture(S1_WIDENING_CANDIDATE.fixture,
+      Buffer.alloc(S1_WIDENING_CANDIDATE.bound_bytes + 1, 7));
+    await write(manifest(replace(overCandidate)));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl), /above the demonstrated S1 input envelope/);
+    const candidateSized = await writeFixture(S1_WIDENING_CANDIDATE.fixture,
+      Buffer.alloc(S1_WIDENING_CANDIDATE.bound_bytes, 7));
+    await write(manifest(replace(candidateSized)));
+    const candidateLoaded = await loadSizingFixtures(directoryUrl, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+    assert.equal(candidateLoaded.fixtures.get(S1_WIDENING_CANDIDATE.fixture).bytes,
+      S1_WIDENING_CANDIDATE.bound_bytes);
+    assert.equal(candidateLoaded.envelopeMode, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
 
     // A declared exclusion that disagrees with the reviewed one is refused: the
-    // manifest may not quietly re-label, resize or re-order an excluded fixture.
-    const stated = S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes));
+    // manifest may not quietly re-label, resize or re-order an excluded fixture. The
+    // reason is bound to the candidate bound, so a below-candidate exclusion is only
+    // accepted with `not_in_reviewed_case_matrix` and an above-candidate one only with
+    // `input_bytes_above_envelope`.
+    const stated = S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes, item.reason));
     await write(manifest(inEnvelope, { excluded: [{ ...stated[0], bytes: 1_000 }, ...stated.slice(1)] }));
     await assert.rejects(() => loadSizingFixtures(directoryUrl), /Declared excluded sizing fixture/);
+    await write(manifest(inEnvelope, { excluded: [{ ...stated[0], reason: 'input_bytes_above_envelope' },
+      ...stated.slice(1)] }));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl), /reviewed reason not_in_reviewed_case_matrix/);
+    await write(manifest(inEnvelope, { excluded: [stated[0], { ...stated[1], reason: 'not_in_reviewed_case_matrix' },
+      ...stated.slice(2)] }));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl), /reviewed reason input_bytes_above_envelope/);
+
+    // The widening candidate record may not be quietly raised or reshaped.
+    await write(manifest(inEnvelope, { candidate: { ...S1_WIDENING_CANDIDATE, bound_bytes: 10_000_000,
+      case_ids: [...S1_WIDENING_CANDIDATE.case_ids] } }));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl), /widening candidate/);
+
+    // The non-qualifying diagnostic record is bound to its exact bytes and expected
+    // code; the loader also checks the truncation property itself.
+    await write(manifest(inEnvelope, { diagnostic: { ...diagnosticRecord, bytes: 1 } }));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl), /Diagnostic probe bytes changed/);
+    await write(manifest(inEnvelope, { diagnostic: { ...diagnosticRecord, qualifying: true } }));
+    await assert.rejects(() => loadSizingFixtures(directoryUrl), /reviewed non-qualifying probe/);
 
     // A deferred record that disagrees with the reviewed constant is refused, so the
     // manifest may not quietly restate the deferred shape.
@@ -342,21 +443,83 @@ test('refuses a manifest fixture or case input above the demonstrated envelope',
       /above the demonstrated S1 input envelope/);
     assert.doesNotThrow(() => assertSizingInputEnvelope(S1_INPUT_BYTES_MAX, 'case input'));
     const oversized = new Map(accepted.fixtures);
-    oversized.set('sweater-ordinary.png', { bytes: S1_INPUT_BYTES_MAX + 1 });
-    assert.throws(() => assertCaseInputsWithinEnvelope(oversized, [{ fixture: 'sweater-ordinary.png' }]),
-      /above the demonstrated S1 input envelope/);
-    assert.throws(() => assertCaseInputsWithinEnvelope(oversized, [{ base_fixture: 'sweater-ordinary.png' }]),
-      /above the demonstrated S1 input envelope/);
+    oversized.set(S1_WIDENING_CANDIDATE.fixture, { bytes: S1_INPUT_BYTES_MAX + 1 });
+    // Demonstrated mode refuses the exact fixture even under a candidate case ID.
     assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
-      [{ base_fixture: 'base-photo-ordinary.jpg', garment_fixtures: ['bag-ordinary.jpg', 'sweater-ordinary.png'] }]),
+      [{ case_id: 'burst-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }]),
     /above the demonstrated S1 input envelope/);
+    // Candidate mode admits it only for the reviewed case IDs and only as `fixture`.
+    assert.doesNotThrow(() => assertCaseInputsWithinEnvelope(oversized,
+      [{ case_id: 'burst-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }],
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }));
+    assert.doesNotThrow(() => assertCaseInputsWithinEnvelope(oversized,
+      [{ case_id: 'burst-ordinary-png-1', fixture: S1_WIDENING_CANDIDATE.fixture }],
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }));
+    assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
+      [{ case_id: 'sequential-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }],
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
+    assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
+      [{ fixture: S1_WIDENING_CANDIDATE.fixture }], { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }),
+    /above the demonstrated S1 input envelope/);
+    assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
+      [{ base_fixture: S1_WIDENING_CANDIDATE.fixture }], { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }),
+    /above the demonstrated S1 input envelope/);
+    assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
+      [{ base_fixture: 'base-photo-ordinary.jpg', garment_fixtures: ['bag-ordinary.jpg', S1_WIDENING_CANDIDATE.fixture] }],
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
+    // A different fixture is not admitted by a candidate case ID.
+    const oversizedOther = new Map(accepted.fixtures);
+    oversizedOther.set('sweater-ordinary.webp', { bytes: S1_INPUT_BYTES_MAX + 1 });
+    assert.throws(() => assertCaseInputsWithinEnvelope(oversizedOther,
+      [{ case_id: 'burst-ordinary-png-0', fixture: 'sweater-ordinary.webp' }],
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
     assert.throws(() => assertCaseInputsWithinEnvelope(accepted.fixtures, [{ fixture: 'sweater-large.png' }]),
       /excluded from the demonstrated S1 envelope/);
     assert.throws(() => assertCaseInputsWithinEnvelope(accepted.fixtures, [{ base_fixture: 'base-photo-large.jpg' }]),
       /excluded from the demonstrated S1 envelope/);
     assert.doesNotThrow(() => assertCaseInputsWithinEnvelope(accepted.fixtures,
       [...sizingUploadCases(), ...sizingVtoCases()]));
+    assert.doesNotThrow(() => assertCaseInputsWithinEnvelope(accepted.fixtures,
+      [...sizingUploadCases(SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE), ...sizingVtoCases()],
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('loads the truncation-only diagnostic probe and the two PNG variants byte-for-byte', async () => {
+  const frozen = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
+  const exact = frozen.fixtures.get(S1_WIDENING_CANDIDATE.fixture);
+  const garment = frozen.fixtures.get(S1_GARMENT_PNG_FIXTURE);
+  assert.equal(exact.bytes, 3_742_711);
+  assert.equal(exact.width, 1200);
+  assert.equal(exact.height, 1039);
+  assert.equal(exact.sha256, '4341430c05ebcc7af7385fce5025c8930b8def0fb5c13f9b4c0f1014bcd3f130');
+  assert.equal(hashBytes(exact.data), exact.sha256);
+  assert.equal(garment.bytes, 696_168);
+  assert.equal(garment.width, 879);
+  assert.equal(garment.height, 761);
+  assert.equal(garment.sha256, '932e48043abd110c7e5c2760b367757222d3de1ba37fb8a02bab2774447cf53d');
+  assert.equal(hashBytes(garment.data), garment.sha256);
+  assert.equal(exact.sha256 === garment.sha256, false);
+
+  const diagnostic = frozen.diagnostic;
+  assert.equal(diagnostic.case_id, S1_DIAGNOSTIC_PROBE.case_id);
+  assert.equal(diagnostic.file, S1_DIAGNOSTIC_PROBE.fixture);
+  assert.equal(diagnostic.expected_failure_code, 'input_image_decode_failed');
+  assert.equal(diagnostic.qualifying, false);
+  assert.equal(diagnostic.bytes, 400);
+  assert.equal(hashBytes(diagnostic.data), diagnostic.sha256);
+  assert.deepEqual([...diagnostic.data.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.equal(diagnostic.data.includes(Buffer.from('IEND')), false);
+  assert.equal(diagnostic.data.includes(Buffer.from('IDAT')), true);
+  // The probe is never part of the frozen case matrix or the submittable fixture set.
+  assert.equal(frozen.fixtures.has(diagnostic.file), false);
+  const inputs = [...sizingUploadCases(), ...sizingVtoCases()]
+    .flatMap(entry => [entry.fixture, entry.base_fixture, ...(entry.garment_fixtures ?? [])]);
+  assert.ok(inputs.every(id => id !== diagnostic.file));
+  // The manifest mirror is exact, so a reader of either source sees the same probe.
+  const manifest = JSON.parse(await readFile(new URL('../tests/fixtures/beta-sizing/fixture-manifest.json',
+    import.meta.url)));
+  assert.deepEqual({ ...manifest.diagnostic, data: undefined }, { ...diagnostic, data: undefined });
 });

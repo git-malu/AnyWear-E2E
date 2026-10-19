@@ -34,6 +34,16 @@ on:
         required: false
         type: choice
         options: [none, S1, S2, S3]
+      envelope_mode:
+        # The demonstrated bound stays the default. `widening-candidate` is the one
+        # authorised measurement of the restored exact fixture; only the measure
+        # operation at stage S1 accepts it, and the preflight refuses every other
+        # combination before a credential job starts.
+        description: Sizing input envelope; widening-candidate is only accepted by operation measure at stage S1
+        required: false
+        default: demonstrated
+        type: choice
+        options: [demonstrated, widening-candidate]
       source_run_id:
         description: Failed E2E run ID containing the account manifest; only operation recover accepts it
         required: false
@@ -135,6 +145,7 @@ jobs:
         env:
           OPERATION: ${{ inputs.operation }}
           SIZING_STAGE: ${{ inputs.sizing_stage }}
+          ENVELOPE_MODE: ${{ inputs.envelope_mode }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
@@ -155,6 +166,18 @@ jobs:
             echo "::error::sizing_stage is only accepted by operation measure (got '$SIZING_STAGE' for '$OPERATION')"
             exit 1
           fi
+          # The demonstrated bound is the default. The widening candidate is the one
+          # authorised measurement of the restored exact fixture, so it is accepted
+          # only by measure at stage S1.
+          case "$ENVELOPE_MODE" in
+            demonstrated) ;;
+            widening-candidate)
+              if [[ "$OPERATION" != "measure" || "$SIZING_STAGE" != "S1" ]]; then
+                echo "::error::envelope_mode widening-candidate is only accepted by operation measure at stage S1"
+                exit 1
+              fi ;;
+            *) echo "::error::Unknown envelope mode '$ENVELOPE_MODE'"; exit 1 ;;
+          esac
           if [[ "$OPERATION" != recover ]]; then
             for name in SOURCE_RUN_ID SOURCE_RUN_ATTEMPT RECOVERY_ATTEMPT PREVIOUS_RECOVERY_RUN_ID PREVIOUS_RECOVERY_RUN_ATTEMPT; do
               if [[ -n "${!name}" ]]; then
@@ -994,6 +1017,9 @@ jobs:
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 1
       E2E_MAX_QUARANTINED_ACCOUNTS: 1
       BETA_SIZING_STAGE: ${{ inputs.sizing_stage }}
+      # The demonstrated envelope is the default; the widening candidate admits the
+      # restored exact fixture only for the two reviewed burst PNG case IDs.
+      BETA_SIZING_ENVELOPE_MODE: ${{ inputs.envelope_mode }}
 
     steps:
       - name: Checkout E2E sources
