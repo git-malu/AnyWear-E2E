@@ -5,8 +5,9 @@ It replaces the v2 single Infra `runtime.yml` deployment record that covered eve
 stack, and the committed `selection` whose release verification crossed
 repositories. It is the system-test side of the release-slice split recorded in
 [ADR 0025](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/ADR/0025-per-service-release-slice-repositories.md):
-`AnyWear-Infra` keeps Bootstrap, Platform and Billing; `AnyWear-Service` owns and
-deploys the Workload release slice.
+`AnyWear-Infra` keeps Bootstrap, the Base stack (physical name
+`AnyWearPlatformStack-beta`) and Billing; `AnyWear-Service` owns and deploys the
+Runtime release slice (`AnyWearRuntimeStack-beta`, formerly the Workload stack).
 
 The contract answers one question: which exact producer produced the deployed
 system this suite qualifies, and which exact record bytes say so. Qualification
@@ -98,7 +99,7 @@ top-level `gate`:
   "record_type": "anywear_service_deployment",
   "producer": { "…Service producer…" },
   "stacks": [
-    { "name": "AnyWearWorkloadStack-beta", "region": "ap-east-1",
+    { "name": "AnyWearRuntimeStack-beta", "region": "ap-east-1",
       "producer_repository": "git-malu/AnyWear-Service", "producer_sha": "<40 hex>",
       "template_sha256": "<64 hex>" }
   ],
@@ -130,9 +131,18 @@ string; `value_sha256` is the hash of the value the run read. `schema.content_sh
 is derived from those inputs (parameter names and versions), so a reader can
 recompute it instead of trusting a cross-repository pin.
 
+The 0.3.0 stage contract publishes 36 parameter definitions: 35 unconditional,
+including `api_base_url` (the public API CloudFront endpoint the Base stack owns),
+plus the conditional `cleanup_task_role_arn`. Issue #166 renamed the Service-owned
+release slice to the Runtime stack; the always-present Infra manifest stays exactly
+Foundation, `AnyWearPlatformStack-beta` and Billing. `AnyWearEgressStack-beta` is
+operation-owned and never appears in a deployment record or the observation
+manifest, so the recorded system tuple stays three Infra stacks plus one Service
+stack.
+
 `observed.minimum_client_version` is the minimum supported Client floor the deployed
 Service enforces, read back from its live `/health` response at deploy time. The
-`@git-malu/stage-contracts` 0.2.2 validator requires a non-negative safe integer there, so
+`@git-malu/stage-contracts` 0.3.0 validator requires a non-negative safe integer there, so
 a producer that did not read the live value cannot write a v4 record. `assertDeploymentBinding`
 requires it to equal `compatibility.minimum_supported_client.version` when the pin carries the member.
 The Service `observed` tuple therefore names both the Service/image it deployed and the
@@ -185,9 +195,9 @@ every run/attempt/artifact id is a positive safe integer.
 
 | Member | Purpose | Producer |
 | --- | --- | --- |
-| `platform` | The Foundation/Platform/Billing deployment record that produced the stage base. `producer_sha` is the commit whose run wrote the record; `record` names that run, its artifact and the exact record bytes. | `git-malu/AnyWear-Infra` |
-| `workload` | The Workload release-slice producer identity. `producer_sha` is the Service release-chain commit that built and deployed the slice. | `git-malu/AnyWear-Service` |
-| `deployment` | The Workload deployment record: the Service release-chain run, artifact and exact record bytes. Its `producer` must equal `workload.producer`. | `git-malu/AnyWear-Service` |
+| `platform` | The Foundation/Base/Billing deployment record that produced the stage base. `producer_sha` is the commit whose run wrote the record; `record` names that run, its artifact and the exact record bytes. | `git-malu/AnyWear-Infra` |
+| `workload` | The Runtime release-slice producer identity; the member keeps its historical `workload` name while the stack is `AnyWearRuntimeStack-beta`. `producer_sha` is the Service release-chain commit that built and deployed the slice. | `git-malu/AnyWear-Service` |
+| `deployment` | The Runtime deployment record: the Service release-chain run, artifact and exact record bytes. Its `producer` must equal `workload.producer`. | `git-malu/AnyWear-Service` |
 
 The two records are deliberately not one record:
 
@@ -195,8 +205,9 @@ The two records are deliberately not one record:
   workflow_ref, run_id, run_attempt}` and lists only the stacks that producer
   deployed. The Infra record covers `AnyWearFoundationStack`,
   `AnyWearPlatformStack-beta` and `AnyWearBillingStack-beta`; the Service record
-  covers only `AnyWearWorkloadStack-beta`. A record that claims another
-  repository's stack is refused.
+  covers only `AnyWearRuntimeStack-beta`. A record that claims another
+  repository's stack is refused. `AnyWearEgressStack-beta` belongs to the Infra
+  `deploy-egress` / `delete-egress` operations and is not listed by either record.
 - The record versions differ deliberately: the Infra record is schema version 3
   and never carries a gate; the Service record is schema version 4 and its
   top-level `gate` is part of the deployment it names. A Service record without a
@@ -204,17 +215,17 @@ The two records are deliberately not one record:
   is refused. Pre-gate Service v3 records are historical only and were never
   produced.
 - The two `observed` tuples are also disjoint. The Infra record observes the
-  Platform tuple (the two Lambdas, the queue configuration hash, the Client commit
-  and the Client endpoint). The Service record observes the Workload tuple (the
-  Service commit, the image digest, the two ECS service identities and the API
-  endpoint). Neither record is a substitute for the other.
+  Base tuple (the two Lambdas, the queue configuration hash, the Client commit
+  and the Client endpoint). The Service record observes the Runtime tuple (the
+  Service commit, the image digest, the minimum Client floor, the two ECS service
+  identities and the API endpoint). Neither record is a substitute for the other.
 - The Infra producer record is written by the run whose `producer.sha` is
   `platform.producer_sha`; that is the platform record producer, and the pin binds
   the record, its run and its artifact to it. `infra.sha` is a different pin: the
   reviewed Infra revision E2E checks out as the observation source. The two may
   differ because a platform stack can be deployed from an earlier reviewed commit
   than the observation helper, so `compatibility.json` keeps both.
-- The Service producer is the release chain that owns the Workload stack. The
+- The Service producer is the release chain that owns the Runtime stack. The
   same run builds the image, verifies the sealed release, deploys the slice and
   writes the record, so no committed `selection` and no cross-repository native
   asset verification exist in this contract.
@@ -264,15 +275,18 @@ One cross-repository dependency is recorded here and has now been approved for t
 producer side. C's post-C Platform deploy removes every `PublishOutput*` output,
 and the release-slice deploy's last eleven weak reads (nine cleanup values and
 two isolated-subnet values) became stage-contract parameters. The Service
-record's `inputs[]` therefore grows to whatever the deployed phase actually reads
-— 38 for resident active `roles-added` in the deployed record (34 stage-base
-parameters + 4 reused values; the stopped-only `isolated_subnet_ids` is not read
-at that phase). E2E does not hardcode a count or a name list:
+record's `inputs[]` therefore grows to whatever the deployment actually reads:
+the 0.3.0 stage contract publishes 36 definitions — 35 unconditional including
+`api_base_url`, plus the conditional `cleanup_task_role_arn` — and the release
+chain reads the values it consumes as pure SSM parameters. There is no
+resident/stopped phase variant any more, so no recorded input depends on which
+lifecycle state the deployment ran in. E2E does not hardcode a count or a name list:
 it accepts the producer's recorded, sorted and unique list within the contract's
 bound, and derives the schema hash from it, so no schema or format change
 follows. Once both stacks read pure SSM parameters, deploy order no longer
 matters. The conversion has landed and one authorized Workload deploy completed
-from it; the platform record is now pinned, so both producers' records are
+from it; issue #166 renamed that slice to the Runtime stack without changing the
+record shape, the platform record is now pinned, so both producers' records are
 recorded and the deferred evidence gap is closed. That Workload record predates
 the #162 v4 gate, so a gated v4 re-pin remains before qualification can pass.
 
@@ -350,8 +364,8 @@ run for `smoke`, `measure` or `recover`.
 
 E2E then independently observes the live stage base from AWS and requires the
 authenticated body (three Infra stacks, their deployed `Original` template
-content hashes, the stage inputs and the Platform observed tuple) to match the
-Infra record. The Service record's Workload identity is bound by the HTTP
+content hashes, the stage inputs and the Base observed tuple) to match the
+Infra record. The Service record's Runtime identity is bound by the HTTP
 evidence: the deployed Client `/build-metadata.json` source and endpoint match the
 Infra record, and the Service `/health` commit, image digest and API endpoint
 match the Service record. E2E comparisons name the differing field with its
@@ -366,7 +380,7 @@ tuple after any authorized configuration change. The pin identifies the record b
 the SHA-256 of its exact bytes, each stack by the content hash of its deployed
 `Original` CloudFormation template, and each stage input by the hash of its value.
 An ECS task-definition ARN revision inside the Service record is audit
-information; the Workload identity is the Service commit and image digest. This
+information; the Runtime identity is the Service commit and image digest. This
 folds in the E2E half of the fix from
 [AnyWear #138](https://github.com/git-malu/AnyWear/issues/138). A comparison
 failure in this consumer names the field that differs and both values; the

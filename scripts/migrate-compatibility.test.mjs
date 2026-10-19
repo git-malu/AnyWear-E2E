@@ -89,7 +89,7 @@ test('v3 migration rejects the wrong producer, another producer stack and an obs
   assert.throws(() => buildV3Compatibility(v2, { ...runs, platformRecord: swap, platformBytes: f.bytes.workload,
     workloadRecord: swap, workloadBytes: f.bytes.workload }), /Stack producer differs|Platform deployment record producer/);
   const extra = structuredClone(f.platformRecord);
-  extra.stacks.push({ ...extra.stacks[0], name: 'AnyWearWorkloadStack-beta' });
+  extra.stacks.push({ ...extra.stacks[0], name: 'AnyWearRuntimeStack-beta' });
   assert.throws(() => buildV3Compatibility(v2, { ...runs, platformRecord: extra, platformBytes: f.bytes.platform,
     workloadRecord: f.workloadRecord, workloadBytes: f.bytes.workload }), /producer|stacks/);
   const stale = structuredClone(f.workloadRecord);

@@ -68,10 +68,10 @@ tuple being pinned; one producer's record cannot stand in for the other.
    Platform stack. It writes the v3 platform deployment record covering
    `AnyWearFoundationStack`, `AnyWearPlatformStack-beta` and
    `AnyWearBillingStack-beta`.
-2. **Workload record.** Run the Service release chain
+2. **Runtime record.** Run the Service release chain
    (`service-artifacts.yml`, operation `deploy`) for the exact deployed Service
    commit. It builds and verifies the sealed release, deploys
-   `AnyWearWorkloadStack-beta` and writes the workload deployment record covering
+   `AnyWearRuntimeStack-beta` and writes the Service deployment record covering
    only that stack. The record must be schema version 4, carry the passed
    600-second six-signal bake gate, and record the live
    `observed.minimum_client_version` it read back from the deployed Service
@@ -98,7 +98,7 @@ Never one producer at a time.
 ```mermaid
 flowchart TD
     A[Window's last change] --> B[Platform observe on Infra]
-    A --> C[Workload deploy on Service]
+    A --> C[Runtime deploy on Service]
     B --> D[Download platform record]
     C --> E[Download workload record]
     D --> F[Move identity members in one commit]
@@ -111,7 +111,9 @@ flowchart TD
 ## Where each member is read from
 
 Field paths are inside each downloaded record. `platform` and `workload` are the
-two per-producer identities; `deployment` is the workload record identity.
+two per-producer identities; `deployment` is the Service (Runtime) record identity.
+The `workload` member keeps its historical name after Issue #166 renamed the
+Service release slice to `AnyWearRuntimeStack-beta`.
 
 | Member | Field path | Producer |
 | --- | --- | --- |
@@ -272,8 +274,8 @@ records. None of them is one.
 
 - **A read-only state check.** A read-only Infra observe without a v3 record
   writes no deployment record and cannot move the pin.
-- **The Infra Workload deploy entry.** Retired. An Infra run can no longer
-  produce a record for `AnyWearWorkloadStack-beta`; that stack's record comes only
+- **The Infra release-slice deploy entry.** Retired. An Infra run can no longer
+  produce a record for `AnyWearRuntimeStack-beta`; that stack's record comes only
   from the Service release chain.
 - **A Service publication run.** `service-artifacts.yml` publishes a sealed
   release; only its `deploy` operation deploys and writes the workload record,
@@ -294,30 +296,31 @@ on reviewed Infra `main` at the revision that produced the deployed Platform
 stack, after the stage switch allows the observation. Only the changed stack may
 name the executor; every unchanged stack must name its real producer.
 
-The workload record comes from the Service release chain's `deploy` operation for
-the exact Service commit already published as a sealed release. The chain reads
-the image digest and commit from its own build/verify outputs, asserts both stacks
-are terminal, refuses a non-active Beta, deploys with the reviewed identity phase
-and writes the v4 record after `cdk deploy` from `ssm get-parameters` and
-`describe-stacks`. The record must include the passed 600-second six-signal bake
-gate; this consumer refuses it otherwise, so a failed or incomplete bake can
-never supply a pinnable record.
+The Service deployment record comes from the Service release chain's `deploy`
+operation for the exact Service commit already published as a sealed release. The
+chain reads the image digest and commit from its own build/verify outputs, deploys
+`AnyWearRuntimeStack-beta` with the reviewed identity phase and writes the v4
+record after `cdk deploy` from `ssm get-parameters` and `describe-stacks`. The
+record must include the passed 600-second six-signal bake gate; this consumer
+refuses it otherwise, so a failed or incomplete bake can never supply a pinnable
+record.
 
 Both artifacts are retained for ninety days and the live binding refuses an
 expired one, so the pin must move while both records still exist.
 
-The Platform → Workload deploy ordering is **not claimed safe in general**, but
+The Platform → Runtime deploy ordering is **not claimed safe in general**, but
 the producer-side fix has landed. C's post-C Platform deploy removes every
 `PublishOutput*` output, and the release-slice deploy's last eleven weak reads
 (nine cleanup values and two isolated-subnet values) became stage-contract
-parameters. The deployed Service record's `inputs[]` carries 38 entries for
-resident active `roles-added` (34 stage-base parameters + 4 reused values; the
-stopped-only `isolated_subnet_ids` is not read at that phase). This consumer
+parameters. Under 0.3.0 the stage contract publishes 36 definitions — 35
+unconditional including `api_base_url`, plus the conditional
+`cleanup_task_role_arn` — and the release chain reads what it consumes as pure
+SSM parameters; there is no resident/stopped input variant. This consumer
 accepts the recorded, sorted and unique list without a count or name assertion,
 so no schema or format change follows. Once both stacks read pure SSM
 parameters, deploy order no longer matters. One authorized Platform → Workload
-deployment succeeded, but live qualification stays closed by the deferred
-`platform.record`, which is the remaining evidence gap.
+deployment succeeded; Issue #166 renamed that slice to Runtime without changing
+the record shape.
 
 ## The offline validator
 
