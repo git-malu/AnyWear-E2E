@@ -114,7 +114,7 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
     const badApi = path => path.endsWith('/zip') ? Buffer.from('tampered') : api(path);
     await assert.rejects(prepareRecoveryFiles(env, { api: badApi, extract: () => { throw new Error('Digest must fail before extraction'); }, loadDiagnostic: async () => diagnostic }), /digest mismatch/);
     const legacyWrongHash = operation(legacy); legacyWrongHash.operation.input_sha256 = 'f'.repeat(64);
-    await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }), loadDiagnostic: async () => diagnostic }), /binding/);
+    await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }), loadDiagnostic: async () => diagnostic }), /bind/);
     await assert.rejects(prepareRecoveryFiles({ ...env, RECOVERY_PREVIOUS_RUN_ID: '456' }, { api: () => { throw new Error('must refuse before API access'); }, loadDiagnostic: async () => diagnostic }), /captured identities only/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

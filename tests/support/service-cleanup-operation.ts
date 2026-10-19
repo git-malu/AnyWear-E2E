@@ -266,7 +266,9 @@ export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, env
 export function deterministicCleanupExecutionName(envelope: CleanupOperationEnvelope, generation = 0): string {
   if (!Number.isSafeInteger(generation) || generation < 0 || generation > MAX_GENERATIONS) throw new Error('Cleanup execution generation is invalid');
   const base = `beta-cleanup-${envelope.run_scope}-${envelope.request_sha256.slice(0, 16)}`;
-  const name = generation === 0 ? base : `${base}-retry1`;
+  // The retry keeps the established 72-character base bound, so a maximum-length
+  // run scope can still start it and an in-flight legacy `-retry1` name is found.
+  const name = generation === 0 ? base : `${base.slice(0, 72)}-retry1`;
   if (name.length > 80) throw new Error('Cleanup execution name exceeds the Step Functions limit');
   return name;
 }
@@ -423,16 +425,39 @@ function recordedEnvelope(value: unknown): CleanupOperationEnvelope {
   return expected;
 }
 
+interface OriginalEvidence {
+  operation: CleanupOperationEvidence['operation'];
+  envelope: CleanupOperationEnvelope;
+}
+
+/**
+ * Validate a historical owner operation in its own terms: its own envelope,
+ * source/image, version and execution identity. It deliberately does not compare
+ * those against the current dispatch, because a captured scope may predate a
+ * reviewed state-machine version or Service image/source advance and must still
+ * be recoverable.
+ */
+function originalOperation(value: unknown): OriginalEvidence {
+  const evidence = object(value, 'Original cleanup evidence');
+  if (![2, 3].includes(evidence.schema_version as number) || evidence.record_type !== 'anywear_e2e_service_cleanup_operation') {
+    throw new Error('Original cleanup evidence is not a schema 2 or 3 operation record');
+  }
+  const operation = object(evidence.operation, 'Original cleanup operation') as unknown as CleanupOperationEvidence['operation'];
+  const envelope = recordedEnvelope(operation.input);
+  if ((operation.operation_mode ?? 'normal') !== 'normal' || operation.operation_mode !== envelope.operation_mode
+    || operation.recovery_attempt !== envelope.recovery_attempt
+    || operation.input_sha256 !== hash(JSON.stringify(envelope))
+    || ![deterministicCleanupExecutionName(envelope, 0), deterministicCleanupExecutionName(envelope, 1)].includes(operation.execution_name)
+    || operation.execution_arn !== cleanupExecutionArn(operation.state_machine_version_arn, operation.execution_name)) {
+    throw new Error('Original cleanup evidence does not bind its own captured operation');
+  }
+  return { operation, envelope };
+}
+
 function recordedOperation(value: unknown): CleanupOperationEvidence['operation'] {
   const evidence = object(value, 'Original owner evidence');
-  const operation = object(evidence.operation, 'Original owner operation') as unknown as CleanupOperationEvidence['operation'];
-  const input = recordedEnvelope(operation.input);
-  if (evidence.schema_version !== 3 || evidence.record_type !== 'anywear_e2e_service_cleanup_operation'
-    || operation.operation_mode !== input.operation_mode || operation.recovery_attempt !== input.recovery_attempt
-    || operation.input_sha256 !== hash(JSON.stringify(input))
-    || ![deterministicCleanupExecutionName(input, 0), deterministicCleanupExecutionName(input, 1)].includes(operation.execution_name)
-    || operation.execution_arn !== cleanupExecutionArn(operation.state_machine_version_arn, operation.execution_name)) throw new Error('Original owner evidence has a foreign operation binding');
-  return operation;
+  if (evidence.schema_version !== 3) throw new Error('Original owner evidence has a foreign operation binding');
+  return originalOperation(value).operation;
 }
 
 export function assertCleanupOwnerEvidence(value: unknown, cleanupRequest: string): CleanupOperationEvidence['operation'] {
@@ -441,20 +466,38 @@ export function assertCleanupOwnerEvidence(value: unknown, cleanupRequest: strin
   return operation;
 }
 
+interface ExpectedExecution {
+  envelope: CleanupOperationEnvelope;
+  versionArn: string;
+  name: string;
+  arn: string;
+}
+
+function expectedExecution(envelope: CleanupOperationEnvelope, versionArn: string, generation: number): ExpectedExecution {
+  const name = deterministicCleanupExecutionName(envelope, generation);
+  return { envelope, versionArn, name, arn: cleanupExecutionArn(versionArn, name) };
+}
+
 /**
- * Resolve one deterministic execution name without starting anything. An absent
- * name is the start candidate; any other describe failure is a refusal, because
- * the entry point must never guess whether an execution exists.
+ * Read one deterministic execution without starting anything. An absent name is
+ * the start candidate; any other describe failure is a refusal, because the entry
+ * point must never guess whether an execution exists.
  */
-async function resolveExecution(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope,
-  versionArn: string, name: string): Promise<DescribeExecutionOutput | undefined> {
+async function describeExecution(io: CleanupOperationIo, arn: string): Promise<DescribeExecutionOutput | undefined> {
   try {
-    const description = await io.describe(arn);
-    validateDescription(description, envelope, versionArn, name);
-    return description;
+    return await io.describe(arn);
   } catch (error) {
     if (error instanceof Error && error.name === 'ExecutionDoesNotExist') return undefined;
     throw error;
+  }
+}
+
+function bindsExpected(description: DescribeExecutionOutput, expected: ExpectedExecution): boolean {
+  try {
+    validateDescription(description, expected.envelope, expected.versionArn, expected.name);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -484,10 +527,21 @@ async function awaitTerminal(io: CleanupOperationIo, arn: string, envelope: Clea
   return last!;
 }
 
+async function observePresent(io: CleanupOperationIo, description: DescribeExecutionOutput, expected: ExpectedExecution,
+  evidence: CleanupOperationEvidence, path: string): Promise<DescribeExecutionOutput> {
+  if (description.status === 'RUNNING') {
+    return awaitTerminal(io, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, description);
+  }
+  await recordDescription(evidence, path, description);
+  return description;
+}
+
 /**
  * The one bounded predecessor check. One inventory pass over the three cleanup
- * task families asks ECS for `RUNNING`-desired tasks only; a returned task means
- * the cleanup family may still be working, so the next generation cannot start.
+ * task families asks ECS for `RUNNING`-desired tasks only; any returned task
+ * means the cleanup family may still be working, so the next generation cannot
+ * start. A task whose desired status is already `STOPPED` is outside this
+ * single-inventory check.
  */
 async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]> {
   const families: string[] = [];
@@ -524,13 +578,21 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * Start or resume the deterministic cleanup operation for one captured run
  * scope.
  *
- * The rule is the same for qualification and recovery dispatch: resolve
- * generation 0, resume it while it runs, verify it when it succeeded, and start
- * generation 1 only after generation 0 is terminal non-success and exactly one
- * bounded predecessor check (its describe plus one cleanup-family inventory)
- * shows the cleanup families stopped. If generation 1 already exists it is
- * resumed or verified; if it is already terminal the dispatch refuses and
- * starts nothing. At most two deterministic names exist per captured scope.
+ * The rule is the same for an ordinary qualification cleanup and a protected
+ * `recover` dispatch: resolve generation 0, resume it while it runs, verify it
+ * when it succeeded, and start generation 1 only after generation 0 is terminal
+ * non-success and exactly one bounded predecessor check (its describe plus one
+ * cleanup-family inventory) shows the cleanup families stopped. If generation 1
+ * already exists it is resumed or verified; if it is already terminal
+ * non-success the dispatch refuses and starts nothing. At most two deterministic
+ * names exist per captured scope.
+ *
+ * A recovery dispatch supplies the original owner evidence. That evidence is
+ * validated in its own terms, so an execution captured before a reviewed version
+ * or Service image/source advance is still observed under its own envelope and
+ * version. Generation 1 is always the current normal envelope under the current
+ * version. If the owner evidence already used the retry name, that name is the
+ * last allowed name and a terminal non-success refuses.
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
   io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
@@ -540,29 +602,26 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     return undefined;
   }
   const envelope = createCleanupOperationEnvelope(inputs, environment);
-  const names = [deterministicCleanupExecutionName(envelope, 0), deterministicCleanupExecutionName(envelope, 1)];
-  const arns = names.map(name => cleanupExecutionArn(versionArn, name));
+  const current = [expectedExecution(envelope, versionArn, 0), expectedExecution(envelope, versionArn, 1)];
   const originalPath = environment.E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH;
-  if (originalPath) {
-    const original = object(parseStrictJson(await readFile(originalPath)), 'Original cleanup evidence');
-    const operation = object(original.operation, 'Original cleanup operation');
-    if (![2, 3].includes(original.schema_version as number) || original.record_type !== 'anywear_e2e_service_cleanup_operation'
-      || (operation.operation_mode ?? 'normal') !== 'normal'
-      || operation.state_machine_version_arn !== versionArn || !isDeepStrictEqual(operation.input, envelope)
-      || operation.input_sha256 !== hash(JSON.stringify(envelope))
-      || !names.includes(String(operation.execution_name))
-      || operation.execution_arn !== cleanupExecutionArn(versionArn, String(operation.execution_name))) throw new Error('Original cleanup evidence does not bind this exact request/source/version');
+  const original = originalPath ? originalOperation(parseStrictJson(await readFile(originalPath))) : undefined;
+  if (original && (original.envelope.cleanup_request !== envelope.cleanup_request || original.envelope.run_scope !== envelope.run_scope)) {
+    throw new Error('Original cleanup evidence does not bind this captured request and run scope');
   }
   const transport = io ?? defaultIo(versionArn);
   const path = environment.E2E_SERVICE_CLEANUP_EVIDENCE_PATH ?? 'test-results/service-cleanup-operation.json';
   const evidence: CleanupOperationEvidence = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation',
-    operation: { operation_mode: 'normal', state_machine_version_arn: versionArn, execution_arn: arns[0], execution_name: names[0],
-      status: 'PENDING', proof_status: 'pending', input_sha256: hash(JSON.stringify(envelope)), input: envelope } };
+    operation: { operation_mode: 'normal', state_machine_version_arn: current[0].versionArn, execution_arn: current[0].arn,
+      execution_name: current[0].name, status: 'PENDING', proof_status: 'pending',
+      input_sha256: hash(JSON.stringify(current[0].envelope)), input: current[0].envelope } };
   let refusalPhase: CleanupRefusalPhase = 'operation_start';
   let refusalCategory: CleanupRefusalCategory = 'operation_start_unavailable';
-  const target = (generation: number) => {
-    evidence.operation.execution_name = names[generation];
-    evidence.operation.execution_arn = arns[generation];
+  const target = (expected: ExpectedExecution) => {
+    evidence.operation.state_machine_version_arn = expected.versionArn;
+    evidence.operation.execution_name = expected.name;
+    evidence.operation.execution_arn = expected.arn;
+    evidence.operation.input = expected.envelope;
+    evidence.operation.input_sha256 = hash(JSON.stringify(expected.envelope));
     evidence.operation.status = 'PENDING';
     evidence.operation.started_at = undefined;
     evidence.operation.stopped_at = undefined;
@@ -570,93 +629,127 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
   const start = async () => {
     await writeEvidence(path, evidence);
     try {
-      const started = await transport.start(envelope, evidence.operation.execution_name);
+      const started = await transport.start(evidence.operation.input, evidence.operation.execution_name);
       if (started.executionArn && started.executionArn !== evidence.operation.execution_arn) throw new Error('Cleanup start returned a foreign execution ARN');
     } catch (error) {
       if (!(error instanceof Error) || !['ExecutionAlreadyExists', 'TimeoutError', 'RequestTimeout', 'NetworkingError', 'InternalServerError', 'ServiceUnavailable'].includes(error.name)) throw error;
       // The exact resolution below settles a completed name or a lost response.
     }
   };
-  try {
-    // Generation 0: resolve, start only when absent, then resume or verify it.
-    refusalPhase = 'execution_observation';
-    refusalCategory = 'execution_observation_unavailable';
-    let description = await resolveExecution(transport, arns[0], envelope, versionArn, names[0]);
-    if (!description) {
-      refusalPhase = 'operation_start';
-      refusalCategory = 'operation_start_unavailable';
-      await start();
-      refusalPhase = 'execution_observation';
-      refusalCategory = 'execution_observation_unavailable';
-      description = await awaitTerminal(transport, arns[0], envelope, versionArn, names[0], evidence, path);
-    } else if (description.status === 'RUNNING') {
-      description = await awaitTerminal(transport, arns[0], envelope, versionArn, names[0], evidence, path, description);
-    } else {
-      await recordDescription(evidence, path, description);
-    }
-    if (description.status !== 'SUCCEEDED') {
-      if (description.status === 'RUNNING') {
-        refusalPhase = 'execution_observation';
-        refusalCategory = 'execution_not_succeeded';
-        throw new Error('Cleanup execution did not reach a terminal state within the bounded wait');
-      }
-      // Generation 0 is terminal non-success. One bounded predecessor check
-      // (its describe above plus this single inventory pass) gates generation 1.
-      refusalPhase = 'retry_proof';
-      refusalCategory = 'retry_proof_unavailable';
-      const families = await cleanupFamiliesStopped(transport);
-      evidence.operation.preceding_execution = { execution_arn: description.executionArn!, status: description.status!,
-        ...(description.stopDate ? { stopped_at: description.stopDate.toISOString() } : {}), cleanup_families: families };
-      await writeEvidence(path, evidence);
-      target(1);
-      refusalPhase = 'execution_observation';
-      refusalCategory = 'execution_observation_unavailable';
-      let retry = await resolveExecution(transport, arns[1], envelope, versionArn, names[1]);
-      if (!retry) {
-        refusalPhase = 'operation_start';
-        refusalCategory = 'operation_start_unavailable';
-        await start();
-        refusalPhase = 'execution_observation';
-        refusalCategory = 'execution_observation_unavailable';
-        retry = await awaitTerminal(transport, arns[1], envelope, versionArn, names[1], evidence, path);
-      } else if (retry.status === 'RUNNING') {
-        retry = await awaitTerminal(transport, arns[1], envelope, versionArn, names[1], evidence, path, retry);
-      } else {
-        await recordDescription(evidence, path, retry);
-      }
-      if (retry.status === 'RUNNING') {
-        refusalPhase = 'execution_observation';
-        refusalCategory = 'execution_not_succeeded';
-        throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
-      }
-      if (retry.status !== 'SUCCEEDED') {
-        refusalPhase = 'retry_eligibility';
-        refusalCategory = 'retry_not_authorized';
-        throw new Error('Cleanup retry already exists and is terminal; no third execution is started');
-      }
-      description = retry;
-    }
+  const verifySuccess = async (description: DescribeExecutionOutput, proofEnvelope: CleanupOperationEnvelope): Promise<CleanupOperationEvidence> => {
     refusalPhase = 'execution_observation';
     refusalCategory = 'execution_not_succeeded';
     if (!description.output || description.outputDetails?.included !== true) throw new Error('Cleanup did not expose complete terminal success');
     refusalPhase = 'result_proof';
     refusalCategory = 'result_proof_unavailable';
-    const output = validateResult(parseStrictJson(description.output), envelope);
+    const output = validateResult(parseStrictJson(description.output), proofEnvelope);
     evidence.operation.output = output;
     await writeEvidence(path, evidence);
     refusalPhase = 'task_proof';
     refusalCategory = 'task_proof_unavailable';
-    const verification = await observeTask(transport, envelope, output.verification_task_arn, output.verification_task_definition_arn);
-    const cleanup = await observeTask(transport, envelope, output.cleanup_task_arn, output.cleanup_task_definition_arn);
+    const verification = await observeTask(transport, proofEnvelope, output.verification_task_arn, output.verification_task_definition_arn);
+    const cleanup = await observeTask(transport, proofEnvelope, output.cleanup_task_arn, output.cleanup_task_definition_arn);
     if (verification.kind !== 'verification' || cleanup.kind !== 'cleanup') throw new Error('Cleanup tasks exchanged their fixed purposes');
     evidence.operation.tasks = [verification, cleanup];
     await writeEvidence(path, evidence);
     refusalPhase = 'completion_proof';
     refusalCategory = 'completion_proof_unavailable';
-    evidence.operation.committed_result = await readCommitted(transport, cleanup, envelope);
+    evidence.operation.committed_result = await readCommitted(transport, cleanup, proofEnvelope);
     evidence.operation.proof_status = 'verified';
     await writeEvidence(path, evidence);
     return evidence;
+  };
+  try {
+    // A historical owner that already used the one retry name is at the last
+    // allowed name: resolve that exact execution and never start a third.
+    const originalRetry = original && original.operation.execution_name === deterministicCleanupExecutionName(original.envelope, 1)
+      ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 1) : undefined;
+    if (originalRetry) {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      const present = await describeExecution(transport, originalRetry.arn);
+      if (!present) throw new Error('Original captured retry execution is unavailable');
+      validateDescription(present, originalRetry.envelope, originalRetry.versionArn, originalRetry.name);
+      target(originalRetry);
+      const description = await observePresent(transport, present, originalRetry, evidence, path);
+      if (description.status === 'SUCCEEDED') return await verifySuccess(description, originalRetry.envelope);
+      if (description.status === 'RUNNING') {
+        refusalPhase = 'execution_observation';
+        refusalCategory = 'execution_not_succeeded';
+        throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
+      }
+      refusalPhase = 'retry_eligibility';
+      refusalCategory = 'retry_not_authorized';
+      throw new Error('Original captured retry execution is terminal non-success; no third execution is started');
+    }
+    // Generation 0. A normal dispatch resolves the current operation; a recovery
+    // dispatch may instead find the execution the original evidence recorded,
+    // under the owner's own envelope and version, or a generation 0 started by an
+    // earlier recovery dispatch under the current pair. An absent generation 0 is
+    // started under the current version and normal envelope.
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_observation_unavailable';
+    const originalBase = original ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 0) : undefined;
+    let expected: ExpectedExecution;
+    let description = await describeExecution(transport, current[0].arn);
+    if (!description) {
+      expected = current[0];
+      target(expected);
+      refusalPhase = 'operation_start';
+      refusalCategory = 'operation_start_unavailable';
+      await start();
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path);
+    } else if (originalBase && bindsExpected(description, originalBase)) {
+      expected = originalBase;
+      target(expected);
+      description = await observePresent(transport, description, expected, evidence, path);
+    } else if (bindsExpected(description, current[0])) {
+      expected = current[0];
+      target(expected);
+      description = await observePresent(transport, description, expected, evidence, path);
+    } else {
+      throw new Error('Observed generation 0 does not bind the original owner or the current operation');
+    }
+    if (description.status === 'SUCCEEDED') return await verifySuccess(description, expected.envelope);
+    if (description.status === 'RUNNING') {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_not_succeeded';
+      throw new Error('Cleanup execution did not reach a terminal state within the bounded wait');
+    }
+    // Generation 0 is terminal non-success. One bounded predecessor check
+    // (its describe above plus this single inventory pass) gates generation 1.
+    refusalPhase = 'retry_proof';
+    refusalCategory = 'retry_proof_unavailable';
+    const families = await cleanupFamiliesStopped(transport);
+    evidence.operation.preceding_execution = { execution_arn: description.executionArn!, status: description.status!,
+      ...(description.stopDate ? { stopped_at: description.stopDate.toISOString() } : {}), cleanup_families: families };
+    await writeEvidence(path, evidence);
+    target(current[1]);
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_observation_unavailable';
+    let retry = await describeExecution(transport, current[1].arn);
+    if (!retry) {
+      refusalPhase = 'operation_start';
+      refusalCategory = 'operation_start_unavailable';
+      await start();
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      retry = await awaitTerminal(transport, current[1].arn, current[1].envelope, current[1].versionArn, current[1].name, evidence, path);
+    } else {
+      validateDescription(retry, current[1].envelope, current[1].versionArn, current[1].name);
+      retry = await observePresent(transport, retry, current[1], evidence, path);
+    }
+    if (retry.status === 'SUCCEEDED') return await verifySuccess(retry, current[1].envelope);
+    if (retry.status === 'RUNNING') {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_not_succeeded';
+      throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
+    }
+    refusalPhase = 'retry_eligibility';
+    refusalCategory = 'retry_not_authorized';
+    throw new Error('Cleanup retry already exists and is terminal non-success; no third execution is started');
   } catch {
     evidence.operation.proof_status = 'refused';
     evidence.operation.failure = 'Exact execution/task/committed-result proof unavailable; Cognito identities retained';

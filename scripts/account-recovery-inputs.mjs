@@ -23,12 +23,12 @@ export const ORIGINAL_OWNER_WORKFLOWS = Object.freeze(['.github/workflows/beta-q
 // download, diagnostic read or AWS credential.
 const REMOVED_REPLAY_INPUT = /^(?:E2E_CLEANUP_(?:OPERATION_MODE|RECOVERY_ATTEMPT|RETRY_FAILED)|RECOVERY_PREVIOUS_RUN_(?:ID|ATTEMPT))$/;
 
-export function assertRecoveryArtifact(artifact, run, recovery = false) {
+export function assertRecoveryArtifact(artifact, run) {
   const started = Date.parse(run.run_started_at);
   const completed = Date.parse(run.updated_at);
   const created = Date.parse(artifact.created_at);
   if (!Number.isSafeInteger(artifact.id) || artifact.id < 1
-    || artifact.name !== `${recovery ? 'beta-account-recovery' : 'beta-account-lifecycle'}-${run.id}-${run.run_attempt}`
+    || artifact.name !== `beta-account-lifecycle-${run.id}-${run.run_attempt}`
     || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? '')
     || artifact.expired !== false || !(Date.parse(artifact.expires_at) > Date.now())
     || artifact.workflow_run?.id !== run.id || artifact.workflow_run?.head_sha !== run.head_sha

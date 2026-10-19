@@ -47,30 +47,38 @@ function committed(patch = {}, input = envelope) {
 /**
  * A stateful two-generation mock. Generation 0 is absent unless seeded, and a
  * start inserts the generation it names; describe reports the current status of
- * that exact execution. Nothing here models execution history: the new rule
- * never reads it.
+ * that exact execution under the envelope and version it was seeded with.
+ * Nothing here models execution history: the new rule never reads it.
  */
 function fixture(options = {}) {
   const calls = [];
   const executions = new Map();
   let logCalls = 0;
-  const insert = (generation, status, patch = {}) => {
-    const executionName = deterministicCleanupExecutionName(envelope, generation);
-    executions.set(executionName, { status, patch });
+  const currentVersionArn = options.currentVersionArn ?? environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
+  const seed = (generation, value) => {
+    const record = typeof value === 'string' ? { status: value } : value;
+    const executionName = deterministicCleanupExecutionName(record.envelope ?? envelope, generation);
+    executions.set(executionName, { status: record.status, patch: record.patch ?? {},
+      envelope: record.envelope ?? envelope, versionArn: record.versionArn ?? currentVersionArn });
     return executionName;
   };
-  for (const [generation, status] of Object.entries(options.existing ?? {})) if (status) insert(Number(generation), status);
+  const insert = (executionName, status) => {
+    executions.set(executionName, { status, patch: {}, envelope, versionArn: currentVersionArn });
+    return executionName;
+  };
+  for (const [generation, value] of Object.entries(options.existing ?? {})) if (value) seed(Number(generation), value);
+  const proofEnvelope = options.proofEnvelope ?? envelope;
   const io = { calls, executions,
     async start(input, executionName) {
       calls.push({ start: executionName, input });
       if (options.startError) {
         if (['ExecutionAlreadyExists', 'TimeoutError', 'RequestTimeout', 'NetworkingError', 'InternalServerError', 'ServiceUnavailable'].includes(options.startError)) {
-          insert(executionName === name1 ? 1 : 0, options.newStatus ?? 'SUCCEEDED');
+          insert(executionName, options.newStatus ?? 'SUCCEEDED');
         }
         throw Object.assign(new Error('simulated'), { name: options.startError });
       }
-      insert(executionName === name1 ? 1 : 0, options.newStatus ?? 'SUCCEEDED');
-      return { executionArn: cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, executionName) };
+      insert(executionName, options.newStatus ?? 'SUCCEEDED');
+      return { executionArn: cleanupExecutionArn(currentVersionArn, executionName) };
     },
     async describe(executionArn) {
       calls.push({ describe: executionArn });
@@ -78,7 +86,7 @@ function fixture(options = {}) {
       const record = executions.get(executionName);
       if (!record) throw Object.assign(new Error('Execution does not exist'), { name: 'ExecutionDoesNotExist' });
       const patch = { ...record.patch, ...(options.description?.(record.status, executionName) ?? {}) };
-      return description(executionName, { status: record.status, ...patch });
+      return description(executionName, { status: record.status, ...patch }, record.envelope, record.versionArn);
     },
     async aws(args) {
       calls.push({ aws: args });
@@ -90,22 +98,22 @@ function fixture(options = {}) {
         if (options.missingMalformed?.includes(kind)) return { failures: [{ arn: task(kind), reason: 'MISSING', detail: 'unexpected' }], tasks: [] };
         const value = { taskArn: task(kind), clusterArn: cluster, taskDefinitionArn: definition(kind), lastStatus: 'STOPPED',
           desiredStatus: 'STOPPED', startedBy: 'AWS Step Functions',
-          containers: [{ name: 'OneShot', lastStatus: 'STOPPED', exitCode: 0, imageDigest: envelope.service_image_digest }],
-          overrides: { containerOverrides: kind === 'verification' ? [] : [{ name: 'OneShot', command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)] }], inferenceAcceleratorOverrides: [] } };
+          containers: [{ name: 'OneShot', lastStatus: 'STOPPED', exitCode: 0, imageDigest: proofEnvelope.service_image_digest }],
+          overrides: { containerOverrides: kind === 'verification' ? [] : [{ name: 'OneShot', command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(proofEnvelope)] }], inferenceAcceleratorOverrides: [] } };
         return { failures: [], tasks: [options.task?.(value, kind) ?? value] };
       }
       if (args[1] === 'describe-task-definition') {
         const kind = args.at(-1) === definition('verification') ? 'verification' : 'cleanup';
         const value = { taskDefinitionArn: definition(kind), cpu: '512', memory: '1024', networkMode: 'awsvpc', requiresCompatibilities: ['FARGATE'], containerDefinitions: [{ name: 'OneShot',
-          image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/anywear@${envelope.service_image_digest}`,
+          image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/anywear@${proofEnvelope.service_image_digest}`,
           command: kind === 'verification' ? ['node', 'dist/verify.js'] : ['node', 'dist/ops/beta-cleanup-operation.js'],
-          environment: [{ name: 'SERVICE_COMMIT_SHA', value: envelope.service_commit_sha }, { name: 'IMAGE_DIGEST', value: envelope.service_image_digest }],
+          environment: [{ name: 'SERVICE_COMMIT_SHA', value: proofEnvelope.service_commit_sha }, { name: 'IMAGE_DIGEST', value: proofEnvelope.service_image_digest }],
           logConfiguration: { logDriver: 'awslogs', options: { 'awslogs-group': '/anywear/beta/one-shot', 'awslogs-region': 'ap-east-1', 'awslogs-stream-prefix': prefix(kind) } } }] };
         return { taskDefinition: options.definition?.(value, kind) ?? value };
       }
       const token = args.includes('--next-token') ? args.at(-1) : undefined;
       logCalls += 1;
-      return options.logs?.(token, logCalls) ?? { events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed())}` }], nextForwardToken: 'end' };
+      return options.logs?.(token, logCalls) ?? { events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({}, proofEnvelope))}` }], nextForwardToken: 'end' };
     },
     async sleep() {
       calls.push({ sleep: 1 });
@@ -117,28 +125,51 @@ function fixture(options = {}) {
 async function run(options = {}, environmentPatch = {}, before) {
   const directory = await mkdtemp(join(tmpdir(), 'anywear-cleanup-proof-'));
   const evidencePath = join(directory, 'operation.json');
-  const io = fixture(options);
+  const effective = { ...environment, ...environmentPatch };
+  const io = fixture({ currentVersionArn: effective.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, ...options });
   try {
     const extra = await before?.(directory);
-    const execution = () => runCleanupOperation(inputs, { ...environment, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: evidencePath, ...environmentPatch, ...extra }, io);
+    const execution = () => runCleanupOperation(inputs, { ...effective, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: evidencePath, ...extra }, io);
     return await options.verify(execution, io, evidencePath);
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
-test('the envelope always emits the Service-required normal mode and no replay attempt', () => {
+function ownerEvidenceFor(input, options = {}) {
+  const versionArn = options.versionArn ?? environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
+  const name = deterministicCleanupExecutionName(input, options.generation ?? 0);
+  return { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
+    ...(input.operation_mode ? { operation_mode: input.operation_mode } : {}),
+    input, input_sha256: hash(JSON.stringify(input)), execution_name: name,
+    execution_arn: cleanupExecutionArn(versionArn, name), state_machine_version_arn: versionArn,
+    status: options.status ?? 'FAILED', proof_status: 'refused' } };
+}
+
+async function runOwner(options, verify) {
+  return run({ ...options, verify }, options.environmentPatch ?? {}, async directory => {
+    const ownerPath = join(directory, 'owner.json');
+    await writeFile(ownerPath, JSON.stringify(options.evidence));
+    return { E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ownerPath };
+  });
+}
+
+test('the envelope always emits normal mode with no attempt, and a Service attempt echo is refused', async () => {
   assert.deepEqual(Object.keys(envelope).sort(), ['cleanup_request', 'operation_id', 'operation_mode', 'request_sha256', 'run_scope',
     'schema_version', 'service_commit_sha', 'service_image_digest'].sort());
   assert.equal(envelope.operation_mode, 'normal');
   assert.equal(Object.hasOwn(envelope, 'recovery_attempt'), false);
   assert.equal(envelope.operation_id, `beta-tester-cleanup:${scope}`);
   assert.equal(JSON.stringify(envelope).includes('recovery_attempt'), false);
-  // `validateCommitted` still compares both echoed fields, so a Service echo that
-  // invents an attempt is refused even though E2E never sends one.
-  const attemptEcho = committed({ recovery_attempt: 1 });
-  assert.throws(() => {
-    const result = attemptEcho;
-    if (result.recovery_attempt !== envelope.recovery_attempt) throw new Error('Service completion marker lacks exact committed request/source proof');
-  }, /committed/);
+  // Drive the production committed-result proof with an attempt echo. The
+  // regression is non-vacuous: `validateCommitted` (through `readCommitted`)
+  // must refuse the marker even though E2E never emits an attempt.
+  await run({ existing: { 0: 'SUCCEEDED' },
+    logs: token => ({ events: token ? [] : [{ message: `ANYWEAR_BETA_CLEANUP_RESULT=${JSON.stringify(committed({ recovery_attempt: 1 }))}` }], nextForwardToken: 'end' }),
+    verify: async (execute, _io, path) => {
+      await assert.rejects(execute(), /identities retained/);
+      const operation = JSON.parse(await readFile(path, 'utf8')).operation;
+      assert.equal(operation.refusal_phase, 'completion_proof');
+      assert.equal(operation.refusal_category, 'completion_proof_unavailable');
+    } });
 });
 
 test('the captured scope has exactly two deterministic names and no recovery-shaped identity', () => {
@@ -150,6 +181,19 @@ test('the captured scope has exactly two deterministic names and no recovery-sha
   // The production surface no longer derives a recovery-shaped execution name.
   const source = readFileSync(new URL('../tests/support/service-cleanup-operation.ts', import.meta.url), 'utf8');
   assert.equal(source.includes('beta-cleanup-recovery-'), false);
+});
+
+test('a maximum-length run scope still has a startable, legacy-compatible retry name', () => {
+  const maxScope = `12345678901234567890-999999-${'a'.repeat(16)}`;
+  const maxInputs = { ...inputs, cleanup_json: JSON.stringify({ runScope: maxScope,
+    users: [{ sub: '10000000-0000-4000-8000-000000000001', email: `e2e-beta-${maxScope}-0-a1b2c3d4@anywear.local` }] }) };
+  const maxEnvelope = createCleanupOperationEnvelope(maxInputs, environment);
+  const base = deterministicCleanupExecutionName(maxEnvelope, 0);
+  const retry = deterministicCleanupExecutionName(maxEnvelope, 1);
+  assert.equal(base.length, 74);
+  assert.equal(retry, `${base.slice(0, 72)}-retry1`);
+  assert.equal(retry.length, 79);
+  assert.ok(cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, retry));
 });
 
 test('bounded canonical worker envelope and execution identity reject malformed source, scope and foreign versions', () => {
@@ -243,6 +287,10 @@ test('one retry after a terminal failure uses one describe, one cleanup-family i
     assert.equal(io.calls.filter(call => call.start).length, 1);
     assert.equal(io.calls.filter(call => call.start)[0].start, name1);
     assert.deepEqual(JSON.parse(JSON.stringify(io.calls.filter(call => call.start)[0].input)), envelope);
+    // Exactly the predecessor describe, the retry-name resolution and the
+    // observation of the execution this dispatch started. An extra speculative
+    // describe would change this sequence.
+    assert.deepEqual(io.calls.filter(call => call.describe).map(call => call.describe), [arn0, arn1, arn1]);
     assert.deepEqual(io.calls.filter(call => call.aws?.[1] === 'list-tasks').map(call => call.aws[call.aws.indexOf('--desired-status') + 1]),
       ['RUNNING', 'RUNNING', 'RUNNING']);
     assert.deepEqual(io.calls.filter(call => call.aws?.[1] === 'list-tasks').map(call => call.aws[call.aws.indexOf('--family') + 1]),
@@ -264,7 +312,7 @@ test('a repeated dispatch onto the existing -retry1 neither starts a duplicate n
   } });
 });
 
-test('a dispatch that finds -retry1 already terminal refuses and starts no third execution', async () => {
+test('a dispatch that finds -retry1 already terminal non-success refuses and starts no third execution', async () => {
   await run({ existing: { 0: 'FAILED', 1: 'FAILED' }, verify: async (execute, io, path) => {
     await assert.rejects(execute(), /identities retained/);
     assert.equal(io.calls.filter(call => call.start).length, 0);
@@ -296,6 +344,97 @@ test('a dispatch refuses to start the retry when the predecessor cannot be shown
       assert.equal(operation.preceding_execution, undefined);
     } });
   }
+});
+
+test('a captured owner from an older state-machine version recovers through one current retry', async () => {
+  const ownerVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', ':1');
+  const currentVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', ':2');
+  await runOwner({
+    existing: { 0: { status: 'FAILED', versionArn: ownerVersionArn } },
+    evidence: ownerEvidenceFor(envelope, { versionArn: ownerVersionArn }),
+    environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: currentVersionArn },
+  }, async (execute, io) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.execution_name, name1);
+    assert.equal(result.operation.state_machine_version_arn, currentVersionArn);
+    assert.equal(result.operation.preceding_execution.execution_arn, arn0);
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    assert.equal(io.calls.filter(call => call.start)[0].start, name1);
+    // The retry is the current normal envelope, not the owner's old input.
+    assert.deepEqual(JSON.parse(JSON.stringify(io.calls.filter(call => call.start)[0].input)), envelope);
+  });
+});
+
+test('an owner captured under a changed Service image/source is still observed and retried', async () => {
+  const ownerEnvironment = { ...environment, E2E_CLEANUP_SERVICE_SHA: 'c'.repeat(40), E2E_CLEANUP_SERVICE_IMAGE_DIGEST: `sha256:${'d'.repeat(64)}` };
+  const ownerEnvelope = createCleanupOperationEnvelope(inputs, ownerEnvironment);
+  assert.notEqual(ownerEnvelope.service_image_digest, envelope.service_image_digest);
+  await runOwner({
+    existing: { 0: { status: 'FAILED', envelope: ownerEnvelope } },
+    evidence: ownerEvidenceFor(ownerEnvelope),
+  }, async (execute, io) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(io.calls.filter(call => call.start)[0].input)), envelope);
+    assert.equal(io.calls.filter(call => call.describe)[0].describe, cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, name0));
+  });
+});
+
+test('a legacy mode-less owner input is still recoverable and the retry uses normal mode', async () => {
+  const legacyEnvelope = Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== 'operation_mode'));
+  await runOwner({
+    existing: { 0: { status: 'FAILED', envelope: legacyEnvelope } },
+    evidence: ownerEvidenceFor(legacyEnvelope),
+  }, async (execute, io) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(io.calls.filter(call => call.start)[0].input)), envelope);
+    assert.equal(result.operation.execution_name, name1);
+  });
+});
+
+test('a running owner from an older version resumes under its own envelope without a start', async () => {
+  const ownerVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', ':1');
+  const currentVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', ':2');
+  const ownerEnvironment = { ...environment, E2E_CLEANUP_SERVICE_IMAGE_DIGEST: `sha256:${'d'.repeat(64)}` };
+  const ownerEnvelope = createCleanupOperationEnvelope(inputs, ownerEnvironment);
+  await runOwner({
+    existing: { 0: { status: 'RUNNING', versionArn: ownerVersionArn, envelope: ownerEnvelope } },
+    evidence: ownerEvidenceFor(ownerEnvelope, { versionArn: ownerVersionArn }),
+    proofEnvelope: ownerEnvelope,
+    completeRunning: true,
+    environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: currentVersionArn },
+  }, async (execute, io) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.execution_name, name0);
+    assert.equal(result.operation.state_machine_version_arn, ownerVersionArn);
+    assert.equal(result.operation.input.service_image_digest, ownerEnvelope.service_image_digest);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+    assert.deepEqual(io.calls.filter(call => call.describe).map(call => call.describe), [arn0, arn0]);
+  });
+});
+
+test('a legacy owner that already used -retry1 refuses a terminal non-success with no third execution', async () => {
+  const ownerVersionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', ':1');
+  const legacyEnvelope = Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== 'operation_mode'));
+  await runOwner({
+    existing: { 1: { status: 'FAILED', versionArn: ownerVersionArn, envelope: legacyEnvelope } },
+    evidence: ownerEvidenceFor(legacyEnvelope, { versionArn: ownerVersionArn, generation: 1 }),
+    proofEnvelope: legacyEnvelope,
+    environmentPatch: { BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN.replace(':7', ':2') },
+  }, async (execute, io, path) => {
+    await assert.rejects(execute(), /identities retained/);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+    const operation = JSON.parse(await readFile(path, 'utf8')).operation;
+    assert.equal(operation.execution_name, name1);
+    assert.equal(operation.state_machine_version_arn, ownerVersionArn);
+    assert.equal(operation.refusal_phase, 'retry_eligibility');
+    assert.equal(operation.refusal_category, 'retry_not_authorized');
+  });
 });
 
 for (const startError of ['ExecutionAlreadyExists', 'TimeoutError', 'NetworkingError']) {
@@ -411,22 +550,35 @@ test('a pending execution remains bounded and retains its recoverable execution 
   } });
 });
 
-test('original operation evidence is consumed and source/version/request drift refuses any start', async () => {
-  for (const executionName of [name0, name1]) {
-    const original = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: {
-      operation_mode: 'normal', state_machine_version_arn: environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, execution_name: executionName,
-      execution_arn: cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, executionName),
-      input_sha256: hash(JSON.stringify(envelope)), input: envelope, status: 'FAILED' } };
-    for (const corrupt of [false, true]) {
-      await run({ existing: { 0: 'SUCCEEDED' }, verify: async (execute, io) => {
-        if (corrupt) { await assert.rejects(execute(), /Original cleanup evidence/); assert.equal(io.calls.length, 0); }
-        else assert.equal((await execute()).operation.proof_status, 'verified');
-      } }, {}, async directory => {
-        const path = join(directory, 'original.json');
-        await writeFile(path, JSON.stringify(corrupt ? { ...original, operation: { ...original.operation, state_machine_version_arn: original.operation.state_machine_version_arn.replace(':7', ':8') } } : original));
-        return { E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: path };
-      });
-    }
+test('original operation evidence is validated in its own terms and request drift refuses any start', async () => {
+  // A valid owner is consumed in its own terms, even when its version differs
+  // from the current one (the dedicated owner tests also cover a changed
+  // source/image and a legacy mode-less input).
+  await runOwner({ existing: { 0: 'SUCCEEDED' }, evidence: ownerEvidenceFor(envelope) }, async (execute, io) => {
+    assert.equal((await execute()).operation.proof_status, 'verified');
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+  });
+  const valid = ownerEvidenceFor(envelope);
+  const otherScope = `987654321-1-${'e'.repeat(16)}`;
+  const otherInputs = { ...inputs, cleanup_json: JSON.stringify({ runScope: otherScope,
+    users: [{ sub: '10000000-0000-4000-8000-000000000001', email: `e2e-beta-${otherScope}-0-a1b2c3d4@anywear.local` }] }) };
+  const otherEnvelope = createCleanupOperationEnvelope(otherInputs, environment);
+  const corruptions = [
+    { ...valid, operation: { ...valid.operation, input_sha256: 'f'.repeat(64) } },
+    { ...valid, record_type: 'anywear_e2e_foreign_record' },
+    { ...valid, operation: { ...valid.operation, execution_name: 'beta-cleanup-foreign-name' } },
+    { ...valid, operation: { ...valid.operation, operation_mode: 'recovery' } },
+    ownerEvidenceFor(otherEnvelope),
+  ];
+  for (const evidence of corruptions) {
+    await run({ existing: { 0: 'SUCCEEDED' }, verify: async (execute, io) => {
+      await assert.rejects(execute(), /Original cleanup evidence/);
+      assert.equal(io.calls.length, 0);
+    } }, {}, async directory => {
+      const path = join(directory, 'original.json');
+      await writeFile(path, JSON.stringify(evidence));
+      return { E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: path };
+    });
   }
 });
 

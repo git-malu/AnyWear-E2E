@@ -462,36 +462,45 @@ unassigned diagnostic `known_message`; those counters alone do not establish
 per-message ownership. Source/image-bound Service validation and live unrelated
 data/message preservation evidence provide that acceptance boundary.
 
-Protected account recovery uses the same one rule as the ordinary qualification cleanup.
-For the exact captured run scope, the entry point resolves one deterministic execution
-name, `beta-cleanup-<runScope>-<requestHash16>`. It resumes that execution while it is
-`RUNNING`, verifies the committed result when it has `SUCCEEDED`, and only when it is
-terminal non-success performs the bounded predecessor check: the execution `describe`
-that established the terminal state, then one inventory pass over the three bounded
-cleanup task families (`beta-anywear-cleanup`, `beta-anywear-cleanup-verify` and
-`beta-anywear-cleanup-acceptance`) asking ECS only for `RUNNING`-desired tasks. If the
-inventory returns a task, or cannot complete, the dispatch refuses. Otherwise it starts
-`beta-cleanup-<runScope>-<requestHash16>-retry1` once, or resumes or verifies that name
-when it already exists.
+Protected account recovery and the ordinary qualification cleanup share one rule. For the
+exact captured run scope, the entry point resolves one deterministic execution name,
+`beta-cleanup-<runScope>-<requestHash16>`; an absent generation 0 is started under the
+current version and normal envelope. It resumes that execution while it is `RUNNING`,
+verifies the committed result when it has `SUCCEEDED`, and only when it is terminal
+non-success performs the bounded predecessor check: the execution `describe` that
+established the terminal state, then one inventory pass over the three bounded cleanup
+task families (`beta-anywear-cleanup`, `beta-anywear-cleanup-verify` and
+`beta-anywear-cleanup-acceptance`) asking ECS only for `RUNNING`-desired tasks. The
+inventory never reads `lastStatus`: any returned task refuses the next start, and an
+inventory that cannot complete refuses as well. A task still draining with a `STOPPED`
+desired status is therefore outside this single-inventory check. Otherwise the dispatch
+starts `beta-cleanup-<runScope>-<requestHash16>-retry1` once, or resumes or verifies that
+name when it already exists.
+
+A protected `recover` dispatch supplies the original owner evidence. That evidence is
+validated in its own terms, so an execution captured under an older state-machine
+version, an older Service image/source or a legacy mode-less owner input is observed and
+verified under its own envelope and version; the retry always uses the current version
+and normal envelope. The original evidence's captured request and run scope must equal
+the current canonical request and scope.
 
 A captured run scope therefore carries at most two executions: the base deterministic
-name and one `-retry1`. A dispatch that finds `-retry1` already terminal refuses,
-records `refusal_phase`/`refusal_category` in the operation evidence, starts no third
-execution and deletes no identity. The retry is the only retry: there is no attempt
+name and one `-retry1`. A dispatch that finds `-retry1` already terminal non-success
+refuses; a `RUNNING` retry is resumed and a `SUCCEEDED` retry is verified. A refused
+dispatch records `refusal_phase`/`refusal_category` in the operation evidence, starts no
+third execution and deletes no identity. The retry is the only retry: there is no attempt
 number, attempt input, predecessor artifact or execution-history hash, and no second
 cessation sample. An operator supplies the captured identities once; the protected
-`recover` dispatch takes `source_run_id`/`source_run_attempt` and reads the original
-owner's canonical request, rather than a previous recovery run.
+`recover` dispatch takes `source_run_id`/`source_run_attempt`.
 
-Every dispatch submits the Service-required envelope in `normal` mode. The envelope
-keeps the required `operation_mode` field and the optional attempt field the Service
-validates, but E2E always emits `operation_mode: 'normal'` and never emits an attempt.
+Every dispatch always emits `operation_mode: 'normal'` and no `recovery_attempt`; the
+envelope keeps the optional attempt field only because the Service validates it.
 `validateCommitted` still compares both echoed fields, so a Service that echoes an
-attempt is refused. The `recover` operation and its original-artifact preparation
-preparation remain the only consumer of the capture inputs in the shared `qualify`
-entry; partial Cognito reconciliation never shrinks the canonical cleanup request.
-Shared account-pool concurrency does not establish a cross-repository writer
-allocation; that remains an operational preflight gate.
+attempt is refused. The `recover` operation and its original-artifact preparation remain
+the only consumer of the capture inputs in the shared `qualify` entry; partial Cognito
+reconciliation never shrinks the canonical cleanup request. Shared account-pool
+concurrency does not establish a cross-repository writer allocation; that remains an
+operational preflight gate.
 
 The `full`, `smoke` and `measure` operations accept `worker_slot_offset` (default `0`) for
 allocating the run's worker slots; for example `2` selects slots 2 and 3 without
