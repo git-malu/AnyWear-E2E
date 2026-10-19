@@ -261,12 +261,14 @@ and their repository-owned pipelines pass.
 
 ## Release-slice qualification contract v3
 
-The release-slice split moves `AnyWearWorkloadStack-{beta,prod}` to `AnyWear-Service`.
-`AnyWear-Infra` keeps Bootstrap, Platform, Billing and the reviewed observation
-entry; the Service release chain builds, verifies, deploys and records the Workload
-slice in one run. E2E follows that split: the deployed tuple is qualified by two
-per-producer deployment records, not by one Infra record covering every stack and
-not by a committed cross-repository `selection`.
+The release-slice split moves `AnyWearRuntimeStack-{beta,prod}` (formerly
+`AnyWearWorkloadStack-{beta,prod}`) to `AnyWear-Service`. `AnyWear-Infra` keeps
+Bootstrap, the persistent Base stack (`AnyWearPlatformStack-beta`) and Billing,
+plus the disposable `AnyWearEgressStack-beta`, and the reviewed observation
+entry; the Service release chain builds, verifies, deploys and records the
+Runtime slice in one run. E2E follows that split: the deployed tuple is qualified
+by two per-producer deployment records, not by one Infra record covering every
+stack and not by a committed cross-repository `selection`.
 
 The full v3 shape, the two record identities, the deferred shape (contract
 history) and the checks each record passes are in
@@ -331,17 +333,19 @@ its `build-metadata.json`, and no Client publish ran after the previous pin.
 [`docs/compatibility-pin.md`](docs/compatibility-pin.md) is the routine that moves
 the pin; a move carries both records, never one producer at a time.
 
-The Platform → Workload deploy ordering is not claimed safe in general, but the
+The Platform → Runtime deploy ordering is not claimed safe in general, but the
 producer-side extension has landed. C's post-C Platform deploy removes every
 `PublishOutput*` output, and the release-slice deploy's last eleven weak reads
 (nine cleanup values and two isolated-subnet values) became stage-contract
-parameters. The deployed Service record's `inputs[]` carries 38 entries for
-resident active `roles-added` (34 stage-base parameters + 4 reused values; the
-stopped-only `isolated_subnet_ids` is not read at that phase). E2E hardcodes
+parameters. Under `@git-malu/stage-contracts` 0.3.0 the stage contract publishes
+36 definitions — 35 unconditional including `api_base_url`, plus the conditional
+`cleanup_task_role_arn` — and the release chain reads what it consumes as pure
+SSM parameters; there is no resident/stopped input variant. E2E hardcodes
 neither the count nor the names: it accepts the producer's recorded, sorted and
 unique list and derives the schema hash from it. Once both stacks read pure SSM
 parameters, deploy order no longer matters. One authorized Platform → Workload
-deployment succeeded, and the platform record is now pinned; neither producer's
+deployment succeeded; Issue #166 renamed that slice to Runtime without changing
+the record shape, and the platform record is now pinned, so neither producer's
 record is deferred.
 
 `scripts/migrate-compatibility.mjs` owns the offline transition. v2 → v3 is
@@ -373,7 +377,7 @@ AWS credentials are assumed before the first observation through
 `beta-e2e-qualification-role`. The exact compatibility-pinned Infra helper observes
 the three stage-base stacks, the actual CFN Original template content hashes, the
 stable Lambda configuration and code hashes, the queue settings and the stage SSM
-inputs. The Workload identity is bound by the deployed Service `/health` and the
+inputs. The Runtime identity is bound by the deployed Service `/health` and the
 Client build metadata. The v3 record's `schema` member is a content hash of the
 stage-contract inputs; the database/applied schema identity moved to the Service
 release chain with the release slice.

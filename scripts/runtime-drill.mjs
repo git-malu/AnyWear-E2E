@@ -233,8 +233,8 @@ export function buildRuntimeDrillPlan(config, stack = {}) {
         id: 'rollback',
         objective: 'Verify application rollback selects the previous immutable digest and leaves schema forward-only.',
         operator_steps: [
-          'Run only after a previous Beta WorkloadStack digest and qualification artifact are recorded.',
-          'Use a reviewed deployment failure that occurs after WorkloadStack update and before post-deploy verification succeeds.',
+          'Run only after a previous Beta Runtime stack digest and qualification artifact are recorded.',
+          'Use a reviewed deployment failure that occurs after the Runtime stack update and before post-deploy verification succeeds.',
           'Capture the previous digest, failed candidate, rollback digest, health identity, and schema version.',
         ],
         pass_conditions: [
@@ -242,7 +242,7 @@ export function buildRuntimeDrillPlan(config, stack = {}) {
           'The qualification candidate is not reported as healthy after rollback.',
           'The database is not rolled back and remains at the compatible forward schema version.',
         ],
-        cleanup: 'Leave the prior known-good WorkloadStack active; do not alter Production.',
+        cleanup: 'Leave the prior known-good Runtime stack deployed; do not alter Production.',
       },
     ],
   };
@@ -531,22 +531,23 @@ async function collectPreflight(config, compatibility) {
   const identity = await awsJson(['sts', 'get-caller-identity']);
   if (identity.Account !== TARGET_ACCOUNT) throw new Error(`AWS identity account ${identity.Account ?? 'unknown'} is not Beta NonProd`);
 
-  const [platformResponse, workloadResponse] = await Promise.all([
+  const [platformResponse, runtimeResponse] = await Promise.all([
     awsJson(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearPlatformStack-beta']),
-    awsJson(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearWorkloadStack-beta']),
+    awsJson(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearRuntimeStack-beta']),
   ]);
   const platform = platformResponse.Stacks?.[0];
-  const workload = workloadResponse.Stacks?.[0];
-  if (!platform || !workload) throw new Error('Beta PlatformStack and WorkloadStack must exist before runtime drills');
+  const runtime = runtimeResponse.Stacks?.[0];
+  // Issue #166: the persistent Base stack and the Service-owned Runtime slice are
+  // the two stacks a running Beta has. There is no separate active flag any more:
+  // the stopped state is simply the absent Runtime stack, so its presence is the
+  // whole precondition.
+  if (!platform || !runtime) throw new Error('Beta Base (AnyWearPlatformStack-beta) and Runtime (AnyWearRuntimeStack-beta) stacks must exist before runtime drills');
   const platformOutputs = outputMap(platform.Outputs);
-  const workloadOutputs = outputMap(workload.Outputs);
-  if (platformOutputs.BetaActive === 'false' || workloadOutputs.BetaActive === 'false') {
-    throw new Error('Beta compute is stopped; run the approved lifecycle start before runtime drills');
-  }
+  const runtimeOutputs = outputMap(runtime.Outputs);
   const stack = {
     cluster: platformOutputs.EcsClusterName,
-    apiService: workloadOutputs.ApiServiceName,
-    workerService: workloadOutputs.WorkerServiceName,
+    apiService: runtimeOutputs.ApiServiceName,
+    workerService: runtimeOutputs.WorkerServiceName,
     userPoolId: platformOutputs.UserPoolId,
     userPoolClientId: platformOutputs.UserPoolClientId,
     bucket: platformOutputs.WardrobeBucketName,

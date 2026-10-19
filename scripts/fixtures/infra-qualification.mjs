@@ -47,11 +47,16 @@ function qualificationReport() {
   return Buffer.from(`${JSON.stringify({ config: { rootDir: SCENARIO_DIRECTORY.slice(0, -1) }, suites, errors: [], stats: {} }, null, 2)}\n`);
 }
 
+// The recorded system tuple is four stacks: three always-present Infra stacks
+// (Foundation, the persistent Beta Base stack and Billing) plus the Service-owned
+// Runtime release slice. `AnyWearEgressStack-beta` is operation-owned and is
+// deliberately absent here: it is never part of a deployment record or the
+// authenticated observation manifest.
 const STACK_REGIONS = Object.freeze({
   AnyWearFoundationStack: 'ap-east-1',
   'AnyWearPlatformStack-beta': 'ap-east-1',
   'AnyWearBillingStack-beta': 'us-east-1',
-  'AnyWearWorkloadStack-beta': 'ap-east-1',
+  'AnyWearRuntimeStack-beta': 'ap-east-1',
 });
 
 const stageInputs = (hash, count, prefix = 'stage_param') => Array.from({ length: count }, (_, index) => ({
@@ -181,7 +186,7 @@ function records({ sha, hash, platformProducerSha, workloadProducerSha }) {
       run_id: 50,
       run_attempt: 1,
     },
-    stacks: [stack('AnyWearWorkloadStack-beta', 'git-malu/AnyWear-Service', workloadProducerSha)],
+    stacks: [stack('AnyWearRuntimeStack-beta', 'git-malu/AnyWear-Service', workloadProducerSha)],
     inputs: workloadInputs,
     observed: {
       service_sha: sha('b'),

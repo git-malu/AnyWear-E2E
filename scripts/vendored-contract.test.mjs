@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { byteHash } from './evidence-contract.mjs';
 import { assertVendoredProvenance, loadVendoredProvenance } from './vendored-contract.mjs';
 
-const SOURCE_SHA = '0e9034332681c86c75b508dbd9edf2eb857a8000';
+const SOURCE_SHA = 'c9983520edbff92c425d7db4261fd55e8f2ecbfb';
 
 test('the vendored v4 contract matches its pinned producer commit and file hashes', async () => {
   const provenance = await loadVendoredProvenance();
@@ -20,10 +20,36 @@ test('the vendored v4 contract matches its pinned producer commit and file hashe
     'deployment-contract.mjs': [{ from: "from '@git-malu/stage-contracts'", to: "from './stage-contracts.mjs'" }],
   });
   assert.equal(provenance.package.name, '@git-malu/stage-contracts');
-  assert.equal(provenance.package.version, '0.2.2');
-  assert.equal(provenance.package.sha256, '465b25fc16306cead891ff09d3d0c2e0d6d7d3d1488535eb6f3eca7ec367b514');
-  assert.match(provenance.package.note, /minimum_client_version/);
+  assert.equal(provenance.package.version, '0.3.0');
+  assert.equal(provenance.package.sha256, '0180a2788e7df0bf695d235f17af2f7ee2cff81520bccf2d9efe7f5d1da0fadb');
+  assert.equal(provenance.package.tarball_commit, '29601d9a2264e69544daccbe7d4b7f29fe2a5991');
+  assert.match(provenance.package.note, /api_base_url/);
+  assert.match(provenance.package.note, /Runtime/);
+  assert.match(provenance.package.note, /No stage-contracts-v0\.3\.0 tag exists/);
   assert.deepEqual(await assertVendoredProvenance(), provenance);
+});
+
+// Issue #166: the Service release slice is the Runtime stack. The vendored
+// package entry and operation table are the only place this repository learns the
+// stack identity, so the pinned bytes must state Runtime and keep the disposable
+// Egress stack out of the always-present manifest.
+test('the vendored 0.3.0 identity is Runtime and Egress stays operation-owned', async () => {
+  const stage = await import('./vendor/stage-contracts.mjs');
+  assert.equal(stage.SERVICE_RUNTIME_STACK.name, 'AnyWearRuntimeStack-beta');
+  assert.equal(stage.SERVICE_RUNTIME_STACK.region, 'ap-east-1');
+  assert.equal(stage.SERVICE_RUNTIME_STACK.workflow_path, '.github/workflows/service-artifacts.yml');
+  assert.equal(stage.runtimeStackName('beta'), 'AnyWearRuntimeStack-beta');
+  assert.equal(stage.runtimeStageFromStack('AnyWearRuntimeStack-beta'), 'beta');
+  assert.equal(typeof stage.validateServiceStacks, 'function');
+  assert.equal(stage.SERVICE_WORKLOAD_STACK, undefined);
+  assert.equal(stage.workloadStageFromStack, undefined);
+  const stacks = await import('./vendor/operation-stacks.mjs');
+  assert.deepEqual(stacks.configuredStacks.map(({ stack_name: name }) => name),
+    ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearBillingStack-beta']);
+  assert.deepEqual(stacks.operationOwnedStacks.map(({ stack_name: name }) => name),
+    ['AnyWearEgressStack-beta']);
+  assert.deepEqual(stacks.changedStackNames('deploy-egress'), ['AnyWearEgressStack-beta']);
+  assert.deepEqual(stacks.changedStackNames('delete-egress'), ['AnyWearEgressStack-beta']);
 });
 
 async function withVendoredCopy(action) {

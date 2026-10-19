@@ -2,10 +2,23 @@
 
 These files are the public v4 deployment contract from
 [`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`0e9034332681c86c75b508dbd9edf2eb857a8000`. The contract keeps the seven-member
-v3 record core, and the Service `anywear_service_deployment` record is schema
-version 4 with a required `gate` block. The Infra `anywear_infra_deployment`
-record stays schema version 3 and never carries a gate.
+`c9983520edbff92c425d7db4261fd55e8f2ecbfb` (`@git-malu/stage-contracts` 0.3.0,
+Issue #166). The contract keeps the seven-member v3 record core, and the Service
+`anywear_service_deployment` record is schema version 4 with a required `gate`
+block. The Infra `anywear_infra_deployment` record stays schema version 3 and
+never carries a gate.
+
+The Service release slice is the **Runtime** stack. `SERVICE_RUNTIME_STACK` is
+`AnyWearRuntimeStack-beta` (`ap-east-1`, workflow
+`.github/workflows/service-artifacts.yml`); `runtimeStackName` and the exported
+`runtimeStageFromStack` replaced the Workload identity, and no
+`AnyWearWorkloadStack`, `SERVICE_WORKLOAD_STACK` or `workloadStageFromStack`
+export remains. `AnyWearEgressStack-beta` is **operation-owned**: the contract's
+always-present `configuredStacks` manifest is still exactly Foundation,
+`AnyWearPlatformStack-beta` and Billing, and the recorded tuple stays three Infra
+stacks plus one Service stack. Egress appears only in the operation change table
+(`deploy-egress` / `delete-egress`) and in `operationOwnedStacks`, never in the
+record or observation manifest.
 
 Three files are exact byte copies. `deployment-contract.mjs` is the raw producer
 file with exactly one declared import rewrite because this repository consumes
@@ -13,10 +26,10 @@ the dependency-free package source instead of installing a tarball:
 
 | E2E file | Producer path in Infra | Producer SHA-256 | Committed SHA-256 |
 | --- | --- | --- | --- |
-| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `972c1fbe8896f53c3046c5c3f67543c87cc550bb973a0a87f47b722a413fa06a` | `0a5dce23d6cd6947595c49cce282477d34c49110a186f01feb9b16dc22c3990a` |
+| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `c17ee5136d01f69309b55bfd18eb8b62b05c20d1306aea64e33a429e83754d5a` | `54a6986f9b399b6935f45829404a3e36b1bd7874da623ad8d56e3d7790728a21` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
-| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023` | `6105de5a9b3860cb130ad7d5c8d05cf03a31a36dc71f818e451f7eddd65cf023` |
-| `stage-contracts.mjs` | `packages/stage-contracts/index.mjs` | `6af31a91990a96ca5eadb366f80aba2018221d6bc73a8e957d03c895fde51287` | `6af31a91990a96ca5eadb366f80aba2018221d6bc73a8e957d03c895fde51287` |
+| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab` | `7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab` |
+| `stage-contracts.mjs` | `packages/stage-contracts/index.mjs` | `4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784` | `4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784` |
 
 ## The one declared rewrite
 
@@ -39,16 +52,23 @@ change or a doctored file is refused before the consumer imports the contract.
 | Member | Value |
 | --- | --- |
 | Package | `@git-malu/stage-contracts` |
-| Version | `0.2.2` |
+| Version | `0.3.0` |
 | Source | `packages/stage-contracts` |
-| Tarball SHA-256 | `465b25fc16306cead891ff09d3d0c2e0d6d7d3d1488535eb6f3eca7ec367b514` |
+| Tarball SHA-256 | `0180a2788e7df0bf695d235f17af2f7ee2cff81520bccf2d9efe7f5d1da0fadb` |
 
-The tarball is the packed `git-malu-stage-contracts-0.2.2.tgz` for consumers that
-install the package. This repository does not commit the tarball and adds no
-dependency: `stage-contracts.mjs` is the same package entry in install-free form.
-`provenance.json` is the machine-readable pin of both forms. Version 0.2.2 makes
-`observed.minimum_client_version` a required non-negative safe integer in the v4
-Service record.
+The tarball is the packed `git-malu-stage-contracts-0.3.0.tgz` for consumers that
+install the package; it was packed from Infra commit
+`29601d9a2264e69544daccbe7d4b7f29fe2a5991`, and its `index.mjs` is exactly the
+vendored `stage-contracts.mjs` bytes. This repository does not commit the tarball
+and adds no dependency: `stage-contracts.mjs` is the same package entry in
+install-free form. `provenance.json` is the machine-readable pin of both forms.
+Version 0.3.0 renames the Service release slice to the Runtime stack
+(`runtimeStackName`, `SERVICE_RUNTIME_STACK`, `runtimeStageFromStack`,
+`validateServiceStacks`) and adds the unconditional `api_base_url` stage-contract
+parameter (36 definitions, 35 unconditional, 1 conditional), which the Base stack
+publishes and the Service release chain reads. It does **not** claim a
+`stage-contracts-v0.3.0` tag: the tag is created only after the Infra merge, at
+Deployment.
 
 ## What the contract validates
 
@@ -63,10 +83,15 @@ dispatches on `record_type` and accepts exactly one producer's record:
   commit and the Client endpoint. It has no `gate`.
 - `anywear_service_deployment` — schema version 4, producer
   `git-malu/AnyWear-Service`, workflow `.github/workflows/service-artifacts.yml`.
-  The record lists exactly `AnyWearWorkloadStack-beta`. Its `observed` is the
-  Workload tuple: the Service commit, the image digest, the minimum Client
+  The record lists exactly `AnyWearRuntimeStack-beta`. Its `observed` is the
+  Runtime tuple: the Service commit, the image digest, the minimum Client
   version floor the deployed Service enforces, the two ECS service identities and
   the API endpoint.
+- The stage contract is 36 parameter definitions: 35 unconditional (including
+  `api_base_url`, the public API distribution endpoint Base owns) and the
+  conditional `cleanup_task_role_arn`. A reader accepts the recorded, sorted and
+  unique `inputs[]` without a fixed count or name list and derives the schema hash
+  from it.
 - The Service `gate` is a required top-level member. It records one passed
   `<stage>-anywear-deployment-bake` window of exactly 600 seconds, the probe
   budget (`15`-second interval, 30–40 probes, request floor 30), and the six
