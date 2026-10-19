@@ -487,13 +487,16 @@ version and envelope. The original evidence's captured request and run scope mus
 the current canonical request and scope.
 
 A captured run scope therefore carries at most two executions: the base deterministic
-name and one `-retry1`. A dispatch that finds `-retry1` already terminal non-success
-refuses; a `RUNNING` retry is resumed and a `SUCCEEDED` retry is verified. A refused
-dispatch records `refusal_phase`/`refusal_category` in the operation evidence, starts no
-third execution and deletes no identity. The retry is the only retry: there is no attempt
-number, attempt input, predecessor artifact or execution-history hash, and no second
-cessation sample. An operator supplies the captured identities once; the protected
-`recover` dispatch takes `source_run_id`/`source_run_attempt`.
+name and one `-retry1`. A retry newly started by this dispatch uses the current version
+and normal envelope. An existing retry that binds the original owner evidence or the
+current pair is resumed when it is `RUNNING` and verified when it is `SUCCEEDED`, under
+that envelope and version. An execution that binds neither — for example a retry started
+by an earlier recovery under an intermediate reviewed tuple — is refused fail-closed: the
+dispatch records `refusal_phase`/`refusal_category`, starts no third execution and deletes
+no identity. The retry is the only retry: there is no attempt number, attempt input,
+predecessor artifact or execution-history hash, and no second cessation sample. An
+operator supplies the captured identities once; the protected `recover` dispatch takes
+`source_run_id`/`source_run_attempt`.
 
 Every dispatch always emits `operation_mode: 'normal'` and no `recovery_attempt`; the
 envelope keeps the optional attempt field only because the Service validates it.
