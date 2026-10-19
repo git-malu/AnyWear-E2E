@@ -12,25 +12,25 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const RUN_SCOPE = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 const VERSION_ARN = /^arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:([1-9][0-9]*)$/;
-const BASE_ARN = 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup';
 const TASK_ARN = /^arn:aws:ecs:ap-east-1:650880818323:task\/beta-anywear\/([a-f0-9]{32})$/;
 const DEFINITION_ARN = /^arn:aws:ecs:ap-east-1:650880818323:task-definition\/(beta-anywear-cleanup(?:-verify)?):[1-9][0-9]*$/;
 const CLUSTER = 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear';
 const LOG_GROUP = '/anywear/beta/one-shot';
 const MARKER = 'ANYWEAR_BETA_CLEANUP_RESULT=';
 const TERMINAL_FAILURE = ['FAILED', 'TIMED_OUT', 'ABORTED'];
+const CLEANUP_FAMILIES = ['beta-anywear-cleanup', 'beta-anywear-cleanup-verify', 'beta-anywear-cleanup-acceptance'] as const;
+const MAX_GENERATIONS = 1;
 const execute = promisify(execFile);
-export type CleanupOperationMode = 'normal' | 'recovery';
 
 type CleanupRefusalPhase = 'operation_start' | 'execution_observation' | 'retry_eligibility' | 'retry_proof'
-  | 'result_proof' | 'task_proof' | 'completion_proof' | 'recovery_preflight';
+  | 'result_proof' | 'task_proof' | 'completion_proof';
 type CleanupRefusalCategory = 'operation_start_unavailable' | 'execution_observation_unavailable' | 'retry_not_authorized'
   | 'retry_proof_unavailable' | 'execution_not_succeeded' | 'result_proof_unavailable' | 'task_proof_unavailable'
-  | 'completion_proof_unavailable' | 'recovery_preflight_unavailable';
+  | 'completion_proof_unavailable';
 
 export interface CleanupOperationEnvelope {
   schema_version: 1;
-  operation_mode: CleanupOperationMode;
+  operation_mode: 'normal';
   recovery_attempt?: number;
   operation_id: string;
   run_scope: string;
@@ -66,9 +66,8 @@ export interface CleanupOperationEvidence {
   schema_version: 3;
   record_type: 'anywear_e2e_service_cleanup_operation';
   operation: {
-    operation_mode: CleanupOperationMode;
+    operation_mode: 'normal';
     recovery_attempt?: number;
-    recovery_preflight?: Record<string, unknown>;
     state_machine_version_arn: string;
     execution_arn: string;
     execution_name: string;
@@ -81,7 +80,7 @@ export interface CleanupOperationEvidence {
     output?: CleanupOperationResult;
     tasks?: Record<string, unknown>[];
     committed_result?: Record<string, unknown>;
-    preceding_execution?: { execution_arn: string; status: string; stopped_tasks: string[]; task_proofs?: Record<string, unknown>[]; log_snapshot_sha256?: string };
+    preceding_execution?: { execution_arn: string; status: string; stopped_at?: string; cleanup_families: string[] };
     failure?: string;
     refusal_phase?: CleanupRefusalPhase;
     refusal_category?: CleanupRefusalCategory;
@@ -109,8 +108,6 @@ interface CanonicalTask {
 interface TaskProofOptions {
   expectedDefinition?: string;
   requireSuccess: boolean;
-  origin: 'live' | 'history';
-  eventIds?: number[];
   snapshotText?: string;
 }
 
@@ -135,11 +132,6 @@ function optionalArray(value: unknown, label: string): unknown[] {
   return array(value, label);
 }
 
-function inertHistoryScalar(value: unknown, label: string): undefined {
-  if (value === undefined || value === '') return undefined;
-  throw new Error(`${label} contains a nonempty override`);
-}
-
 function mapLiveTask(value: unknown): CanonicalTask {
   const task = object(value, 'Live ECS task');
   for (const key of ['taskArn', 'clusterArn', 'taskDefinitionArn', 'lastStatus', 'desiredStatus', 'startedBy']) {
@@ -149,40 +141,6 @@ function mapLiveTask(value: unknown): CanonicalTask {
   return { taskArn: task.taskArn as string, clusterArn: task.clusterArn as string, taskDefinitionArn: task.taskDefinitionArn as string,
     lastStatus: task.lastStatus as string, desiredStatus: task.desiredStatus as string, startedBy: task.startedBy as string, containers,
     overrides: object(task.overrides === undefined ? {} : task.overrides, 'Live ECS overrides') };
-}
-
-function mapHistoryTask(value: unknown): CanonicalTask {
-  const task = object(value, 'History ECS task');
-  for (const key of ['TaskArn', 'ClusterArn', 'TaskDefinitionArn', 'LastStatus', 'DesiredStatus', 'StartedBy']) {
-    if (typeof task[key] !== 'string' || task[key] === '') throw new Error(`History ECS task field ${key} is malformed`);
-  }
-  const containers = array(task.Containers, 'History ECS containers').map(entry => {
-    const container = object(entry, 'History ECS container');
-    if (typeof container.Name !== 'string' || typeof container.LastStatus !== 'string'
-      || !Number.isInteger(container.ExitCode) || typeof container.ImageDigest !== 'string') throw new Error('History ECS container is malformed');
-    return { name: container.Name, lastStatus: container.LastStatus, exitCode: container.ExitCode, imageDigest: container.ImageDigest };
-  });
-  const rawOverrides = object(task.Overrides === undefined ? {} : task.Overrides, 'History ECS overrides');
-  if (Object.keys(rawOverrides).some(key => !['ContainerOverrides', 'InferenceAcceleratorOverrides', 'TaskRoleArn', 'ExecutionRoleArn', 'Cpu', 'Memory'].includes(key))) {
-    throw new Error('History ECS overrides contain an unknown field');
-  }
-  const containerOverrides = optionalArray(rawOverrides.ContainerOverrides, 'History container overrides').map(entry => {
-    const override = object(entry, 'History container override');
-    if (Object.keys(override).some(key => !['Name', 'Command', 'Environment', 'EnvironmentFiles', 'ResourceRequirements'].includes(key))) {
-      throw new Error('History container override contains an unknown field');
-    }
-    if (typeof override.Name !== 'string') throw new Error('History container override name is malformed');
-    if (override.Command !== undefined && !Array.isArray(override.Command)) throw new Error('History container override command is malformed');
-    return { name: override.Name, command: override.Command, environment: override.Environment,
-      environmentFiles: override.EnvironmentFiles, resourceRequirements: override.ResourceRequirements };
-  });
-  return { taskArn: task.TaskArn as string, clusterArn: task.ClusterArn as string, taskDefinitionArn: task.TaskDefinitionArn as string,
-    lastStatus: task.LastStatus as string, desiredStatus: task.DesiredStatus as string, startedBy: task.StartedBy as string,
-    containers, overrides: { containerOverrides, inferenceAcceleratorOverrides: optionalArray(rawOverrides.InferenceAcceleratorOverrides, 'History accelerator overrides'),
-      taskRoleArn: inertHistoryScalar(rawOverrides.TaskRoleArn, 'History task role'),
-      executionRoleArn: inertHistoryScalar(rawOverrides.ExecutionRoleArn, 'History execution role'),
-      cpu: inertHistoryScalar(rawOverrides.Cpu, 'History CPU'),
-      memory: inertHistoryScalar(rawOverrides.Memory, 'History memory') } };
 }
 
 function validateCanonicalTask(task: CanonicalTask, envelope: CleanupOperationEnvelope, io: CleanupOperationIo,
@@ -252,17 +210,12 @@ function validateCanonicalTask(task: CanonicalTask, envelope: CleanupOperationEn
     return { task_arn: task.taskArn, task_definition_arn: task.taskDefinitionArn, kind: verification ? 'verification' : 'cleanup',
       status: 'STOPPED', exit_code: container.exitCode, image_digest: container.imageDigest, service_commit_sha: variable('SERVICE_COMMIT_SHA'),
       log_group: LOG_GROUP, log_stream: `${prefix}/OneShot/${TASK_ARN.exec(task.taskArn)![1]}`,
-      proof_origin: options.origin, snapshot_sha256: hash(options.snapshotText ?? JSON.stringify(task)), ...(options.eventIds ? { event_ids: options.eventIds } : {}),
+      proof_origin: 'live', snapshot_sha256: hash(options.snapshotText ?? JSON.stringify(task)),
       ...(envelopeHash ? { envelope_sha256: envelopeHash } : {}) };
   })();
 }
 
-export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
-  operationMode: CleanupOperationMode = 'normal', recoveryAttempt?: number): CleanupOperationEnvelope {
-  if (operationMode !== 'normal' && operationMode !== 'recovery') throw new Error('Cleanup operation mode is invalid');
-  if (operationMode === 'recovery' ? !Number.isInteger(recoveryAttempt) || recoveryAttempt! < 1 || recoveryAttempt! > 999999
-    : recoveryAttempt !== undefined || Boolean(environment.E2E_CLEANUP_RECOVERY_ATTEMPT)) throw new Error('Cleanup operation mode/attempt is invalid');
-  if (operationMode === 'recovery' && environment.E2E_CLEANUP_RETRY_FAILED === 'true') throw new Error('Recovery forbids the old retry switch');
+export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env): CleanupOperationEnvelope {
   if (inputs.action !== 'cleanup' || inputs.emails !== '[]') throw new Error('Unsupported Service cleanup action');
   if (Buffer.byteLength(inputs.cleanup_json, 'utf8') > 16_384) throw new Error('Cleanup request exceeds the Service limit');
   const request = object(parseStrictJson(inputs.cleanup_json), 'Cleanup request');
@@ -294,18 +247,28 @@ export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, env
   const digest = environment.E2E_CLEANUP_SERVICE_IMAGE_DIGEST;
   if (!source || !SHA.test(source)) throw new Error('Reviewed cleanup source must be a full commit SHA');
   if (!digest || !DIGEST.test(digest)) throw new Error('Reviewed cleanup image must be an OCI digest');
-  const envelope: CleanupOperationEnvelope = { schema_version: 1, operation_mode: operationMode,
-    ...(operationMode === 'recovery' ? { recovery_attempt: recoveryAttempt } : {}),
-    operation_id: operationMode === 'recovery' ? `beta-tester-cleanup:recovery:${request.runScope}:a${recoveryAttempt}` : `beta-tester-cleanup:${request.runScope}`, run_scope: request.runScope,
+  // The Service envelope keeps `operation_mode` (and its optional
+  // `recovery_attempt`) because the Service validator requires the field. E2E
+  // always submits the ordinary mode, and never submits an attempt.
+  const envelope: CleanupOperationEnvelope = { schema_version: 1, operation_mode: 'normal',
+    operation_id: `beta-tester-cleanup:${request.runScope}`, run_scope: request.runScope,
     request_sha256: hash(inputs.cleanup_json), service_commit_sha: source, service_image_digest: digest, cleanup_request: inputs.cleanup_json };
   const overrides = { ContainerOverrides: [{ Name: 'OneShot', Command: ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)] }] };
   if (Buffer.byteLength(JSON.stringify(overrides), 'utf8') > 8192) throw new Error('Cleanup envelope exceeds the ECS container override limit');
   return envelope;
 }
 
-export function deterministicCleanupExecutionName(envelope: CleanupOperationEnvelope): string {
-  const name = envelope.operation_mode === 'recovery' ? `beta-cleanup-recovery-${envelope.run_scope}-a${envelope.recovery_attempt}`
-    : `beta-cleanup-${envelope.run_scope}-${envelope.request_sha256.slice(0, 16)}`;
+/**
+ * The two deterministic names of one captured scope: the base name and exactly
+ * one retry. Nothing else is ever derived from the captured identities, so a
+ * replay of the same scope can only land on generation 0 or generation 1.
+ */
+export function deterministicCleanupExecutionName(envelope: CleanupOperationEnvelope, generation = 0): string {
+  if (!Number.isSafeInteger(generation) || generation < 0 || generation > MAX_GENERATIONS) throw new Error('Cleanup execution generation is invalid');
+  const base = `beta-cleanup-${envelope.run_scope}-${envelope.request_sha256.slice(0, 16)}`;
+  // The retry keeps the established 72-character base bound, so a maximum-length
+  // run scope can still start it and an in-flight legacy `-retry1` name is found.
+  const name = generation === 0 ? base : `${base.slice(0, 72)}-retry1`;
   if (name.length > 80) throw new Error('Cleanup execution name exceeds the Step Functions limit');
   return name;
 }
@@ -315,11 +278,6 @@ export function cleanupExecutionArn(versionArn: string, name: string): string {
   return `${versionArn.replace(/:stateMachine:/, ':execution:').replace(/:[1-9][0-9]*$/, '')}:${name}`;
 }
 
-function baseExecutionArn(baseArn: string, name: string): string {
-  if (baseArn !== BASE_ARN || !/^[A-Za-z0-9_-]{1,80}$/.test(name)) throw new Error('Cleanup execution inventory has an invalid state-machine or name');
-  return `${baseArn.replace(':stateMachine:', ':execution:')}:${name}`;
-}
-
 function validateDescription(description: DescribeExecutionOutput, envelope: CleanupOperationEnvelope, versionArn: string, name: string): void {
   if (description.executionArn !== cleanupExecutionArn(versionArn, name) || description.name !== name
     || description.stateMachineArn !== versionArn.replace(/:[1-9][0-9]*$/, '') || description.stateMachineVersionArn !== versionArn
@@ -327,12 +285,6 @@ function validateDescription(description: DescribeExecutionOutput, envelope: Cle
     || !description.status || !['RUNNING', 'SUCCEEDED', ...TERMINAL_FAILURE].includes(description.status)) {
     throw new Error('Observed cleanup execution does not bind the exact input, name and immutable version');
   }
-}
-
-function canonicalDescription(description: DescribeExecutionOutput): DescribeExecutionOutput {
-  const canonical = { ...description };
-  delete (canonical as unknown as { $metadata?: unknown }).$metadata;
-  return canonical;
 }
 
 function validateResult(value: unknown, envelope: CleanupOperationEnvelope): CleanupOperationResult {
@@ -354,21 +306,18 @@ function validateResult(value: unknown, envelope: CleanupOperationEnvelope): Cle
 }
 
 async function observeTask(io: CleanupOperationIo, envelope: CleanupOperationEnvelope, taskArn: string,
-  expectedDefinition?: string, requireSuccess = true, historical?: CanonicalTask, eventIds?: number[], snapshotText?: string): Promise<Record<string, unknown>> {
+  expectedDefinition?: string, requireSuccess = true): Promise<Record<string, unknown>> {
   if (!TASK_ARN.test(taskArn)) throw new Error('Cleanup task ARN is outside the fixed Beta cluster');
   const response = object(await io.aws(['ecs', 'describe-tasks', '--cluster', CLUSTER, '--tasks', taskArn]), 'Observed cleanup tasks');
   const failures = array(response.failures, 'Task failures');
   const tasks = array(response.tasks, 'Tasks');
   const missingFailure = failures.length === 1 ? exactObject(failures[0], 'Task failure', ['arn', 'reason']) : undefined;
   const missing = tasks.length === 0 && failures.length === 1 && missingFailure?.arn === taskArn && missingFailure.reason === 'MISSING';
-  if (missing) {
-    if (!historical) throw new Error('Cleanup task history fallback is unavailable');
-    return validateCanonicalTask(historical, envelope, io, { expectedDefinition, requireSuccess, origin: 'history', eventIds, snapshotText });
-  }
+  if (missing) throw new Error('Cleanup task history fallback is unavailable');
   if (failures.length !== 0 || tasks.length !== 1) throw new Error('Cleanup task cannot be observed');
   const liveTask = mapLiveTask(tasks[0]);
   if (liveTask.taskArn !== taskArn) throw new Error('Observed ECS task differs from the submitted task identity');
-  return validateCanonicalTask(liveTask, envelope, io, { expectedDefinition, requireSuccess, origin: 'live', snapshotText: JSON.stringify(tasks[0]) });
+  return validateCanonicalTask(liveTask, envelope, io, { expectedDefinition, requireSuccess, snapshotText: JSON.stringify(tasks[0]) });
 }
 
 function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): Record<string, unknown> {
@@ -428,95 +377,6 @@ async function readCommitted(io: CleanupOperationIo, proof: Record<string, unkno
   throw new Error('Cleanup log completion marker was not observed within the bounded wait');
 }
 
-interface HistoricalTaskProof { taskArn: string; task: CanonicalTask; eventIds: number[]; snapshotText: string }
-
-function historyEvent(events: Record<string, unknown>[], id: number, type: string, previous?: number): Record<string, unknown> {
-  const event = events.find(value => value.id === id);
-  if (!event || event.type !== type || (previous !== undefined && event.previousEventId !== previous)) throw new Error('Prior execution event linkage is invalid');
-  return event;
-}
-
-function scheduledTask(event: Record<string, unknown>, taskDefinition: string, command?: string[]): void {
-  const details = exactObject(event.taskScheduledEventDetails, 'Scheduled task details', ['resourceType', 'resource', 'region', 'parameters', 'timeoutInSeconds']);
-  if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync' || details.region !== 'ap-east-1' || typeof details.parameters !== 'string') throw new Error('Prior scheduled task is outside the fixed capability');
-  const parameters = exactObject(parseStrictJson(details.parameters), 'Scheduled task parameters', ['Cluster', 'TaskDefinition', 'LaunchType', 'NetworkConfiguration', 'Overrides', 'ClientToken', 'StartedBy']);
-  if (parameters.Cluster !== CLUSTER || parameters.TaskDefinition !== taskDefinition || parameters.LaunchType !== 'FARGATE'
-    || typeof parameters.ClientToken !== 'string' || !/^[a-f0-9]{64}$/.test(parameters.ClientToken)
-    || parameters.StartedBy !== 'AWS Step Functions') throw new Error('Prior scheduled task binding is invalid');
-  const network = exactObject(parameters.NetworkConfiguration, 'Scheduled network configuration', ['AwsvpcConfiguration']);
-  const awsvpc = exactObject(network.AwsvpcConfiguration, 'Scheduled awsvpc configuration', ['Subnets', 'SecurityGroups', 'AssignPublicIp']);
-  if (!Array.isArray(awsvpc.Subnets) || awsvpc.Subnets.length < 1 || !Array.isArray(awsvpc.SecurityGroups) || awsvpc.SecurityGroups.length !== 1 || awsvpc.AssignPublicIp !== 'DISABLED') throw new Error('Prior scheduled network binding is invalid');
-  if (command) {
-    const overrides = exactObject(parameters.Overrides, 'Scheduled cleanup overrides', ['ContainerOverrides']);
-    const rows = array(overrides.ContainerOverrides, 'Scheduled container overrides');
-    if (rows.length !== 1) throw new Error('Prior scheduled cleanup override is invalid');
-    const row = exactObject(rows[0], 'Scheduled cleanup override', ['Name', 'Command']);
-    if (row.Name !== 'OneShot' || !isDeepStrictEqual(row.Command, command)) throw new Error('Prior scheduled cleanup command is invalid');
-  } else if (parameters.Overrides !== undefined && !isDeepStrictEqual(parameters.Overrides, {})) {
-    throw new Error('Prior verifier executable override is invalid');
-  }
-}
-
-async function proveStoppedExecution(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope): Promise<HistoricalTaskProof[]> {
-  const history = object(await io.aws(['stepfunctions', 'get-execution-history', '--execution-arn', arn, '--max-results', '1000', '--no-paginate']), 'Execution history');
-  if (history.nextToken) throw new Error('Prior execution history is incomplete; retry refused');
-  const events = array(history.events, 'Execution events').map(value => object(value, 'Execution event'));
-  if (events.length !== 19 || new Set(events.map(event => event.id)).size !== 19 || events.some(event => !Number.isInteger(event.id) || Number(event.id) < 1 || Number(event.id) > 19)) throw new Error('Prior execution history is not the exact complete event set');
-  const begun = events.filter(event => event.type === 'ExecutionStarted');
-  const begunDetails = object(begun[0]?.executionStartedEventDetails, 'Prior execution input');
-  if (begun.length !== 1 || begunDetails.input !== JSON.stringify(envelope)
-    || object(begunDetails.inputDetails, 'Prior input completeness').truncated !== false
-    || !events.some(event => ['ExecutionFailed', 'ExecutionTimedOut', 'ExecutionAborted'].includes(String(event.type)))
-    || events.some(event => event.type === 'ExecutionRedriven')) throw new Error('Prior terminal execution history does not bind the exact request');
-  historyEvent(events, 1, 'ExecutionStarted');
-  historyEvent(events, 2, 'PassStateEntered', 1);
-  historyEvent(events, 3, 'PassStateExited', 2);
-  historyEvent(events, 4, 'PassStateEntered', 3);
-  historyEvent(events, 5, 'PassStateExited', 4);
-  historyEvent(events, 6, 'TaskStateEntered', 5);
-  historyEvent(events, 12, 'PassStateEntered', 11);
-  historyEvent(events, 13, 'PassStateExited', 12);
-  historyEvent(events, 14, 'TaskStateEntered', 13);
-  const chains = [{ entered: 6, scheduled: 7, started: 8, submitted: 9, terminal: 10, exited: 11, name: 'Verify', success: true },
-    { entered: 14, scheduled: 15, started: 16, submitted: 17, terminal: 18, name: 'Cleanup', success: false }];
-  const proofs: HistoricalTaskProof[] = [];
-  for (const chain of chains) {
-    const entered = historyEvent(events, chain.entered, 'TaskStateEntered', chain.entered - 1);
-    if (object(entered.taskStateEnteredEventDetails, 'Task state').name !== chain.name) throw new Error('Prior task state name changed');
-    const submittedEvent = historyEvent(events, chain.submitted, 'TaskSubmitted', chain.started);
-    historyEvent(events, chain.scheduled, 'TaskScheduled', chain.entered);
-    historyEvent(events, chain.started, 'TaskStarted', chain.scheduled);
-    if (chain.exited) historyEvent(events, chain.exited, 'TaskStateExited', chain.terminal);
-    const scheduledDetails = object(events.find(event => event.id === chain.scheduled)?.taskScheduledEventDetails, 'Scheduled task details');
-    const scheduledParameters = object(parseStrictJson(String(scheduledDetails.parameters)), 'Scheduled parameters');
-    const definition = String(scheduledParameters.TaskDefinition);
-    if (!DEFINITION_ARN.test(definition)) throw new Error('Prior task definition is not fixed');
-    scheduledTask(events.find(event => event.id === chain.scheduled)!, definition,
-      chain.success ? undefined : ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(envelope)]);
-    const details = exactObject(submittedEvent.taskSubmittedEventDetails, 'Submitted task details', ['resourceType', 'resource', 'output', 'outputDetails']);
-    if (details.resourceType !== 'ecs' || details.resource !== 'runTask.sync' || object(details.outputDetails, 'Submitted output completeness').truncated !== false) throw new Error('Prior task launch data is truncated; retry refused');
-    const output = exactObject(parseStrictJson(String(details.output)), 'Submitted task output', ['Failures', 'Tasks', 'SdkHttpMetadata', 'SdkResponseMetadata']);
-    const rows = array(output.Tasks, 'Submitted ECS tasks');
-    if (rows.length !== 1 || array(output.Failures, 'Submitted ECS failures').length !== 0) throw new Error('Prior task launch proof is not the fixed ECS capability');
-    const submittedTask = exactObject(rows[0], 'Submitted ECS task', ['TaskArn', 'ClusterArn']);
-    const taskArn = submittedTask.TaskArn;
-    if (typeof taskArn !== 'string' || !TASK_ARN.test(taskArn) || submittedTask.ClusterArn !== CLUSTER) throw new Error('Prior submitted task identity unavailable');
-    const terminal = historyEvent(events, chain.terminal, chain.success ? 'TaskSucceeded' : 'TaskFailed', chain.submitted);
-    const terminalDetails = object(terminal[chain.success ? 'taskSucceededEventDetails' : 'taskFailedEventDetails'], 'Terminal task details');
-    if (chain.success && object(terminalDetails.outputDetails, 'Verifier output completeness').truncated !== false) throw new Error('Verifier output is incomplete');
-    if (!chain.success && terminalDetails.causeDetails !== undefined
-      && object(terminalDetails.causeDetails, 'Cleanup cause completeness').truncated !== false) throw new Error('Cleanup cause is incomplete');
-    const snapshotText = String(terminalDetails[chain.success ? 'output' : 'cause']);
-    const snapshot = mapHistoryTask(parseStrictJson(snapshotText));
-    if (snapshot.taskArn !== taskArn || snapshot.clusterArn !== CLUSTER || snapshot.taskDefinitionArn !== definition) throw new Error('Prior terminal task does not link submitted identity');
-    proofs.push({ taskArn, task: snapshot, eventIds: [chain.entered, chain.scheduled, chain.started, chain.submitted, chain.terminal, ...(chain.exited ? [chain.exited] : [])], snapshotText });
-  }
-  const failed = historyEvent(events, 19, 'ExecutionFailed', 18);
-  if (!failed) throw new Error('Prior execution failure is missing');
-  if (new Set(proofs.map(value => value.taskArn)).size !== 2) throw new Error('Prior task launch identities are duplicated');
-  return proofs;
-}
-
 function defaultIo(versionArn: string): CleanupOperationIo {
   const client = new SFNClient({ region: 'ap-east-1' });
   return {
@@ -540,462 +400,359 @@ function defaultIo(versionArn: string): CleanupOperationIo {
   };
 }
 
-export async function observeFailedCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
-  io?: CleanupOperationIo): Promise<Record<string, unknown>> {
-  const envelope = createCleanupOperationEnvelope(inputs, environment);
-  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
-  const name = deterministicCleanupExecutionName(envelope);
-  const arn = cleanupExecutionArn(versionArn, name);
-  const transport = io ?? defaultIo(versionArn);
-  const description = await transport.describe(arn);
-  validateDescription(description, envelope, versionArn, name);
-  if (description.status !== 'FAILED' || !description.startDate || !description.stopDate) throw new Error('Expected refusal lacks exact terminal failure');
-  const proofs = await proveStoppedExecution(transport, arn, envelope);
-  const tasks = await Promise.all(proofs.map(proof => observeTask(transport, envelope, proof.taskArn, undefined, false, proof.task, proof.eventIds, proof.snapshotText)));
-  const verification = tasks.filter(task => task.kind === 'verification');
-  const cleanup = tasks.filter(task => task.kind === 'cleanup');
-  if (tasks.length !== 2 || verification.length !== 1 || cleanup.length !== 1
-    || verification[0].exit_code !== 0 || cleanup[0].exit_code === 0) throw new Error('Refusal needs a successful verifier and exact stopped failed cleanup');
-  const snapshots: string[] = [];
-  for (let scan = 0; scan < 2; scan += 1) {
-    const events: unknown[] = [];
-    let token: string | undefined;
-    let complete = false;
-    for (let page = 0; page < 20; page += 1) {
-      const response = object(await transport.aws(['logs', 'get-log-events', '--log-group-name', LOG_GROUP,
-        '--log-stream-name', String(cleanup[0].log_stream), '--start-from-head', '--limit', '1000', ...(token ? ['--next-token', token] : [])]), 'Refusal logs');
-      const pageEvents = array(response.events, 'Refusal events');
-      if (pageEvents.length > 1000 || events.length + pageEvents.length > 4096) throw new Error('Refusal log inventory exceeds bound');
-      for (const value of pageEvents) {
-        const event = object(value, 'Refusal event');
-        if (typeof event.message !== 'string' || event.message.length > 262144 || event.message.includes(MARKER)) throw new Error('Refused cleanup exposes a committed marker or malformed log');
-        events.push(event);
-      }
-      if (typeof response.nextForwardToken !== 'string') throw new Error('Refusal log pagination is incomplete');
-      if (response.nextForwardToken === token) { complete = true; break; }
-      token = response.nextForwardToken;
-    }
-    if (!complete || events.length === 0) throw new Error('Refusal log proof unavailable');
-    snapshots.push(hash(JSON.stringify(events)));
-    if (scan === 0) await transport.sleep(2_000);
-  }
-  if (snapshots[0] !== snapshots[1]) throw new Error('Refusal logs changed during observation');
-  return { schema_version: 1, record_type: 'anywear_e2e_cleanup_refusal_proof', execution_arn: arn,
-    started_at: description.startDate.toISOString(), stopped_at: description.stopDate.toISOString(), status: 'FAILED',
-    input_sha256: hash(JSON.stringify(envelope)), tasks, committed_marker_observed: false, log_snapshot_sha256: snapshots[0] };
-}
-
-export async function prepareCleanupRetryIntent(inputs: ServiceCleanupInputs, original: CleanupOperationEvidence,
-  environment: NodeJS.ProcessEnv = process.env, io?: CleanupOperationIo): Promise<CleanupOperationEvidence> {
-  const envelope = createCleanupOperationEnvelope(inputs, environment);
-  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
-  const name = deterministicCleanupExecutionName(envelope);
-  if (original.schema_version !== 3 || original.record_type !== 'anywear_e2e_service_cleanup_operation'
-    || original.operation.operation_mode !== 'normal'
-    || original.operation.state_machine_version_arn !== versionArn || original.operation.execution_name !== name
-    || original.operation.execution_arn !== cleanupExecutionArn(versionArn, name)
-    || original.operation.input_sha256 !== hash(JSON.stringify(envelope)) || !isDeepStrictEqual(original.operation.input, envelope)
-    || original.operation.status !== 'FAILED' || original.operation.proof_status !== 'refused') throw new Error('Retry intent lacks the exact original refused operation');
-  const proof = await observeFailedCleanupOperation(inputs, environment, io);
-  const retryName = `${name.slice(0, 72)}-retry1`;
-  return { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation', operation: { operation_mode: 'normal',
-    state_machine_version_arn: versionArn, execution_name: retryName, execution_arn: cleanupExecutionArn(versionArn, retryName),
-    input: envelope, input_sha256: hash(JSON.stringify(envelope)), status: 'PENDING', proof_status: 'pending',
-    preceding_execution: { execution_arn: String(proof.execution_arn), status: 'FAILED', task_proofs: proof.tasks as Record<string, unknown>[],
-      log_snapshot_sha256: String(proof.log_snapshot_sha256),
-      stopped_tasks: (proof.tasks as Record<string, unknown>[]).map(task => String(task.task_arn)) },
-  } };
-}
-
-export async function submitCleanupRetryIntent(evidence: CleanupOperationEvidence, environment: NodeJS.ProcessEnv = process.env,
-  start?: (input: CleanupOperationEnvelope, name: string) => Promise<{ executionArn?: string; startDate?: Date }>): Promise<{ execution_arn: string; started_at: string; submitted_at: string }> {
-  const operation = evidence.operation;
-  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
-  const base = deterministicCleanupExecutionName(operation.input);
-  const expectedInput = createCleanupOperationEnvelope({ action: 'cleanup', emails: '[]', cleanup_json: operation.input.cleanup_request }, environment);
-  if (evidence.schema_version !== 3 || operation.proof_status !== 'pending' || operation.status !== 'PENDING'
-    || operation.operation_mode !== 'normal'
-    || operation.state_machine_version_arn !== versionArn || operation.execution_name !== `${base.slice(0, 72)}-retry1`
-    || operation.execution_arn !== cleanupExecutionArn(versionArn, operation.execution_name)
-    || operation.preceding_execution?.execution_arn !== cleanupExecutionArn(versionArn, base)
-    || operation.preceding_execution.status !== 'FAILED' || operation.preceding_execution.stopped_tasks.length !== 2
-    || new Set(operation.preceding_execution.stopped_tasks).size !== 2 || operation.preceding_execution.stopped_tasks.some(arn => !TASK_ARN.test(arn))
-    || !isDeepStrictEqual(operation.input, expectedInput)
-    || operation.input_sha256 !== hash(JSON.stringify(operation.input))) throw new Error('Submit requires the exact stopped-failure retry intent');
-  const client = new SFNClient({ region: 'ap-east-1', maxAttempts: 1 });
-  try {
-    const result = await (start ? start(operation.input, operation.execution_name)
-      : client.send(new StartExecutionCommand({ stateMachineArn: versionArn, name: operation.execution_name, input: JSON.stringify(operation.input) })));
-    if (result.executionArn !== operation.execution_arn || !result.startDate || !Number.isFinite(result.startDate.getTime())) throw new Error('Retry submit did not return authenticated exact ARN/start time');
-    return { execution_arn: result.executionArn, started_at: result.startDate.toISOString(), submitted_at: new Date().toISOString() };
-  } finally { client.destroy(); }
-}
-
-export async function observeSubmittedCleanupOperation(evidence: CleanupOperationEvidence, environment: NodeJS.ProcessEnv = process.env,
-  io?: CleanupOperationIo): Promise<Record<string, unknown>> {
-  const operation = evidence.operation;
-  const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN!;
-  const transport = io ?? defaultIo(versionArn);
-  const description = await transport.describe(operation.execution_arn);
-  validateDescription(description, operation.input, versionArn, operation.execution_name);
-  if (!['RUNNING', 'SUCCEEDED'].includes(description.status!) || description.startDate?.toISOString() !== operation.started_at) throw new Error('Original submitted execution is unavailable or changed');
-  const history = object(await transport.aws(['stepfunctions', 'get-execution-history', '--execution-arn', operation.execution_arn,
-    '--max-results', '1000', '--no-paginate']), 'Submitted history');
-  if (history.nextToken) throw new Error('Original submitted history is incomplete');
-  const events = array(history.events, 'Submitted events').map(event => object(event, 'Submitted event'));
-  const terminal = events.filter(event => ['ExecutionFailed', 'ExecutionTimedOut', 'ExecutionAborted', 'ExecutionSucceeded'].includes(String(event.type)));
-  if (description.status === 'RUNNING' ? terminal.length !== 0 : terminal.length !== 1 || terminal[0].type !== 'ExecutionSucceeded') throw new Error('Original submitted terminal history changed');
-  const scheduledTasks = events.filter(event => event.type === 'TaskScheduled');
-  if (scheduledTasks.length > 2 || scheduledTasks.some(event => {
-    const details = object(event.taskScheduledEventDetails, 'Submitted schedule');
-    return details.resourceType !== 'ecs' || details.resource !== 'runTask.sync';
-  })) throw new Error('Original scheduled capability changed');
-  const begun = events.filter(event => event.type === 'ExecutionStarted');
-  const details = object(begun[0]?.executionStartedEventDetails, 'Submitted input');
-  if (begun.length !== 1 || details.input !== JSON.stringify(operation.input)
-    || object(details.inputDetails, 'Submitted completeness').truncated !== false || events.some(event => event.type === 'ExecutionRedriven')) throw new Error('Original submitted input/history changed');
-  const tasks = events.filter(event => event.type === 'TaskSubmitted').map(event => {
-    const value = object(event.taskSubmittedEventDetails, 'Submitted task');
-    if (value.resourceType !== 'ecs' || value.resource !== 'runTask.sync'
-      || object(value.outputDetails, 'Submitted task completeness').truncated !== false) throw new Error('Original task submission is unknown');
-    const output = object(parseStrictJson(String(value.output)), 'Submitted task output');
-    const rows = array(output.Tasks, 'Submitted task rows');
-    const task = object(rows[0], 'Submitted task identity');
-    if (rows.length !== 1 || array(output.Failures, 'Submitted task errors').length !== 0
-      || typeof task.TaskArn !== 'string' || !TASK_ARN.test(task.TaskArn)) throw new Error('Original submitted task identity unavailable');
-    return task.TaskArn;
-  });
-  if (tasks.length > scheduledTasks.length || tasks.length > 2 || new Set(tasks).size !== tasks.length
-    || (description.status === 'SUCCEEDED' && (tasks.length !== 2 || scheduledTasks.length !== 2))) throw new Error('Original task submission inventory changed');
-  return { execution_arn: operation.execution_arn, started_at: operation.started_at, status: description.status, task_arns: tasks };
-}
-
 async function writeEvidence(path: string, evidence: CleanupOperationEvidence): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(`${path}.tmp`, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
   await rename(`${path}.tmp`, path);
 }
 
-async function completePages(io: CleanupOperationIo, args: string[], field: string, deadline: number): Promise<unknown[]> {
-  const rows: unknown[] = [];
-  const tokens = new Set<string>();
-  let token: string | undefined;
-  for (let page = 0; page < 10; page += 1) {
-    if (Date.now() > deadline) throw new Error('Recovery inventory deadline exceeded');
-    const response = object(await io.aws([...args, '--no-paginate', ...(token ? ['--next-token', token] : [])]), 'Recovery inventory page');
-    const values = array(response[field], 'Recovery inventory');
-    rows.push(...values);
-    if (values.length > (args.includes('1000') ? 1000 : 100) || rows.length > 10000) throw new Error('Recovery inventory exceeds its bound');
-    if (response.nextToken === undefined) return rows;
-    if (typeof response.nextToken !== 'string' || !response.nextToken || tokens.has(response.nextToken)) throw new Error('Recovery inventory pagination is incomplete or repeated');
-    tokens.add(response.nextToken);
-    token = response.nextToken;
-  }
-  throw new Error('Recovery inventory pagination exceeds its bound');
-}
-
-function recordedEnvelope(value: unknown, allowLegacyOwner = false): CleanupOperationEnvelope {
+function recordedEnvelope(value: unknown): CleanupOperationEnvelope {
   const input = object(value, 'Recorded cleanup envelope');
-  const legacy = allowLegacyOwner && input.operation_mode === undefined && input.recovery_attempt === undefined;
+  // Owner evidence produced before `operation_mode` became mandatory may omit
+  // that one field; it may not omit anything else or carry a replay attempt.
+  const legacy = input.operation_mode === undefined && input.recovery_attempt === undefined;
   const expected = createCleanupOperationEnvelope({ action: 'cleanup', emails: '[]', cleanup_json: String(input.cleanup_request) }, {
     E2E_CLEANUP_SERVICE_SOURCE_SHA: String(input.service_commit_sha), E2E_CLEANUP_SERVICE_IMAGE_DIGEST: String(input.service_image_digest),
-  }, legacy ? 'normal' : input.operation_mode as CleanupOperationMode, input.recovery_attempt as number | undefined);
+  });
   if (legacy) {
     const original = Object.fromEntries(Object.entries(expected).filter(([key]) => key !== 'operation_mode'));
     if (!isDeepStrictEqual(input, original)) throw new Error('Legacy owner envelope contains unknown or changed fields');
-    // Keep the original input bytes/hash; legacy normal is only an owner/predecessor source.
+    // Keep the original input bytes/hash; the missing mode is tolerated only for
+    // historical owner evidence, never for a new dispatch.
     return input as unknown as CleanupOperationEnvelope;
   }
   if (!isDeepStrictEqual(input, expected)) throw new Error('Recorded cleanup envelope is malformed');
   return expected;
 }
 
-function recordedOperation(value: unknown, allowLegacyOwner = false): CleanupOperationEvidence['operation'] {
-  const evidence = object(value, 'Trusted recovery evidence');
-  const operation = object(evidence.operation, 'Trusted recovery operation') as unknown as CleanupOperationEvidence['operation'];
-  const input = recordedEnvelope(operation.input, allowLegacyOwner);
-  const name = deterministicCleanupExecutionName(input);
-  if (evidence.schema_version !== 3 || evidence.record_type !== 'anywear_e2e_service_cleanup_operation'
-    || operation.operation_mode !== input.operation_mode || operation.recovery_attempt !== input.recovery_attempt
-    || operation.input_sha256 !== hash(JSON.stringify(input))
-    || (input.operation_mode === 'recovery' ? operation.execution_name !== name : ![name, `${name.slice(0, 72)}-retry1`].includes(operation.execution_name))
-    || operation.execution_arn !== cleanupExecutionArn(operation.state_machine_version_arn, operation.execution_name)) throw new Error('Trusted recovery evidence has a foreign operation binding');
-  return operation;
+interface OriginalEvidence {
+  operation: CleanupOperationEvidence['operation'];
+  envelope: CleanupOperationEnvelope;
+}
+
+/**
+ * Validate a historical owner operation in its own terms: its own envelope,
+ * source/image, version and execution identity. It deliberately does not compare
+ * those against the current dispatch, because a captured scope may predate a
+ * reviewed state-machine version or Service image/source advance and must still
+ * be recoverable.
+ */
+function originalOperation(value: unknown): OriginalEvidence {
+  const evidence = object(value, 'Original cleanup evidence');
+  if (![2, 3].includes(evidence.schema_version as number) || evidence.record_type !== 'anywear_e2e_service_cleanup_operation') {
+    throw new Error('Original cleanup evidence is not a schema 2 or 3 operation record');
+  }
+  const operation = object(evidence.operation, 'Original cleanup operation') as unknown as CleanupOperationEvidence['operation'];
+  const envelope = recordedEnvelope(operation.input);
+  if ((operation.operation_mode ?? 'normal') !== 'normal' || operation.operation_mode !== envelope.operation_mode
+    || operation.recovery_attempt !== envelope.recovery_attempt
+    || operation.input_sha256 !== hash(JSON.stringify(envelope))
+    || ![deterministicCleanupExecutionName(envelope, 0), deterministicCleanupExecutionName(envelope, 1)].includes(operation.execution_name)
+    || operation.execution_arn !== cleanupExecutionArn(operation.state_machine_version_arn, operation.execution_name)) {
+    throw new Error('Original cleanup evidence does not bind its own captured operation');
+  }
+  return { operation, envelope };
+}
+
+function recordedOperation(value: unknown): CleanupOperationEvidence['operation'] {
+  const evidence = object(value, 'Original owner evidence');
+  if (evidence.schema_version !== 3) throw new Error('Original owner evidence has a foreign operation binding');
+  return originalOperation(value).operation;
 }
 
 export function assertCleanupOwnerEvidence(value: unknown, cleanupRequest: string): CleanupOperationEvidence['operation'] {
-  const operation = recordedOperation(value, true);
+  const operation = recordedOperation(value);
   if ((operation.operation_mode ?? 'normal') !== 'normal' || operation.input.cleanup_request !== cleanupRequest) throw new Error('Original owner evidence differs from captured canonical request');
   return operation;
 }
 
-export function assertRecoveryOperationEvidence(value: unknown, cleanupRequest: string): CleanupOperationEvidence['operation'] {
-  const operation = recordedOperation(value);
-  if (operation.operation_mode !== 'recovery' || operation.input.cleanup_request !== cleanupRequest) throw new Error('Previous recovery evidence differs from captured canonical request');
-  return operation;
+interface ExpectedExecution {
+  envelope: CleanupOperationEnvelope;
+  versionArn: string;
+  name: string;
+  arn: string;
 }
 
-async function recoveryExecutions(io: CleanupOperationIo, envelope: CleanupOperationEnvelope, versionArn: string, deadline: number) {
-  const baseArn = versionArn.replace(/:[1-9][0-9]*$/, '');
-  const entries = await completePages(io, ['stepfunctions', 'list-executions', '--state-machine-arn', baseArn, '--max-results', '100'], 'executions', deadline);
-  const arns = new Set<string>();
-  const matches: { input: CleanupOperationEnvelope; description: DescribeExecutionOutput }[] = [];
-  for (const entry of entries) {
-    if (Date.now() > deadline) throw new Error('Recovery description deadline exceeded');
-    const row = object(entry, 'Recovery execution entry');
-    if (typeof row.executionArn !== 'string' || typeof row.name !== 'string' || arns.has(row.executionArn)
-      || row.stateMachineArn !== baseArn || row.executionArn !== baseExecutionArn(baseArn, row.name)) throw new Error('Recovery execution inventory is malformed or duplicated');
-    arns.add(row.executionArn);
-    if (!['RUNNING', 'SUCCEEDED', ...TERMINAL_FAILURE].includes(String(row.status))) throw new Error('Recovery execution inventory status is unknown');
-    const description = canonicalDescription(await io.describe(row.executionArn));
-    if (description.executionArn !== row.executionArn || description.name !== row.name || description.status !== row.status || description.stateMachineArn !== baseArn
-      || typeof description.stateMachineVersionArn !== 'string' || !VERSION_ARN.test(description.stateMachineVersionArn)
-      || description.stateMachineVersionArn.replace(/:[1-9][0-9]*$/, '') !== baseArn
-      || description.inputDetails?.included !== true || typeof description.input !== 'string') throw new Error('Recovery execution row and description differ');
-    const input = object(parseStrictJson(description.input), 'Recovery inventory input');
-    const prefix = `beta-cleanup-recovery-${envelope.run_scope}`;
-    if (input.run_scope !== envelope.run_scope && !row.name.startsWith(prefix)) continue;
-    const canonical = recordedEnvelope(input, true);
-    const expectedName = deterministicCleanupExecutionName(canonical);
-    if (canonical.run_scope !== envelope.run_scope || canonical.cleanup_request !== envelope.cleanup_request
-      || (canonical.operation_mode === 'recovery' ? row.name !== expectedName : ![expectedName, `${expectedName.slice(0, 72)}-retry1`].includes(row.name))) throw new Error('Recovery inventory scope/name binding is invalid');
-    const actualVersion = description.stateMachineVersionArn;
-    if (canonical.operation_mode === 'recovery' && actualVersion !== versionArn) throw new Error('Recovery execution is attached to a foreign state-machine version');
-    validateDescription(description, canonical, actualVersion, row.name);
-    matches.push({ input: canonical, description });
-  }
-  const recovery = matches.filter(entry => entry.input.operation_mode === 'recovery').sort((a, b) => a.input.recovery_attempt! - b.input.recovery_attempt!);
-  if (recovery.some((entry, index) => entry.input.recovery_attempt !== index + 1)) throw new Error('Recovery inventory has a missing or duplicate attempt');
-  return { matches, recovery };
+function expectedExecution(envelope: CleanupOperationEnvelope, versionArn: string, generation: number): ExpectedExecution {
+  const name = deterministicCleanupExecutionName(envelope, generation);
+  return { envelope, versionArn, name, arn: cleanupExecutionArn(versionArn, name) };
 }
 
-async function cessationSnapshot(io: CleanupOperationIo, description: DescribeExecutionOutput, input: CleanupOperationEnvelope, deadline: number) {
-  if (!TERMINAL_FAILURE.includes(description.status!) || !description.startDate || !description.stopDate) throw new Error('New recovery requires terminal predecessor failure');
-  const events = (await completePages(io, ['stepfunctions', 'get-execution-history', '--execution-arn', description.executionArn!, '--max-results', '1000'], 'events', deadline))
-    .map(event => object(event, 'Recovery history event'));
-  const ids = new Set(events.map(event => event.id));
-  if (events.length < 2 || ids.size !== events.length || events.some(event => !Number.isInteger(event.id) || Number(event.id) < 1 || Number(event.id) > events.length
-    || (!ids.has(event.previousEventId) && event.id !== 1 && !(event.id === 2 && event.previousEventId === 0)))
-    || events.some(event => event.type === 'ExecutionRedriven')) throw new Error('Recovery history has gaps or redrive');
-  const begun = events.filter(event => event.type === 'ExecutionStarted');
-  const terminal = events.filter(event => ['ExecutionFailed', 'ExecutionAborted', 'ExecutionTimedOut', 'ExecutionSucceeded'].includes(String(event.type)));
-  const details = object(begun[0]?.executionStartedEventDetails, 'Recovery history input');
-  const terminalType = { FAILED: 'ExecutionFailed', ABORTED: 'ExecutionAborted', TIMED_OUT: 'ExecutionTimedOut' }[description.status as 'FAILED'];
-  if (begun.length !== 1 || details.input !== JSON.stringify(input) || object(details.inputDetails, 'Recovery history completeness').truncated !== false
-    || begun[0].id !== 1 || terminal.length !== 1 || terminal[0].type !== terminalType || terminal[0].id !== events.length) throw new Error('Recovery history input/terminal proof changed');
-  const scheduled = events.filter(event => event.type === 'TaskScheduled');
-  const submitted = events.filter(event => event.type === 'TaskSubmitted');
-  if (scheduled.length > 2 || scheduled.length !== submitted.length
-    || events.some(event => /(?:Activity|LambdaFunction|Map|Parallel).*Started/.test(String(event.type)))) throw new Error('Recovery history has an unaccounted launch');
-  const submittedArns = new Set<string>();
-  const scheduledIds = new Set<number>();
-  for (const event of submitted) {
-    const started = historyEvent(events, Number(event.previousEventId), 'TaskStarted');
-    const schedule = historyEvent(events, Number(started.previousEventId), 'TaskScheduled');
-    if (scheduledIds.has(Number(schedule.id))) throw new Error('Recovery history duplicates a scheduled launch');
-    scheduledIds.add(Number(schedule.id));
-    const scheduleDetails = object(schedule.taskScheduledEventDetails, 'Recovery schedule');
-    const parameters = object(parseStrictJson(String(scheduleDetails.parameters)), 'Recovery scheduled input');
-    const definition = String(parameters.TaskDefinition);
-    const verification = DEFINITION_ARN.exec(definition)?.[1] === 'beta-anywear-cleanup-verify';
-    if (!DEFINITION_ARN.test(definition)) throw new Error('Recovery schedule uses a foreign task family');
-    scheduledTask(schedule, definition, verification ? undefined : ['node', 'dist/ops/beta-cleanup-operation.js', JSON.stringify(input)]);
-    const submittedDetails = object(event.taskSubmittedEventDetails, 'Recovery task submission');
-    if (submittedDetails.resourceType !== 'ecs' || submittedDetails.resource !== 'runTask.sync'
-      || object(submittedDetails.outputDetails, 'Recovery submission completeness').truncated !== false) throw new Error('Recovery task launch is incomplete');
-    const output = object(parseStrictJson(String(submittedDetails.output)), 'Recovery submission output');
-    const tasks = array(output.Tasks, 'Recovery submitted tasks');
-    const task = object(tasks[0], 'Recovery submitted task');
-    if (tasks.length !== 1 || array(output.Failures, 'Recovery submission failures').length || task.ClusterArn !== CLUSTER
-      || typeof task.TaskArn !== 'string' || !TASK_ARN.test(task.TaskArn) || submittedArns.has(task.TaskArn)) throw new Error('Recovery task inventory is ambiguous');
-    submittedArns.add(task.TaskArn);
-    const ended = events.filter(value => value.previousEventId === event.id && ['TaskSucceeded', 'TaskFailed'].includes(String(value.type)));
-    if (ended.length > 1) throw new Error('Recovery terminal task inventory is duplicated');
+/**
+ * Read one deterministic execution without starting anything. An absent name is
+ * the start candidate; any other describe failure is a refusal, because the entry
+ * point must never guess whether an execution exists.
+ */
+async function describeExecution(io: CleanupOperationIo, arn: string): Promise<DescribeExecutionOutput | undefined> {
+  try {
+    return await io.describe(arn);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ExecutionDoesNotExist') return undefined;
+    throw error;
   }
-  const inventory: Record<string, unknown>[] = [];
-  const listed = new Set<string>();
-  for (const family of ['beta-anywear-cleanup', 'beta-anywear-cleanup-verify', 'beta-anywear-cleanup-acceptance']) {
-    for (const status of ['RUNNING', 'STOPPED']) {
-      const tasks = await completePages(io, ['ecs', 'list-tasks', '--cluster', CLUSTER, '--family', family, '--desired-status', status, '--max-results', '100'], 'taskArns', deadline);
-      if (new Set(tasks).size !== tasks.length) throw new Error('Recovery ECS inventory has duplicate tasks');
-      for (const arn of tasks) {
-        if (typeof arn !== 'string' || !TASK_ARN.test(arn) || listed.has(arn)) throw new Error('Recovery ECS inventory is malformed or duplicated');
-        listed.add(arn);
-        const response = object(await io.aws(['ecs', 'describe-tasks', '--cluster', CLUSTER, '--tasks', arn]), 'Recovery inventory task');
-        const values = array(response.tasks, 'Recovery inventory task values');
-        const value = mapLiveTask(values[0]);
-        if (values.length !== 1 || array(response.failures, 'Recovery inventory task failures').length || value.taskArn !== arn
-          || value.clusterArn !== CLUSTER || !value.taskDefinitionArn.startsWith(`arn:aws:ecs:ap-east-1:650880818323:task-definition/${family}:`)
-          || value.lastStatus !== 'STOPPED' || value.desiredStatus !== 'STOPPED') throw new Error('Recovery ECS inventory contains active or unavailable tasks');
-        inventory.push({ task_arn: arn, snapshot_sha256: hash(JSON.stringify(value)) });
+}
+
+function bindsExpected(description: DescribeExecutionOutput, expected: ExpectedExecution): boolean {
+  try {
+    validateDescription(description, expected.envelope, expected.versionArn, expected.name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recordDescription(evidence: CleanupOperationEvidence, path: string, description: DescribeExecutionOutput): Promise<void> {
+  evidence.operation.status = description.status!;
+  evidence.operation.started_at = description.startDate?.toISOString();
+  evidence.operation.stopped_at = description.stopDate?.toISOString();
+  await writeEvidence(path, evidence);
+}
+
+/** Resume one execution: observe it until it is terminal, bounded to 900 observations. */
+async function awaitTerminal(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope, versionArn: string,
+  name: string, evidence: CleanupOperationEvidence, path: string, initial?: DescribeExecutionOutput): Promise<DescribeExecutionOutput> {
+  let description = initial;
+  let last: DescribeExecutionOutput | undefined;
+  for (let observation = 0; observation < 900; observation += 1) {
+    if (!description) description = await io.describe(arn);
+    validateDescription(description, envelope, versionArn, name);
+    last = description;
+    await recordDescription(evidence, path, description);
+    if (description.status === 'SUCCEEDED' || TERMINAL_FAILURE.includes(description.status!)) return description;
+    await io.sleep(2_000);
+    description = undefined;
+  }
+  // Every observation was RUNNING: report the last one so the caller refuses
+  // with the execution identity it actually observed.
+  return last!;
+}
+
+async function observePresent(io: CleanupOperationIo, description: DescribeExecutionOutput, expected: ExpectedExecution,
+  evidence: CleanupOperationEvidence, path: string): Promise<DescribeExecutionOutput> {
+  if (description.status === 'RUNNING') {
+    return awaitTerminal(io, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, description);
+  }
+  await recordDescription(evidence, path, description);
+  return description;
+}
+
+/**
+ * The one bounded predecessor check. One inventory pass over the three cleanup
+ * task families asks ECS for `RUNNING`-desired tasks only; any returned task
+ * means the cleanup family may still be working, so the next generation cannot
+ * start. A task whose desired status is already `STOPPED` is outside this
+ * single-inventory check.
+ */
+async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]> {
+  const families: string[] = [];
+  for (const family of CLEANUP_FAMILIES) {
+    const rows: unknown[] = [];
+    const tokens = new Set<string>();
+    let token: string | undefined;
+    let complete = false;
+    for (let page = 0; page < 10; page += 1) {
+      const response = object(await io.aws(['ecs', 'list-tasks', '--cluster', CLUSTER, '--family', family,
+        '--desired-status', 'RUNNING', '--max-results', '100', '--no-paginate', ...(token ? ['--next-token', token] : [])]),
+      'Cleanup family inventory');
+      const taskArns = array(response.taskArns, 'Cleanup family tasks');
+      if (taskArns.length > 100 || rows.length + taskArns.length > 1000) throw new Error('Cleanup family inventory exceeds its bound');
+      rows.push(...taskArns);
+      if (response.nextToken === undefined) { complete = true; break; }
+      if (typeof response.nextToken !== 'string' || !response.nextToken || tokens.has(response.nextToken)) {
+        throw new Error('Cleanup family inventory pagination is incomplete or repeated');
       }
+      tokens.add(response.nextToken);
+      token = response.nextToken;
     }
+    if (!complete) throw new Error('Cleanup family inventory pagination exceeds its bound');
+    for (const arn of rows) {
+      if (typeof arn !== 'string' || !TASK_ARN.test(arn)) throw new Error('Cleanup family inventory contains a foreign task');
+    }
+    if (rows.length !== 0) throw new Error('Cleanup family still has RUNNING tasks; the next generation is refused');
+    families.push(family);
   }
-  return { history_sha256: hash(JSON.stringify(events)), historical_submitted_task_arns: [...submittedArns].sort(),
-    inventory: inventory.sort((a, b) => String(a.task_arn).localeCompare(String(b.task_arn))) };
+  return families;
 }
 
-async function recoveryPreflight(io: CleanupOperationIo, envelope: CleanupOperationEnvelope, versionArn: string, environment: NodeJS.ProcessEnv) {
-  const deadline = Date.now() + 120_000;
-  const inventory = await recoveryExecutions(io, envelope, versionArn, deadline);
-  const latest = inventory.recovery.at(-1);
-  const priorPath = environment.E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH;
-  const originalPath = environment.E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH;
-  if (!originalPath) throw new Error('Recovery requires the canonical original owner/request evidence');
-  const original = recordedOperation(parseStrictJson(await readFile(originalPath)), true);
-  if ((original.operation_mode ?? 'normal') !== 'normal' || original.input.cleanup_request !== envelope.cleanup_request || original.input.run_scope !== envelope.run_scope) throw new Error('Recovery changes the original captured request or owner scope');
-  const owner = inventory.matches.find(entry => entry.description.executionArn === original.execution_arn);
-  const currentVersion = Number(VERSION_ARN.exec(versionArn)?.[1]);
-  const ownerVersion = owner && Number(VERSION_ARN.exec(String(owner.description.stateMachineVersionArn))?.[1]);
-  if (!owner || !isDeepStrictEqual(owner.input, original.input)
-    || owner.description.executionArn !== original.execution_arn || owner.description.name !== original.execution_name
-    || owner.description.stateMachineVersionArn !== original.state_machine_version_arn
-    || original.input_sha256 !== hash(JSON.stringify(original.input))
-    || !Number.isSafeInteger(currentVersion) || !Number.isSafeInteger(ownerVersion)
-    || ownerVersion! > currentVersion) throw new Error('Original cleanup predecessor is unavailable');
-  for (const entry of inventory.matches) {
-    if (entry.input.operation_mode === 'normal' && entry !== owner
-      && entry.description.stateMachineVersionArn !== versionArn) throw new Error('Recovery inventory has a foreign normal execution version');
-  }
-  let predecessor: typeof latest;
-  if (latest) {
-    if (!priorPath) throw new Error('Recovery requires the latest trusted recovery artifact');
-    const prior = recordedOperation(parseStrictJson(await readFile(priorPath)));
-    if (prior.operation_mode !== 'recovery' || prior.recovery_attempt !== latest.input.recovery_attempt
-      || prior.execution_arn !== latest.description.executionArn || prior.state_machine_version_arn !== latest.description.stateMachineVersionArn
-      || !isDeepStrictEqual(prior.input, latest.input)) throw new Error('Recovery artifact is stale or differs from latest execution');
-    if (envelope.recovery_attempt === latest.input.recovery_attempt) {
-      if (versionArn !== prior.state_machine_version_arn || !isDeepStrictEqual(envelope, prior.input)) throw new Error('Same recovery attempt cannot repair input/source/version');
-      return { latest_attempt: latest.input.recovery_attempt, action: 'resume', execution_inventory_sha256: hash(JSON.stringify(inventory.matches)) };
-    }
-    if (envelope.recovery_attempt !== latest.input.recovery_attempt! + 1) throw new Error('Recovery attempt must resume latest or advance exactly once');
-    predecessor = latest;
-  } else {
-    if (envelope.recovery_attempt !== 1 || priorPath) throw new Error('First recovery requires attempt 1 without a previous recovery artifact');
-    predecessor = owner;
-  }
-  if (inventory.matches.some(entry => entry.description.status === 'RUNNING')) throw new Error('Recovery owner has active executions');
-  const first = await cessationSnapshot(io, predecessor!.description, predecessor!.input, deadline);
-  await io.sleep(2_000);
-  const second = await cessationSnapshot(io, predecessor!.description, predecessor!.input, deadline);
-  const reread = await recoveryExecutions(io, envelope, versionArn, deadline);
-  if (Date.now() > deadline || !isDeepStrictEqual(first, second) || !isDeepStrictEqual(inventory.matches, reread.matches)) throw new Error('Recovery predecessor/inventory changed or deadline elapsed during cessation proof');
-  return { latest_attempt: latest?.input.recovery_attempt ?? 0, action: 'new_attempt', predecessor_execution_arn: predecessor!.description.executionArn,
-    predecessor_input_sha256: hash(JSON.stringify(predecessor!.input)), predecessor_status: predecessor!.description.status,
-    execution_inventory_sha256: hash(JSON.stringify(inventory.matches)), cessation: second };
-}
-
+/**
+ * Start or resume the deterministic cleanup operation for one captured run
+ * scope.
+ *
+ * The rule is the same for an ordinary qualification cleanup and a protected
+ * `recover` dispatch: resolve generation 0, resume it while it runs, verify it
+ * when it succeeded, and start generation 1 only after generation 0 is terminal
+ * non-success and exactly one bounded predecessor check (its describe plus one
+ * cleanup-family inventory) shows the cleanup families stopped. If generation 1
+ * already exists it is resumed or verified; if it is already terminal
+ * non-success the dispatch refuses and starts nothing. At most two deterministic
+ * names exist per captured scope.
+ *
+ * A recovery dispatch supplies the original owner evidence. That evidence is
+ * validated in its own terms, so an execution captured before a reviewed version
+ * or Service image/source advance is still observed under its own envelope and
+ * version. A generation 1 newly started by this dispatch always uses the current
+ * normal envelope under the current version; a retry already recorded in the
+ * owner evidence is observed and, when it succeeded, verified under that
+ * evidence's own version and envelope. If the owner evidence already used the
+ * retry name, that name is the last allowed name and a terminal non-success
+ * refuses.
+ */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
-  io?: CleanupOperationIo, operationMode: CleanupOperationMode = 'normal'): Promise<CleanupOperationEvidence | undefined> {
+  io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
   const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
   if (!versionArn) {
     console.warn('Beta cleanup capability is not configured; cleanup deferred and identities retained');
     return undefined;
   }
-  const recoveryAttempt = operationMode === 'recovery' && /^[1-9][0-9]{0,5}$/.test(environment.E2E_CLEANUP_RECOVERY_ATTEMPT ?? '')
-    ? Number(environment.E2E_CLEANUP_RECOVERY_ATTEMPT) : undefined;
-  const envelope = createCleanupOperationEnvelope(inputs, environment, operationMode, recoveryAttempt);
-  let name = deterministicCleanupExecutionName(envelope);
-  cleanupExecutionArn(versionArn, name);
+  const envelope = createCleanupOperationEnvelope(inputs, environment);
+  const current = [expectedExecution(envelope, versionArn, 0), expectedExecution(envelope, versionArn, 1)];
   const originalPath = environment.E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH;
-  if (originalPath && operationMode === 'normal') {
-    const original = object(parseStrictJson(await readFile(originalPath)), 'Original cleanup evidence');
-    const operation = object(original.operation, 'Original cleanup operation');
-    const retryName = `${name.slice(0, 72)}-retry1`;
-    if (![2, 3].includes(original.schema_version as number) || original.record_type !== 'anywear_e2e_service_cleanup_operation'
-      || operation.operation_mode !== operationMode || operation.state_machine_version_arn !== versionArn || !isDeepStrictEqual(operation.input, envelope)
-      || operation.input_sha256 !== hash(JSON.stringify(envelope)) || (operationMode === 'normal' ? ![name, retryName].includes(String(operation.execution_name)) : operation.execution_name !== name)
-      || operation.execution_arn !== cleanupExecutionArn(versionArn, String(operation.execution_name))) throw new Error('Original cleanup evidence does not bind this exact request/source/version');
+  const original = originalPath ? originalOperation(parseStrictJson(await readFile(originalPath))) : undefined;
+  if (original && (original.envelope.cleanup_request !== envelope.cleanup_request || original.envelope.run_scope !== envelope.run_scope)) {
+    throw new Error('Original cleanup evidence does not bind this captured request and run scope');
   }
   const transport = io ?? defaultIo(versionArn);
   const path = environment.E2E_SERVICE_CLEANUP_EVIDENCE_PATH ?? 'test-results/service-cleanup-operation.json';
   const evidence: CleanupOperationEvidence = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation',
-    operation: { operation_mode: operationMode, state_machine_version_arn: versionArn, execution_arn: cleanupExecutionArn(versionArn, name), execution_name: name,
-      ...(operationMode === 'recovery' ? { recovery_attempt: recoveryAttempt } : {}),
-      status: 'PENDING', proof_status: 'pending', input_sha256: hash(JSON.stringify(envelope)), input: envelope } };
+    operation: { operation_mode: 'normal', state_machine_version_arn: current[0].versionArn, execution_arn: current[0].arn,
+      execution_name: current[0].name, status: 'PENDING', proof_status: 'pending',
+      input_sha256: hash(JSON.stringify(current[0].envelope)), input: current[0].envelope } };
   let refusalPhase: CleanupRefusalPhase = 'operation_start';
   let refusalCategory: CleanupRefusalCategory = 'operation_start_unavailable';
+  const target = (expected: ExpectedExecution) => {
+    evidence.operation.state_machine_version_arn = expected.versionArn;
+    evidence.operation.execution_name = expected.name;
+    evidence.operation.execution_arn = expected.arn;
+    evidence.operation.input = expected.envelope;
+    evidence.operation.input_sha256 = hash(JSON.stringify(expected.envelope));
+    evidence.operation.status = 'PENDING';
+    evidence.operation.started_at = undefined;
+    evidence.operation.stopped_at = undefined;
+  };
   const start = async () => {
     await writeEvidence(path, evidence);
     try {
-      const started = await transport.start(envelope, name);
+      const started = await transport.start(evidence.operation.input, evidence.operation.execution_name);
       if (started.executionArn && started.executionArn !== evidence.operation.execution_arn) throw new Error('Cleanup start returned a foreign execution ARN');
     } catch (error) {
       if (!(error instanceof Error) || !['ExecutionAlreadyExists', 'TimeoutError', 'RequestTimeout', 'NetworkingError', 'InternalServerError', 'ServiceUnavailable'].includes(error.name)) throw error;
-      // The exact Describe below resolves completed names and an ambiguous lost response.
+      // The exact resolution below settles a completed name or a lost response.
     }
   };
-  try {
-    if (operationMode === 'recovery') {
-      refusalPhase = 'recovery_preflight';
-      refusalCategory = 'recovery_preflight_unavailable';
-      await writeEvidence(path, evidence);
-      evidence.operation.recovery_preflight = await recoveryPreflight(transport, envelope, versionArn, environment);
-      refusalPhase = 'operation_start';
-      refusalCategory = 'operation_start_unavailable';
-    }
-    if (evidence.operation.recovery_preflight?.action !== 'resume') await start();
-    refusalPhase = 'execution_observation';
-    refusalCategory = 'execution_observation_unavailable';
-    let description: DescribeExecutionOutput | undefined;
-    for (let poll = 0; poll < 900; poll += 1) {
-      description = await transport.describe(evidence.operation.execution_arn);
-      validateDescription(description, envelope, versionArn, name);
-      evidence.operation.status = description.status!;
-      evidence.operation.started_at = description.startDate?.toISOString();
-      evidence.operation.stopped_at = description.stopDate?.toISOString();
-      await writeEvidence(path, evidence);
-      if (description.status === 'SUCCEEDED') break;
-      if (TERMINAL_FAILURE.includes(description.status!)) {
-        refusalPhase = 'retry_eligibility';
-        refusalCategory = 'retry_not_authorized';
-        if (operationMode === 'recovery' || environment.E2E_CLEANUP_RETRY_FAILED !== 'true' || name.endsWith('-retry1')) throw new Error('Cleanup terminated without success; identities retained and retry requires explicit task-cessation proof');
-        refusalPhase = 'retry_proof';
-        refusalCategory = 'retry_proof_unavailable';
-        const proof = await observeFailedCleanupOperation(inputs, environment, transport);
-        if (proof.execution_arn !== evidence.operation.execution_arn || proof.status !== 'FAILED'
-          || proof.input_sha256 !== evidence.operation.input_sha256 || proof.committed_marker_observed !== false
-          || typeof proof.log_snapshot_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(proof.log_snapshot_sha256)
-          || !Array.isArray(proof.tasks) || proof.tasks.length !== 2) {
-          throw new Error('Cleanup retry requires the exact stable no-commit refusal proof');
-        }
-        const taskProofs = proof.tasks as Record<string, unknown>[];
-        evidence.operation.preceding_execution = { execution_arn: proof.execution_arn, status: 'FAILED',
-          stopped_tasks: taskProofs.map(task => String(task.task_arn)), task_proofs: taskProofs,
-          log_snapshot_sha256: proof.log_snapshot_sha256 };
-        name = `${name.slice(0, 72)}-retry1`;
-        evidence.operation.execution_name = name;
-        evidence.operation.execution_arn = cleanupExecutionArn(versionArn, name);
-        evidence.operation.status = 'PENDING';
-        description = undefined;
-        refusalPhase = 'operation_start';
-        refusalCategory = 'operation_start_unavailable';
-        await start();
-        refusalPhase = 'execution_observation';
-        refusalCategory = 'execution_observation_unavailable';
-      } else await transport.sleep(2_000);
-    }
+  const verifySuccess = async (description: DescribeExecutionOutput, proofEnvelope: CleanupOperationEnvelope): Promise<CleanupOperationEvidence> => {
     refusalPhase = 'execution_observation';
     refusalCategory = 'execution_not_succeeded';
-    if (description?.status !== 'SUCCEEDED' || !description.output || description.outputDetails?.included !== true) throw new Error('Cleanup did not expose complete terminal success');
+    if (!description.output || description.outputDetails?.included !== true) throw new Error('Cleanup did not expose complete terminal success');
     refusalPhase = 'result_proof';
     refusalCategory = 'result_proof_unavailable';
-    const output = validateResult(parseStrictJson(description.output), envelope);
+    const output = validateResult(parseStrictJson(description.output), proofEnvelope);
     evidence.operation.output = output;
     await writeEvidence(path, evidence);
     refusalPhase = 'task_proof';
     refusalCategory = 'task_proof_unavailable';
-    const verification = await observeTask(transport, envelope, output.verification_task_arn, output.verification_task_definition_arn);
-    const cleanup = await observeTask(transport, envelope, output.cleanup_task_arn, output.cleanup_task_definition_arn);
+    const verification = await observeTask(transport, proofEnvelope, output.verification_task_arn, output.verification_task_definition_arn);
+    const cleanup = await observeTask(transport, proofEnvelope, output.cleanup_task_arn, output.cleanup_task_definition_arn);
     if (verification.kind !== 'verification' || cleanup.kind !== 'cleanup') throw new Error('Cleanup tasks exchanged their fixed purposes');
     evidence.operation.tasks = [verification, cleanup];
     await writeEvidence(path, evidence);
     refusalPhase = 'completion_proof';
     refusalCategory = 'completion_proof_unavailable';
-    evidence.operation.committed_result = await readCommitted(transport, cleanup, envelope);
+    evidence.operation.committed_result = await readCommitted(transport, cleanup, proofEnvelope);
     evidence.operation.proof_status = 'verified';
     await writeEvidence(path, evidence);
     return evidence;
+  };
+  try {
+    // A historical owner that already used the one retry name is at the last
+    // allowed name: resolve that exact execution and never start a third.
+    const originalRetry = original && original.operation.execution_name === deterministicCleanupExecutionName(original.envelope, 1)
+      ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 1) : undefined;
+    if (originalRetry) {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      const present = await describeExecution(transport, originalRetry.arn);
+      if (!present) throw new Error('Original captured retry execution is unavailable');
+      validateDescription(present, originalRetry.envelope, originalRetry.versionArn, originalRetry.name);
+      target(originalRetry);
+      const description = await observePresent(transport, present, originalRetry, evidence, path);
+      if (description.status === 'SUCCEEDED') return await verifySuccess(description, originalRetry.envelope);
+      if (description.status === 'RUNNING') {
+        refusalPhase = 'execution_observation';
+        refusalCategory = 'execution_not_succeeded';
+        throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
+      }
+      refusalPhase = 'retry_eligibility';
+      refusalCategory = 'retry_not_authorized';
+      throw new Error('Original captured retry execution is terminal non-success; no third execution is started');
+    }
+    // Generation 0. A normal dispatch resolves the current operation; a recovery
+    // dispatch may instead find the execution the original evidence recorded,
+    // under the owner's own envelope and version, or a generation 0 started by an
+    // earlier recovery dispatch under the current pair. An absent generation 0 is
+    // started under the current version and normal envelope.
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_observation_unavailable';
+    const originalBase = original ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 0) : undefined;
+    let expected: ExpectedExecution;
+    let description = await describeExecution(transport, current[0].arn);
+    if (!description) {
+      expected = current[0];
+      target(expected);
+      refusalPhase = 'operation_start';
+      refusalCategory = 'operation_start_unavailable';
+      await start();
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path);
+    } else if (originalBase && bindsExpected(description, originalBase)) {
+      expected = originalBase;
+      target(expected);
+      description = await observePresent(transport, description, expected, evidence, path);
+    } else if (bindsExpected(description, current[0])) {
+      expected = current[0];
+      target(expected);
+      description = await observePresent(transport, description, expected, evidence, path);
+    } else {
+      throw new Error('Observed generation 0 does not bind the original owner or the current operation');
+    }
+    if (description.status === 'SUCCEEDED') return await verifySuccess(description, expected.envelope);
+    if (description.status === 'RUNNING') {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_not_succeeded';
+      throw new Error('Cleanup execution did not reach a terminal state within the bounded wait');
+    }
+    // Generation 0 is terminal non-success. One bounded predecessor check
+    // (its describe above plus this single inventory pass) gates generation 1.
+    refusalPhase = 'retry_proof';
+    refusalCategory = 'retry_proof_unavailable';
+    const families = await cleanupFamiliesStopped(transport);
+    evidence.operation.preceding_execution = { execution_arn: description.executionArn!, status: description.status!,
+      ...(description.stopDate ? { stopped_at: description.stopDate.toISOString() } : {}), cleanup_families: families };
+    await writeEvidence(path, evidence);
+    target(current[1]);
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_observation_unavailable';
+    let retry = await describeExecution(transport, current[1].arn);
+    if (!retry) {
+      refusalPhase = 'operation_start';
+      refusalCategory = 'operation_start_unavailable';
+      await start();
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      retry = await awaitTerminal(transport, current[1].arn, current[1].envelope, current[1].versionArn, current[1].name, evidence, path);
+    } else {
+      validateDescription(retry, current[1].envelope, current[1].versionArn, current[1].name);
+      retry = await observePresent(transport, retry, current[1], evidence, path);
+    }
+    if (retry.status === 'SUCCEEDED') return await verifySuccess(retry, current[1].envelope);
+    if (retry.status === 'RUNNING') {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_not_succeeded';
+      throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
+    }
+    refusalPhase = 'retry_eligibility';
+    refusalCategory = 'retry_not_authorized';
+    throw new Error('Cleanup retry already exists and is terminal non-success; no third execution is started');
   } catch {
     evidence.operation.proof_status = 'refused';
     evidence.operation.failure = 'Exact execution/task/committed-result proof unavailable; Cognito identities retained';
@@ -1004,11 +761,4 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     await writeEvidence(path, evidence);
     throw new Error(evidence.operation.failure);
   }
-}
-
-/** Start or resume the explicitly requested recovery operation. It has a distinct
- * deterministic identity and never enters the legacy FAILED retry proof path. */
-export function runRecoveryCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
-  io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
-  return runCleanupOperation(inputs, environment, io, 'recovery');
 }

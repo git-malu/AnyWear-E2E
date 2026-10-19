@@ -432,20 +432,20 @@ all local/Actions/CFN/ECS/nested Service jobs have ceased before handing the
 environment to another writer; timeout alone never releases it.
 
 The Infra-owned versioned Step Functions cleanup capability invokes Service's fixed
-application-data task. Normal and recovery cleanup submit the same strict envelope,
-wait for its exact execution and committed result, and require terminal success
-before deleting Cognito identities. Recovery validates the completed
-original E2E owner and captured worker subjects; unknown or unrecovered identities
-and quarantined leases remain in its manifest and fail recovery. The account
-artifact preserves the capability execution, source/image binding and exact cleanup
-request before any Cognito deletion, including when later cleanup fails. Legacy
-`service-cleanup-run.json` records remain accepted as historical recovery input;
-new runs use `service-cleanup-operation.json`. E2E does not check out a mutable cleanup
-helper or pass the Lifecycle/Cleanup task roles. Service's surviving operator must
-select the dedicated `CleanupTaskRoleArn` with no fallback to the old Lifecycle
-role. Its legacy image still needs narrowly reviewed data-cleanup permissions for
-the two Beta DLQs, while admission controls remain outside that role. None of these
-operations deploy CDK, change admission policy, or revive the retired runtime drill.
+application-data task. An ordinary qualification cleanup and a protected `recover`
+dispatch submit the same strict normal-mode envelope and enter the same resume/verify/
+retry rule. Recovery validates the completed original E2E owner and captured worker
+subjects; unknown or unrecovered identities and quarantined leases remain in its
+manifest and fail recovery. The account artifact preserves the capability execution,
+source/image binding and exact cleanup request before any Cognito deletion, including
+when later cleanup fails. Legacy `service-cleanup-run.json` records remain accepted as
+historical recovery input; new runs use `service-cleanup-operation.json`. E2E does not
+check out a mutable cleanup helper or pass the Lifecycle/Cleanup task roles. Service's
+surviving operator must select the dedicated `CleanupTaskRoleArn` with no fallback to
+the old Lifecycle role. Its legacy image still needs narrowly reviewed data-cleanup
+permissions for the two Beta DLQs, while admission controls remain outside that role.
+None of these operations deploy CDK, change admission policy, or revive the retired
+runtime drill.
 
 Operation evidence uses schema 3 and records initiation, observed terminal state,
 and a separate `proof_status`. Step Functions success alone does not permit identity
@@ -462,26 +462,52 @@ unassigned diagnostic `known_message`; those counters alone do not establish
 per-message ownership. Source/image-bound Service validation and live unrelated
 data/message preservation evidence provide that acceptance boundary.
 
-Protected account recovery defaults to `operation_mode=normal`. Explicit recovery
-requires `operation_mode=recovery` and `recovery_attempt` (1..999999). Attempt 1
-uses the original `smoke` or `full` run's authenticated owner artifact
-and canonical captured request. Later runs also select the latest completed main
-recovery workflow through `previous_recovery_run_id` and
-`previous_recovery_run_attempt`; each artifact is named by that recovery workflow's
-own run ID and attempt. These inputs are checked before AWS credentials, and the
-`recover` operation is the only consumer of them in the shared `qualify` entry.
+Protected account recovery and the ordinary qualification cleanup share one rule. For the
+exact captured run scope, the entry point resolves one deterministic execution name,
+`beta-cleanup-<runScope>-<requestHash16>`; an absent generation 0 is started under the
+current version and normal envelope. It resumes that execution while it is `RUNNING`,
+verifies the committed result when it has `SUCCEEDED`, and only when it is terminal
+non-success performs the bounded predecessor check: the execution `describe` that
+established the terminal state, then one inventory pass over the three bounded cleanup
+task families (`beta-anywear-cleanup`, `beta-anywear-cleanup-verify` and
+`beta-anywear-cleanup-acceptance`) asking ECS only for `RUNNING`-desired tasks. The
+inventory never reads `lastStatus`: any returned task refuses the next start, and an
+inventory that cannot complete refuses as well. A task still draining with a `STOPPED`
+desired status is therefore outside this single-inventory check. Otherwise the dispatch
+starts `beta-cleanup-<runScope>-<requestHash16>-retry1` once, or resumes or verifies that
+name when it already exists.
 
-Recovery execution names bind the original run scope and attempt alone. Resuming
-the latest attempt preserves its exact source, image, version and input, including
-after a lost success response. Repair requires explicit latest+1 after the prior
-execution failed, timed out or was aborted. Full bounded execution/history records
-bind the predecessor and every submitted task. Two stable current ECS inventory
-scans must prove no active work; expired historical task descriptions do not block
-a new attempt. Unavailable listed current tasks, incomplete pages, stale artifacts,
-changed captured subjects or active work retain the accounts. Recovery does not
-enter the legacy normal retry/no-commit path. Partial Cognito reconciliation never shrinks the
-canonical cleanup request. Shared account-pool concurrency does not establish a
-cross-repository writer allocation; that remains an operational preflight gate.
+A protected `recover` dispatch supplies the original owner evidence. That evidence is
+validated in its own terms, so an execution captured under an older state-machine
+version, an older Service image/source or a legacy mode-less owner input is observed and
+verified under its own envelope and version. A retry newly started by this dispatch
+always uses the current version and normal envelope; a retry already recorded in the
+original evidence is observed and, when `SUCCEEDED`, verified under that evidence's own
+version and envelope. The original evidence's captured request and run scope must equal
+the current canonical request and scope.
+
+A captured run scope therefore carries at most two executions: the base deterministic
+name and one `-retry1`. A retry newly started by this dispatch uses the current version
+and normal envelope. An existing retry that binds the original owner evidence or the
+current pair is resumed when it is `RUNNING` and verified when it is `SUCCEEDED`, under
+that envelope and version. A recorded retry that is already terminal non-success refuses
+the same way: it records `refusal_phase`/`refusal_category`, starts no third execution and
+deletes no identity. An execution that binds neither — for example a retry started
+by an earlier recovery under an intermediate reviewed tuple — is refused fail-closed: the
+dispatch records `refusal_phase`/`refusal_category`, starts no third execution and deletes
+no identity. The retry is the only retry: there is no attempt number, attempt input,
+predecessor artifact or execution-history hash, and no second cessation sample. An
+operator supplies the captured identities once; the protected `recover` dispatch takes
+`source_run_id`/`source_run_attempt`.
+
+Every dispatch always emits `operation_mode: 'normal'` and no `recovery_attempt`; the
+envelope keeps the optional attempt field only because the Service validates it.
+`validateCommitted` still compares both echoed fields, so a Service that echoes an
+attempt is refused. The `recover` operation and its original-artifact preparation remain
+the only consumer of the capture inputs in the shared `qualify` entry; partial Cognito
+reconciliation never shrinks the canonical cleanup request. Shared account-pool
+concurrency does not establish a cross-repository writer allocation; that remains an
+operational preflight gate.
 
 The `full`, `smoke` and `measure` operations accept `worker_slot_offset` (default `0`) for
 allocating the run's worker slots; for example `2` selects slots 2 and 3 without

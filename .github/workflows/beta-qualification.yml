@@ -42,29 +42,6 @@ on:
         description: Attempt number for that failed E2E run; only operation recover accepts it
         required: false
         type: string
-      operation_mode:
-        description: Cleanup execution mode; only operation recover reads it
-        required: false
-        default: normal
-        type: choice
-        options: [normal, recovery]
-      recovery_attempt:
-        description: Explicit recovery attempt (1..999999), empty for normal; only operation recover accepts it
-        required: false
-        type: string
-      previous_recovery_run_id:
-        description: Latest completed recovery run containing its trusted artifact; only operation recover accepts it
-        required: false
-        type: string
-      previous_recovery_run_attempt:
-        description: Attempt number of that recovery run; only operation recover accepts it
-        required: false
-        type: string
-      retry_failed_execution:
-        description: Legacy normal-mode retry after exact no-commit proof; only operation recover accepts it and recovery forbids it
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -127,8 +104,8 @@ jobs:
 
       # The entry is one dispatch surface, so the operation and the inputs that belong to
       # another operation are refused here rather than by file presence. `sizing_stage` is
-      # required by measure and refused by every other operation; the recovery inputs are
-      # rejected by every operation but recover.
+      # required by measure and refused by every other operation; the captured identity
+      # inputs are rejected by every operation but recover.
       - name: Validate the dispatch operation and its input scope
         id: operation-scope
         shell: bash
@@ -137,10 +114,6 @@ jobs:
           SIZING_STAGE: ${{ inputs.sizing_stage }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
-          PREVIOUS_RECOVERY_RUN_ID: ${{ inputs.previous_recovery_run_id }}
-          PREVIOUS_RECOVERY_RUN_ATTEMPT: ${{ inputs.previous_recovery_run_attempt }}
-          RETRY_FAILED_EXECUTION: ${{ inputs.retry_failed_execution }}
         run: |
           case "$OPERATION" in
             full|smoke|measure|recover) ;;
@@ -156,16 +129,12 @@ jobs:
             exit 1
           fi
           if [[ "$OPERATION" != recover ]]; then
-            for name in SOURCE_RUN_ID SOURCE_RUN_ATTEMPT RECOVERY_ATTEMPT PREVIOUS_RECOVERY_RUN_ID PREVIOUS_RECOVERY_RUN_ATTEMPT; do
+            for name in SOURCE_RUN_ID SOURCE_RUN_ATTEMPT; do
               if [[ -n "${!name}" ]]; then
                 echo "::error::$name is only accepted by operation recover"
                 exit 1
               fi
             done
-            if [[ "$RETRY_FAILED_EXECUTION" == "true" ]]; then
-              echo "::error::retry_failed_execution is only accepted by operation recover"
-              exit 1
-            fi
           fi
           # Publish the validated operation. The credential jobs gate on this output, so the
           # job that authorizes them is the job that checked the operation and its inputs.
@@ -1184,13 +1153,8 @@ jobs:
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
       E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: recovery/beta-cleanup-diagnostic.json
-      E2E_CLEANUP_OPERATION_MODE: ${{ inputs.operation_mode }}
-      E2E_CLEANUP_RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
-      E2E_CLEANUP_RETRY_FAILED: ${{ inputs.retry_failed_execution && 'true' || 'false' }}
       RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       RECOVERY_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
-      RECOVERY_PREVIOUS_RUN_ID: ${{ inputs.previous_recovery_run_id }}
-      RECOVERY_PREVIOUS_RUN_ATTEMPT: ${{ inputs.previous_recovery_run_attempt }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
 
     steps:
@@ -1240,7 +1204,7 @@ jobs:
           node scripts/account-recovery-inputs.mjs --validate-inputs
           node scripts/check-compatibility.mjs --require-infra
 
-      - name: Verify exact original E2E owner and previous recovery artifact
+      - name: Verify exact original E2E owner artifact
         id: recovery-scope
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1274,7 +1238,6 @@ jobs:
       - name: Recover exact worker data and identities through the reviewed Service operator
         env:
           E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.original_operation_path }}
-          E2E_CLEANUP_PREVIOUS_RECOVERY_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.previous_operation_path }}
           E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: ${{ steps.recovery-scope.outputs.diagnostic_path }}
           E2E_BETA_CLEANUP_DIAGNOSTIC_SHA256: ${{ steps.recovery-scope.outputs.diagnostic_sha256 }}
           E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
@@ -1311,9 +1274,6 @@ jobs:
             recovery/original-service-cleanup-run.json
             recovery/original-owner.json
             recovery/beta-cleanup-diagnostic.json
-            recovery/previous-recovery-operation.json
-            recovery/previous-recovery-owner.json
-            recovery/recovery-selection.json
             recovery/account-recovery-failure.json
           if-no-files-found: ignore
 

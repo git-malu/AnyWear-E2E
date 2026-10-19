@@ -4,9 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ghApi } from './trusted-deployment-inputs.mjs';
 import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, requireImageDigest, requireMatch, repositories } from './evidence-contract.mjs';
-import { isDeepStrictEqual } from 'node:util';
 import { createServiceCleanupInputs } from '../tests/support/worker-cleanup.ts';
-import { assertCleanupOwnerEvidence, assertRecoveryOperationEvidence } from '../tests/support/service-cleanup-operation.ts';
+import { assertCleanupOwnerEvidence } from '../tests/support/service-cleanup-operation.ts';
 import { isBetaWorkerEmailForScope } from '../tests/support/beta-address.ts';
 import { loadDiagnosticEvidence } from './beta-cleanup-diagnostic.mjs';
 
@@ -15,17 +14,21 @@ const RECOVERABLE_STATUSES = new Set(['reserved', 'provisioning', 'in_use', 'cle
 
 // #163 transition allow-list. Recover now runs as an operation of the single `qualify` entry,
 // so a new recovery run (and a new original smoke/full run) names `beta-qualification.yml`.
-// Historical `integration.yml` originals and `account-recovery.yml` predecessors remain
-// readable so an in-flight recovery can still consume the evidence it was captured under.
+// Historical `integration.yml` originals remain readable so an in-flight recovery can still
+// consume the evidence it was captured under.
 export const ORIGINAL_OWNER_WORKFLOWS = Object.freeze(['.github/workflows/beta-qualification.yml', '.github/workflows/integration.yml']);
-export const RECOVERY_WORKFLOWS = Object.freeze(['.github/workflows/beta-qualification.yml', '.github/workflows/account-recovery.yml']);
 
-export function assertRecoveryArtifact(artifact, run, recovery = false) {
+// The replay inputs this issue removed from dispatch. A stale workflow or
+// operator that still supplies one of them is refused before any artifact
+// download, diagnostic read or AWS credential.
+const REMOVED_REPLAY_INPUT = /^(?:E2E_CLEANUP_(?:OPERATION_MODE|RECOVERY_ATTEMPT|RETRY_FAILED)|RECOVERY_PREVIOUS_RUN_(?:ID|ATTEMPT))$/;
+
+export function assertRecoveryArtifact(artifact, run) {
   const started = Date.parse(run.run_started_at);
   const completed = Date.parse(run.updated_at);
   const created = Date.parse(artifact.created_at);
   if (!Number.isSafeInteger(artifact.id) || artifact.id < 1
-    || artifact.name !== `${recovery ? 'beta-account-recovery' : 'beta-account-lifecycle'}-${run.id}-${run.run_attempt}`
+    || artifact.name !== `beta-account-lifecycle-${run.id}-${run.run_attempt}`
     || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? '')
     || artifact.expired !== false || !(Date.parse(artifact.expires_at) > Date.now())
     || artifact.workflow_run?.id !== run.id || artifact.workflow_run?.head_sha !== run.head_sha
@@ -41,48 +44,12 @@ export function validateAccountRecoverySelection(environment = process.env) {
     if (!/^[1-9][0-9]*$/.test(value ?? '')) throw new Error(`${label} must be a canonical positive integer`);
     return requireId(Number(value), label);
   };
-  const mode = environment.E2E_CLEANUP_OPERATION_MODE;
+  for (const key of Object.keys(environment)) {
+    if (REMOVED_REPLAY_INPUT.test(key)) throw new Error('Recovery selection accepts the captured identities only');
+  }
   const sourceRunId = integer(environment.RECOVERY_SOURCE_RUN_ID, 'Original run');
   const sourceAttempt = integer(environment.RECOVERY_SOURCE_RUN_ATTEMPT, 'Original attempt');
-  if (!['normal', 'recovery'].includes(mode)) throw new Error('Explicit cleanup operation mode required');
-  const attemptValue = environment.E2E_CLEANUP_RECOVERY_ATTEMPT;
-  const priorId = environment.RECOVERY_PREVIOUS_RUN_ID;
-  const priorAttempt = environment.RECOVERY_PREVIOUS_RUN_ATTEMPT;
-  if (mode === 'normal') {
-    if (attemptValue || priorId || priorAttempt) throw new Error('Normal cleanup forbids recovery attempt and predecessor inputs');
-    return { mode, sourceRunId, sourceAttempt };
-  }
-  if (environment.E2E_CLEANUP_RETRY_FAILED === 'true') throw new Error('Recovery forbids the old retry switch');
-  const recoveryAttempt = integer(attemptValue, 'Recovery attempt');
-  if (recoveryAttempt > 999999 || Boolean(priorId) !== Boolean(priorAttempt) || recoveryAttempt > 1 && !priorId) throw new Error('Recovery attempt or predecessor selection is invalid');
-  return { mode, sourceRunId, sourceAttempt, recoveryAttempt,
-    ...(priorId ? { previousRunId: integer(priorId, 'Previous recovery run'), previousRunAttempt: integer(priorAttempt, 'Previous recovery run attempt') } : {}) };
-}
-
-export function assertPreviousRecovery(run, selection, files, originalFiles) {
-  requireCommit(run.head_sha, 'Previous recovery source');
-  if (run.id !== selection.previousRunId || run.run_attempt !== selection.previousRunAttempt
-    || run.repository?.full_name !== repositories.e2e || run.head_branch !== 'main' || run.event !== 'workflow_dispatch'
-    || !RECOVERY_WORKFLOWS.includes(run.path) || run.status !== 'completed'
-    || !['success', 'failure', 'cancelled', 'timed_out'].includes(run.conclusion)) throw new Error('Previous recovery is not a completed trusted main run');
-  for (const name of ['original-account-budget.json', 'original-service-cleanup-operation.json', 'original-owner.json']) {
-    if (!files[name] || files[name] !== originalFiles[name]) throw new Error('Previous recovery changes canonical original owner/request evidence');
-  }
-  const priorSelection = parseStrictJson(Buffer.from(files['recovery-selection.json'] ?? '', 'base64'));
-  const evidence = parseStrictJson(Buffer.from(files['service-cleanup-operation.json'] ?? '', 'base64'));
-  const originalOperation = parseStrictJson(Buffer.from(originalFiles['original-service-cleanup-operation.json'], 'base64'));
-  const operation = assertRecoveryOperationEvidence(evidence, originalOperation.operation.input.cleanup_request);
-  if (priorSelection.mode !== 'recovery' || priorSelection.sourceRunId !== selection.sourceRunId || priorSelection.sourceAttempt !== selection.sourceAttempt
-    || !Number.isInteger(priorSelection.recoveryAttempt) || priorSelection.recoveryAttempt < 1 || priorSelection.recoveryAttempt > 999999
-    || ![priorSelection.recoveryAttempt, priorSelection.recoveryAttempt + 1].includes(selection.recoveryAttempt)
-    || evidence.schema_version !== 3 || evidence.record_type !== 'anywear_e2e_service_cleanup_operation' || operation?.operation_mode !== 'recovery'
-    || operation.recovery_attempt !== priorSelection.recoveryAttempt || operation.input?.recovery_attempt !== priorSelection.recoveryAttempt) throw new Error('Previous recovery artifact does not bind same or immediate next attempt');
-  const original = parseStrictJson(Buffer.from(originalFiles['original-account-budget.json'], 'base64'));
-  const manifest = parseStrictJson(Buffer.from(files['account-budget.json'] ?? '', 'base64'));
-  const stable = value => ({ ...value, accounts: value.accounts.map(account => Object.fromEntries(Object.entries(account)
-    .filter(([key]) => !['status', 'updatedAt'].includes(key)))) });
-  if (!isDeepStrictEqual(stable(manifest), stable(original))) throw new Error('Previous recovery drops or changes captured accounts, slots or owner scope');
-  return { evidence, manifest };
+  return { sourceRunId, sourceAttempt };
 }
 
 function readAccountArchive(archivePath) {
@@ -92,7 +59,7 @@ function readAccountArchive(archivePath) {
     'with zipfile.ZipFile(sys.argv[1]) as z:',
     ' entries=z.infolist()',
     ' names=[e.filename for e in entries]',
-    ' allowed=("account-budget.json","service-cleanup-run.json","service-cleanup-operation.json","original-account-budget.json","original-service-cleanup-run.json","original-service-cleanup-operation.json","original-owner.json","previous-recovery-operation.json","previous-recovery-owner.json","recovery-selection.json","account-recovery-failure.json")',
+    ' allowed=("account-budget.json","service-cleanup-run.json","service-cleanup-operation.json","original-account-budget.json","original-service-cleanup-run.json","original-service-cleanup-operation.json","original-owner.json","account-recovery-failure.json")',
     ' if len(names)!=len(set(names)) or "account-budget.json" not in names or any(n not in allowed for n in names): raise ValueError("Unexpected account artifact contents")',
     ' if len(entries)>12 or any(e.is_dir() or e.file_size>1048576 or (e.external_attr>>16)&0o170000==0o120000 for e in entries): raise ValueError("Unbounded or unsafe account artifact file")',
     ' print(json.dumps({e.filename:base64.b64encode(z.read(e)).decode("ascii") for e in entries}))',
@@ -181,34 +148,12 @@ export async function prepareRecoveryFiles(environment = process.env, {
     archive_sha256: byteHash(archive), manifest_sha256: byteHash(bytes),
   }, null, 2)}\n`);
   await writeFile(resolve(dirname(path), 'original-owner.json'), ownerBytes, { mode: 0o600 });
-  let currentManifest = manifest;
-  if (selection.previousRunId) {
-    const priorRun = parseStrictJson(api(`repos/${repositories.e2e}/actions/runs/${selection.previousRunId}/attempts/${selection.previousRunAttempt}`));
-    const priorName = `beta-account-recovery-${priorRun.id}-${priorRun.run_attempt}`;
-    const priorResponse = parseStrictJson(api(`repos/${repositories.e2e}/actions/runs/${priorRun.id}/artifacts?name=${priorName}&per_page=100`));
-    if (priorResponse.total_count !== 1 || priorResponse.artifacts?.length !== 1) throw new Error('Previous recovery artifact must exist uniquely');
-    const priorArtifact = assertRecoveryArtifact(priorResponse.artifacts[0], priorRun, true);
-    const priorArchive = api(`repos/${repositories.e2e}/actions/artifacts/${priorArtifact.id}/zip`, true);
-    if (priorArchive.length > 8 * 1024 * 1024 || priorArtifact.digest !== `sha256:${byteHash(priorArchive)}`) throw new Error('Previous recovery artifact digest mismatch or bound exceeded');
-    const priorPath = resolve(dirname(path), 'previous-recovery-artifact.zip');
-    await writeFile(priorPath, priorArchive);
-    const priorFiles = extract(priorPath);
-    const prior = assertPreviousRecovery(priorRun, selection, priorFiles, {
-      'original-account-budget.json': files['account-budget.json'], 'original-service-cleanup-operation.json': files['service-cleanup-operation.json'],
-      'original-owner.json': ownerBytes.toString('base64'),
-    });
-    currentManifest = prepareAccountRecovery(prior.manifest, run, id, attempt);
-    await writeFile(resolve(dirname(path), 'previous-recovery-operation.json'), Buffer.from(priorFiles['service-cleanup-operation.json'], 'base64'), { mode: 0o600 });
-    await writeFile(resolve(dirname(path), 'previous-recovery-owner.json'), `${JSON.stringify({ run: priorRun, artifact: priorArtifact, archive_sha256: byteHash(priorArchive) }, null, 2)}\n`, { mode: 0o600 });
-  }
   await writeFile(diagnosticPath, diagnosticBytes, { mode: 0o600 });
-  await writeFile(resolve(dirname(path), 'recovery-selection.json'), `${JSON.stringify(selection, null, 2)}\n`, { mode: 0o600 });
-  await writeFile(path, `${JSON.stringify(currentManifest, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   await appendFile(environment.GITHUB_OUTPUT, [
     `run_scope=${manifest.runScope}`, `max_active=${manifest.config.maxActiveAccounts}`,
     `max_new=${manifest.config.maxNewAccountsPerRun}`, `max_quarantined=${manifest.config.maxQuarantinedAccounts}`, '',
     `original_operation_path=${files['service-cleanup-operation.json'] ? resolve(dirname(path), 'original-service-cleanup-operation.json') : ''}`, '',
-    `previous_operation_path=${selection.previousRunId ? resolve(dirname(path), 'previous-recovery-operation.json') : ''}`, '',
     `diagnostic_path=${diagnosticPath}`, `diagnostic_sha256=${byteHash(diagnosticBytes)}`, '',
     `diagnostic_service_source_sha=${diagnosticServiceSourceSha}`, `diagnostic_service_image_digest=${diagnosticServiceImageDigest}`,
     `diagnostic_state_machine_version_arn=${diagnosticStateMachineVersionArn}`, '',
