@@ -1,8 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { hashBytes } from './beta-sizing-workload.mjs';
-import { correlateSizingWorkload } from './beta-sizing-telemetry.mjs';
+import { hashBytes, S1_DIAGNOSTIC_PROBE, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE,
+  SIZING_ENVELOPE_MODES } from './beta-sizing-workload.mjs';
+import { correlateSizingTask, correlateSizingWorkload } from './beta-sizing-telemetry.mjs';
 import { sizingAwsReader, sizingRuntimeSnapshot } from './beta-sizing-runtime.mjs';
 import { assertEqual } from './evidence-contract.mjs';
 import { validateSizingSource } from './beta-sizing-source.mjs';
@@ -88,6 +89,50 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
   }
   const correlation = correlateSizingWorkload(workload.workload, events);
   gaps.push(...correlation.gaps);
+  // The envelope mode is part of the record, never inferred: a candidate
+  // measurement must carry the diagnostic probe and its verification, while a
+  // demonstrated one must not carry a probe it never ran.
+  const envelopeMode = workload.workload?.envelope_mode;
+  if (!SIZING_ENVELOPE_MODES.includes(envelopeMode)) throw new Error('Sizing workload must record its reviewed envelope mode');
+  const failures = [...correlation.failures];
+  let failurePath = null;
+  const diagnostic = workload.diagnostics?.failure_path;
+  if (envelopeMode === SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE) {
+    if (!diagnostic) throw new Error('Widening-candidate measurement requires the diagnostic probe record');
+    if (diagnostic.expected_failure_code !== S1_DIAGNOSTIC_PROBE.expected_failure_code
+      || diagnostic.observed_failure_code !== S1_DIAGNOSTIC_PROBE.expected_failure_code) {
+      throw new Error('Diagnostic probe must record the expected sanitized failure code');
+    }
+    if (typeof diagnostic.resource_id !== 'string' || !diagnostic.resource_id) {
+      throw new Error('Diagnostic probe record must name the resource it observed');
+    }
+    const task = correlateSizingTask(diagnostic.resource_id, events, { failureCode: diagnostic.observed_failure_code });
+    if (task.gap) throw new Error(`Diagnostic probe correlation is incomplete: ${task.gap}`);
+    if (task.failure_code !== S1_DIAGNOSTIC_PROBE.expected_failure_code) {
+      throw new Error(`Diagnostic probe failure code ${String(task.failure_code)} is not `
+        + `${S1_DIAGNOSTIC_PROBE.expected_failure_code}`);
+    }
+    if (task.attempts !== S1_DIAGNOSTIC_PROBE.expected_executions) {
+      throw new Error(`Diagnostic probe must settle in exactly ${S1_DIAGNOSTIC_PROBE.expected_executions} execution; `
+        + `observed ${task.attempts}`);
+    }
+    if (task.provider_waits !== S1_DIAGNOSTIC_PROBE.expected_provider_calls) {
+      throw new Error(`Diagnostic probe must make zero provider calls; observed ${task.provider_waits}`);
+    }
+    failures.push({ case_id: diagnostic.case_id, task_id: task.task_id, failure_code: task.failure_code,
+      attempts: task.attempts, provider_waits: task.provider_waits });
+    failurePath = { ...diagnostic, task_id: task.task_id, executions: task.attempts,
+      provider_calls: task.provider_waits, expected_failure_verified: true,
+      single_execution_verified: true, zero_provider_calls_verified: true };
+  } else if (diagnostic) {
+    throw new Error('The diagnostic probe is only submitted by the widening-candidate measurement');
+  }
+  if (failures.some(item => !item.failure_code)) gaps.push('A failed execution lacks its observed sanitized failure code');
+  const failureCodes = {};
+  for (const item of failures) {
+    if (!item.failure_code) continue;
+    failureCodes[item.failure_code] = (failureCodes[item.failure_code] ?? 0) + 1;
+  }
   const limits = aws(['application-autoscaling', 'describe-scalable-targets', '--service-namespace', 'ecs']);
   const observed = Object.fromEntries(['api', 'worker'].map(role => {
     const service = after.services.find(item => item.serviceName === `beta-anywear-${role}`);
@@ -111,10 +156,18 @@ export function collectSizingCloudEvidence({ workload, before, aws }) {
         benchmark_source_sha256: workload.source_proof.benchmark_source_sha256,
         image_digest: workload.deployment.service.image_digest }, observed,
       workload: correlation.workload, provider_configuration: correlation.provider_configuration,
+      // An observed failure is retained with the sanitized code the run reported and
+      // the execution/provider-call counts telemetry shows; it is never counted as a
+      // successful task timing.
+      failure_codes: failureCodes,
+      failure_path: failurePath,
       measurements: { started_at: new Date(alignedStart).toISOString(), finished_at: new Date(alignedEnd).toISOString(),
         peak_method: 'container-cgroup-high-water', peak_window_covered: peaks.length === 2 && replacements === 0 && stoppedTasks.length === 0,
         tasks: inventory, container_peaks: peaks, cpu_samples: cpu,
-        route_samples_ms: workload.route_samples_ms, task_timings: correlation.task_timings },
+        route_samples_ms: workload.route_samples_ms,
+        task_timings: [...correlation.task_timings, ...failures.map(item => ({ case_id: item.case_id,
+          task_id: item.task_id, failure_code: item.failure_code, attempts: item.attempts,
+          provider_waits: item.provider_waits }))] },
       evidence_gaps: gaps,
       remaining_acceptance: ['readiness, lease/queue/DLQ/backlog, duplicate/lost-work and notification evidence',
         'native completed-success exact run/artifact authentication and independent actual commit inventory reconstruction',
