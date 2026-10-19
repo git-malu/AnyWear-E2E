@@ -490,7 +490,9 @@ A captured run scope therefore carries at most two executions: the base determin
 name and one `-retry1`. A retry newly started by this dispatch uses the current version
 and normal envelope. An existing retry that binds the original owner evidence or the
 current pair is resumed when it is `RUNNING` and verified when it is `SUCCEEDED`, under
-that envelope and version. An execution that binds neither — for example a retry started
+that envelope and version. A recorded retry that is already terminal non-success refuses
+the same way: it records `refusal_phase`/`refusal_category`, starts no third execution and
+deletes no identity. An execution that binds neither — for example a retry started
 by an earlier recovery under an intermediate reviewed tuple — is refused fail-closed: the
 dispatch records `refusal_phase`/`refusal_category`, starts no third execution and deletes
 no identity. The retry is the only retry: there is no attempt number, attempt input,
