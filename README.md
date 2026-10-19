@@ -480,8 +480,10 @@ name when it already exists.
 A protected `recover` dispatch supplies the original owner evidence. That evidence is
 validated in its own terms, so an execution captured under an older state-machine
 version, an older Service image/source or a legacy mode-less owner input is observed and
-verified under its own envelope and version; the retry always uses the current version
-and normal envelope. The original evidence's captured request and run scope must equal
+verified under its own envelope and version. A retry newly started by this dispatch
+always uses the current version and normal envelope; a retry already recorded in the
+original evidence is observed and, when `SUCCEEDED`, verified under that evidence's own
+version and envelope. The original evidence's captured request and run scope must equal
 the current canonical request and scope.
 
 A captured run scope therefore carries at most two executions: the base deterministic

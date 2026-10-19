@@ -590,9 +590,12 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * A recovery dispatch supplies the original owner evidence. That evidence is
  * validated in its own terms, so an execution captured before a reviewed version
  * or Service image/source advance is still observed under its own envelope and
- * version. Generation 1 is always the current normal envelope under the current
- * version. If the owner evidence already used the retry name, that name is the
- * last allowed name and a terminal non-success refuses.
+ * version. A generation 1 newly started by this dispatch always uses the current
+ * normal envelope under the current version; a retry already recorded in the
+ * owner evidence is observed and, when it succeeded, verified under that
+ * evidence's own version and envelope. If the owner evidence already used the
+ * retry name, that name is the last allowed name and a terminal non-success
+ * refuses.
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
   io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
