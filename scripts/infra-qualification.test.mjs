@@ -246,7 +246,7 @@ test('execution guard binds protected dispatch/source and the captured dedicated
   assert.throws(() => assertE2EExecution(beforeCredentials, { sourceSha }), /dedicated E2E principal/);
 });
 
-test('recovery binds the original completed owner and preserves unknown identities', () => {
+test('recovery binds the original completed owner and preserves unproven identities', () => {
   const run = { id: 123, run_attempt: 1, head_sha: 'a'.repeat(40), repository: { full_name: 'git-malu/AnyWear-E2E' },
     head_branch: 'main', event: 'workflow_dispatch', path: '.github/workflows/beta-qualification.yml', status: 'completed', conclusion: 'failure' };
   const manifest = { version: 1, runScope: '123-1-0000000000000000', config: { maxActiveAccounts: 2, maxNewAccountsPerRun: 4, maxQuarantinedAccounts: 2 },
@@ -256,7 +256,9 @@ test('recovery binds the original completed owner and preserves unknown identiti
       { mode: 'worker', status: 'provisioning', subject: 'unknown', email: 'e2e-beta-worker-2-chromium@anywear.local' }] };
   const prepared = prepareAccountRecovery(structuredClone(manifest), run, 123, 1);
   assert.equal(prepared.accounts[0].status, 'cleanup_pending');
-  assert.equal(prepared.accounts[1].status, 'quarantined');
+  // A quarantined record whose captured subject and address are intact is the
+  // same cleanup request; only an unproven identity stays terminal.
+  assert.equal(prepared.accounts[1].status, 'cleanup_pending');
   assert.equal(prepared.accounts[2].status, 'deleted');
   assert.equal(prepared.accounts[3].status, 'provisioning');
   for (const patch of [{ status: 'in_progress' }, { run_attempt: 2 }, { path: '.github/workflows/runtime-drill.yml' }, { repository: { full_name: 'other/E2E' } }]) assert.throws(() => prepareAccountRecovery(structuredClone(manifest), { ...run, ...patch }, 123, 1));
