@@ -82,6 +82,33 @@ test('every tracked workload, workflow, fixture, lock and file mode affects the 
   });
 });
 
+test('the restored exact fixture and the diagnostic probe are tracked source, not generated artifacts', async () => {
+  await withRepository(async ({ directory, git }) => {
+    await mkdir(join(directory, 'tests', 'fixtures', 'beta-sizing', 'diagnostic'), { recursive: true });
+    const exact = join(directory, 'tests', 'fixtures', 'beta-sizing', 'sweater-ordinary.png');
+    const diagnostic = join(directory, 'tests', 'fixtures', 'beta-sizing', 'diagnostic', 'truncated.png');
+    const png = value => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from(value)]);
+    await writeFile(exact, png('exact-fixture-body'));
+    await writeFile(diagnostic, png('truncated-body'));
+    git(['add', '.']); git(['commit', '--quiet', '-m', 'Track the sizing PNG and its diagnostic probe']);
+    let prior = reconstructSizingSource(directory, git(['rev-parse', 'HEAD']));
+    for (const [file, body] of [[exact, 'exact-fixture-body-changed'], [diagnostic, 'truncated-body-changed']]) {
+      await writeFile(file, png(body));
+      git(['add', file]); git(['commit', '--quiet', '-m', `Change ${body}`]);
+      const next = reconstructSizingSource(directory, git(['rev-parse', 'HEAD']));
+      assert.notEqual(next.benchmark_source_sha256, prior.benchmark_source_sha256,
+        `changing ${file} must change the benchmark source digest`);
+      prior = next;
+    }
+    // Both paths appear as tracked inventory entries, so the digest covers the bytes a
+    // sizing run actually submits rather than only the manifest that names them.
+    const paths = prior.inventory.map(entry => Buffer.from(entry.path_base64, 'base64').toString());
+    assert.ok(paths.includes('tests/fixtures/beta-sizing/sweater-ordinary.png'));
+    assert.ok(paths.includes('tests/fixtures/beta-sizing/diagnostic/truncated.png'));
+  });
+});
+
 test('clean actual source refuses dirty/index-hidden/untracked/replaced/foreign source and run identities', async () => {
   await withRepository(async ({ directory, git, sha }) => {
     const env = environment(sha);

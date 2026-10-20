@@ -4,7 +4,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createSizingPlan, evaluateSizingResult, sizingUploadCases, SIZING_STAGES, SIZING_WORKLOAD, validateSizingPlan } from './beta-sizing-benchmark.mjs';
 import { sizingVtoCases, vtoAggregateSubmittedBytes } from './beta-sizing-workload.mjs';
-import { S1_INPUT_BYTES_MAX, S1_DEFERRED_VTO_SHAPE } from './beta-sizing-envelope.mjs';
+import { S1_DEFERRED_VTO_SHAPE, S1_DIAGNOSTIC_PROBE, S1_GARMENT_PNG_FIXTURE, S1_INPUT_BYTES_MAX,
+  S1_INPUT_EXCLUDED_FIXTURES, S1_WIDENING_CANDIDATE, SIZING_ENVELOPE_MODE_DEMONSTRATED,
+  SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, SIZING_ENVELOPE_MODES, assertCaseInputsWithinEnvelope,
+  assertSizingInputEnvelope, sizingCaseInputBound, sizingEnvelopeRecord } from './beta-sizing-envelope.mjs';
 import { sizingSourceFixture } from './fixtures/beta-sizing-source.mjs';
 
 const hash = 'a'.repeat(64);
@@ -16,9 +19,9 @@ const fixtures = new Map(JSON.parse(fixtureBytes).fixtures.map(fixture => [fixtu
 const manifestSha256 = createHash('sha256').update(fixtureBytes).digest('hex');
 const vtoCases = sizingVtoCases();
 
-function result(stage) {
+function result(stage, envelopeMode = SIZING_ENVELOPE_MODE_DEMONSTRATED) {
   const sizing = SIZING_STAGES.find((item) => item.id === stage);
-  const uploads = sizingUploadCases().map((item, index) => ({
+  const uploads = sizingUploadCases(envelopeMode).map((item, index) => ({
     ...item, task_id: `upload-${index}`, mime: fixtures.get(item.fixture).mime,
     fixture_sha256: fixtures.get(item.fixture).sha256, fixture_bytes: fixtures.get(item.fixture).bytes,
     fixture_dimensions: [fixtures.get(item.fixture).width, fixtures.get(item.fixture).height],
@@ -60,7 +63,7 @@ function result(stage) {
     workload: { uploads, vto, overlap: [
       { upload_task_id: 'upload-0', vto_task_id: 'vto-0' },
       { upload_task_id: 'upload-1', vto_task_id: 'vto-1' },
-    ] },
+    ], ...sizingEnvelopeRecord(envelopeMode) },
     measurements: {
       started_at: started, finished_at: finished, peak_method: 'container-cgroup-high-water', peak_window_covered: true,
       tasks, container_peaks: tasks.map((item) => ({ task_arn: item.task_arn,
@@ -181,11 +184,17 @@ test('binds the reviewed plan and collected evidence to the measured S1 input en
   moreShapes.workload.vto_shapes.push('representative-larger-outfit-output');
   assert.throws(() => validateSizingPlan(moreShapes), /reviewed representative set/);
 
-  // Evidence that reports an above-envelope input is unqualified, not accepted:
-  // constraining what is submitted never relaxes what must pass. The measured
-  // inputs are the run's historical figures, so the shipped fixtures may differ.
+  // The restored exact fixture is committed above the demonstrated bound as the
+  // widening candidate. Every other frozen fixture stays inside the demonstrated
+  // bound, and the manifest mirrors the reviewed candidate record.
   const declared = JSON.parse(fixtureBytes);
-  assert.ok(declared.fixtures.every(fixture => fixture.bytes <= S1_INPUT_BYTES_MAX));
+  const overDemonstrated = declared.fixtures.filter(fixture => fixture.bytes > S1_INPUT_BYTES_MAX);
+  assert.deepEqual(overDemonstrated.map(fixture => [fixture.id, fixture.bytes, fixture.sha256]),
+    [[S1_WIDENING_CANDIDATE.fixture, S1_WIDENING_CANDIDATE.bound_bytes,
+      '4341430c05ebcc7af7385fce5025c8930b8def0fb5c13f9b4c0f1014bcd3f130']]);
+  assert.ok(declared.fixtures.every(fixture => fixture.bytes <= S1_WIDENING_CANDIDATE.bound_bytes));
+  assert.deepEqual(declared.s1_input_envelope.widening_candidate,
+    { ...S1_WIDENING_CANDIDATE, case_ids: [...S1_WIDENING_CANDIDATE.case_ids] });
   assert.match(declared.s1_input_envelope.measured_inputs_basis, /historical run evidence/);
   assert.match(declared.s1_input_envelope.input_bytes_max_basis, /per submitted input/);
   assert.deepEqual(declared.s1_input_envelope.deferred_vto_shape, { ...S1_DEFERRED_VTO_SHAPE,
@@ -212,6 +221,109 @@ test('binds the reviewed plan and collected evidence to the measured S1 input en
   const reordered = result('S1');
   reordered.workload.vto[2].garment_fixtures = ['trousers-ordinary.jpg', 'bag-ordinary.jpg', 'shoes-ordinary.jpg'];
   assert.match(evaluateSizingResult(reordered).reason, /canonical inside-envelope list/);
+});
+
+test('records the widening candidate and admits it only for its S1 case IDs', () => {
+  assert.deepEqual([...SIZING_ENVELOPE_MODES], ['demonstrated', 'widening-candidate']);
+  assert.equal(S1_WIDENING_CANDIDATE.bound_bytes, 3_742_711);
+  assert.equal(S1_WIDENING_CANDIDATE.fixture, 'sweater-ordinary.png');
+  assert.equal(S1_WIDENING_CANDIDATE.prior_bound_bytes, S1_INPUT_BYTES_MAX);
+  assert.equal(S1_WIDENING_CANDIDATE.authorising_issue, 140);
+  assert.equal(S1_WIDENING_CANDIDATE.status, 'candidate');
+  assert.deepEqual([...S1_WIDENING_CANDIDATE.case_ids], ['burst-ordinary-png-0', 'burst-ordinary-png-1']);
+
+  // The 12-case matrix keeps its case IDs. Only the two burst PNG cases name the exact
+  // fixture, and only in candidate mode; every other PNG case names the garment
+  // variant, and the demonstrated matrix never names the exact fixture.
+  const demonstrated = sizingUploadCases();
+  const candidate = sizingUploadCases(SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+  assert.equal(candidate.length, SIZING_WORKLOAD.upload_tagging_cases);
+  assert.deepEqual(candidate.map(item => item.case_id), demonstrated.map(item => item.case_id));
+  assert.deepEqual(candidate.filter(item => item.fixture === S1_WIDENING_CANDIDATE.fixture)
+    .map(item => item.case_id), [...S1_WIDENING_CANDIDATE.case_ids]);
+  assert.ok(candidate.filter(item => item.fixture === S1_WIDENING_CANDIDATE.fixture)
+    .every(item => item.submission === 'burst'));
+  assert.ok(demonstrated.every(item => item.fixture !== S1_WIDENING_CANDIDATE.fixture));
+  assert.equal(demonstrated.filter(item => item.fixture === S1_GARMENT_PNG_FIXTURE).length, 4);
+  assert.equal(candidate.filter(item => item.fixture === S1_GARMENT_PNG_FIXTURE).length, 2);
+  assert.equal(fixtures.get(S1_GARMENT_PNG_FIXTURE).bytes, 696_168);
+  assert.equal(fixtures.get(S1_WIDENING_CANDIDATE.fixture).bytes, 3_742_711);
+  assert.equal(fixtures.get(S1_WIDENING_CANDIDATE.fixture).width, 1200);
+  assert.equal(fixtures.get(S1_WIDENING_CANDIDATE.fixture).height, 1039);
+
+  // The allowance is keyed on BOTH the reviewed case ID and the candidate fixture:
+  // candidate mode alone cannot admit the exact fixture under another case, and a
+  // candidate case cannot admit a different fixture.
+  const candidateBound = (caseId, fixture) => sizingCaseInputBound(SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, caseId, fixture);
+  assert.equal(candidateBound('burst-ordinary-png-0', S1_WIDENING_CANDIDATE.fixture), 3_742_711);
+  assert.equal(candidateBound('burst-ordinary-png-1', S1_WIDENING_CANDIDATE.fixture), 3_742_711);
+  assert.equal(candidateBound('sequential-ordinary-png-0', S1_WIDENING_CANDIDATE.fixture), S1_INPUT_BYTES_MAX);
+  assert.equal(candidateBound('burst-ordinary-png-0', S1_GARMENT_PNG_FIXTURE), S1_INPUT_BYTES_MAX);
+  assert.equal(sizingCaseInputBound(SIZING_ENVELOPE_MODE_DEMONSTRATED, 'burst-ordinary-png-0',
+    S1_WIDENING_CANDIDATE.fixture), S1_INPUT_BYTES_MAX);
+
+  // Candidate evidence passes at S1 and is refused at another stage, without its mode
+  // record, or when it carries a demonstrated-mode case matrix.
+  assert.equal(evaluateSizingResult(result('S1', SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE)).status, 'passed');
+  assert.equal(evaluateSizingResult(result('S1')).status, 'passed');
+  const missingMode = result('S1', SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+  delete missingMode.workload.envelope_mode;
+  assert.match(evaluateSizingResult(missingMode).reason, /envelope mode/);
+  const wrongBounds = result('S1', SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+  wrongBounds.workload.candidate_bound_bytes++;
+  assert.match(evaluateSizingResult(wrongBounds).reason, /envelope bound record changed/);
+  assert.match(evaluateSizingResult(result('S2', SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE)).reason,
+    /only measurable at stage S1/);
+  const mismatched = result('S1', SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+  mismatched.workload.uploads = result('S1').workload.uploads.map((item, index) => ({ ...item, task_id: `upload-${index}` }));
+  assert.match(evaluateSizingResult(mismatched).reason, /Upload matrix or frozen fixture binding/);
+
+  // The plan records the mode and both bounds, and refuses a changed record.
+  const candidatePlan = createSizingPlan({ fixtureManifestSha256: hash, compatibilitySha: sha,
+    envelopeMode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE });
+  assert.equal(validateSizingPlan(candidatePlan), true);
+  assert.equal(candidatePlan.workload.envelope_mode, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+  assert.equal(candidatePlan.workload.candidate_bound_bytes, 3_742_711);
+  assert.equal(candidatePlan.workload.prior_bound_bytes, S1_INPUT_BYTES_MAX);
+  const changedCandidate = structuredClone(candidatePlan);
+  changedCandidate.workload.candidate_bound_bytes++;
+  assert.throws(() => validateSizingPlan(changedCandidate), /envelope bounds must match/);
+  const missingPlanMode = structuredClone(candidatePlan);
+  delete missingPlanMode.workload.envelope_mode;
+  assert.throws(() => validateSizingPlan(missingPlanMode), /envelope mode/);
+});
+
+test('reviews exclusions by the candidate bound and keeps the deferred reason single-valued', () => {
+  const base = S1_INPUT_EXCLUDED_FIXTURES.find(item => item.id === 'base-photo-large.jpg');
+  assert.equal(base.reason, 'not_in_reviewed_case_matrix');
+  assert.ok(base.bytes > S1_INPUT_BYTES_MAX && base.bytes < S1_WIDENING_CANDIDATE.bound_bytes);
+  for (const fixture of S1_INPUT_EXCLUDED_FIXTURES.filter(item => item.id !== 'base-photo-large.jpg')) {
+    assert.equal(fixture.reason, 'input_bytes_above_envelope');
+    assert.ok(fixture.bytes > S1_WIDENING_CANDIDATE.bound_bytes);
+    assert.throws(() => assertSizingInputEnvelope(fixture.bytes, `Sizing fixture ${fixture.id}`),
+      /above the demonstrated S1 input envelope/);
+    assert.throws(() => assertCaseInputsWithinEnvelope(fixtures,
+      [{ case_id: 'burst-ordinary-png-0', fixture: fixture.id }]), /excluded from the demonstrated S1 envelope/);
+    assert.throws(() => assertCaseInputsWithinEnvelope(fixtures,
+      [{ case_id: 'burst-ordinary-png-0', fixture: fixture.id }], { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }),
+    /excluded from the demonstrated S1 envelope/);
+  }
+  // A under-candidate-bound exclusion is only accepted with the reviewed reason; the
+  // manifest mirrors both the reason and the deferred record.
+  const declared = JSON.parse(fixtureBytes);
+  assert.deepEqual(declared.s1_input_envelope.excluded_fixtures.map(item => [item.id, item.reason]), [
+    ['base-photo-large.jpg', 'not_in_reviewed_case_matrix'],
+    ['sweater-large.jpg', 'input_bytes_above_envelope'],
+    ['sweater-large.png', 'input_bytes_above_envelope'],
+    ['sweater-large.webp', 'input_bytes_above_envelope'],
+  ]);
+  assert.equal(S1_DEFERRED_VTO_SHAPE.reason, 'deferred_to_172_vto_base64_payload');
+  assert.equal(declared.s1_input_envelope.deferred_vto_shape.reason, 'deferred_to_172_vto_base64_payload');
+  assert.equal(declared.s1_input_envelope.deferred_vto_shape.garment_fixtures.at(-1), S1_GARMENT_PNG_FIXTURE);
+  assert.equal(S1_DIAGNOSTIC_PROBE.qualifying, false);
+  assert.equal(S1_DIAGNOSTIC_PROBE.expected_failure_code, 'input_image_decode_failed');
+  assert.equal(S1_DIAGNOSTIC_PROBE.expected_executions, 1);
+  assert.equal(S1_DIAGNOSTIC_PROBE.expected_provider_calls, 0);
 });
 
 test('sampled memory, missing task peaks and missing CPU minutes remain unqualified', () => {

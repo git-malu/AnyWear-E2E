@@ -415,6 +415,31 @@ test('reads a missing or malformed environment input as a recorded problem', asy
   }
 });
 
+test('plumbs the sizing envelope mode only into the measure environment', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  const jobSection = name => {
+    const marker = `\n  ${name}:\n`;
+    const start = workflow.indexOf(marker);
+    if (start < 0) return '';
+    const rest = workflow.slice(start + marker.length);
+    const next = rest.search(/\n {2}[a-z][a-z0-9-]*:\n/);
+    return marker + (next < 0 ? rest : rest.slice(0, next));
+  };
+  // The dispatch input defaults to the demonstrated bound and offers the candidate
+  // mode; only measure carries it into the measured environment.
+  assert.match(workflow, /envelope_mode:[\s\S]*?default: demonstrated[\s\S]*?options: \[demonstrated, widening-candidate\]/);
+  assert.match(jobSection('measure'), /BETA_SIZING_ENVELOPE_MODE: \$\{\{ inputs\.envelope_mode \}\}/);
+  for (const name of ['full', 'smoke', 'record']) {
+    assert.doesNotMatch(jobSection(name), /BETA_SIZING_ENVELOPE_MODE/, `${name} must not carry an envelope mode`);
+  }
+  // The preflight is the gate that refuses every combination but measure at S1, and
+  // it runs before any credential job.
+  const preflight = jobSection('preflight');
+  assert.match(preflight, /ENVELOPE_MODE: \$\{\{ inputs\.envelope_mode \}\}/);
+  assert.match(preflight, /envelope_mode widening-candidate is only accepted by operation measure at stage S1/);
+  assert.match(preflight, /\$OPERATION" != "measure" \|\| "\$SIZING_STAGE" != "S1"/);
+});
+
 test('keeps the frozen VTO shape set at four reviewed shapes, each run twice', () => {
   const cases = sizingVtoCases();
   assert.deepEqual([...SIZING_WORKLOAD.vto_shapes], ['ordinary-base-one-garment', 'large-base-one-garment',

@@ -13,7 +13,7 @@
     "workload": "test-results/beta-sizing-workload.json",
     "input_bytes_max": 697437,
     "input_bytes_max_basis": "per submitted input; a VTO aggregate is a separate quantity and is not proven by it",
-    "measured_inputs_basis": "historical run evidence from run 38768690421; the shipped fixtures are re-encoded and are not these byte counts",
+    "measured_inputs_basis": "historical run evidence from run 38768690421; the restored sweater-ordinary.png is that run's exact bytes, while the other shipped fixtures are re-encoded and are not these byte counts",
     "measured_inputs": [
       {
         "case_id": "sequential-ordinary-jpg-0",
@@ -52,7 +52,7 @@
         "height": 2940,
         "sha256": "a7b6638f370cf06800211280934da7ccf00d04eac7fb86654fe54b5784c96b46",
         "size_class": "large-base",
-        "reason": "input_bytes_above_envelope"
+        "reason": "not_in_reviewed_case_matrix"
       },
       {
         "id": "sweater-large.jpg",
@@ -83,6 +83,17 @@
       }
     ],
     "excluded_reason": "deferred to the #140 large-input defect: no case may submit an input above the largest input this deployment is demonstrated to serve",
+    "widening_candidate": {
+      "bound_bytes": 3742711,
+      "fixture": "sweater-ordinary.png",
+      "case_ids": [
+        "burst-ordinary-png-0",
+        "burst-ordinary-png-1"
+      ],
+      "prior_bound_bytes": 697437,
+      "authorising_issue": 140,
+      "status": "candidate"
+    },
     "vto_aggregate_limit": "per submitted input, not per aggregate: the VTO aggregate (base photo plus garments) is a separate, unproven quantity recorded as aggregate_submitted_bytes per observation",
     "vto_shape_naming": "the `large-base-*` shape identifiers are historical names retained for binding stability, not a description of the fixture: every submitted shape uses base-photo-ordinary.jpg, and the only shape that carried the large base photo is the deferred five-garment one",
     "deferred_vto_shape": {
@@ -96,12 +107,12 @@
         "shoes-ordinary.jpg",
         "trousers-ordinary.jpg",
         "jacket-ordinary.jpg",
-        "sweater-ordinary.png"
+        "sweater-ordinary-garment.png"
       ],
       "garment_only_bytes": 2408024,
       "base_photo_bytes": 545720,
       "aggregate_submitted_bytes": 2953744,
-      "reason": "deferred_to_140"
+      "reason": "deferred_to_172_vto_base64_payload"
     }
   },
   "fixtures": [
@@ -129,6 +140,24 @@
       "file": "sweater-ordinary.png",
       "mime": "image/png",
       "size_class": "ordinary",
+      "bytes": 3742711,
+      "width": 1200,
+      "height": 1039,
+      "sha256": "4341430c05ebcc7af7385fce5025c8930b8def0fb5c13f9b4c0f1014bcd3f130",
+      "source": "../dummy.png",
+      "source_sha256": "f18222764d576d931d9f41901d23dd90670c89f1643b49e2d71203b724312b7e",
+      "encoding": {
+        "codec": "png",
+        "restored_from_commit": "1af6f019"
+      },
+      "s1_bytes": 3742711,
+      "derivation": "restored byte-for-byte from commit 1af6f019 (blob 6c6c69e661fee701684eb8413a26c98c6436aedb); 3742711 B at 1200x1039, the exact failed measured input and the widening candidate, not re-encoded"
+    },
+    {
+      "id": "sweater-ordinary-garment.png",
+      "file": "sweater-ordinary-garment.png",
+      "mime": "image/png",
+      "size_class": "ordinary",
       "bytes": 696168,
       "width": 879,
       "height": 761,
@@ -140,7 +169,7 @@
         "compress_level": 9
       },
       "s1_bytes": 696168,
-      "derivation": "lossless PNG transcode of an over-bound fixture; 3742711 B exceeded the bound and the normally compressed form of the same pixels is 1126570 B, so the pixels are reduced: 879x761 from 1200x1039, aspect retained, Lanczos resample, no lossy codec"
+      "derivation": "lossless PNG transcode of an over-bound fixture; 3742711 B exceeded the bound and the normally compressed form of the same pixels is 1126570 B, so the pixels are reduced: 879x761 from 1200x1039, aspect retained, Lanczos resample, no lossy codec; retained as the garment-size variant when the exact fixture was restored"
     },
     {
       "id": "sweater-ordinary.webp",
@@ -256,5 +285,18 @@
       "s1_bytes": 664453,
       "derivation": "re-encoded at the reviewed envelope encoding (quality 100, 4:2:0 subsampling); same 900x1200 pixels, chroma resampled from the legacy 4:4:4 source; 697437 B -> 664453 B (source bytes 583f3be6bf2ff0ad)"
     }
-  ]
+  ],
+  "diagnostic": {
+    "case_id": "diagnostic-truncated-png-0",
+    "id": "diagnostic-truncated.png",
+    "file": "diagnostic/truncated.png",
+    "mime": "image/png",
+    "bytes": 400,
+    "sha256": "a0887534883a0b0c35bad438be7fe3c4aa2c6b48ef893c7eacec1a66276a3063",
+    "expected_failure_code": "input_image_decode_failed",
+    "qualifying": false,
+    "source": "first 400 bytes of sweater-ordinary.png",
+    "source_sha256": "4341430c05ebcc7af7385fce5025c8930b8def0fb5c13f9b4c0f1014bcd3f130",
+    "derivation": "valid 8-byte PNG signature and complete IHDR; the IDAT body is truncated before IEND, so a decoder must reject it"
+  }
 }

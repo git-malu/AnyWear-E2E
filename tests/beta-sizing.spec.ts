@@ -5,7 +5,9 @@ import { assertE2EExecution } from '../scripts/execution-guard.mjs';
 import { captureSizingSource, validateSizingSource } from '../scripts/beta-sizing-source.mjs';
 import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, vtoAggregateSubmittedBytes,
   createSizingVtoGarmentPlan, assertVtoCasesResolvableInPlan, sizingVtoGarmentUploadCases,
-  SIZING_PROVIDER_ENVELOPE, type SizingFixture, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
+  SIZING_PROVIDER_ENVELOPE, type UploadCase } from '../scripts/beta-sizing-workload.mjs';
+import { S1_DIAGNOSTIC_PROBE, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, assertSizingEnvelopeModeScope,
+  resolveSizingEnvelopeMode, sizingEnvelopeRecord } from '../scripts/beta-sizing-envelope.mjs';
 import { ENVIRONMENT_IDENTITY_PATHS, terminalWaitMs, validateWorkerIdentity,
   type WorkerIdentity } from '../scripts/beta-sizing-environment.mjs';
 import { expect, login, test } from './support/fixtures.js';
@@ -14,8 +16,17 @@ import { DirectTeardown, deleteRouteFor, quarantinesScope, structuralOwnerKind,
   type ProductResult, type ResourceKind } from './support/cleanup-operation.js';
 
 interface Observation {
-  case_id: string; resource_id?: string; terminal_state?: string; [key: string]: unknown;
+  case_id: string; resource_id?: string; terminal_state?: string; failure_code?: string; [key: string]: unknown;
 }
+
+interface DiagnosticRecord {
+  case_id: string; fixture: string; resource_id?: string; mime: string; fixture_sha256: string; fixture_bytes: number;
+  expected_failure_code: string; observed_failure_code?: string | null; terminal_state?: string;
+  elapsed_ms?: number; state: string; started_at?: string;
+}
+
+// `postImage` only needs the parts of a frozen image that S3 receives.
+interface PostableImage { file: string; mime: string; data: Buffer }
 
 interface SizingWorkloadRecord {
   schema_version: 1;
@@ -41,7 +52,15 @@ interface SizingWorkloadRecord {
   started_at: string;
   finished_at: string;
   result: string;
-  workload: { uploads: Observation[]; vto: Observation[]; overlap_intent: { upload_resource_ids: string[]; vto_resource_id: string }[] };
+  workload: {
+    uploads: Observation[]; vto: Observation[]; overlap_intent: { upload_resource_ids: string[]; vto_resource_id: string }[];
+    // The envelope the workload measured under, recorded rather than inferred: the
+    // candidate and prior bounds travel with the mode.
+    envelope_mode: string; candidate_bound_bytes: number; prior_bound_bytes: number;
+  };
+  // The non-qualifying failure probe. `state` keeps `not_run` distinct from an
+  // observed failure; `failure_path` is written only when the probe actually ran.
+  diagnostics?: { probe?: { state: string } & Partial<DiagnosticRecord>; failure_path?: DiagnosticRecord };
   route_samples_ms: Record<string, number[]>;
 }
 
@@ -160,11 +179,17 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
       || process.env.E2E_OPERATION !== 'measure') {
       throw new Error('Paid sizing workload requires the protected Beta measurement operation');
     }
-    const frozen = await loadSizingFixtures(new URL('./fixtures/beta-sizing/', import.meta.url));
+    // The envelope mode is resolved from the environment and scoped before a single
+    // fixture is read: only the protected measure operation at stage S1 may use the
+    // widening candidate, and the default is the conservative demonstrated mode.
+    const envelopeMode = resolveSizingEnvelopeMode();
+    assertSizingEnvelopeModeScope(envelopeMode, { operation: process.env.E2E_OPERATION,
+      stage: process.env.BETA_SIZING_STAGE });
+    const frozen = await loadSizingFixtures(new URL('./fixtures/beta-sizing/', import.meta.url), envelopeMode);
     // The complete plan of what this run submits, built before any upload is sent.
     // VTO garment ids resolve from here, so no VTO case depends on how far the
     // upload half has progressed or on the order either half runs in.
-    const garmentPlan = createSizingVtoGarmentPlan();
+    const garmentPlan = createSizingVtoGarmentPlan(envelopeMode);
     const deploymentBytes = await readFile('deployment-evidence-before.json');
     const runtimeBytes = await readFile('.qualification-inputs/beta-sizing-runtime-before.json');
     // Recorded before the first side effect: a run that cannot say which workers
@@ -193,7 +218,13 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
       runtime_before_sha256: hashBytes(runtimeBytes),
       worker_identity_before: workerIdentity, worker_identity_before_sha256: workerIdentity.identity_sha256,
       started_at: new Date().toISOString(), finished_at: '', result: 'running',
-      workload: { uploads, vto, overlap_intent: overlapIntent }, route_samples_ms: routeSamples };
+      workload: { uploads, vto, overlap_intent: overlapIntent, ...sizingEnvelopeRecord(envelopeMode) },
+      // A demonstrated run never submits the probe, so its state is recorded as the
+      // distinct `not_run` value and no failure path or failure code is invented.
+      diagnostics: { probe: { state: S1_DIAGNOSTIC_PROBE.status_when_not_run,
+        case_id: S1_DIAGNOSTIC_PROBE.case_id, fixture: S1_DIAGNOSTIC_PROBE.fixture,
+        expected_failure_code: S1_DIAGNOSTIC_PROBE.expected_failure_code } },
+      route_samples_ms: routeSamples };
     const output = 'test-results/beta-sizing-workload.json';
     await mkdir('test-results', { recursive: true });
     let saving = Promise.resolve();
@@ -257,7 +288,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
      * content type, so an oversized or mis-typed upload fails here rather than
      * at the confirmation.
      */
-    const postImage = async (upload: { url?: unknown; fields?: unknown }, image: SizingFixture) => {
+    const postImage = async (upload: { url?: unknown; fields?: unknown }, image: PostableImage) => {
       assertE2EExecution();
       const url = typeof upload.url === 'string' ? upload.url : '';
       const fields = upload.fields;
@@ -285,7 +316,14 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
         const status = String(kind === 'tagging' ? state.taggingStatus : state.status);
         item.terminal_state = status;
         item.last_state_version = version;
-        if (status === 'failed' || status === 'Failed') throw new Error(`Sizing task failed: ${item.case_id}`);
+        if (status === 'failed' || status === 'Failed') {
+          // The sanitized code the platform wrote to the item is the artifact's own
+          // failure evidence; record exactly what it reported and never a guess.
+          if (kind === 'tagging' && typeof state.taggingErrorCode === 'string' && state.taggingErrorCode) {
+            item.failure_code = state.taggingErrorCode;
+          }
+          throw new Error(`Sizing task failed: ${item.case_id}`);
+        }
         if (status === 'ready' || status === 'Complete') {
           item.finished_at = new Date().toISOString();
           if (kind === 'vto') {
@@ -360,6 +398,56 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
       }
     };
 
+    // The non-qualifying diagnostic probe (#140 step 4). It is submitted only by the
+    // widening-candidate measurement, is expected to fail deterministically, and its
+    // expected failure is evidence rather than a suite failure. An unexpected
+    // success or a different sanitized code fails clearly; the execution and
+    // provider-call counts are verified from telemetry when the evidence is collected.
+    const runDiagnosticProbe = async () => {
+      const probe = frozen.diagnostic;
+      const startedAt = new Date().toISOString();
+      const started = performance.now();
+      const presign = await check(await page.request.post(`${serviceUrl}/wardrobe/upload-url`, {
+        headers, data: { contentType: probe.mime },
+      }), 200);
+      await postImage(presign.upload as { url?: unknown; fields?: unknown }, probe);
+      const accepted = await check(await page.request.post(`${serviceUrl}/wardrobe/upload`, {
+        headers: { ...headers, 'Idempotency-Key': randomUUID() },
+        data: { reservationId: String(presign.reservationId) },
+      }), 202);
+      const resourceId = String(accepted.itemId);
+      await captureCreated('wardrobe_item', resourceId);
+      let terminal: Record<string, unknown> | undefined;
+      await expect.poll(async () => {
+        const state = await check(await page.request.get(`${serviceUrl}/wardrobe/items/${resourceId}`, { headers }), 200);
+        const status = String(state.taggingStatus);
+        if (status === 'failed' || status === 'ready') terminal = state;
+        return status;
+      }, { timeout: terminalWaitMs('tagging'), intervals: [1_000, 2_000, 5_000] }).toMatch(/^(failed|ready)$/);
+      const elapsedMs = Math.round(performance.now() - started);
+      const observed = typeof terminal?.taggingErrorCode === 'string' ? terminal.taggingErrorCode : null;
+      const failurePath: DiagnosticRecord = {
+        case_id: S1_DIAGNOSTIC_PROBE.case_id, fixture: S1_DIAGNOSTIC_PROBE.fixture, resource_id: resourceId,
+        mime: probe.mime, fixture_sha256: probe.sha256, fixture_bytes: probe.bytes,
+        expected_failure_code: S1_DIAGNOSTIC_PROBE.expected_failure_code,
+        observed_failure_code: observed, terminal_state: String(terminal?.taggingStatus ?? 'unknown'),
+        elapsed_ms: elapsedMs, started_at: startedAt,
+        state: terminal?.taggingStatus === 'ready' ? 'unexpected_success'
+          : observed === S1_DIAGNOSTIC_PROBE.expected_failure_code ? 'failed_as_expected'
+            : 'unexpected_failure_code',
+      };
+      record.diagnostics = { failure_path: failurePath };
+      await preserve();
+      if (failurePath.state === 'unexpected_success') {
+        throw new Error(`Diagnostic probe unexpectedly succeeded; expected `
+          + `${S1_DIAGNOSTIC_PROBE.expected_failure_code} in ${S1_DIAGNOSTIC_PROBE.expected_executions} execution`);
+      }
+      if (failurePath.state !== 'failed_as_expected') {
+        throw new Error(`Diagnostic probe settled ${String(observed)}, expected `
+          + `${S1_DIAGNOSTIC_PROBE.expected_failure_code}`);
+      }
+    };
+
     let sourceError: unknown;
     try {
       expect(await credit()).toBeGreaterThanOrEqual(10);
@@ -384,13 +472,13 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
         // Captured as created: the lease's cleanup deletes this exact base photo.
         await captureCreated('base_photo', String(response.id));
       }
-      const sequential = sizingUploadCases().filter(item => item.submission === 'sequential');
+      const sequential = sizingUploadCases(envelopeMode).filter(item => item.submission === 'sequential');
       // The garment fixtures are submitted FIRST, before any VTO is accepted: a VTO
       // garment has to be a real wardrobe item the API can resolve, not merely a
       // fixture the plan names. They are the plan's pool in its smallest-first
       // order, so a future plan that moves one of them behind the VTO loop - or adds
       // a garment no sequential upload case submits - fails here by name.
-      const garmentUploads = sizingVtoGarmentUploadCases();
+      const garmentUploads = sizingVtoGarmentUploadCases(envelopeMode);
       const submittedCases = new Set(garmentUploads.map(item => item.case_id));
       const orderedSequential = [...garmentUploads,
         ...sequential.filter(item => !submittedCases.has(item.case_id))];
@@ -400,7 +488,7 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
         await reloadCheck([item], 'tagging');
         await preserve();
       }
-      const burst = sizingUploadCases().filter(item => item.submission === 'burst');
+      const burst = sizingUploadCases(envelopeMode).filter(item => item.submission === 'burst');
       // Authoritative resolution: every garment id comes from the plan built over
       // the COMPLETE fixture set, so no VTO case depends on how far the upload half
       // has progressed. This fails before the first VTO is accepted if any garment
@@ -477,6 +565,10 @@ test.describe('Representative Beta sizing @full-stack @beta-sizing @instrumentat
         expect(await credit()).toBe(before - 1);
         await preserve();
       }
+      // The probe runs after the measured cases so an unexpected probe result cannot
+      // hide the workload's own results from the artifact. It is submitted only in
+      // the candidate mode; the demonstrated mode keeps its distinct `not_run` state.
+      if (envelopeMode === SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE) await runDiagnosticProbe();
       // Pace ordinary authenticated routes; retain samples, never an invented p95.
       for (let sample = 0; sample < 100; sample += 1) {
         for (const route of Object.keys(routeSamples)) {
