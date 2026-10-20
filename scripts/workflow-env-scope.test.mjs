@@ -27,7 +27,10 @@ const read = (name) => readFileSync(join(workflowDirectory, name), 'utf8');
 
 // The names that exist only on the protected environment (or would only be correct there).
 // Keep this list explicit: it is the reviewable statement of what a no-environment job may
-// not resolve, independently of which job carries it.
+// not resolve, independently of which job carries it. #180 keeps BETA_CLIENT_URL and
+// BETA_SERVICE_URL here even though the qualification entry now reads the same public
+// endpoints from workflow constants: the environment-scoped copies still exist, and a
+// no-environment job that started resolving them again would read empty values.
 const ENVIRONMENT_SCOPED = Object.freeze([
   'AWS_ACCOUNT_ID',
   'AWS_REGION',
@@ -132,6 +135,19 @@ test('the deployment account and region are literal workflow constants', () => {
   assert.equal(env.AWS_ACCOUNT_ID, "'650880818323'", 'workflow AWS_ACCOUNT_ID must be the literal account');
   assert.equal(env.AWS_REGION, "'ap-east-1'", 'workflow AWS_REGION must be the literal region');
 
+  // #180: the two public Beta endpoints are workflow constants for the same reason as the
+  // account and region. The environment-free preflight must read the live tuple, and it
+  // cannot resolve the environment-scoped copies. Exactly one declaration keeps the
+  // preflight comparison, the suite and the record on the same endpoints.
+  for (const name of ['E2E_CLIENT_URL', 'E2E_SERVICE_URL']) {
+    assert.match(env[name], /^'https:\/\/[a-z0-9-]+\.cloudfront\.net'$/, `workflow ${name} must be the literal public endpoint`);
+  }
+  for (const candidate of qualifyJobs) {
+    for (const name of ['E2E_CLIENT_URL', 'E2E_SERVICE_URL']) {
+      assert.ok(!Object.hasOwn(candidate.env, name), `${candidate.name} must inherit the workflow ${name} constant rather than override it`);
+    }
+  }
+
   // These values are constants for every job, so no job may shadow them.
   for (const file of files) {
     for (const candidate of workflowJobs(read(file))) {
@@ -204,7 +220,7 @@ test('every operation gate uses the preflight-validated operation output', () =>
   // The preflight publishes the operation it validated, and the output is wired to it.
   assert.match(preflight.text, /^ {4}outputs:\n(?: {6}#[^\n]*\n)* {6}operation: \$\{\{ steps\.operation-scope\.outputs\.operation \}\}$/m,
     'preflight must expose the validated operation as the operation output');
-  assert.match(preflight.text, /^ {6}- name: Validate the dispatch operation and its input scope$/m);
+  assert.match(preflight.text, /^ {6}- name: Validate the dispatch operation, trigger and input scope$/m);
   assert.match(preflight.text, /^ {8}id: operation-scope$/m);
   assert.ok(preflight.text.includes('echo "operation=$OPERATION" >> "$GITHUB_OUTPUT"'),
     'the operation validation step must publish the validated operation');

@@ -315,6 +315,10 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.ok(record.length > 0, 'the qualify entry must declare a record job');
   assert.match(record, /needs: \[preflight, full\]/);
   assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
+  // The release decision is the green full run plus the sealed record: no approval job and
+  // no approval Environment.
+  assert.doesNotMatch(workflow, /\n {2}approve:\n/);
+  assert.doesNotMatch(workflow, /beta-release-approval/);
   assert.match(full, /qualification:generate/);
   for (const [name, job] of [['smoke', smoke], ['measure', measure], ['recover', workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'))], ['record', record]]) {
     assert.doesNotMatch(job, /qualification:(generate|verify)/, `${name} must not produce a qualification record`);
