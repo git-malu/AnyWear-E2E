@@ -39,6 +39,17 @@ three properties separation keeps are: the record is produced only by `full`; th
 the operation dispatched, so its producer is uniquely identifiable; and both this repository's
 producer/verifier and the Infra-side executor allow-list check `operation == full`.
 
+Since [#180](https://github.com/git-malu/AnyWear/issues/180) the dispatch surface also names
+the trigger and the expectation it was dispatched for: `trigger=deploy-smoke` only runs
+`smoke`, `trigger=release-qualify` only runs `full` and requires `expected_service_commit`, and
+`trigger=manual` covers re-runs and diagnostics. `full` compares the expected Service commit
+with the live `/health` value, writes qualification record v3 from the live observed tuple, and
+the `record` job is the last qualification job: the green `full` run plus its sealed record is
+the release decision, with the dispatch event, the run/attempt and the record tuple as the
+audit trail. No scenario in this
+inventory reads a committed compatibility file; the qualification path reads
+`minimum-supported-client.json` only for the oldest-Client leg.
+
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.
 

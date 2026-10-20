@@ -1,5 +1,13 @@
 # Moving the system-test compatibility pin
 
+> **Retained inert until Wave 2 (#180).** Qualification no longer reads `compatibility.json`.
+> Since AnyWear #180 the qualification path reads the live deployed tuple and writes
+> qualification record v3, and the pin, its tools and this document are kept only as the
+> revert target until a real `full` run passes against the live tuple. Nothing in
+> `beta-qualification.yml`, `pnpm check`, `test:core` or `test:list` reads this contract.
+> Do not follow it for a deployment; see [README](../README.md#ci-model) and
+> [scenario-inventory.md](scenario-inventory.md). It is deleted in Wave 2.
+
 `compatibility.json` is the system-test compatibility contract: it records the
 deployed identity that Beta qualification accepts. Qualification refuses an
 environment whose live tuple no longer matches it, so the pin has to move when the

@@ -1,5 +1,13 @@
 # Compatibility v3: per-producer deployment records
 
+> **Retained inert until Wave 2 (#180).** Qualification no longer reads `compatibility.json`.
+> Since AnyWear #180 the qualification path reads the live deployed tuple and writes
+> qualification record v3, and the pin, its tools and this document are kept only as the
+> revert target until a real `full` run passes against the live tuple. Nothing in
+> `beta-qualification.yml`, `pnpm check`, `test:core` or `test:list` reads this contract.
+> Do not follow it for a deployment; see [README](../README.md#ci-model) and
+> [scenario-inventory.md](scenario-inventory.md). It is deleted in Wave 2.
+
 `compatibility.json` version 3 splits the recorded deployment identity by producer.
 It replaces the v2 single Infra `runtime.yml` deployment record that covered every
 stack, and the committed `selection` whose release verification crossed
