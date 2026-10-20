@@ -301,7 +301,6 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: AnyWear-Service
           permission-contents: read
-          permission-actions: read
 
       - name: Verify the live deployed tuple, supported-Client floor and immutable Service release
         env:
@@ -397,7 +396,6 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: AnyWear-Service
           permission-contents: read
-          permission-actions: read
 
       # #180: the credential-free gate is repeated here, in the job that writes the record,
       # before it assumes any AWS credential. It compares the live identity with the
@@ -599,7 +597,7 @@ jobs:
       - name: Build the oldest supported Client from its pinned commit
         working-directory: AnyWear-Client-oldest
         env:
-          VITE_API_BASE_URL: ${{ vars.BETA_SERVICE_URL }}
+          VITE_API_BASE_URL: ${{ env.E2E_SERVICE_URL }}
           SOURCE_COMMIT_SHA: ${{ steps.minimum-supported-client.outputs.sha }}
         run: |
           export VITE_COGNITO_USER_POOL_ID="${VITE_COGNITO_USER_POOL_ID:?the Beta Cognito user pool was not loaded}"
@@ -899,7 +897,7 @@ jobs:
             echo "Client $(jq -r '.client.source_commit' deployment-evidence-before.json)"
             echo "Service $(jq -r '.service.service_commit' deployment-evidence-before.json)"
             echo "Image $(jq -r '.service.image_digest' deployment-evidence-before.json)"
-            echo "Minimum Client $(jq -r '.minimum_client_version' .qualification-inputs/live-identity.json)"
+            echo "Minimum Client $(jq -r '.service.minimum_client_version' .qualification-inputs/live-identity.json)"
           } | tee tested-revisions.txt
 
       - name: Load Beta test identity configuration
