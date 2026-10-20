@@ -10,7 +10,7 @@
   },
   "service": {
     "repository": "git-malu/AnyWear-Service",
-    "sha": "3b97f14a1178b321cf10bbf433990811d0268c47"
+    "sha": "340df8cb79a878521b2a53fc3c2a2db09bbc9779"
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
@@ -31,21 +31,21 @@
   },
   "workload": {
     "producer": "git-malu/AnyWear-Service",
-    "producer_sha": "3b97f14a1178b321cf10bbf433990811d0268c47"
+    "producer_sha": "340df8cb79a878521b2a53fc3c2a2db09bbc9779"
   },
   "deployment": {
     "producer": "git-malu/AnyWear-Service",
     "workflow_path": ".github/workflows/service-artifacts.yml",
     "status": "recorded",
-    "run_id": 39159560523,
+    "run_id": 39391571751,
     "run_attempt": 1,
-    "artifact_id": 12148762802,
-    "record_sha256": "0e5de3e2052c9fa5b5b2c629d49c04c5539593ded41e5be35dc72d9d2411095a"
+    "artifact_id": 12250557515,
+    "record_sha256": "3eb1da80073f74199e581ecf72b639798acd0d51b801f64271c1664b3e4013e6"
   },
   "service_artifacts": {
     "repository": "git-malu/AnyWear-Service",
-    "release_id": 416658939,
-    "manifest_asset_id": 654303046,
-    "manifest_sha256": "e9ae86e4905cec57df5a9665e4368218a869640b3a0af33130e479e96e3fe690"
+    "release_id": 418146255,
+    "manifest_asset_id": 658687146,
+    "manifest_sha256": "fba73b2fa6c3f6ee9e406dd6f4289812d8e7eb6ff01beae855492e24233c9a82"
   }
 }
