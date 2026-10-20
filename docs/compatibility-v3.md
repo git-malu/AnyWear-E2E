@@ -1,11 +1,15 @@
 # Compatibility v3: per-producer deployment records
 
 > **Retained inert until Wave 2 (#180).** Qualification no longer reads `compatibility.json`.
-> Since AnyWear #180 the qualification path reads the live deployed tuple and writes
+> Since AnyWear #180 the release-qualification path reads the live deployed tuple and writes
 > qualification record v3, and the pin, its tools and this document are kept only as the
-> revert target until a real `full` run passes against the live tuple. Nothing in
-> `beta-qualification.yml`, `pnpm check`, `test:core` or `test:list` reads this contract.
-> Do not follow it for a deployment; see [README](../README.md#ci-model) and
+> revert target until a real `full` run passes against the live tuple. No
+> **release-qualification** path reads this contract: `beta-qualification.yml`, `pnpm check`,
+> `test:core` and `test:list` are pin-free. The one remaining executed read is the `measure`
+> sizing workload (`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`), which is a
+> measurement, not qualification, and is #141's deletion set. The pin tools are not runnable
+> after Wave 1 (they import the deleted `trusted-deployment-inputs.mjs`) and work only after
+> reverting the Wave-1 PR. See [README](../README.md#ci-model) and
 > [scenario-inventory.md](scenario-inventory.md). It is deleted in Wave 2.
 
 `compatibility.json` version 3 splits the recorded deployment identity by producer.
@@ -259,7 +263,9 @@ inventing a run:
   falls back to a historical Infra `runtime.yml` tuple and never treats a Service
   publication run as a deployment.
 - `validate-compatibility-pin` refuses to move a pin while either record is
-  deferred, so a deferred pin cannot be relabelled as a recorded one offline.
+  deferred, so a deferred pin cannot be relabelled as a recorded one offline. After
+  Wave 1 the tool is inert and not runnable (it imports the deleted
+  `trusted-deployment-inputs.mjs`); see [compatibility-pin.md](compatibility-pin.md).
 
 A deferred pin is coherent and reviewable; it is not qualification authority.
 The committed pin no longer uses the shape: both records are recorded through the

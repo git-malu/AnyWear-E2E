@@ -46,9 +46,11 @@ the trigger and the expectation it was dispatched for: `trigger=deploy-smoke` on
 with the live `/health` value, writes qualification record v3 from the live observed tuple, and
 the `record` job is the last qualification job: the green `full` run plus its sealed record is
 the release decision, with the dispatch event, the run/attempt and the record tuple as the
-audit trail. No scenario in this
-inventory reads a committed compatibility file; the qualification path reads
-`minimum-supported-client.json` only for the oldest-Client leg.
+audit trail. No release-qualification path reads a committed compatibility file; the
+qualification path reads `minimum-supported-client.json` only for the oldest-Client leg. The
+one remaining executed read of the retained pin is the `measure` sizing workload
+(`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`): it is a measurement, not
+qualification, and #141 deletes it.
 
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.

@@ -255,16 +255,25 @@ full matrix or rebuild a separate control platform.
 
 The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
 browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes
-the static build to the Beta PlatformStack's CloudFront distribution; set `BETA_CLIENT_URL`
-to that stable `https://<distribution>.cloudfront.net` endpoint before qualification.
+the static build to the Beta PlatformStack's CloudFront distribution. Qualification reads that
+endpoint from the workflow constants `E2E_CLIENT_URL` / `E2E_SERVICE_URL` in
+`beta-qualification.yml` (beside `AWS_ACCOUNT_ID` / `AWS_REGION`), so an operator does **not**
+set `BETA_CLIENT_URL` or edit the `beta` environment for a qualification run; those
+environment-scoped copies are unused by this workflow. If a distribution is recreated, the two
+workflow constants move with it in one reviewed change.
 
 ## CI Model
 
 Qualification reads the live deployed tuple; `compatibility.json` is **retained inert until
-Wave 2** and no active path reads it. [docs/compatibility-pin.md](docs/compatibility-pin.md),
+Wave 2**, and no release-qualification path reads it: `beta-qualification.yml`, `pnpm check`,
+`test:core` and `test:list` are pin-free. The one remaining executed read is the `measure`
+sizing workload (`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`), which is a
+measurement, not qualification, and is #141's deletion set.
+[docs/compatibility-pin.md](docs/compatibility-pin.md),
 [docs/compatibility-v3.md](docs/compatibility-v3.md) and the pin tools describe the retired
-contract and the revert target; they are deleted in Wave 2, after a real `full` run passes
-against the live tuple. Do not add a new reader of either.
+contract and the revert target; the tools are not runnable after Wave 1 (they import the
+deleted `trusted-deployment-inputs.mjs`), and all of it is deleted in Wave 2 after a real
+`full` run passes against the live tuple. Do not add a new reader of either.
 
 The live tuple is:
 

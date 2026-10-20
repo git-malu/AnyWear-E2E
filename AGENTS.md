@@ -80,15 +80,19 @@ Run install and build commands from this repository.
   cross-repository Infra checkout.
 - `compatibility.json`, `docs/compatibility-pin.md`, `docs/compatibility-v3.md` and the
   pin tools (`validate-compatibility-pin.mjs`, `migrate-compatibility.mjs`,
-  `check-compatibility.mjs`) are **retained inert until Wave 2**. No active qualification
-  path may read them; the repository keeps them only as the revert target until a real
-  `full` run passes against the live tuple. Do not add new readers, and do not delete them
-  in a Wave-1 change. The sizing pin readers (`beta-sizing-*`,
-  `collect-beta-sizing-evidence.mjs`, `tests/beta-sizing.spec.ts`) are #141's deletion set,
-  and #141 must merge after #180 and rebase onto it. `runtime-drill.mjs` and
-  `runtime-recovery-artifact.mjs` read the pin only in their manual CLI entry points; no
-  workflow, `pnpm check`, `test:core` or `test:list` path reads that branch, and Wave 2
-  replaces the input with the qualification tuple or deletes the CLI with the pin.
+  `check-compatibility.mjs`) are **retained inert until Wave 2**. No **release-qualification**
+  path may read them (`beta-qualification.yml`, `pnpm check`, `test:core` and `test:list` are
+  pin-free); the repository keeps them only as the revert target until a real `full` run passes
+  against the live tuple. Do not add new readers, and do not delete them in a Wave-1 change.
+  The retained pin tools are not runnable after Wave 1: they import the deleted
+  `trusted-deployment-inputs.mjs` and only work after reverting the Wave-1 PR. The only
+  remaining executed pin read is the `measure` sizing workload (`beta-sizing-*`,
+  `collect-beta-sizing-evidence.mjs`, `tests/beta-sizing.spec.ts`), which is measurement, not
+  qualification; those are #141's deletion set, and #141 must merge after #180 and rebase onto
+  it. `runtime-drill.mjs` and `runtime-recovery-artifact.mjs` read the pin only in their manual
+  CLI entry points; no workflow, `pnpm check`, `test:core` or `test:list` path reads that
+  branch, and Wave 2 replaces the input with the qualification tuple or deletes the CLI with
+  the pin.
 - The release decision is the green `full` run plus the sealed record that `record` verifies
   and attaches. There is no separate approval job or approval Environment: the audit trail is
   the `qualify` `workflow_dispatch` event (actor and time), the E2E `full` run/attempt and the
