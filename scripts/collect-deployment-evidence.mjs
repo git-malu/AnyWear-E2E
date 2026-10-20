@@ -1,38 +1,55 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { assertStableDeploymentEvidence, collectDeploymentEvidence, validateInfraEvidence } from './qualification-record.mjs';
-import { byteHash, parseStrictJson, validateCompatibility } from './evidence-contract.mjs';
-import { pinnedInfraObserver } from './infra-observation.mjs';
+import { assertStableObservation, collectDeploymentEvidence } from './qualification-record.mjs';
+import { liveObservationIo, observePlatform } from './infra-observation.mjs';
+import { parseStrictJson } from './evidence-contract.mjs';
 import { assertE2EExecution } from './execution-guard.mjs';
 
-const compatibility = validateCompatibility(parseStrictJson(await readFile(new URL('../compatibility.json', import.meta.url))));
-for (const [label, identity] of [['platform', compatibility.platform.record], ['workload', compatibility.deployment]]) {
-  if (identity.status === 'deferred') throw new Error(`Deployment evidence deferred for ${label}: ${identity.reason}`);
-}
+// #180: one observation of the live deployed system. It reads the two live identities
+// (Client `build-metadata.json`, Service `/health`), takes this repository's own
+// authenticated platform snapshot, and states `authenticated: true`. It reads no
+// compatibility file and no producer deployment record. The workflow runs it once
+// before the suite and once after it with `QUALIFICATION_BASELINE_PATH` set to the
+// first output, and the two observations must be identical.
 assertE2EExecution();
-const inputsDirectory = resolve(process.env.QUALIFICATION_INPUTS_DIR ?? '.qualification-inputs');
-const platformBytes = await readFile(resolve(inputsDirectory, 'platform-deployment-record.json'));
-const workloadBytes = await readFile(resolve(inputsDirectory, 'deployment-record.json'));
-if (byteHash(platformBytes) !== compatibility.platform.record.record_sha256) throw new Error('Trusted platform deployment record bytes changed');
-if (byteHash(workloadBytes) !== compatibility.deployment.record_sha256) throw new Error('Trusted workload deployment record bytes changed');
-const platform = parseStrictJson(platformBytes);
-const workload = parseStrictJson(workloadBytes);
-const http = await collectDeploymentEvidence({
+const expected = {
+  service_commit: process.env.EXPECTED_SERVICE_COMMIT || null,
+  client_commit: process.env.EXPECTED_CLIENT_COMMIT || null,
+};
+const identity = await collectDeploymentEvidence({
   clientUrl: process.env.E2E_CLIENT_URL,
   serviceUrl: process.env.E2E_SERVICE_URL,
   runId: process.env.GITHUB_RUN_ID,
-}, compatibility);
-const authenticated = await pinnedInfraObserver(compatibility, { platform, workload });
-const evidence = validateInfraEvidence({ ...http, schema_version: 3, compatibility,
-  platform: { identity: compatibility.platform.record, record: platform },
-  workload: { identity: compatibility.deployment, record: workload },
-  service_artifacts: compatibility.service_artifacts, authenticated,
-}, compatibility);
+}, expected);
+const platform = await observePlatform({ io: liveObservationIo() });
+const observation = {
+  collected_at: new Date().toISOString(),
+  client: identity.client,
+  service: identity.service,
+  platform,
+  authenticated: true,
+};
+
 if (process.env.QUALIFICATION_BASELINE_PATH) {
   const baselinePath = resolve(process.env.QUALIFICATION_BASELINE_PATH);
   const baseline = parseStrictJson(await readFile(baselinePath));
-  assertStableDeploymentEvidence(baseline, evidence);
+  assertStableObservation(baseline, observation);
 }
+
+const inputsDirectory = resolve(process.env.QUALIFICATION_INPUTS_DIR ?? '.qualification-inputs');
+await mkdir(inputsDirectory, { recursive: true });
+// The versions are not part of an observation member: the record states them under
+// `revisions`. The latest collect wins, and the after-observation and this file are the
+// same read, so the record cannot claim a version its own observation contradicts.
+const live = {
+  client: { ...identity.client, client_version: identity.client_version },
+  service: { ...identity.service, minimum_client_version: identity.minimum_client_version },
+};
+await writeFile(resolve(inputsDirectory, 'live-identity.json'), `${JSON.stringify(live, null, 2)}\n`);
+
 const outputPath = resolve(process.env.QUALIFICATION_EVIDENCE_PATH ?? 'deployment-evidence.json');
-await writeFile(outputPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
-console.log(`Verified deployed Client ${evidence.client.source_commit.slice(0, 7)} and Service ${evidence.service.source_commit.slice(0, 7)}`);
+await writeFile(outputPath, `${JSON.stringify(observation, null, 2)}\n`);
+const short = (value) => String(value).slice(0, 7);
+console.log(`Observed the live tuple: Client ${short(observation.client.source_commit)} (version ${identity.client_version}), `
+  + `Service ${short(observation.service.service_commit)} (${observation.service.image_digest.slice(0, 19)}...), `
+  + `minimum Client ${identity.minimum_client_version}, platform ${platform.schema_sha256.slice(0, 12)}...`);

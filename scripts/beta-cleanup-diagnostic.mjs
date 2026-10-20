@@ -5,7 +5,7 @@ import {
   assertEqual, byteHash, exactKeys, parseStrictJson, repositories, requireCommit,
   requireHash, requireImageDigest, requireOwnedRepository, repositoryIds,
 } from './evidence-contract.mjs';
-import { ghApi, repositoryReadEnvironment } from './trusted-deployment-inputs.mjs';
+import { ghApi, repositoryReadEnvironment } from './github-read.mjs';
 
 // #163 transition allow-list. Infra is replacing its `beta-deploy.yml` dispatch entry with
 // `mutate.yml` while deliberately keeping the operation record's family name `beta-deploy`.
