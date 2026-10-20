@@ -29,8 +29,9 @@ The record version is per producer. The Infra `anywear_infra_deployment` record
 stays **schema version 3** with the seven-member core. The Service
 `anywear_service_deployment` record is **schema version 4**: the same core plus a
 required top-level `gate` that records the passed 600-second deployment bake.
-Historical v2 Infra records stay readable only through the frozen envelope check
-in `scripts/trusted-deployment-inputs.mjs`; they are never a live input. Pre-gate
+Historical v2 Infra records were readable only through the frozen envelope check
+in `scripts/trusted-deployment-inputs.mjs`; that module is deleted in Wave 1, so
+no reader remains and a v2 record is never a live input. Pre-gate
 Service v3 records were never produced, so there is no Service v3 window to keep.
 
 ## Shape

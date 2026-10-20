@@ -386,13 +386,19 @@ The documented hole: neither record carries its artifact id, so no offline input
 constrains `platform.record.artifact_id` or `deployment.artifact_id`. The other
 properties only the live GitHub API can supply are out of reach here too: each
 run's conclusion, branch, dispatch type and head, each artifact's name and
-lifetime, and the Service release's immutability and manifest bytes. Those stay
-enforced at qualification time by `scripts/trusted-deployment-inputs.mjs`.
+lifetime, and the Service release's immutability and manifest bytes. The retired
+consumer enforced those while it existed; after Wave 1 they moved to the live
+path — `scripts/service-release.mjs` (immutable release and manifest bytes),
+`verifyQualificationForPromotion` and the credential-free `record` job (run,
+artifact, lifetime), and the Infra production preflight as the record consumer —
+and the pin validator is inert, so it enforces nothing on this branch.
 
-It is **not a gate**. The validator does not join `pnpm check`; only its test joins
-the `test:core` list that `pnpm check` already runs. There is no new workflow, no
-new required check and no new release gate. Green means the pin is coherent with
-both records and with the previous pin — **coherence, not authority**.
+It is **not a gate**. The validator and its test are both inert after Wave 1:
+neither joins `pnpm check`, because `test:core` no longer lists
+`validate-compatibility-pin.test.mjs` (or `migrate-compatibility.test.mjs`) and
+the validator itself is not runnable. There is no new workflow, no new required
+check and no new release gate. On a reverted tree, green meant the pin is coherent
+with both records and with the previous pin — **coherence, not authority**.
 
 ## Checklist
 
