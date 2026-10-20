@@ -356,9 +356,9 @@ jobs:
             echo "USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
+            echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)"
+            echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)"
           } >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Set unique cleanup run scope
         shell: bash
@@ -581,7 +581,7 @@ jobs:
             fi
             if ! kill -0 "$preview_pid" 2>/dev/null; then
               cat "$preview_log"
-              echo "::error::the oldest supported Client preview exited before it became ready"
+              echo "::error::the oldest supported Client preview exited before it became ready (attempt ${attempt}/60)"
               exit 1
             fi
             sleep 1
@@ -888,9 +888,9 @@ jobs:
             echo "USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
+            echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)"
+            echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)"
           } >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Set unique cleanup run scope
         shell: bash
@@ -1099,9 +1099,9 @@ jobs:
             echo "USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_USER_POOL_ID=$pool_id"
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
+            echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)"
+            echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)"
           } >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Set unique cleanup run scope
         shell: bash
