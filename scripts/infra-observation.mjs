@@ -66,10 +66,13 @@ export function liveObservationIo({ execute = execFileSync, environment = proces
 
 const outputsOf = (stack) => Object.fromEntries((stack.Outputs ?? []).map((item) => [item.OutputKey, item.OutputValue]));
 
-async function readTemplateHash(io, actual) {
+// `get-template` is a regional CloudFormation read, so it must run in the stack's own
+// region, not in the observation's default region: Billing is configured in us-east-1
+// while Foundation and the Base stack are in ap-east-1.
+async function readTemplateHash(io, actual, stackRegion) {
   const template = (await io.aws([
     'cloudformation', 'get-template', '--stack-name', actual.StackId, '--template-stage', 'Original',
-  ], region)).TemplateBody;
+  ], stackRegion)).TemplateBody;
   if (!template) throw new Error(`Original deployed template missing for ${actual.StackName}`);
   const body = typeof template === 'string' ? parseStrictJson(template) : template;
   return contentHash(body);
@@ -153,7 +156,7 @@ export async function observePlatform({ io = liveObservationIo() } = {}) {
     stacks.push({
       name: configured.stack_name,
       region: configured.region,
-      template_sha256: await readTemplateHash(io, actual),
+      template_sha256: await readTemplateHash(io, actual, configured.region),
     });
     actualStacks.set(configured.stack_name, actual);
   }

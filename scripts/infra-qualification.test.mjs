@@ -26,11 +26,14 @@ const DEFAULT_OUTPUTS = {
 
 // The AWS CLI double for the authenticated platform observation. Every read the
 // observation performs is answered here, and a test can fail or change exactly one
-// answer so the observation's own refusals are exercised without AWS.
+// answer so the observation's own refusals are exercised without AWS. `calls` records
+// the exact `{args, region}` of every read, so a test can assert which region each
+// regional call actually used.
 function observationIo({
   account = '650880818323', stackStatus = 'UPDATE_COMPLETE', secondStatus = stackStatus,
   secondUpdatedTime = '2026-10-07T00:00:00.000Z', outputs = DEFAULT_OUTPUTS, lambdaArnAccount = '650880818323',
   queueArnAccount = '650880818323', templateBodies = {}, distributionDomain = 'client123.cloudfront.net',
+  calls = [],
 } = {}) {
   const byKey = new Map();
   for (const configured of configuredStacks) {
@@ -46,7 +49,8 @@ function observationIo({
   }
   const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
   return {
-    async aws(args) {
+    async aws(args, stackRegion) {
+      calls.push({ args: [...args], region: stackRegion });
       const [service, action] = args;
       if (service === 'sts') return { Account: account };
       if (service === 'cloudformation' && action === 'describe-stacks') {
@@ -127,6 +131,35 @@ test('observes the live platform itself: three stacks, stage inputs, Lambdas, qu
     authenticated: true,
   };
   assert.equal(validateObservation(observation, 'observed'), observation);
+});
+
+// #177 B1: `cloudformation get-template` is a regional read. The three configured stacks
+// do not share a region (Billing is us-east-1, Foundation and the Base stack are
+// ap-east-1), so each template read must run in the stack's own region.
+test('reads each stack template in the stack\'s own region', async () => {
+  const calls = [];
+  await observePlatform({ io: observationIo({ calls }) });
+  const configuredRegion = (stackName) => configuredStacks.find(({ stack_name: name }) => name === stackName)?.region;
+  const templates = calls.filter(({ args }) => args[0] === 'cloudformation' && args[1] === 'get-template');
+  assert.equal(templates.length, configuredStacks.length);
+  for (const call of templates) {
+    const stackArn = call.args[call.args.indexOf('--stack-name') + 1];
+    const arnRegion = /^arn:aws:cloudformation:([a-z0-9-]+):/.exec(stackArn)?.[1];
+    const stackName = stackArn.split('/')[1];
+    assert.equal(call.region, arnRegion, `get-template for ${stackName} must use the region in its stack ARN`);
+    assert.equal(call.region, configuredRegion(stackName), `get-template for ${stackName} must use its configured region`);
+  }
+  const templateFor = (name) => templates.find(({ args }) => args.some((arg) => typeof arg === 'string' && arg.includes(name)));
+  assert.equal(templateFor('AnyWearBillingStack-beta')?.region, 'us-east-1');
+  assert.equal(templateFor('AnyWearFoundationStack')?.region, 'ap-east-1');
+  assert.equal(templateFor('AnyWearPlatformStack-beta')?.region, 'ap-east-1');
+  // The describe-stacks reads (the initial identity read and the closing re-read) use the
+  // same per-stack regions, so neither can be silently routed to the default region.
+  for (const call of calls.filter(({ args }) => args[0] === 'cloudformation' && args[1] === 'describe-stacks')) {
+    const key = call.args[call.args.indexOf('--stack-name') + 1];
+    const stackName = key.includes(':stack/') ? key.split('/')[1] : key;
+    assert.equal(call.region, configuredRegion(stackName), `describe-stacks for ${stackName} must use its configured region`);
+  }
 });
 
 test('refuses a stack, account, Lambda, queue or template that is not the reviewed deployed one', async () => {
