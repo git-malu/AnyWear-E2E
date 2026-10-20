@@ -1106,7 +1106,7 @@ jobs:
       - name: Set unique cleanup run scope
         shell: bash
         run: |
-          run_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-measure-$(openssl rand -hex 8)"
+          run_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 8)"
           echo "E2E_CLEANUP_RUN_SCOPE=$run_scope" >> "$GITHUB_ENV"
 
       - name: Install Chromium
