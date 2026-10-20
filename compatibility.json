@@ -14,19 +14,19 @@
   },
   "infra": {
     "repository": "git-malu/AnyWear-Infra",
-    "sha": "b3fc259664561b351f69733b3d7ca1073aa3773b"
+    "sha": "9382e40810fa451b626f13a3303fe205614305f7"
   },
   "platform": {
     "producer": "git-malu/AnyWear-Infra",
-    "producer_sha": "b3fc259664561b351f69733b3d7ca1073aa3773b",
+    "producer_sha": "9382e40810fa451b626f13a3303fe205614305f7",
     "record": {
       "producer": "git-malu/AnyWear-Infra",
       "workflow_path": ".github/workflows/runtime.yml",
       "status": "recorded",
-      "run_id": 39163688966,
+      "run_id": 39399734928,
       "run_attempt": 1,
-      "artifact_id": 12150066924,
-      "record_sha256": "805299dac8a375cb2e90e0be7963b6239195e75a69e6c165dee3e3f6436a8a8a"
+      "artifact_id": 12254416665,
+      "record_sha256": "414b51fab7826bfe7154ac35f0d500fa48a0befd3e7b8b77372ce22174a2dffa"
     }
   },
   "workload": {
