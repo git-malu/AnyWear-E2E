@@ -7,17 +7,19 @@ import { pathToFileURL } from 'node:url';
 import { byteHash } from './evidence-contract.mjs';
 import { assertVendoredProvenance, loadVendoredProvenance } from './vendored-contract.mjs';
 
-const SOURCE_SHA = 'c9983520edbff92c425d7db4261fd55e8f2ecbfb';
+const SOURCE_SHA = '9382e40810fa451b626f13a3303fe205614305f7';
 
 test('the vendored v4 contract matches its pinned producer commit and file hashes', async () => {
   const provenance = await loadVendoredProvenance();
   assert.equal(provenance.source_repository, 'git-malu/AnyWear-Infra');
   assert.equal(provenance.source_sha, SOURCE_SHA);
   assert.deepEqual(Object.keys(provenance.files).sort(),
-    ['deployment-contract.mjs', 'json-contract.mjs', 'operation-stacks.mjs', 'stage-contracts.mjs']);
-  assert.deepEqual(Object.keys(provenance.producer_files), ['deployment-contract.mjs']);
+    ['deployment-contract.mjs', 'json-contract.mjs', 'operation-stacks.mjs', 'stage-contract-parameters.mjs', 'stage-contracts.mjs']);
+  assert.deepEqual(Object.keys(provenance.producer_files).sort(),
+    ['deployment-contract.mjs', 'stage-contract-parameters.mjs']);
   assert.deepEqual(provenance.import_rewrites, {
     'deployment-contract.mjs': [{ from: "from '@git-malu/stage-contracts'", to: "from './stage-contracts.mjs'" }],
+    'stage-contract-parameters.mjs': [{ from: "from '@git-malu/stage-contracts'", to: "from './stage-contracts.mjs'" }],
   });
   assert.equal(provenance.package.name, '@git-malu/stage-contracts');
   assert.equal(provenance.package.version, '0.3.0');
@@ -27,6 +29,21 @@ test('the vendored v4 contract matches its pinned producer commit and file hashe
   assert.match(provenance.package.note, /Runtime/);
   assert.match(provenance.package.note, /No stage-contracts-v0\.3\.0 tag exists/);
   assert.deepEqual(await assertVendoredProvenance(), provenance);
+});
+
+// #180: E2E takes the authenticated platform observation itself, so it reads the
+// stage contract through the same bounded `ssm get-parameters` reader the producer
+// uses. The vendored copy is the producer's file with one declared package-specifier
+// rewrite, and the reader still refuses a short or foreign stage-contract surface.
+test('the vendored stage-input reader is the producer copy with the declared rewrite', async () => {
+  const reader = await import('./vendor/stage-contract-parameters.mjs');
+  assert.equal(typeof reader.readStageInputs, 'function');
+  assert.equal(reader.SSM_GET_PARAMETERS_LIMIT, 10);
+  assert.ok(Array.isArray(reader.STAGE_CONTRACT_READ_PARAMETERS) && reader.STAGE_CONTRACT_READ_PARAMETERS.length > 0);
+  assert.ok(Array.isArray(reader.STAGE_CONTRACT_READ_BATCHES) && reader.STAGE_CONTRACT_READ_BATCHES.length > 0);
+  const source = await readFile(new URL('./vendor/stage-contract-parameters.mjs', import.meta.url), 'utf8');
+  assert.match(source, /from '\.\/stage-contracts\.mjs'/);
+  assert.doesNotMatch(source, /from '@git-malu\/stage-contracts'/);
 });
 
 // Issue #166: the Service release slice is the Runtime stack. The vendored
