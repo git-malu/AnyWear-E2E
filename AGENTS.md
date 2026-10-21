@@ -74,19 +74,18 @@ Run install and build commands from this repository.
   no `deployment` member. The independent platform observation is this repository's own
   authenticated read (`scripts/infra-observation.mjs`) through the vendored contract, not a
   cross-repository Infra checkout.
-- `compatibility.json`, `docs/compatibility-pin.md`, `docs/compatibility-v3.md` and the
-  pin tools (`validate-compatibility-pin.mjs`, `migrate-compatibility.mjs`,
-  `check-compatibility.mjs`) are **retained inert until Wave 2**. No **release-qualification**
-  path may read them (`beta-qualification.yml`, `pnpm check`, `test:core` and `test:list` are
-  pin-free); the repository keeps them only as the revert target until a real `full` run passes
-  against the live tuple. Do not add new readers, and do not delete them in a Wave-1 change.
-  The retained pin tools are not runnable after Wave 1: they import the deleted
-  `trusted-deployment-inputs.mjs` and only work after reverting the Wave-1 PR. No executed
-  path reads the pin: the former measurement workload that did is deleted with the sizing
-  apparatus. `runtime-drill.mjs` and `runtime-recovery-artifact.mjs` read the pin only in their manual
-  CLI entry points; no workflow, `pnpm check`, `test:core` or `test:list` path reads that
-  branch, and Wave 2 replaces the input with the qualification tuple or deletes the CLI with
-  the pin.
+- The compatibility pin is **deleted** (#192): the committed pin file, `docs/compatibility-pin.md`,
+  `docs/compatibility-v3.md` and the pin tools (`validate-compatibility-pin.mjs`,
+  `migrate-compatibility.mjs`, `check-compatibility.mjs`) were removed, and no
+  **release-qualification** path read them (`beta-qualification.yml`, `pnpm check`, `test:core`
+  and `test:list` were pin-free). The manual `runtime-drill.mjs` and
+  `runtime-recovery-artifact.mjs` CLIs read the expected deployed tuple from a
+  `qualification-record.json` v3 (`revisions.client.sha` / `revisions.service.sha`) named by
+  `--tuple <path>` or `RUNTIME_DRILL_TUPLE`; `--plan` needs no tuple, `--preflight` compares the
+  live identities only when one is supplied, and `--verify`, `--execute` and `--recover` refuse
+  without one. No release-qualification path reads a committed deployment file, no workflow,
+  `pnpm check`, `test:core` or `test:list` path is affected, and `minimum-supported-client.json`
+  remains the only committed input on the live path.
 - The release decision is the green `full` run plus the sealed record that `record` verifies
   and attaches. There is no separate approval job or approval Environment: the audit trail is
   the `qualify` `workflow_dispatch` event (actor and time), the E2E `full` run/attempt and the

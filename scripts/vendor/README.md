@@ -132,6 +132,6 @@ as evidence. #180 also deletes the E2E deployment-record consumer
 envelope check) and the cross-repository Infra observer checkout
 (`scripts/infra-source.mjs`): qualification takes its own authenticated platform
 observation from this contract instead of consuming a producer record. Historical
-v2 records remain readable only in the retained-inert pin tooling (Wave 2
-deletion), never as a live input. Pre-gate Service v3 records were never
+v2 records were readable only in the pin tooling, which #192 deletes; no live
+input reads them. Pre-gate Service v3 records were never
 produced; the Service record is only ever the v4 gated shape.

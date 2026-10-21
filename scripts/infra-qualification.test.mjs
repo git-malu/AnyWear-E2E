@@ -225,7 +225,6 @@ test('the record is self-contained: only the v3 members, and the live tuple insi
   assert.ok(serialized.includes(`"minimum_client_version":${record.revisions.service.minimum_client_version}`));
   assert.ok(serialized.includes(record.observations.after.platform.schema_sha256));
   assert.ok(serialized.includes(record.observations.after.platform.client_domain));
-  assert.equal(serialized.includes('compatibility.json'), false);
   assert.equal(serialized.includes('"compatibility"'), false);
   assert.equal(serialized.includes('"deployment"'), false);
   assert.equal(serialized.includes('"infra"'), false);

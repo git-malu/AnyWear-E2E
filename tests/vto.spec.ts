@@ -19,8 +19,8 @@ import {
 const uploadFixture = fileURLToPath(new URL('./fixtures/dummy.png', import.meta.url));
 
 // The platform's recovery floor for virtual try-on, from the deployed Service task runtime
-// policy at the pinned compatibility SHA (`service.sha`
-// `340df8cb79a878521b2a53fc3c2a2db09bbc9779`, `src/tasks/runtime-policy.json`): the vto queue
+// policy at Service source commit
+// `340df8cb79a878521b2a53fc3c2a2db09bbc9779` (`src/tasks/runtime-policy.json`): the vto queue
 // declares a **900 s** visibility with a **180 s** database lease, so work a worker
 // replacement interrupted cannot be redelivered and claimed before the longer of the two,
 // 900,000 ms. The sizing documentation restated this floor as 960 s from a 960 s database
