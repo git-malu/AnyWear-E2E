@@ -66,7 +66,7 @@ agreeing about the invocations that exist.
 | Assertion boundary | Deployed Client UI and Service HTTP API together, with the Service's real auto-tagging and VTO provider calls in the path |
 | Actual operation | Leases a synthetic Cognito identity, creates a wardrobe item through the real Client upload flow, uploads one base photo through the Mirror UI, submits one VTO generation with that garment, polls it to terminal `Complete`, retrieves the generated image, and asserts the Client's rendered result |
 | Owner | AnyWear-E2E maintainers |
-| Lifecycle | Current. It is the only end-to-end coverage of the VTO path after the sizing workload was retired |
+| Lifecycle | Current. It is the only end-to-end coverage of the VTO path; the sizing workload that also exercised it is retired by this issue's separate deletion PR |
 | Command | `pnpm test:regression`, and `pnpm test` because the suite step runs the same selection |
 | Default trigger | The `full` operation of the `qualify` entry, whose selection this scenario is part of |
 | Cost | External write and paid provider cost: one leased identity, one uploaded garment object, one uploaded base photo, one auto-tagging task and one VTO generation per attempt. Not separately metered |
