@@ -5,19 +5,27 @@ import { ENVIRONMENT_VERDICT_PATH, readOptionalEnvironmentJson } from './beta-si
 import { parseStrictJson } from './evidence-contract.mjs';
 import { QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, repositoryRoot } from './test-selection.mjs';
 
-const compatibility = parseStrictJson(await readFile(new URL('../compatibility.json', import.meta.url)));
-const evidencePath = resolve(process.env.QUALIFICATION_EVIDENCE_PATH ?? 'deployment-evidence.json');
-const after = parseStrictJson(await readFile(evidencePath));
+// #180: the v3 record is assembled from what this run observed, never from a committed
+// compatibility file. The three inputs are the two live observations the collect step
+// wrote (before and after the suite), the immutable Service release identity the
+// credential-free check verified before the suite, and the live identity (Client
+// version and Service floor) read by the same check. The dispatch expectation is passed
+// in explicitly so the record can state whether the run was triggered with an expected
+// Service commit (`source: trigger`) or took the live value at run start (`source: live`).
+const inputsDirectory = resolve(process.env.QUALIFICATION_INPUTS_DIR ?? '.qualification-inputs');
+const after = parseStrictJson(await readFile(resolve(process.env.QUALIFICATION_EVIDENCE_PATH ?? 'deployment-evidence.json')));
 const before = parseStrictJson(await readFile(resolve(process.env.QUALIFICATION_BASELINE_PATH ?? 'deployment-evidence-before.json')));
-// The environment gate the record path now requires: the workflow's qualification-gate
-// step refuses first, and this read is what makes the record path refuse even if that
-// step were skipped. A missing or malformed verdict refuses here rather than qualifying.
+const serviceArtifacts = parseStrictJson(await readFile(resolve(inputsDirectory, 'service-artifacts.json')));
+const live = parseStrictJson(await readFile(resolve(inputsDirectory, 'live-identity.json')));
+// The environment gate the record path requires: the workflow's qualification-gate step
+// refuses first, and this read is what makes the record path refuse even if that step
+// were skipped. A missing or malformed verdict refuses here rather than qualifying.
 const environment = await readOptionalEnvironmentJson(resolve(process.env.ENVIRONMENT_VERDICT_PATH ?? ENVIRONMENT_VERDICT_PATH));
 // The record states which scenarios ran and how many of each spec's collected tests were
-// skipped, and the run's own Playwright JSON report is the only source of that. The path is
-// the workflow's job-level declaration, resolved from this repository rather than from the
-// process's working directory so the reporter that writes the file and the producer that
-// reads it cannot drift apart.
+// skipped, and the run's own Playwright JSON report is the only source of that. The path
+// is the workflow's job-level declaration, resolved from this repository rather than from
+// the process's working directory so the reporter that writes the file and the producer
+// that reads it cannot drift apart.
 const reportPath = resolve(repositoryRoot, process.env[QUALIFICATION_REPORT_ENV] ?? QUALIFICATION_REPORT_PATH);
 let reportBytes;
 try {
@@ -29,7 +37,7 @@ const record = buildQualificationRecord({
   result: process.env.QUALIFICATION_RESULT,
   // The dispatched operation, not a workflow file: the record path refuses anything but
   // `full`, so the shared `qualify` entry cannot issue a record from smoke, measure or
-  // recover (#163).
+  // recover.
   operation: process.env.E2E_OPERATION,
   e2eSha: process.env.GITHUB_SHA,
   repository: process.env.GITHUB_REPOSITORY,
@@ -40,8 +48,22 @@ const record = buildQualificationRecord({
   awsRegion: process.env.AWS_REGION,
   workflowPath: '.github/workflows/beta-qualification.yml',
   workflowRef: process.env.GITHUB_WORKFLOW_REF,
-}, compatibility, { before, after }, undefined, environment, reportBytes);
+  // Which trigger dispatched this run, and the run that dispatched it when a release
+  // action (or the deployment smoke hook) did so. A manual run states neither beyond
+  // `manual`.
+  trigger: process.env.QUALIFICATION_TRIGGER,
+  dispatchedBy: process.env.QUALIFICATION_DISPATCHED_BY || null,
+}, {
+  service_commit: process.env.EXPECTED_SERVICE_COMMIT || null,
+  client_commit: process.env.EXPECTED_CLIENT_COMMIT || null,
+  source: process.env.EXPECTED_SOURCE,
+}, {
+  before,
+  after,
+  service_artifacts: serviceArtifacts,
+  live,
+}, undefined, environment, reportBytes);
 
 const outputPath = resolve(process.env.QUALIFICATION_OUTPUT_PATH ?? 'qualification-record.json');
 await writeFile(outputPath, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
-console.log(`Created qualification record ${record.qualification_id}`);
+console.log(`Created qualification record ${record.qualification_id} from the live tuple (expected source ${record.expected.source}, trigger ${record.workflow.trigger})`);

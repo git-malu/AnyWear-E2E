@@ -54,22 +54,49 @@ Run install and build commands from this repository.
 - Use role, label, and visible-text locators before test IDs or CSS selectors.
 - Never commit credentials, browser storage state, reports, traces, screenshots,
   or videos.
-- Treat `compatibility.json` as the system-test compatibility contract. Use only
-  full Client, Service and Infra commit SHAs that exist on their remotes; never
-  use a mutable branch or tag. Version 3 pins the two deployment producers (Infra
-  for the platform record, the Service release chain for the workload record);
-  the shape and the deferred-record rule are in
-  [docs/compatibility-v3.md](docs/compatibility-v3.md), and
-  [docs/compatibility-pin.md](docs/compatibility-pin.md) is the routine that moves
-  it.
+- Qualification reads the live deployed tuple. The Client identifies itself through
+  `build-metadata.json` (`source_commit`, `client_version`, `built_at`, schema 3) and the
+  Service through `/health` (`service_commit`, `image_digest`, `minimum_client_version`);
+  `full` compares those values with the dispatch expectation and refuses a mismatch before
+  the suite, naming the observed and the expected value. The only committed input on the
+  live path is `minimum-supported-client.json` (`{version, sha}`): the oldest supported
+  Client the deployed Service still accepts, whose `version` must equal the live Service
+  floor (a disagreement is a refusal, never an automatic choice). Do not add a committed
+  file that describes the deployed revisions; that is what #180 removed.
 - For release qualification, record the full intended Client, Service, and E2E
   SHAs and verify that the target environment serves those Client and Service
   revisions through Client `build-metadata.json` and Service `/health`. Recheck
-  both identities and the Service image digest after the suite; a mismatch or
-  deployment change cannot qualify the release. Preserve the observed runtime
+  both identities, the platform observation and the Service image digest after the suite;
+  a mismatch or deployment change cannot qualify the release. Preserve the observed runtime
   revisions, image digest, environment endpoints, and qualification run/artifact
   links together with the intended SHAs in the release evidence. Checking out
   pinned source alone does not prove the deployed system ran it.
+- Qualification record schema v3 is self-contained: `expected`, `revisions`
+  (`e2e`/`client`/`service`, never `infra`), `service_artifacts` (including
+  `service-artifacts-<service sha>`), the two `observations`, `test`, `workflow`
+  (including `trigger` and `dispatched_by`) and `integrity`. It has no `compatibility` and
+  no `deployment` member. The independent platform observation is this repository's own
+  authenticated read (`scripts/infra-observation.mjs`) through the vendored contract, not a
+  cross-repository Infra checkout.
+- `compatibility.json`, `docs/compatibility-pin.md`, `docs/compatibility-v3.md` and the
+  pin tools (`validate-compatibility-pin.mjs`, `migrate-compatibility.mjs`,
+  `check-compatibility.mjs`) are **retained inert until Wave 2**. No **release-qualification**
+  path may read them (`beta-qualification.yml`, `pnpm check`, `test:core` and `test:list` are
+  pin-free); the repository keeps them only as the revert target until a real `full` run passes
+  against the live tuple. Do not add new readers, and do not delete them in a Wave-1 change.
+  The retained pin tools are not runnable after Wave 1: they import the deleted
+  `trusted-deployment-inputs.mjs` and only work after reverting the Wave-1 PR. The only
+  remaining executed pin read is the `measure` sizing workload (`beta-sizing-*`,
+  `collect-beta-sizing-evidence.mjs`, `tests/beta-sizing.spec.ts`), which is measurement, not
+  qualification; those are #141's deletion set, and #141 must merge after #180 and rebase onto
+  it. `runtime-drill.mjs` and `runtime-recovery-artifact.mjs` read the pin only in their manual
+  CLI entry points; no workflow, `pnpm check`, `test:core` or `test:list` path reads that
+  branch, and Wave 2 replaces the input with the qualification tuple or deletes the CLI with
+  the pin.
+- The release decision is the green `full` run plus the sealed record that `record` verifies
+  and attaches. There is no separate approval job or approval Environment: the audit trail is
+  the `qualify` `workflow_dispatch` event (actor and time), the E2E `full` run/attempt and the
+  record tuple. Do not add an approval Environment or approval/`Approved`/`Rejected` states.
 - The single protected `qualify` entry in `beta-qualification.yml` owns the deployed
   operations for beta and later stages; it must not target dev. Separation between
   qualification, the smoke diagnostic, measurement and account recovery now lives in the
