@@ -2,7 +2,7 @@ import {
   assertEqual, byteHash, exactKeys, payloadDigest as strictPayloadDigest, repositories,
   parseStrictJson, requireHttpsUrl as requireContractHttpsUrl, requireId, requireHash,
 } from './evidence-contract.mjs';
-import { assertQualificationEnvironment } from './beta-sizing-environment.mjs';
+import { assertQualificationEnvironment } from './qualification-environment.mjs';
 import { assertLiveClientFloor, readMinimumSupportedClient } from './minimum-supported-client.mjs';
 import { configuredStacks } from './vendor/operation-stacks.mjs';
 import { stageContractSchemaHash } from './vendor/deployment-contract.mjs';
@@ -339,7 +339,7 @@ function resolveExpected(expected, observation) {
 // The record is produced only by the `full` operation of the single `qualify` entry.
 // The operation is read from the dispatch event (`E2E_OPERATION`), never inferred from
 // the workflow file, and it is written into the payload so the validator and the
-// release consumers can re-check the binding. `smoke`, `measure` and `recover` share
+// release consumers can re-check the binding. `smoke` and `recover` share
 // the dispatch surface but cannot reach this function with a recordable operation.
 export function buildQualificationRecord(input, expected, evidence, now = new Date(), environment, reportBytes) {
   if (input.result !== 'passed') {

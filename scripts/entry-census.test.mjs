@@ -52,13 +52,10 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   const operation = inputBlock('operation');
   assert.match(operation, /required: true/);
   assert.match(operation, /type: choice/);
-  assert.match(operation, /options: \[full, smoke, measure, recover\]/);
-  const sizing = inputBlock('sizing_stage');
-  assert.match(sizing, /type: choice/);
-  // `none` is the unselected sentinel a no-default choice needs (GitHub preselects the first
-  // option); measure refuses it, so a measurement stage is never implicit.
-  assert.match(sizing, /options: \[none, S1, S2, S3\]/);
-  assert.doesNotMatch(sizing, /default:/, 'a measurement stage is never implicit');
+  assert.match(operation, /options: \[full, smoke, recover\]/);
+  // The retired measurement operation carried the only sizing stage input; nothing in the
+  // entry may declare it again.
+  assert.doesNotMatch(qualify, /sizing_stage/, 'the retired measurement operation carries no dispatch input');
 
   // #180: the live-tuple dispatch surface. The expectation is optional and only `full`
   // compares it; the trigger is a closed choice; the dispatching run URL is optional and
@@ -98,7 +95,7 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.match(preflight, /repositories: AnyWear-Service/);
   assert.doesNotMatch(preflight, /check-compatibility|trusted-deployment-inputs|\.infra-source|GH_TOKEN: \$\{\{ steps\.evidence-token/);
 
-  for (const operation of ['full', 'smoke', 'measure', 'recover']) {
+  for (const operation of ['full', 'smoke', 'recover']) {
     const section = job(operation);
     assert.ok(section.length > 0, `the qualify entry must declare ${operation}`);
     assert.match(section, /needs: preflight/);
@@ -127,7 +124,7 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.match(qualify, /dispatched_by/);
   assert.doesNotMatch(qualify, /beta-release-approval/);
   assert.doesNotMatch(qualify, /AwaitingApproval|Approved|Rejected/);
-  for (const name of ['preflight', 'smoke', 'measure', 'recover', 'record']) {
+  for (const name of ['preflight', 'smoke', 'recover', 'record']) {
     assert.doesNotMatch(job(name), /qualification:generate/, `${name} must not produce the qualification record`);
   }
   // `record` is the last job in the workflow.
@@ -135,7 +132,7 @@ test('the qualify chain keeps one credential job per operation and a credential-
 });
 
 test('no qualification job downloads a producer deployment record or checks out producer source', () => {
-  for (const name of ['preflight', 'full', 'smoke', 'measure', 'record']) {
+  for (const name of ['preflight', 'full', 'smoke', 'record']) {
     const section = job(name);
     assert.doesNotMatch(section, /platform-deployment-record\.json/, `${name} must not retain the retired platform record`);
     assert.doesNotMatch(section, /\.qualification-inputs\/deployment-record\.json/, `${name} must not retain the retired workload record`);

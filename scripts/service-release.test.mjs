@@ -166,7 +166,7 @@ const fetcherFor = ({ client, service }) => async (url) => new Response(
 test('skips the live check for the operations that do not gate on the deployed tuple', async () => {
   let called = false;
   const result = await runServiceRelease({
-    argv: ['--operation', 'measure'], api: () => { called = true; }, log: () => {},
+    argv: ['--operation', 'recover'], api: () => { called = true; }, log: () => {},
   });
   assert.deepEqual(result, { skipped: true });
   assert.equal(called, false);

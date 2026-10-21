@@ -5,10 +5,10 @@
 > qualification record v3, and the pin, its tools and this document are kept only as the
 > revert target until a real `full` run passes against the live tuple. No
 > **release-qualification** path reads this contract: `beta-qualification.yml`, `pnpm check`,
-> `test:core` and `test:list` are pin-free. The one remaining executed read is the `measure`
-> sizing workload (`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`), which is a
-> measurement, not qualification, and is #141's deletion set. The pin tools are not runnable
-> after Wave 1 (they import the deleted `trusted-deployment-inputs.mjs`) and work only after
+> `test:core` and `test:list` are pin-free. The former measurement workload was the last
+> executed reader of the pin, and it is deleted with the sizing apparatus. The pin tools are
+> not runnable after Wave 1 (they import the deleted `trusted-deployment-inputs.mjs`) and work
+> only after
 > reverting the Wave-1 PR. See [README](../README.md#ci-model) and
 > [scenario-inventory.md](scenario-inventory.md). It is deleted in Wave 2.
 
@@ -71,7 +71,7 @@ platform record observed; the two may name the same commit when only one Client 
 supported. The member is required at qualification and on a pin move, but the committed pin
 moves **after** the deployment that first serves the floor: until that move the committed
 pin has no `minimum_supported_client` member, `pnpm check` (which only validates the shape) still
-accepts it, and `full` refuses to write a qualification record. `smoke` and `measure` do not
+accepts it, and `full` refuses to write a qualification record. `smoke` does not
 require it.
 
 A **deployment record** (produced by Infra or Service, consumed by E2E) shares a
@@ -375,7 +375,7 @@ evidence. The qualification record's `test` member continues to derive from the 
 deployed report, and the second leg is not a record member: a Client that cannot even parse
 the deployed Service contract fails the leg, while the oldest supported Client's behavior
 is evidenced by the uploaded report and the workflow's own assertions. This leg does not
-run for `smoke`, `measure` or `recover`.
+run for `smoke` or `recover`.
 
 E2E then independently observes the live stage base from AWS and requires the
 authenticated body (three Infra stacks, their deployed `Original` template

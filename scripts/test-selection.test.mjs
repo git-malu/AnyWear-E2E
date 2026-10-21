@@ -236,12 +236,11 @@ test('derives each invocation tag from package.json and refuses any that selects
     ['test', '@regression'],
     ['test:smoke', '@smoke'],
     ['test:regression', '@regression'],
-    ['test:instrumentation', '@instrumentation'],
     ['test:full-stack', '@full-stack'],
   ]) {
     assert.equal(selectionTag(pkg, invocation), tag, invocation);
   }
-  // Discovery, offline contracts and the measurement set carry no single positive tag.
+  // Discovery, offline contracts and the deferred prototypes carry no single positive tag.
   for (const invocation of ['test:core', 'test:tool-regressions', 'test:deferred-sqs', 'test:list']) {
     assert.throws(() => selectionTag(pkg, invocation), /not a single positive --grep tag selection/, invocation);
   }
@@ -256,20 +255,18 @@ test('derives each invocation tag from package.json and refuses any that selects
 test('the spec titles, the scenario inventory and the release-gating selection agree on the five members', () => {
   const declarations = assertScenarioDeclarations();
   assert.deepEqual(declarations.map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
-    'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts',
+    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(qualificationSelection(), { invocation: 'test', tag: '@regression' });
+  // Every tracked deployed scenario is in the release-gating selection.
   assert.deepEqual(selectedScenarios('@regression').map(({ file }) => file), [
     'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
-  // Discovery is wider than the gate: the measurement scenario is selected by @full-stack
-  // and by nothing the release gate runs.
   assert.deepEqual(selectedScenarios('@full-stack').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
-    'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts',
+    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
-  assert.deepEqual(selectedScenarios('@instrumentation').map(({ file }) => file), ['tests/beta-sizing.spec.ts']);
 });
 
 test('derives one entry per selected spec from the run report with the documented outcome priority', () => {
@@ -320,16 +317,15 @@ test('refuses a selection that omits a declared member or adds one the tag does 
     scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
   ])), /omits tests\/wardrobe\.spec\.ts/);
-  // `tests/beta-sizing.spec.ts` is selected by `@full-stack` and by nothing the release gate
-  // runs, so listing it claims a scenario the gate did not run — the discovery-versus-gated
-  // distinction this change exists to make legible.
+  // A scenario file neither the tag nor this repository selects is refused rather than added
+  // to the record's claim.
   assert.throws(() => assertTestSelection(testMember('@regression', [
-    ...regression.map((file) => scenario(file)), scenario('tests/beta-sizing.spec.ts'),
-  ])), /adds tests\/beta-sizing\.spec\.ts/);
+    ...regression.map((file) => scenario(file)), scenario('tests/retired.spec.ts'),
+  ])), /adds tests\/retired\.spec\.ts/);
   // Stating the discovery selection is refused before the scenario list is even compared:
   // the qualification workflow's suite step does not run `@full-stack`.
   assert.throws(() => assertTestSelection(testMember('@full-stack', [
-    ...regression.map((file) => scenario(file)), scenario('tests/beta-sizing.spec.ts'),
+    ...regression.map((file) => scenario(file)),
   ])), /Qualification selection mismatch/);
   // The declared selection itself, with the one declared skip, is accepted.
   assert.doesNotThrow(() => assertTestSelection(testMember('@regression', [

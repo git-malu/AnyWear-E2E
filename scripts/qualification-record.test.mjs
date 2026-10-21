@@ -9,7 +9,7 @@ import {
   verifyQualificationAgainstReport,
   verifyQualificationRecord,
 } from './qualification-record.mjs';
-import { ENVIRONMENT_VERDICT_PATH, environmentVerdict, qualificationRefusalMessage } from './beta-sizing-environment.mjs';
+import { ENVIRONMENT_VERDICT_PATH, environmentVerdict, qualificationRefusalMessage } from './qualification-environment.mjs';
 import { byteHash, payloadDigest } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 
@@ -176,14 +176,14 @@ test('binds the dispatched full operation and refuses every other operation', ()
   const f = fixture();
   const build = (operation) => buildQualificationRecord({ ...f.input, operation }, f.expected, f.evidence, now, f.environment, f.report);
   assert.equal(build('full').operation, 'full');
-  for (const operation of ['smoke', 'measure', 'recover', undefined]) {
+  for (const operation of ['smoke', 'recover', undefined]) {
     let refusal;
     try { build(operation); } catch (error) { refusal = error; }
     assert.ok(refusal, `${operation} must not issue a record`);
     assert.match(refusal.message, /full qualification operation/);
   }
   const tampered = structuredClone(build('full'));
-  tampered.operation = 'measure';
+  tampered.operation = 'smoke';
   assert.throws(() => verifyQualificationRecord(redigest(tampered)), /operation must be full/);
 });
 

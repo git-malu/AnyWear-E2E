@@ -15,25 +15,24 @@ wrong.
 ## Deployed invocations
 
 Each invocation below carries its own trigger and its own verdict. The verdicts are
-separated deliberately: a measurement or drill result is data about an operation, and it
+separated deliberately: a diagnostic result is data about one operation, and it
 can neither satisfy nor fail release qualification.
 
 | invocation | Selects | Trigger | Verdict |
 | --- | --- | --- | --- |
 | `test:smoke` | `@smoke` | The `smoke` operation of the protected `qualify` entry | Diagnostic observation of a narrow deployed path; it does not qualify a release |
 | `test:regression` | `@regression` | The `full` operation of the protected `qualify` entry, as the only release-gating selection | Release qualification: a red result fails the gate, and a green result is a required input to the qualification record |
-| `test:instrumentation` | `@instrumentation` | Explicit operator opt-in through the `measure` operation of the protected `qualify` entry | Measurement or drill result; it can neither satisfy nor fail release qualification |
-| `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation, including instrumentation; not a release-gating selection on its own |
-| `test` | `@regression` | Local investigation, and the `full` operation's qualification suite step | Identical to `test:regression`: the release gate. An instrumentation scenario is not in this selection |
+| `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation; not a release-gating selection on its own |
+| `test` | `@regression` | Local investigation, and the `full` operation's qualification suite step | Identical to `test:regression`: the release gate |
 | `test:core` | The explicitly listed offline `scripts/*.test.mjs` contract files and `tests/scenario-declarations.test.mjs` | The automatic Check entry (PR/main) and qualify preflight source preparation | Source contract result; no deployed claim |
 | `test:tool-regressions` | The explicitly listed offline retained-tool files | The automatic Check entry's `tool-regressions` job on every PR/main | Tool source result; no deployed claim |
 | `test:deferred-sqs` | The explicitly listed prospective SQS protocol files | Manual deferred-owner review | Prototype contract only |
 
 The separation is carried by the signed `operation` field, not by a workflow boundary, a step
 or a job. One protected dispatch surface, the `qualify` entry in `beta-qualification.yml`,
-carries `full`, `smoke`, `measure` and `recover`. A release consumer accepts a qualification
+carries `full`, `smoke` and `recover`. A release consumer accepts a qualification
 record only from the `full` operation of a completed-success qualification run: the record
-states `operation: full` and is produced only by that operation, so a `smoke`, `measure` or
+states `operation: full` and is produced only by that operation, so a `smoke` or
 `recover` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record binds
 the operation dispatched, so its producer is uniquely identifiable; and both this repository's
@@ -47,10 +46,7 @@ with the live `/health` value, writes qualification record v3 from the live obse
 the `record` job is the last qualification job: the green `full` run plus its sealed record is
 the release decision, with the dispatch event, the run/attempt and the record tuple as the
 audit trail. No release-qualification path reads a committed compatibility file; the
-qualification path reads `minimum-supported-client.json` only for the oldest-Client leg. The
-one remaining executed read of the retained pin is the `measure` sizing workload
-(`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`): it is a measurement, not
-qualification, and #141 deletes it.
+qualification path reads `minimum-supported-client.json` only for the oldest-Client leg.
 
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.
@@ -182,29 +178,6 @@ agreeing about the invocations that exist.
 | Verification rationale | The binding assertion is the reason the scenario exists and it cannot be established at a lower boundary: the defect it guards against appeared only against the deployed identity boundary. The profile status is attached as evidence for a red run |
 | Red result means | A product failure in the identity/profile binding contract, or an environment condition. As smoke it withholds diagnostic confidence; inside the release selection it fails the gate |
 
-### `tests/beta-sizing.spec.ts`
-
-| Field | Value |
-| --- | --- |
-| Declared title | `Representative Beta sizing @full-stack @beta-sizing @instrumentation` |
-| Policy class | `Destructive/expensive drill`, admitted as measurement rather than as a gate: it spends paid provider work, so the policy classes it as a drill even though it observes the ordinary deployed environment |
-| Tags | `@instrumentation` to select it, plus `@full-stack` for cross-repository discovery and `@beta-sizing` as the sizing workload identifier |
-| Intent | A frozen representative workload — twelve upload/tagging cases and eight virtual try-on cases — runs once against the deployed environment so cost, capacity and provider behaviour can be measured from its own artifact |
-| Current caller | The `measure` operation of the protected `qualify` entry, which requires a sizing stage as an input. It also skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3` |
-| Assertion boundary | The deployed Service's task pipeline, provider calls, streaming responses and credit accounting, with the deployed Client used for navigation and reloads |
-| Actual operation | Leases a synthetic identity, uploads frozen fixtures through presigned URLs, submits tagging and VTO work, reads back terminal states, samples ordinary routes, and writes `test-results/beta-sizing-workload.json` |
-| Owner | AnyWear-E2E maintainers, under the sizing work item |
-| Lifecycle | Current while the sizing envelope and cost baseline are being established; it is retired or replaced only with a recorded caller and evidence decision |
-| Command | `pnpm test:instrumentation` |
-| Default trigger | Explicit operator dispatch of the `measure` operation, never as part of the `full` operation. It is never part of the release-gating selection |
-| Cost | The most expensive scenario here: paid provider spend on twelve uploads and eight VTO generations, plus one leased identity per attempt |
-| Side effects | Application rows, generated images, provider spend, and a Cognito identity |
-| Evidence level | Diagnostic and measurement; the policy's Qualification level is not reachable from an instrumentation result |
-| Disposition | Retain as instrumentation; its own record, not a release verdict |
-| Cleanup contract | `DirectTeardown` against the attempt's own scope, capturing every created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation`. It refuses to report a captured child without its owning resource, proves absence by exact readback for routed resources and by the authenticated list route for base photos, and performs no ad hoc deletion. A teardown that is not `passed` quarantines the scope and fails the separate teardown gate |
-| Verification rationale | The scenario's own terminal record decides its outcome: `passed` only from a completed workload, otherwise `failed-or-incomplete`. The workload is bounded by the measured S1 input envelope, and each observation records the aggregate bytes it actually submitted. `retries: 0`, because each attempt spends real provider budget |
-| Red result means | An unqualified or rejected measurement, not a product verdict. It cannot fail release qualification, and a passing measurement is not qualification evidence. A run that is not the `measure` operation of the `qualify` entry is refused before any provider call |
-
 ## Admission rule
 
 The [testing policy
@@ -221,8 +194,8 @@ it, because a scenario's verdict follows from the invocation that selects it:
    `tests/scenario-declarations.test.mjs` fails the offline check if a spec and this
    document disagree.
 2. Tag a release-gating scenario `@regression` and every cross-repository scenario
-   `@full-stack`. Reserve `@instrumentation` for measurement workloads and drills, which
-   the policy admits as measurement and never as a gate.
+   `@full-stack`. A deployed scenario is in the release gate only through the
+   `@regression` tag the gate's positive `--grep` selection matches.
 3. Record the cleanup contract. A scenario that creates no business resource declares that
    in its own attempt record; an absent declaration is not a declaration.
 4. Satisfy the offline `pnpm check` gate before the scenario enters any deployed

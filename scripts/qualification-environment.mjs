@@ -1,28 +1,27 @@
+import { execFileSync } from 'node:child_process';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { assertE2EExecution } from './execution-guard.mjs';
 import { canonicalJson, byteHash, exactKeys, requireHash } from './evidence-contract.mjs';
-import { sizingAwsReader } from './beta-sizing-runtime.mjs';
 
-// The environment a qualification suite is embedded in: the recovery floor the
-// deployed platform is entitled to before it retries interrupted work, the
-// terminal waits derived from that floor, and the identity of the workers serving
-// Beta at suite start and suite end.
+// The environment a qualification suite is embedded in: the identity of the workers serving
+// Beta at suite start and suite end, the verdict that brackets the run, and the gate that
+// refuses a qualification measured across two worker task definitions.
 //
-// A suite that runs across a deployment rotation can have its in-flight work
-// killed underneath it. When that happens no terminal state is written for the
-// case, the harness waits out its budget, and the run reports the platform's own
-// recovery as a product failure. The evidence for that is issue #147 and
-// qualification run 38864061777: a worker rotation stopped the task holding an S1
-// VTO case, its provider call was killed by SIGTERM after 40.7 s, nothing was
-// recorded for it, the case stayed in `Processing`, and the queue redelivered the
-// work exactly at its 900 s visibility floor - after the 600 s wait had expired.
+// A suite that runs across a deployment rotation can have its in-flight work killed
+// underneath it. When that happens no terminal state is written for the case, the harness
+// waits out its budget, and the run reports the platform's own recovery as a product
+// failure. The evidence for that is issue #147 and qualification run 38864061777: a worker
+// rotation stopped the task holding an S1 VTO case, its provider call was killed by SIGTERM
+// after 40.7 s, nothing was recorded for it, the case stayed in `Processing`, and the queue
+// redelivered the work exactly at its 900 s visibility floor - after the 600 s wait had
+// expired.
 //
-// The reader is deliberately outside the Playwright spec: the qualification
-// workflow holds the scoped AWS credentials and the spec holds none, so the spec
-// records what the run observed and the workflow records what the platform was.
+// The AWS reader is deliberately outside the Playwright spec: the qualification workflow
+// holds the scoped AWS credentials and the spec holds none, so the spec records what the
+// run observed and the workflow records what the platform was.
 
 export const BETA_ACCOUNT_ID = '650880818323';
 export const BETA_REGION = 'ap-east-1';
@@ -37,61 +36,6 @@ export const ENVIRONMENT_IDENTITY_PATHS = Object.freeze({
   after: '.qualification-inputs/beta-environment-after.json',
 });
 export const ENVIRONMENT_VERDICT_PATH = 'test-results/beta-environment-verdict.json';
-export const SIZING_WORKLOAD_PATH = 'test-results/beta-sizing-workload.json';
-
-// The recovery floor each task type is entitled to before the platform retries
-// work a worker replacement interrupted. These are the deployed Beta task runtime
-// policy values, owned by AnyWear-Service in `src/tasks/runtime-policy.json`:
-// `vto` runs a 900 s queue visibility with a 960 s database lease, and
-// `auto-tagging` a 300 s visibility with a 360 s lease. The floor is the larger of
-// the two, because a redelivery that arrives while the database lease is still
-// held cannot be claimed either.
-export const SIZING_TASK_RECOVERY_FLOOR_MS = Object.freeze({ vto: 960_000, tagging: 360_000 });
-// The floor's basis, recorded next to it so the budget can be audited against the
-// deployed policy instead of being read as a latency observation.
-export const SIZING_TASK_RECOVERY_BASIS = Object.freeze({
-  source: 'AnyWear-Service src/tasks/runtime-policy.json (the deployed Beta task runtime policy)',
-  vto: Object.freeze({ queue_visibility_seconds: 900, database_lease_seconds: 960 }),
-  tagging: Object.freeze({ queue_visibility_seconds: 300, database_lease_seconds: 360 }),
-  observation: 'issue #147, qualification run 38864061777: the redelivery arrived exactly at the 900 s visibility '
-    + 'floor, after the previous 600 s wait had already expired',
-});
-
-// The VTO terminal-wait budget is a bound on the platform's own recovery floor,
-// not a measurement of observed provider latency. A run that gives up before the
-// floor reports the platform's recovery as a product failure, which is exactly
-// what run 38864061777 did. The observed provider work in that run and its
-// predecessor was nowhere near either budget: no provider call exceeded 62,819 ms,
-// the same three-garment shape completed in 46.8 s earlier and 46.3 s in the other
-// case of the same run. 1,200,000 ms clears the 960 s floor with margin for the
-// redelivery to be claimed and finished, and stays a bound on the floor rather
-// than on latency.
-export const SIZING_VTO_TERMINAL_WAIT_MS = 1_200_000;
-// The auto-tagging budget is unchanged: it already outlasts that task type's
-// smaller floor (300 s visibility / 360 s lease).
-export const SIZING_TAGGING_TERMINAL_WAIT_MS = 600_000;
-
-const TERMINAL_WAITS_MS = Object.freeze({
-  vto: SIZING_VTO_TERMINAL_WAIT_MS,
-  tagging: SIZING_TAGGING_TERMINAL_WAIT_MS,
-});
-
-export function assertTerminalWaitCoversRecoveryFloor(kind, waitMs) {
-  if (!Object.hasOwn(SIZING_TASK_RECOVERY_FLOOR_MS, kind)) {
-    throw new Error(`Unknown sizing task kind ${String(kind)}`);
-  }
-  const floor = SIZING_TASK_RECOVERY_FLOOR_MS[kind];
-  if (!Number.isSafeInteger(waitMs) || waitMs <= floor) {
-    throw new Error(`The ${kind} terminal wait of ${String(waitMs)} ms does not outlast the platform recovery floor `
-      + `of ${floor} ms; a shorter wait reports the platform's own recovery as a product failure`);
-  }
-  return waitMs;
-}
-
-export function terminalWaitMs(kind) {
-  if (!Object.hasOwn(TERMINAL_WAITS_MS, kind)) throw new Error(`Unknown sizing task kind ${String(kind)}`);
-  return assertTerminalWaitCoversRecoveryFloor(kind, TERMINAL_WAITS_MS[kind]);
-}
 
 const TASK_ARN = /^arn:aws:ecs:[^:]+:\d+:task\/[^/]+\/[0-9a-f-]+$/;
 const TASK_DEFINITION_ARN = /^arn:aws:ecs:[^:]+:\d+:task-definition\/[^/]+:\d+$/;
@@ -290,7 +234,7 @@ export function compareWorkerIdentity(before, after, { problem } = {}) {
 // passed nor produced a product failure - a cancelled run, or one the job timeout
 // ended. An incomplete suite asserts no product failure, because no product failure
 // was established; its red run comes from the cancelled step itself.
-export function environmentVerdict({ comparison, suiteOutcome, workload = null }) {
+export function environmentVerdict({ comparison, suiteOutcome }) {
   if (!['success', 'failure', 'incomplete'].includes(suiteOutcome)) {
     throw new Error('A verdict needs the suite outcome: success, failure or incomplete');
   }
@@ -308,16 +252,6 @@ export function environmentVerdict({ comparison, suiteOutcome, workload = null }
     : coverageEstablished
       ? comparison.reason
       : `${comparison.reason}; the environment-change check is not established, so a failure still stands as a product failure`;
-  const workloadBinding = workload
-    ? {
-      record_present: true,
-      record_result: typeof workload.result === 'string' ? workload.result : null,
-      worker_identity_before_sha256: typeof workload.worker_identity_before_sha256 === 'string'
-        ? workload.worker_identity_before_sha256 : null,
-      matches_before_identity: comparison.before_identity_sha256 === null ? null
-        : workload.worker_identity_before_sha256 === comparison.before_identity_sha256,
-    }
-    : { record_present: false, record_result: null, worker_identity_before_sha256: null, matches_before_identity: null };
   return {
     schema_version: ENVIRONMENT_SCHEMA_VERSION,
     record_type: ENVIRONMENT_VERDICT_RECORD_TYPE,
@@ -339,14 +273,13 @@ export function environmentVerdict({ comparison, suiteOutcome, workload = null }
       removed_task_arns: comparison.removed_task_arns,
       task_definition_changed: comparison.task_definition_changed,
     },
-    workload_binding: workloadBinding,
   };
 }
 
 // The exact key set `environmentVerdict` returns. A consumer that validates a verdict
 // reads these instead of re-declaring them, so the shape has one owner.
 const VERDICT_FIELDS = Object.freeze(['schema_version', 'record_type', 'recorded_at', 'suite_outcome', 'verdict',
-  'attribution', 'product_failure_asserted', 'identity_coverage', 'reason', 'comparison', 'workload_binding']);
+  'attribution', 'product_failure_asserted', 'identity_coverage', 'reason', 'comparison']);
 const VERDICT_COMPARISON_FIELDS = Object.freeze(['before_observed_at', 'after_observed_at', 'before_identity_sha256',
   'after_identity_sha256', 'before_task_arns', 'after_task_arns', 'added_task_arns', 'removed_task_arns',
   'task_definition_changed']);
@@ -458,8 +391,6 @@ async function emitStepSummary(record) {
     lines.push(`- worker tasks added: ${record.comparison.added_task_arns.join(', ') || 'none'}`);
     lines.push(`- worker tasks removed: ${record.comparison.removed_task_arns.join(', ') || 'none'}`);
   }
-  lines.push(`- sizing workload record bound to this window: ${record.workload_binding.matches_before_identity === null
-    ? 'not checked' : record.workload_binding.matches_before_identity ? 'yes' : 'NO, the workload recorded a different start identity'}`);
   await appendFile(target, `${lines.join('\n')}\n`);
 }
 
@@ -495,9 +426,20 @@ async function qualificationGate({ output }) {
   console.log(`No qualification refusal: ${output} reports no worker task definition change across a passing suite.`);
 }
 
+// The private AWS reader for the CLI: the qualification workflow holds the scoped Beta
+// credentials and no Playwright spec creates an AWS client, so the reader stays inside the
+// module the workflow invokes instead of being shared with the suite.
+function environmentAwsReader(profile) {
+  return args => JSON.parse(execFileSync('aws', [...args, '--region', BETA_REGION,
+    ...(profile ? ['--profile', profile] : []), '--output', 'json'], {
+    encoding: 'utf8', timeout: 60_000, maxBuffer: 32 * 1024 * 1024,
+    env: { ...process.env, AWS_PAGER: '' },
+  }));
+}
+
 async function capture({ phase, output }) {
   assertE2EExecution();
-  const identity = workerIdentitySnapshot(sizingAwsReader(), { phase });
+  const identity = workerIdentitySnapshot(environmentAwsReader(), { phase });
   validateWorkerIdentity(identity, { phase });
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(identity, null, 2)}\n`);
@@ -505,13 +447,12 @@ async function capture({ phase, output }) {
     + `(${identity.identity_sha256}).`);
 }
 
-async function verdict({ suiteOutcome, beforePath, afterPath, workloadPath, output }) {
+async function verdict({ suiteOutcome, beforePath, afterPath, output }) {
   const before = await readOptionalEnvironmentJson(beforePath);
   const after = await readOptionalEnvironmentJson(afterPath);
-  const workload = await readOptionalEnvironmentJson(workloadPath);
   const comparison = compareWorkerIdentity(before.record, after.record,
     { problem: before.problem ?? after.problem ?? undefined });
-  const record = environmentVerdict({ comparison, suiteOutcome, workload: workload.record });
+  const record = environmentVerdict({ comparison, suiteOutcome });
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(record, null, 2)}\n`);
   await emitGithubOutputs(record);
@@ -528,7 +469,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       'suite-outcome': { type: 'string' },
       before: { type: 'string' },
       after: { type: 'string' },
-      workload: { type: 'string' },
     },
     allowPositionals: true,
   });
@@ -544,13 +484,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       suiteOutcome: values['suite-outcome'],
       beforePath: values.before ?? ENVIRONMENT_IDENTITY_PATHS.before,
       afterPath: values.after ?? ENVIRONMENT_IDENTITY_PATHS.after,
-      workloadPath: values.workload ?? SIZING_WORKLOAD_PATH,
       output: values.output ?? ENVIRONMENT_VERDICT_PATH,
     });
   } else if (mode === 'qualification-gate') {
     if (positionals.length !== 1) throw new Error('The qualification gate takes no positional arguments beyond its mode');
     await qualificationGate({ output: values.output ?? ENVIRONMENT_VERDICT_PATH });
   } else {
-    throw new Error('Beta environment identity supports the capture, verdict and qualification-gate modes');
+    throw new Error('The qualification environment supports the capture, verdict and qualification-gate modes');
   }
 }

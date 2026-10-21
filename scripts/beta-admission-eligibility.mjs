@@ -56,12 +56,11 @@ export function validateBetaAdmissionPolicy(response) {
 
 export function verifyBetaAdmissionEligibility(environment = process.env, { execute = execFileSync, sourceSha } = {}) {
   assertE2EExecution(environment, { sourceSha });
-  // #163: full and smoke qualify with two workers, measure runs the single-slot workload,
-  // and all three read the admission mode from the one qualify entry. The worker count is
-  // part of the operation's shape, so the exact entry is no longer enough on its own.
-  const expectedWorkers = environment.E2E_OPERATION === 'measure' ? '1' : '2';
-  if (environment.GITHUB_WORKFLOW_REF !== qualificationWorkflow || environment.E2E_WORKERS !== expectedWorkers) {
-    throw new Error(`Beta admission eligibility requires the exact qualification workflow with exactly ${expectedWorkers} worker${expectedWorkers === '1' ? '' : 's'} for operation ${environment.E2E_OPERATION}`);
+  // #163: the `full` operation qualifies with two workers and is the only remaining caller
+  // of this check. The worker count is part of the operation's shape, so the exact entry is
+  // no longer enough on its own.
+  if (environment.GITHUB_WORKFLOW_REF !== qualificationWorkflow || environment.E2E_WORKERS !== '2') {
+    throw new Error(`Beta admission eligibility requires the exact qualification workflow with exactly 2 workers for operation ${environment.E2E_OPERATION}`);
   }
   let response;
   try {

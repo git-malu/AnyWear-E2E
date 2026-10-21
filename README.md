@@ -45,13 +45,12 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 
 ```bash
 pnpm check             # vendored contract, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 24 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # 21 registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # sixteen retained offline operational-support test files
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
 pnpm test:smoke        # on-demand deployed Beta diagnostic, @smoke only
 pnpm test:regression   # the release-gating deployed selection, @regression only
-pnpm test:instrumentation # a measurement workload or drill, @instrumentation only
 pnpm test:full-stack   # deployed Beta scenarios marked @full-stack
 pnpm test              # the release-gating selection: identical to test:regression
 pnpm report            # open the latest HTML report
@@ -76,16 +75,15 @@ scenario must satisfy.
 | `test:deferred-sqs` | Repository maintainer under [#58](https://github.com/git-malu/AnyWear/issues/58); manual future-protocol review only | Two offline ARM/ACK/FIRE prototype files; no live transport, trusted AWS identity or receipt proof, and no #54 acceptance claim |
 | `test:smoke` | E2E maintainers; the `smoke` operation of the protected `qualify` entry | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
 | `test:regression` / `test` | E2E maintainers; the `full` operation's protected Beta qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this operation and its evidence can qualify a release |
-| `test:instrumentation` | E2E maintainers; explicit opt-in through the `measure` operation of the protected `qualify` entry | A measurement workload with paid provider spend and its own cleanup contract, reported as a measurement; it can neither satisfy nor fail release qualification |
-| `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario, the measurement included; not a release-gating selection on its own |
+| `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario; not a release-gating selection on its own |
 | `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
 
-The release-gating selection, the smoke diagnostic, the measurement and account recovery are
+The release-gating selection, the smoke diagnostic and account recovery are
 separated by the signed `operation` field, not by a workflow boundary, a step or a job. One
 protected dispatch surface, the `qualify` entry in `beta-qualification.yml`, carries
-`full`, `smoke`, `measure` and `recover`. A release consumer accepts a qualification record
+`full`, `smoke` and `recover`. A release consumer accepts a qualification record
 only from the `full` operation of a completed-success qualification run; the record states
-`operation: full` and is produced only by that operation, so a `smoke`, `measure` or
+`operation: full` and is produced only by that operation, so a `smoke` or
 `recover` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record
 binds the operation dispatched, so its producer is uniquely identifiable; and both this
@@ -93,7 +91,7 @@ repository's producer/verifier and the Infra-side executor allow-list check
 `operation == full`. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 24 registered core files retain account-budget, Cognito cleanup, qualification
+The 21 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
 declaration contracts plus the v3 live-tuple contracts: `qualification-record.test.mjs`
 (the live identity, the supported-Client floor and the v3 record), `infra-qualification.test.mjs`
@@ -128,7 +126,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Check entry runs the vendored-contract assertion, the explicit 24 core test files,
+Check entry runs the vendored-contract assertion, the explicit 21 core test files,
 the credential-free tool regressions, lint, type checking, and Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -143,7 +141,7 @@ entry, and it runs the release-gating selection. Only a passing `full` run again
 tuple it observed before and after the suite produces qualification evidence that Production
 may consume. The
 [scenario inventory](docs/scenario-inventory.md) records which scenarios that step's
-selection contains; a measurement or drill result is not part of it and carries no release
+selection contains; a diagnostic result is not part of it and carries no release
 verdict in either direction.
 
 The qualification record states the selection that produced it instead of a constant. Its
@@ -173,8 +171,7 @@ revision; the current verifier does not accept the retired `suite: 'complete'` s
 Test classification is explicit: `@smoke` marks the small, stable critical path for the
 on-demand Beta diagnostic; `@regression` marks the scenarios admitted to the
 release-gating selection; `@full-stack` marks cross-repository scenarios, which every
-scenario here carries; `@instrumentation` marks a measurement workload or drill, which
-is admitted as measurement and cannot gate a release. A tag selects; the
+scenario here carries. A tag selects; the
 [scenario inventory](docs/scenario-inventory.md) states the class and the verdict.
 Dev verification remains in the Client and Service unit and integration suites.
 
@@ -186,8 +183,8 @@ skips unless `E2E_PUBLIC_REGISTRATION_OPEN=true` and cannot appear
 as a passing smoke gate. No workflow opens public registration for this scenario.
 
 The manual `Beta Qualification` entry (`qualify`) is the single protected dispatch
-surface, with the required operation menu `full` (release gate), `smoke` (diagnostic),
-`measure` (sizing) and `recover` (account recovery). Its dispatch also carries
+surface, with the required operation menu `full` (release gate), `smoke` (diagnostic)
+and `recover` (account recovery). Its dispatch also carries
 `expected_service_commit` and `expected_client_commit` (`full` only), `trigger` (`manual`,
 `deploy-smoke` for the deployment smoke hook, `release-qualify` for the release action) and
 `dispatched_by` (the dispatching run URL; non-manual triggers only), and the credential-free
@@ -266,9 +263,8 @@ workflow constants move with it in one reviewed change.
 
 Qualification reads the live deployed tuple; `compatibility.json` is **retained inert until
 Wave 2**, and no release-qualification path reads it: `beta-qualification.yml`, `pnpm check`,
-`test:core` and `test:list` are pin-free. The one remaining executed read is the `measure`
-sizing workload (`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`), which is a
-measurement, not qualification, and is #141's deletion set.
+`test:core` and `test:list` are pin-free. The former measurement workload was the last
+executed reader of the pin, and it is deleted with the sizing apparatus.
 [docs/compatibility-pin.md](docs/compatibility-pin.md),
 [docs/compatibility-v3.md](docs/compatibility-v3.md) and the pin tools describe the retired
 contract and the revert target; the tools are not runnable after Wave 1 (they import the
@@ -391,7 +387,7 @@ does not serialize those other repositories. Keep `ENABLE_BETA_MUTATION` unset o
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
 the single `qualify` entry and the explicitly stated `operation` establish source
 identity. `execution-guard.mjs --source-only` checks that identity before credentials,
-including that the operation is one of `full`, `smoke`, `measure` or `recover` and that
+including that the operation is one of `full`, `smoke` or `recover` and that
 the workflow ref is the entry the operation map names. After
 assuming the dedicated `beta-e2e-qualification-role`, each operation job captures fresh
 STS account/principal values and checks the exact account, role and region. Those
@@ -399,7 +395,7 @@ values are supplied by the workflow, not dispatch inputs. The default guard requ
 that captured principal before observations, suite and mutation boundaries, including
 Cognito deletion after a fixed cleanup operation wait. Missing or mismatched identity
 retains the cleanup manifest for protected recovery. `full` has a 90-minute
-job bound; `smoke`, `measure` and `recover` have 60-minute bounds. All four share
+job bound; `smoke` and `recover` have 60-minute bounds. All three share
 the `beta-e2e-account-pool` concurrency group with cancellation disabled. Verify
 all local/Actions/CFN/ECS/nested Service jobs have ceased before handing the
 environment to another writer; timeout alone never releases it.
@@ -485,126 +481,24 @@ reconciliation never shrinks the canonical cleanup request. Shared account-pool
 concurrency does not establish a cross-repository writer allocation; that remains an
 operational preflight gate.
 
-The `full`, `smoke` and `measure` operations accept `worker_slot_offset` (default `0`) for
-allocating the run's worker slots; for example `2` selects slots 2 and 3 without
-reusing slots 0 and 1, while `measure` allocates one slot. Admission eligibility does not
+The `full` and `smoke` operations accept `worker_slot_offset` (default `0`) for
+allocating the run's two worker slots; for example `2` selects slots 2 and 3 without
+reusing slots 0 and 1. Admission eligibility does not
 use the offset. Recovery always uses the exact captured
 original emails/subjects, independent of later slot allocations. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: verify
 outstanding executions, tasks and manifests are reconciled before reuse.
 
-## Beta sizing evidence
-
-> **#141 residual.** The sizing measurement still binds the retained compatibility pin
-> (`scripts/beta-sizing-source.mjs`, `collect-beta-sizing-evidence.mjs`) because the pin was
-> its only tuple source. That is a measurement, never qualification, and no qualification
-> path reads it. [#141](https://github.com/git-malu/AnyWear/issues/141) deletes the sizing
-> apparatus, and Wave 2 removes the pin; this section is retained until then.
-
-`scripts/beta-sizing-benchmark.mjs` classifies collected sizing evidence. It does
-not authenticate artifact publication or replace the `qualify` entry. A normal
-suite pass alone cannot qualify smaller tasks.
-
-Measured result schema version 2 requires exact application/deployment and fixture
-bindings, raw evidence URLs/hashes, initial configured desired/minimum/task sizes,
-12 completed upload/tagging cases, four representative VTO shapes twice, two distinct
-same-Worker overlap cases, per-task container high-water readings, complete CPU minute
-coverage, at least 100 samples per ordinary route, and provider-separated local and
-publication/execution intervals for each accepted task. Record every actual task and
-scaling event in the evidence; configured desired count does not imply a constant
-replica count. Each VTO observation must report the aggregate it submitted, which the
-per-input bound does not cover: the VTO payload aggregates the base photo and the
-garments and is a separate measured quantity. The five-garment 4K shape is deferred to
-#172 for the VTO base64-payload defect, not asserted as an invented product maximum.
-Retain uncertain provider/model envelope limits.
-
-Missing metrics, unsupported peak sources, incomplete workloads, mismatched inputs or
-an unqualified fresh common S1 remain **unqualified**. Collector `evidence_gaps`
-must be an explicitly empty array for S1 and candidates. Each upload must match its
-unique canonical case ID, mode, format, size and frozen fixture hash/bytes/dimensions;
-totals or partial matrix presence do not establish the 12-case coverage.
-Observed correctness, headroom or
-regression failures are **rejected**. S3 retains the smaller API headroom criterion.
-CPU rejection requires five consecutive valid one-minute samples at or above 90%.
-Compare local processing separately from provider time and both queue intervals
-independently; preserve provider timings without treating provider variability as
-local processing. Never substitute sampled memory, process RSS, missing buckets or
-transaction acknowledgement for an unobserved peak, zero usage or exact DB commit.
-Queue measurements may use exact common-clock intervals or verified conservative
-phase bounds. Upper bounds compare against independently known S1 lower bounds;
-unknown exact baseline delays use the conservative lower bound zero. A failing
-upper-bound comparison remains inconclusive, while an exact measured regression
-is rejected. Every task needs clock/error evidence and same-task correlation;
-execution before send acknowledgement is legal, and the send-start boundary avoids
-inventing a clamped zero delay. Unverified clocks or contradictory ordering cannot
-qualify a result.
-
-S0 records historical two-replica cost/configuration evidence. It is not a new
-runtime gate. The changed telemetry image must first pass a fresh S1 workload at
-one API replica, 512 CPU / 1024 MiB and the existing Worker size. S2/S3 compare
-only against that passing S1 with identical E2E source, image, Client, fixture and observed
-provider configurations. Do not reuse old-image timings or restore two replicas
-merely to collect a new baseline.
-
-The `full` and `smoke` operations do not run the workload and accept no sizing stage. The
-`measure` operation refuses the menu's `none` sentinel and any stage other than `S1`, `S2` or
-`S3`, and there is no default stage, so a measurement is never implicit. It also accepts
-`envelope_mode`: `demonstrated` is the default, and `widening-candidate` is accepted only
-for `measure` at stage `S1`; every other combination is refused. It runs
-`tests/beta-sizing.spec.ts` in `pnpm test:instrumentation`
-once with no retries: 12 uploads/tagging tasks (three formats, JPEG/PNG/WebP,
-sequential/burst, two repeats), then four VTO shapes twice. Two
-bursts overlap VTO submissions; actual same-Worker overlap must still be shown by
-telemetry. VTO uses one/three garment references on the served ordinary base photo,
-submitted smallest-first so each shape carries the least payload it can, with the
-default 2K output. Every garment is a fixture the run submits before the first VTO
-case, and each case resolves its garment ids from the frozen submission plan rather
-than from the uploads recorded when that case starts, so the submission order and the
-VTO order are independent of each other. These are representative cases bounded by
-the measured envelope
-below, not asserted product/provider maxima. The five-garment shape that carried the
-representative larger 4K output is deferred to #172 (the separate VTO base64-payload
-defect) with its aggregate recorded; see the envelope section.
-The reviewed provider PDF covers 5.0-lite, while deployed source uses 5.0; S1 failure
-must resolve this applicability gap before candidate measurements. Model/settings stay
-frozen after S1. The preflight requires ten existing daily credits; it changes no quota.
-
-### The VTO terminal wait is the platform's recovery floor
-
-The VTO terminal wait is a bound on the platform's own recovery floor, **not** a
-measurement of observed provider latency. `scripts/beta-sizing-environment.mjs` owns
-both numbers and the derivation between them. The floor is the larger of the two values
-AnyWear-Service publishes as the deployed task runtime policy
-(`src/tasks/runtime-policy.json`): the `vto` queue visibility of **900 s** and its
-**960 s** database lease, so work a worker replacement interrupted cannot be redelivered
-and claimed before 960 s. `SIZING_VTO_TERMINAL_WAIT_MS` is therefore **1,200,000 ms**,
-and `terminalWaitMs('vto')` refuses any budget that does not outlast that floor. The
-auto-tagging wait stays at **600,000 ms**: uploads already outlast their own, smaller
-floor (300 s visibility, 360 s lease), so raising it would change a budget that was
-never wrong.
-
-The old 600,000 ms budget sat below the floor, and that is the defect issue #147 records
-rather than a slow product. In qualification run
-[38864061777](https://github.com/git-malu/AnyWear-E2E/actions/runs/38864061777) a
-rotating Beta worker stopped the task holding the S1 `large-base-three-garments-0` case;
-its provider call was killed by `SIGTERM` 40.7 s in and wrote nothing, the case stayed in
-`Processing`, the queue redelivered the work exactly at its 900 s visibility floor, and
-the suite had stopped looking 300 s earlier. Nothing about the shape was slow: it
-completed in 46.8 s in an earlier run and 46.3 s in the other three-garment case of that
-same run, and no provider call in either run exceeded 62,819 ms. The budget was never
-tight on provider latency; it was set below the point at which the platform is allowed
-to retry.
-
-### Environment change during a suite
+## Environment change during a suite
 
 A qualification can run across a deployment rotation, and the run now says so instead of
 reporting the platform's recovery as a product failure. The workflow records the
 identity of the worker(s) serving Beta immediately before and immediately after the
 suite - the worker service's task ARN set and the task definition those tasks run - and
-compares them. `scripts/beta-sizing-environment.mjs` reads that identity from the
+compares them. `scripts/qualification-environment.mjs` reads that identity from the
 workflow, which holds the scoped AWS credentials; the Playwright spec reads no AWS and
-decides no environment change, so the sizing support code owns the record shape and the
-comparison rules while the spec keeps recording what it observed.
+decides no environment change, so the qualification-environment module owns the record
+shape and the comparison rules while the spec keeps recording what it observed.
 
 - `.qualification-inputs/beta-environment-before.json` and
   `.qualification-inputs/beta-environment-after.json` are the two captures; the
@@ -614,8 +508,6 @@ comparison rules while the spec keeps recording what it observed.
   `product_failure_asserted` and the exact worker task ARNs that appeared and
   disappeared. When the suite passed and `comparison.task_definition_changed` is true,
   this same verdict is what refuses the qualification.
-- `test-results/beta-sizing-workload.json` records the identity the workload started in
-  (`worker_identity_before_sha256`), and the verdict reports whether the two agree.
 
 A verdict of `environment-changed` **replaces the product-failure report**: the run
 states that the platform was redeployed under the suite and that no product failure is
@@ -648,295 +540,4 @@ redeployment that replaces the deployed tuple is still caught separately by
 `Confirm deployed identities remained stable`.
 
 The capture is unconditional for every qualification run, because a deployment change
-cannot qualify release evidence of any kind. The `measure` operation captures the same
-identity around its own workload, so a rotated task definition during a measurement is
-attributable too. The
-frozen shape set is untouched by any of this: the four VTO shapes, the three-garment
-shapes included, still run twice each, and the environment record bounds no payload -
-the VTO aggregate stays the separate, measured quantity recorded per observation.
-
-### Measured S1 input envelope and its limits
-
-The sizing case set submits only inputs this deployment is demonstrated to serve. The
-bound is not a provider maximum and not a guess: it is the largest input a real S1 run
-served to a terminal `ready` state, taken from the authorised S1 `measure` run
-[39529614042](https://github.com/git-malu/AnyWear-E2E/actions/runs/39529614042)
-(attempt 1), artifact `beta-measurement-39529614042-1`, at E2E
-`b95c55036d81cd284fb6e0ad55c160b7e7c25860`, stage S1, as recorded in
-`test-results/beta-sizing-workload.json`. The run was dispatched as `measure` in
-`widening-candidate` mode; it is measurement evidence, not `full` qualification
-evidence. It ran against Service `340df8cb79a878521b2a53fc3c2a2db09bbc9779`, image
-`sha256:14c42d5798f9d1ffb1ff748d6ff34cad76869b8e13761003a40bbf5b2e5eb927`. Every
-byte count in the table below is also the committed frozen fixture size, so the
-artifact and the repository agree for all 12 uploads.
-
-| Case | Fixture | Input | Outcome |
-| --- | --- | --- | --- |
-| `sequential-ordinary-jpg-0` | `trousers-ordinary.jpg` | 388,182 B, 1200x960 | `ready` |
-| `sequential-ordinary-jpg-1` | `jacket-ordinary.jpg` | 664,453 B, 900x1200 | `ready` |
-| `sequential-ordinary-png-0` | `sweater-ordinary-garment.png` | 696,168 B, 879x761 | `ready` |
-| `sequential-ordinary-png-1` | `sweater-ordinary-garment.png` | 696,168 B, 879x761 | `ready` |
-| `sequential-ordinary-webp-0` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
-| `sequential-ordinary-webp-1` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
-| `burst-ordinary-jpg-0` | `shoes-ordinary.jpg` | 339,830 B, 1200x800 | `ready` |
-| `burst-ordinary-jpg-1` | `bag-ordinary.jpg` | 319,391 B, 800x1200 | `ready` |
-| `burst-ordinary-png-0` | `sweater-ordinary.png` | 3,742,711 B, 1200x1039 | `ready` |
-| `burst-ordinary-png-1` | `sweater-ordinary.png` | 3,742,711 B, 1200x1039 | `ready` |
-| `burst-ordinary-webp-0` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
-| `burst-ordinary-webp-1` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
-
-`S1_INPUT_BYTES_MAX` is therefore **3,742,711 B**, the largest input demonstrated
-served: `burst-ordinary-png-0`, the largest served case, submits the exact
-`sweater-ordinary.png` at exactly that size, and `burst-ordinary-png-1` submits the
-same bytes. The prior demonstrated bound was 697,437 B. The promotion is metadata
-only: no fixture or workload bytes changed. Because the promoted bound equals the
-demonstrated bound, there is no per-case allowance left - every submitted input is
-bounded by this one number in both modes:
-
-- `S1_INPUT_ENVELOPE.widening_candidate` is now the promotion record
-  (`status: 'demonstrated'`): the bound (3,742,711 B), the fixture
-  (`sweater-ordinary.png`), the only two case IDs allowed to submit it
-  (`burst-ordinary-png-0`, `burst-ordinary-png-1`), the prior bound (697,437 B) and
-  authorising issue 140. The manifest mirrors the record, and the loader refuses a
-  manifest whose candidate differs.
-- `BETA_SIZING_ENVELOPE_MODE=demonstrated|widening-candidate` selects the mode. The
-  default is `demonstrated`, and only the protected `measure` operation at stage S1
-  accepts `widening-candidate`; the workflow validates that before any credential
-  job, and the spec asserts the same scope before reading a fixture. The mode no
-  longer selects a bound: it selects the measurement case matrix. A demonstrated run
-  never names the exact fixture; a candidate run adds the two burst PNG cases that do,
-  and the diagnostic probe. Every other case is unchanged.
-- The workload and plan record `envelope_mode`, `candidate_bound_bytes` (3,742,711 B)
-  and `prior_bound_bytes` (697,437 B) in both modes. Those two numbers are promotion
-  lineage, not a second bound: the artifact states which matrix it ran and which bound
-  the candidate replaced.
-
-The basis is **one submitted input**: it was derived from single-image uploads, where
-one input is one provider payload. A VTO generation aggregates a base photo plus the
-garments and is a separately recorded quantity, so it is not bounded by this number.
-The same measure run supplies that record: eight VTO generations, all terminal
-`Complete`, at the two shipped aggregates of 933,902 B and 2,294,523 B (see below).
-
-The bound is on what is submitted, never a relaxation of what must pass: a case above
-it is not made passable, it is not submitted. The constraint lives in
-`scripts/beta-sizing-envelope.mjs` as explicit constants, and every path that could
-exceed it fails loudly instead: `sizingUploadCases()` builds the matrix only from
-`SIZING_WORKLOAD.size_classes` and asserts the resulting count, `loadSizingFixtures`
-accepts a frozen fixture only up to the demonstrated bound (the exact fixture sits
-exactly at it and its hash is still checked), refuses any case input naming an excluded
-fixture, any garment outside `S1_VTO_GARMENT_POOL`, and any garment list that is not
-the canonical smallest-first one. `assertCaseInputsWithinEnvelope` applies the one
-demonstrated bound to every named input in both modes; the mode only chooses the
-matrix. `evidenceGap` reads the recorded `envelope_mode`, bounds a recorded upload
-directly by `S1_INPUT_BYTES_MAX`, marks a VTO base photo or VTO garment above the
-demonstrated bound, or a VTO observation that does not report the exact recomputed
-aggregate, unqualified. The fixture manifest repeats the bound, its per-input basis,
-the measured uploads, the measured VTO observations, the excluded fixtures with their
-reviewed reasons, the promotion record, the historical VTO shape names and the
-deferred VTO shape, and the loader refuses a manifest whose declared envelope differs
-from these constants.
-
-**The VTO garment pool and its rule.** A VTO case must resolve each garment to the
-wardrobe item its upload created, so a garment may only be a fixture the run submits
-*before* the first VTO case. `S1_VTO_GARMENT_POOL` is therefore the sequential half's
-uploads restricted to the reviewed garment formats - `VTO_GARMENT_FORMATS`, the ordinary
-JPEG and PNG. `sequentialGarmentUploads()` derives exactly that rule from
-`mime` and the case set, and the loader refuses a pool that does not equal it;
-`createSizingVtoGarmentPlan()` then refuses any case whose garment the plan cannot
-resolve, naming the fixture and the case before the first VTO is accepted.
-
-The rule costs coverage, and that trade is accepted rather than hidden. The sequential
-half submits four distinct fixtures and the pool holds three:
-
-- `bag-ordinary.jpg` and `shoes-ordinary.jpg` are **burst-only** - the only upload cases
-  that carry them are `burst-ordinary-jpg-1` and `burst-ordinary-jpg-0`, which launch
-  *inside* the VTO loop. No pre-VTO upload produces their wardrobe item, so they cannot
-  be resolved when the first VTO case needs one. These two are the fixtures the
-  previous five-id `S1_VTO_GARMENT_ORDER` named and the defect this change fixes.
-- `sweater-ordinary.webp` is deliberately outside the reviewed garment formats: it is the
-  WebP format-coverage fixture, not a garment reference. It is submitted sequentially,
-  so it is excluded by the format rule rather than by timing.
-- `sweater-ordinary-garment.png` **is** a pool garment. It is submitted sequentially as
-  `sequential-ordinary-png-0` - the 696,168-byte garment variant, `ready` in the
-  measure run above - and it is not burst-only. The restored exact
-  `sweater-ordinary.png` is deliberately **not** a pool garment: its only
-  submissions are the two burst PNG cases, so the VTO garment select stays on the
-  garment variant and the three-garment aggregate stays 2,294,523 B.
-
-So VTO coverage no longer includes the two smallest fixtures. The submitted shapes keep
-their one/three garment counts and their smallest-first order within the pool, and the
-aggregates that follow from the frozen bytes are stated in the aggregate bullet below.
-
-The measure run completed the whole workload: all 12 uploads reached `ready` and all
-8 VTO generations reached terminal `Complete`, so the VTO cases are now observed at
-every submitted payload size. Each generated input is inside the bound - the base photo
-is the served ordinary photo and the garment references are frozen upload fixtures -
-and each observation reports the `aggregate_submitted_bytes` it actually sent, so the
-real payload is visible in the evidence instead of left to be added up. The two
-shipped aggregates are 933,902 B (545,720 + 388,182) for the one-garment shapes and
-2,294,523 B (545,720 + 388,182 + 664,453 + 696,168) for the three-garment shapes.
-They are recorded per observation and recomputed rather than restated; they remain a
-separate quantity that the per-input bound does not bound. The `large-base-*` shape
-identifiers are historical names retained for binding stability, not a description of
-the fixture: every submitted shape uses `base-photo-ordinary.jpg`, and the only shape
-that carried the large base photo is the deferred five-garment one.
-
-What this measurement covers, and what it does not:
-
-- **This envelope only.** A green sizing run states that the 12 uploads and 8 VTO cases
-  above passed, per submitted input, inside the demonstrated 3,742,711 B bound. It is
-  not evidence for anything larger, and it says nothing about the VTO aggregate.
-- **The large-input defect is why the bound moved.** The case that once failed is the
-  known defect tracked as **#140** (the pipeline base64-encoded original bytes to the
-  VLM, the fixed 60 s budget expired and the case ended terminal). The authorised S1
-  `measure` run served that exact 3,742,711-byte fixture to `ready` through the two
-  burst PNG cases, and this change promotes the demonstrated bound to those bytes; the
-  sanitized failure code and diagnostic probe stay in the run artifact. That run was
-  `measure` at S1 in `widening-candidate` mode: measurement evidence, not `full`
-  qualification evidence. The removal of the other oversized fixtures and the deferred
-  VTO shape stay recorded in the manifest and in `scripts/beta-sizing-envelope.mjs`
-  rather than disappearing.
-- **The VTO aggregate is separate and measured.** The five-garment shape that also
-  carried the representative larger 4K output is deferred to **#172** for the separate
-  VTO base64-payload defect, with the exact reason
-  `deferred_to_172_vto_base64_payload`, and recorded in
-  `s1_input_envelope.deferred_vto_shape`: 2,408,024 B of garments plus the 545,720-byte
-  base photo is a 2,953,744-byte aggregate, about 79% of the 3,742,711-byte single input
-  whose base64 payload exhausted the 60 s budget. That aggregate is **below** the
-  promoted per-input bound, so the deferral is not a bound decision: it stays deferred
-  to #172 and returns when a run passes with it. Its PNG garment reference is the
-  garment variant, so those figures stay true now that the exact fixture is the
-  demonstrated bound. The aggregates the **submitted** shapes carry are not frozen
-  numbers but the sum of the frozen fixture bytes each case names: the one-garment
-  shapes submit 933,902 B (545,720 + 388,182) and the three-garment shapes 2,294,523 B
-  (545,720 + 388,182 + 664,453 + 696,168), both recorded per observation and recomputed
-  by `vtoAggregateSubmittedBytes` rather than restated, so a fixture re-encode cannot
-  leave a stale claim behind.
-- **The submitted-shape aggregates follow the pool.** The 933,902 B and 2,294,523 B
-  above are the sums the current pool produces, not independent limits. Adding a fixture
-  back as a garment - `bag-ordinary.jpg`, `shoes-ordinary.jpg` or
-  `sweater-ordinary.webp` - or re-encoding a pool fixture moves them, which is why they
-  are recomputed rather than restated. The deferred shape's own 2,408,024 B, 545,720 B and
-  2,953,744 B are restated constants, so the test recomputes all three from the frozen
-  fixtures and fails on any difference: those figures may not outlive the bytes they
-  describe.
-- **Widening again needs a passing run.** The promotion is complete: the authorised S1
-  `measure` run supplied the evidence and step 5 moved the demonstrated bound to
-  3,742,711 B (metadata only, no fixture or workload bytes change). Only an input above
-  that bound still requires its own passing run; a below-bound exclusion such as
-  `base-photo-large.jpg` is a review choice rather than an unmeasured size, and the
-  deferred five-garment shape waits on #172 rather than on a larger input bound. A
-  demonstrated run inside the current envelope cannot qualify a wider one.
-- **Submitted bytes are not provider cost.** The bound is measured in input bytes
-  because that is what the evidence and the failure mechanism show; it is not a claim
-  about pixel count, decode time or provider latency at the bound.
-
-Frozen image bytes, dimensions, SHA-256 and source/license provenance live in
-`tests/fixtures/beta-sizing/fixture-manifest.json`. That manifest also records the
-`encoding` and `derivation` of every shipped fixture and the non-qualifying diagnostic
-record, so a rebuilt fixture cannot pass as the original:
-
-- The six JPEG fixtures - `sweater-ordinary.jpg`, `base-photo-ordinary.jpg`,
-  `trousers-ordinary.jpg`, `shoes-ordinary.jpg`, `bag-ordinary.jpg` and
-  `jacket-ordinary.jpg` - were re-encoded from the legacy 4:4:4 settings to quality 100
-  with 4:2:0 subsampling. Their pixel dimensions did not change, but **their chroma
-  did**, so this is a re-encode and not a byte-identical pass-through. Each manifest
-  `derivation` states that per fixture with its own byte delta.
-- `sweater-ordinary.png` is the **restored exact fixture**: byte-for-byte the
-  3,742,711-byte, 1200x1039 input with SHA-256 `4341430c...` from E2E `1af6f019`, and
-  the fixture that sets the demonstrated bound. The builder neither re-encodes nor
-  submits it, and the measured matrix submits it only through the two
-  `widening-candidate` burst PNG cases.
-- `sweater-ordinary-garment.png` is the former lossless PNG transcode retained as the
-  garment variant: the same pixels reduced to 879x761 with the aspect ratio retained
-  (Lanczos, `compress_level: 9`) for 696,168 B, SHA-256 `932e4804...`. The sequential
-  PNG upload cases and the VTO garment pool use it, and the builder copies it through
-  byte-for-byte too.
-- `sweater-ordinary.webp` re-encodes to the reviewed lossless settings unchanged.
-
-The excluded fixtures are recorded at their original sizes and SHA-256 values in the
-manifest's `s1_input_envelope.excluded_fixtures` with their reviewed reasons:
-`base-photo-large.jpg` (2,611,145 B) is below the demonstrated 3,742,711 B bound, so it
-is excluded as `not_in_reviewed_case_matrix` - a review choice, not an above-envelope
-observation; the three 9.2-9.7 MB `near-supported-limit` fixtures are
-`input_bytes_above_envelope` and stay above the demonstrated bound. A below-bound
-exclusion is accepted only with the first reason, and a later reader must not read any
-of them as passing cases. Valid codec encoding/resize creates the fixtures; no padding
-or noise is added. The Pillow builder enforces each fixture's bound itself, copies the
-two preserved PNG variants through byte-for-byte after checking their
-size/SHA-256/dimensions, and refuses to write above its bound.
-
-**Failure codes and the diagnostic probe.** `tests/beta-sizing.spec.ts` records
-`state.taggingErrorCode` as `failure_code` on a failed case before it throws, so
-`test-results/beta-sizing-workload.json` can carry the sanitized code on both `uploads[]`
-and `vto[]` entries. `correlateSizingTask` returns
-`{ failure_code, attempts, provider_waits }` for an observed failed execution instead of
-only an evidence-gap string, and `collect-beta-sizing-evidence.mjs` writes
-`measured.measurements.task_timings[].failure_code`, `measured.failure_codes` (a
-code-to-count map) and `measured.failure_path` into
-`test-results/beta-sizing-evidence.json`. `not_run` stays a distinct probe state, never
-a free-text failure code.
-
-The probe is `tests/fixtures/beta-sizing/diagnostic/truncated.png`: 400 bytes with a
-valid PNG signature, a complete IHDR and an IDAT body truncated before IEND, recorded in
-the manifest's `diagnostic` block with its size, SHA-256 and expected
-`input_image_decode_failed`. Only the `widening-candidate` measure run submits it, after
-the measured cases. In the promotion run the probe is recorded as
-`state: failed_as_expected` with observed code `input_image_decode_failed`, so the
-deterministic failure path is visible in the same artifact as the successful
-measurements. Its expected failure is evidence and does not fail the suite; an
-unexpected success, a different code, more than one execution or a nonzero provider-call
-count fails clearly, and the collector verifies the execution and provider-call counts
-from telemetry before writing `measured.failure_path`.
-
-The `measure` operation preserves `.qualification-inputs/beta-sizing-runtime-before.json`
-and `test-results/beta-sizing-workload.json` in its own
-`beta-measurement-<run>-<attempt>` artifact, including
-partial business results after failure. They are measurement evidence, not part of the
-`full` operation's diagnostics, which do not carry them. Protected leased-account
-application
-cleanup handles all retained data and exact subjects; the scenario performs no
-ad hoc deletion. Unfinished tasks/failed cleanup cannot qualify the stage.
-
-Sizing captures a complete canonical Git path-byte/mode/type/object inventory at
-the actual protected E2E HEAD before and after the workload, with exact source,
-run/attempt, origin, tracked-byte, index-flag and clean initialized-submodule
-checks. The benchmark digest excludes **only root `compatibility.json`**; gitlinks
-remain pinned commit entries, and no tracked file is omitted through ignore
-patterns. Actual E2E SHAs and full compatibility bytes/blob hashes stay visible.
-S1/candidates require identical digests and strict compatibility, allowing only
-`deployment.run_id`, `run_attempt`, `artifact_id` and `record_sha256` to change.
-Client/Service/Infra/artifact/API/fixture/model or any other source/contract change
-requires a fresh common S1. Missing or malformed proof remains unqualified.
-
-The proof's self-hash is not an authenticity claim. Before candidate dispatch,
-review the exact commit diff, confined to `compatibility.json` and those four fields.
-During acceptance, independently authenticate the native
-completed-success protected-main qualification run, exact head/attempt and artifact
-IDs/name/run/digest/byte checksums. `assertSizingSourceRun` checks supplied native
-run metadata, and `verifySizingSourceAtCommit` independently reconstructs the full
-inventory from that trusted actual commit; use both with authenticated inputs.
-Neither function fetches metadata or grants credentials. Collector/classifier
-success does not satisfy this separate trust gate.
-
-After independently authenticating/downloading that exact run artifact, the
-owner uses `scripts/collect-beta-sizing-evidence.mjs` with explicit `--profile`,
-`--workload`, `--workload-sha256`, `--before`, `--before-sha256`, and `--output`.
-This tool only reads AWS STS, ECS, task definitions, scaling, CloudWatch CPU and
-reviewed API/Worker log streams in account 650880818323 / ap-east-1. Run it within
-50 minutes after the bounded workload starts so stopped-task evidence remains
-available. Allow CloudWatch/log delivery first; missing minute buckets or final
-high-water samples remain gaps. The E2E principal receives no new metrics IAM
-grant. Preserve the resulting raw artifact and hash before composing final
-classification. Separate readiness, queue/DLQ/lease/backlog, notification,
-lost/duplicate-work and lifecycle evidence is still required; the collector never
-fills those acceptance counters with assumed zeros.
-
-Service's opt-in same-Worker causal method requires a complete unfiltered outbox-ID
-snapshot (256-row cap, 200 ms statement timeout, 250 ms bounded observer wait), an
-immutable task/outbox correlation, first send/ACK/execution and one process clock.
-Commit-to-publication upper bound is ACK minus an earlier snapshot query start
-that saw the ID absent; lower bound is zero. Publication-to-execution lies between
-`max(0, execution - ACK)` and `execution - send-start`. Missing/truncated snapshots,
-retry/republish/process replacement invalidate it. Both S1 and candidates retain
-query overhead and raw proof; no API/Worker wall-clock error is invented.
+cannot qualify release evidence of any kind.

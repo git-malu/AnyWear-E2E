@@ -1,4 +1,4 @@
-import { environmentVerdict } from '../beta-sizing-environment.mjs';
+import { environmentVerdict } from '../qualification-environment.mjs';
 import { readMinimumSupportedClient } from '../minimum-supported-client.mjs';
 import { SCENARIO_DIRECTORY, qualificationSelection, selectedScenarios } from '../test-selection.mjs';
 import { stageContractSchemaHash } from '../vendor/deployment-contract.mjs';
@@ -118,37 +118,6 @@ export function qualificationFixture({
     manifest_asset_id: 11,
     manifest_sha256: hash('d'),
   };
-  // Retained-inert pin scaffolding. #180 removed the pin from every qualification path,
-  // but the sizing measurement (`fixtures/beta-sizing-source.mjs`, #141) still builds a
-  // sizing source proof from a pin-shaped object, and its benchmark tests are part of
-  // `test:core`. This member exists only for that retained fixture; no qualification
-  // module reads it, and it disappears with the sizing apparatus and the pin in Wave 2.
-  const compatibility = {
-    version: 3,
-    client: { repository: 'git-malu/AnyWear-Client', sha: clientSha },
-    service: { repository: 'git-malu/AnyWear-Service', sha: serviceSha },
-    infra: { repository: 'git-malu/AnyWear-Infra', sha: sha('e') },
-    platform: {
-      producer: 'git-malu/AnyWear-Infra',
-      producer_sha: sha('e'),
-      record: {
-        producer: 'git-malu/AnyWear-Infra', workflow_path: '.github/workflows/runtime.yml', status: 'recorded',
-        run_id: 30, run_attempt: 2, artifact_id: 40, record_sha256: hash('b'),
-      },
-    },
-    workload: { producer: 'git-malu/AnyWear-Service', producer_sha: serviceSha },
-    deployment: {
-      producer: 'git-malu/AnyWear-Service', workflow_path: '.github/workflows/service-artifacts.yml', status: 'recorded',
-      run_id: 50, run_attempt: 1, artifact_id: 60, record_sha256: hash('e'),
-    },
-    // The historical pin shape has no `tag` member; the v3 record identity above does.
-    service_artifacts: {
-      repository: serviceArtifacts.repository,
-      release_id: serviceArtifacts.release_id,
-      manifest_asset_id: serviceArtifacts.manifest_asset_id,
-      manifest_sha256: serviceArtifacts.manifest_sha256,
-    },
-  };
   const input = {
     result: 'passed',
     operation: 'full',
@@ -198,7 +167,6 @@ export function qualificationFixture({
     clientDomain,
     clientVersion,
     minimumClientVersion,
-    compatibility,
     input,
     expected,
     evidence: { before, after, service_artifacts: serviceArtifacts, live },

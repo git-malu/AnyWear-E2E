@@ -16,11 +16,10 @@ The `recover` operation of the protected `beta-qualification.yml` entry restores
 gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main \
   -f operation=recover \
   -f source_run_id=<failed run id> \
-  -f source_run_attempt=<attempt> \
-  -f sizing_stage=none
+  -f source_run_attempt=<attempt>
 ```
 
-- `operation` is required. `recover` is the only operation that accepts `source_run_id` and `source_run_attempt`, and `sizing_stage` must be `none` for it. `worker_slot_offset` is unused by recovery; leave its default.
+- `operation` is required. `recover` is the only operation that accepts `source_run_id` and `source_run_attempt`. `worker_slot_offset` is unused by recovery; leave its default.
 - The replay inputs removed with the single-rule consolidation (`operation_mode`, `recovery_attempt`, `previous_recovery_run_id`, `previous_recovery_run_attempt`, `retry_failed_execution`) are not dispatch inputs. The preflight refuses a stale dispatch that still supplies one.
 - One dispatch recovers one captured scope. There is no predecessor artifact, attempt sequence or execution-history hash to supply: the entry point resolves the deterministic execution name for the captured scope, resumes a running execution, verifies a succeeded one, and only after a terminal non-success performs the bounded predecessor check before the one retry name.
 
@@ -38,7 +37,7 @@ A quarantined worker record is terminal only while its ownership cannot be prove
 
 The dispatch refuses before any AWS credential when:
 
-- the operation or input scope is wrong: a stale replay input, a `sizing_stage` other than `none`, or recovery inputs on a non-`recover` operation;
+- the operation or input scope is wrong: a stale replay input, or recovery inputs on a non-`recover` operation;
 - the original run is not a completed trusted `main` dispatch, or the manifest does not bind that exact run and attempt;
 - the exact lifecycle artifact is missing, duplicated, expired, or its digest does not match the downloaded bytes;
 - no captured worker request can be built, or an evidence-bearing artifact's operation does not match the canonical request;
