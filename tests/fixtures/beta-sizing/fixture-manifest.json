@@ -4,46 +4,214 @@
   "license": "Public Unsplash images: https://unsplash.com/license; existing dummy.png retains repository provenance",
   "transform": "EXIF transpose, RGB, Lanczos resize, valid codec; no padding or added noise",
   "s1_input_envelope": {
-    "reference": "beta-qualification-diagnostics-38768690421-1",
-    "run_url": "https://github.com/git-malu/AnyWear-E2E/actions/runs/38768690421",
-    "run_id": 38768690421,
+    "reference": "beta-measurement-39529614042-1",
+    "run_url": "https://github.com/git-malu/AnyWear-E2E/actions/runs/39529614042",
+    "run_id": 39529614042,
     "run_attempt": 1,
     "stage": "S1",
-    "e2e_sha": "2fb06bce239e483eae77f7095062dc06fc395891",
+    "e2e_sha": "b95c55036d81cd284fb6e0ad55c160b7e7c25860",
     "workload": "test-results/beta-sizing-workload.json",
-    "input_bytes_max": 697437,
-    "input_bytes_max_basis": "per submitted input; a VTO aggregate is a separate quantity and is not proven by it",
-    "measured_inputs_basis": "historical run evidence from run 38768690421; the restored sweater-ordinary.png is that run's exact bytes, while the other shipped fixtures are re-encoded and are not these byte counts",
+    "input_bytes_max": 3742711,
+    "input_bytes_max_basis": "per submitted input; a VTO aggregate is a separate measured quantity that this per-input number does not bound",
+    "measured_inputs_basis": "the authorised S1 `measure` run 39529614042 (attempt 1) recorded these fixture bytes, and they are the committed frozen bytes; the envelope is now the demonstrated bound, per submitted input, not a candidate under measurement. A VTO aggregate is a separate quantity that the per-input bound does not bound",
     "measured_inputs": [
       {
         "case_id": "sequential-ordinary-jpg-0",
         "fixture": "trousers-ordinary.jpg",
-        "bytes": 441913,
+        "bytes": 388182,
         "width": 1200,
         "height": 960,
-        "terminal_state": "ready",
-        "seconds": 25.7
+        "terminal_state": "ready"
       },
       {
         "case_id": "sequential-ordinary-jpg-1",
         "fixture": "jacket-ordinary.jpg",
-        "bytes": 697437,
+        "bytes": 664453,
         "width": 900,
         "height": 1200,
-        "terminal_state": "ready",
-        "seconds": 85.0
+        "terminal_state": "ready"
       },
       {
         "case_id": "sequential-ordinary-png-0",
+        "fixture": "sweater-ordinary-garment.png",
+        "bytes": 696168,
+        "width": 879,
+        "height": 761,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "sequential-ordinary-png-1",
+        "fixture": "sweater-ordinary-garment.png",
+        "bytes": 696168,
+        "width": 879,
+        "height": 761,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "sequential-ordinary-webp-0",
+        "fixture": "sweater-ordinary.webp",
+        "bytes": 686274,
+        "width": 1200,
+        "height": 1039,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "sequential-ordinary-webp-1",
+        "fixture": "sweater-ordinary.webp",
+        "bytes": 686274,
+        "width": 1200,
+        "height": 1039,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "burst-ordinary-jpg-0",
+        "fixture": "shoes-ordinary.jpg",
+        "bytes": 339830,
+        "width": 1200,
+        "height": 800,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "burst-ordinary-jpg-1",
+        "fixture": "bag-ordinary.jpg",
+        "bytes": 319391,
+        "width": 800,
+        "height": 1200,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "burst-ordinary-png-0",
         "fixture": "sweater-ordinary.png",
         "bytes": 3742711,
         "width": 1200,
         "height": 1039,
-        "terminal_state": "failed"
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "burst-ordinary-png-1",
+        "fixture": "sweater-ordinary.png",
+        "bytes": 3742711,
+        "width": 1200,
+        "height": 1039,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "burst-ordinary-webp-0",
+        "fixture": "sweater-ordinary.webp",
+        "bytes": 686274,
+        "width": 1200,
+        "height": 1039,
+        "terminal_state": "ready"
+      },
+      {
+        "case_id": "burst-ordinary-webp-1",
+        "fixture": "sweater-ordinary.webp",
+        "bytes": 686274,
+        "width": 1200,
+        "height": 1039,
+        "terminal_state": "ready"
       }
     ],
-    "largest_served_bytes": 697437,
-    "largest_served_case_id": "sequential-ordinary-jpg-1",
+    "measured_vto_cases": [
+      {
+        "case_id": "ordinary-base-one-garment-0",
+        "shape": "ordinary-base-one-garment",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 1,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg"
+        ],
+        "aggregate_submitted_bytes": 933902,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "large-base-one-garment-0",
+        "shape": "large-base-one-garment",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 1,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg"
+        ],
+        "aggregate_submitted_bytes": 933902,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "ordinary-base-three-garments-0",
+        "shape": "ordinary-base-three-garments",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 3,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg",
+          "jacket-ordinary.jpg",
+          "sweater-ordinary-garment.png"
+        ],
+        "aggregate_submitted_bytes": 2294523,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "large-base-three-garments-0",
+        "shape": "large-base-three-garments",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 3,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg",
+          "jacket-ordinary.jpg",
+          "sweater-ordinary-garment.png"
+        ],
+        "aggregate_submitted_bytes": 2294523,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "ordinary-base-one-garment-1",
+        "shape": "ordinary-base-one-garment",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 1,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg"
+        ],
+        "aggregate_submitted_bytes": 933902,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "large-base-one-garment-1",
+        "shape": "large-base-one-garment",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 1,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg"
+        ],
+        "aggregate_submitted_bytes": 933902,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "ordinary-base-three-garments-1",
+        "shape": "ordinary-base-three-garments",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 3,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg",
+          "jacket-ordinary.jpg",
+          "sweater-ordinary-garment.png"
+        ],
+        "aggregate_submitted_bytes": 2294523,
+        "terminal_state": "Complete"
+      },
+      {
+        "case_id": "large-base-three-garments-1",
+        "shape": "large-base-three-garments",
+        "base_fixture": "base-photo-ordinary.jpg",
+        "garment_count": 3,
+        "garment_fixtures": [
+          "trousers-ordinary.jpg",
+          "jacket-ordinary.jpg",
+          "sweater-ordinary-garment.png"
+        ],
+        "aggregate_submitted_bytes": 2294523,
+        "terminal_state": "Complete"
+      }
+    ],
+    "largest_served_bytes": 3742711,
+    "largest_served_case_id": "burst-ordinary-png-0",
     "excluded_fixtures": [
       {
         "id": "base-photo-large.jpg",
@@ -82,7 +250,7 @@
         "reason": "input_bytes_above_envelope"
       }
     ],
-    "excluded_reason": "deferred to the #140 large-input defect: no case may submit an input above the largest input this deployment is demonstrated to serve",
+    "excluded_reason": "excluded from the reviewed case matrix: inputs above the demonstrated bound stay deferred to the #140 large-input defect until a run passes at those sizes, while a below-bound exclusion is a review choice rather than evidence of failure",
     "widening_candidate": {
       "bound_bytes": 3742711,
       "fixture": "sweater-ordinary.png",
@@ -92,9 +260,9 @@
       ],
       "prior_bound_bytes": 697437,
       "authorising_issue": 140,
-      "status": "candidate"
+      "status": "demonstrated"
     },
-    "vto_aggregate_limit": "per submitted input, not per aggregate: the VTO aggregate (base photo plus garments) is a separate, unproven quantity recorded as aggregate_submitted_bytes per observation",
+    "vto_aggregate_limit": "per submitted input, not per aggregate: the VTO aggregate (base photo plus garments) is a separate, measured quantity recorded as aggregate_submitted_bytes per observation, and the per-input bound does not bound it",
     "vto_shape_naming": "the `large-base-*` shape identifiers are historical names retained for binding stability, not a description of the fixture: every submitted shape uses base-photo-ordinary.jpg, and the only shape that carried the large base photo is the deferred five-garment one",
     "deferred_vto_shape": {
       "shape": "representative-larger-outfit-output",
@@ -113,7 +281,8 @@
       "base_photo_bytes": 545720,
       "aggregate_submitted_bytes": 2953744,
       "reason": "deferred_to_172_vto_base64_payload"
-    }
+    },
+    "description": "The demonstrated S1 input envelope: the largest single input the authorised S1 `measure` run 39529614042 served to a terminal ready state, now 3,742,711 B per submitted input. The recorded fixture bytes are the committed frozen bytes. Larger inputs are excluded rather than assumed to pass: they stay the #140 defect until a run passes at those sizes. VTO aggregates are recorded per observation and are not bounded by the per-input number."
   },
   "fixtures": [
     {

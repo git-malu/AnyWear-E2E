@@ -1,65 +1,128 @@
 // The sizing input envelope this deployment is demonstrated to serve.
 //
 // The bound is measured, not assumed: it is the largest single input a real S1
-// Beta Qualification run served to a terminal `ready` state. It applies to each
-// SUBMITTED INPUT, which is the reading the evidence supports - it was derived
-// from single-image uploads, where one input is one provider payload. A VTO
-// generation aggregates a base photo plus one or more garments and is a separate
-// quantity; see `SIZING_VTO_AGGREGATE_LIMIT`.
+// measurement run served to a terminal `ready` state - the exact 3,742,711-byte
+// PNG that had previously failed. It applies to each SUBMITTED INPUT, which is the
+// reading the evidence supports - it was derived from single-image uploads, where
+// one input is one provider payload. A VTO generation aggregates a base photo plus
+// one or more garments and is a separate quantity; see `SIZING_VTO_AGGREGATE_LIMIT`.
 //
 // This is a bound on what is submitted, never a relaxation of what must pass: an
 // input above the bound is not made passable, it is not submitted until a run
 // passes at that size. Inputs above the bound remain the known #140 defect.
-export const S1_INPUT_BYTES_MAX = 697_437;
+export const S1_INPUT_BYTES_MAX = 3_742_711;
 
 export const S1_INPUT_ENVELOPE_REFERENCE = Object.freeze({
-  artifact: 'beta-qualification-diagnostics-38768690421-1',
-  run_url: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/38768690421',
-  run_id: 38768690421,
+  artifact: 'beta-measurement-39529614042-1',
+  run_url: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/39529614042',
+  run_id: 39529614042,
   run_attempt: 1,
   stage: 'S1',
-  e2e_sha: '2fb06bce239e483eae77f7095062dc06fc395891',
+  e2e_sha: 'b95c55036d81cd284fb6e0ad55c160b7e7c25860',
   workload_path: 'test-results/beta-sizing-workload.json',
 });
 
-export const S1_INPUT_MEASURED_BASIS = 'historical run evidence from run 38768690421; the restored '
-  + 'sweater-ordinary.png is that run\'s exact bytes, while the other shipped fixtures are re-encoded and are not '
-  + 'these byte counts';
+export const S1_INPUT_MEASURED_BASIS = 'the authorised S1 `measure` run 39529614042 (attempt 1) recorded these '
+  + 'fixture bytes, and they are the committed frozen bytes; the envelope is now the demonstrated bound, per '
+  + 'submitted input, not a candidate under measurement. A VTO aggregate is a separate quantity that the '
+  + 'per-input bound does not bound';
 
-// Inputs this envelope is derived from, exactly as that run reported them. These
-// are HISTORICAL figures, not the committed fixture sizes for the two serving
-// fixtures: those now ship re-encoded (trousers-ordinary.jpg 441,913 -> 388,182 B
-// and jacket-ordinary.jpg 697,437 -> 664,453 B). The failed third case is retained
-// because it is the observation that places the bound below its bytes, and its
-// fixture is now restored byte-for-byte as the widening candidate.
+// Inputs this envelope is derived from, exactly as the authorised S1 `measure` run
+// reported them. Unlike the earlier historical record, these byte counts are also
+// the committed frozen bytes: every fixture below ships at exactly this size, so
+// the artifact and the repository agree for all 12 uploads. The two burst PNG
+// cases submit the exact fixture at the demonstrated bound; every other case
+// submits the ordinary or garment-variant fixture.
 export const S1_INPUT_MEASURED_CASES = Object.freeze([
   Object.freeze({ case_id: 'sequential-ordinary-jpg-0', fixture: 'trousers-ordinary.jpg',
-    bytes: 441_913, width: 1200, height: 960, terminal_state: 'ready', seconds: 25.7 }),
+    bytes: 388_182, width: 1200, height: 960, terminal_state: 'ready' }),
   Object.freeze({ case_id: 'sequential-ordinary-jpg-1', fixture: 'jacket-ordinary.jpg',
-    bytes: 697_437, width: 900, height: 1200, terminal_state: 'ready', seconds: 85.0 }),
-  Object.freeze({ case_id: 'sequential-ordinary-png-0', fixture: 'sweater-ordinary.png',
-    bytes: 3_742_711, width: 1200, height: 1039, terminal_state: 'failed' }),
+    bytes: 664_453, width: 900, height: 1200, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'sequential-ordinary-png-0', fixture: 'sweater-ordinary-garment.png',
+    bytes: 696_168, width: 879, height: 761, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'sequential-ordinary-png-1', fixture: 'sweater-ordinary-garment.png',
+    bytes: 696_168, width: 879, height: 761, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'sequential-ordinary-webp-0', fixture: 'sweater-ordinary.webp',
+    bytes: 686_274, width: 1200, height: 1039, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'sequential-ordinary-webp-1', fixture: 'sweater-ordinary.webp',
+    bytes: 686_274, width: 1200, height: 1039, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'burst-ordinary-jpg-0', fixture: 'shoes-ordinary.jpg',
+    bytes: 339_830, width: 1200, height: 800, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'burst-ordinary-jpg-1', fixture: 'bag-ordinary.jpg',
+    bytes: 319_391, width: 800, height: 1200, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'burst-ordinary-png-0', fixture: 'sweater-ordinary.png',
+    bytes: 3_742_711, width: 1200, height: 1039, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'burst-ordinary-png-1', fixture: 'sweater-ordinary.png',
+    bytes: 3_742_711, width: 1200, height: 1039, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'burst-ordinary-webp-0', fixture: 'sweater-ordinary.webp',
+    bytes: 686_274, width: 1200, height: 1039, terminal_state: 'ready' }),
+  Object.freeze({ case_id: 'burst-ordinary-webp-1', fixture: 'sweater-ordinary.webp',
+    bytes: 686_274, width: 1200, height: 1039, terminal_state: 'ready' }),
 ]);
 
-// The widening candidate (#140): the exact fixture whose failed input set the
-// demonstrated bound, restored at its original bytes. It is a CANDIDATE, not the
-// bound: `S1_INPUT_BYTES_MAX` stays the demonstrated 697,437 B and only the one
-// `measure`/S1 run that is authorised to try it may submit it, through
-// `BETA_SIZING_ENVELOPE_MODE=widening-candidate`. After that run passes, a
-// metadata-only promotion may raise the demonstrated bound; until then the
-// demonstrated run refuses these bytes.
+// The VTO observations the same authorised S1 `measure` run recorded, in the order
+// the artifact reports them: four reviewed shapes, twice each, all terminal
+// `Complete`. Each record carries the aggregate it actually submitted. That
+// aggregate is a different quantity from the per-input bound and is NOT bounded by
+// it, although these observations now demonstrate the two shipped aggregates
+// (933,902 B and 2,294,523 B) were served; the bound itself stays per submitted
+// input.
+export const S1_INPUT_MEASURED_VTO_CASES = Object.freeze([
+  Object.freeze({ case_id: 'ordinary-base-one-garment-0', shape: 'ordinary-base-one-garment',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 1,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg']),
+    aggregate_submitted_bytes: 933_902, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'large-base-one-garment-0', shape: 'large-base-one-garment',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 1,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg']),
+    aggregate_submitted_bytes: 933_902, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'ordinary-base-three-garments-0', shape: 'ordinary-base-three-garments',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 3,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary-garment.png']),
+    aggregate_submitted_bytes: 2_294_523, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'large-base-three-garments-0', shape: 'large-base-three-garments',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 3,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary-garment.png']),
+    aggregate_submitted_bytes: 2_294_523, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'ordinary-base-one-garment-1', shape: 'ordinary-base-one-garment',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 1,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg']),
+    aggregate_submitted_bytes: 933_902, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'large-base-one-garment-1', shape: 'large-base-one-garment',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 1,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg']),
+    aggregate_submitted_bytes: 933_902, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'ordinary-base-three-garments-1', shape: 'ordinary-base-three-garments',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 3,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary-garment.png']),
+    aggregate_submitted_bytes: 2_294_523, terminal_state: 'Complete' }),
+  Object.freeze({ case_id: 'large-base-three-garments-1', shape: 'large-base-three-garments',
+    base_fixture: 'base-photo-ordinary.jpg', garment_count: 3,
+    garment_fixtures: Object.freeze(['trousers-ordinary.jpg', 'jacket-ordinary.jpg', 'sweater-ordinary-garment.png']),
+    aggregate_submitted_bytes: 2_294_523, terminal_state: 'Complete' }),
+]);
+
+// The promoted widening candidate (#140): the exact fixture whose failed input set
+// the previous 697,437 B demonstrated bound, restored at its original bytes. The
+// authorised S1 `measure` run submitted it through
+// `BETA_SIZING_ENVELOPE_MODE=widening-candidate` and served both burst PNG cases
+// to `ready`, so a metadata-only promotion made those bytes the demonstrated bound
+// (`S1_INPUT_BYTES_MAX`) and the record now says `demonstrated`. It keeps the
+// promotion lineage: the former bound (`prior_bound_bytes`), the fixture, the case
+// IDs that re-submit it, and the authorising issue.
 //
-// The allowance is deliberately narrow: only the two burst PNG case IDs may carry
-// an above-demonstrated input, because they are the cases that re-submit the exact
-// failed fixture. Every other case stays on the demonstrated bound, so the rest of
-// the reviewable matrix is unchanged.
+// The candidate bound now equals the demonstrated bound, so there is no per-case
+// allowance left: every submitted input is bounded by the one demonstrated bound
+// in both modes. The two modes still exist because the mode selects the
+// measurement case matrix - only the two burst PNG cases submit the exact PNG, and
+// only in the candidate mode - and the diagnostic probe, which only that mode runs.
 export const S1_WIDENING_CANDIDATE = Object.freeze({
   bound_bytes: 3_742_711,
   fixture: 'sweater-ordinary.png',
   case_ids: Object.freeze(['burst-ordinary-png-0', 'burst-ordinary-png-1']),
   prior_bound_bytes: 697_437,
   authorising_issue: 140,
-  status: 'candidate',
+  status: 'demonstrated',
 });
 
 // The PNG re-encode that stays inside the demonstrated envelope. It is used by the
@@ -97,13 +160,14 @@ export const S1_DIAGNOSTIC_PROBE = Object.freeze({
 });
 
 // Fixtures deliberately outside the constrained set. They stay excluded, and no
-// case may reference them, until a run demonstrates a larger envelope. The reason
-// distinguishes the two reviews: a fixture above the widening candidate is above
-// the envelope under measurement, while one between the demonstrated and candidate
-// bounds is simply not in the reviewed case matrix.
+// case may reference them, even now that the demonstrated bound is larger. The
+// reason distinguishes the two reviews: a fixture above the demonstrated bound is
+// an above-envelope observation, while one below it is simply not in the reviewed
+// case matrix and its exclusion is a review choice rather than an above-bound
+// observation.
 export const S1_INPUT_EXCLUDED_FIXTURES = Object.freeze([
-  // Below the widening candidate bound, so its exclusion is a review choice rather
-  // than an above-envelope observation: it is not in the reviewed case matrix.
+  // Below the demonstrated 3,742,711 B bound, so its exclusion is a review choice
+  // rather than an above-envelope observation: it is not in the reviewed case matrix.
   Object.freeze({ id: 'base-photo-large.jpg', bytes: 2_611_145, width: 2124, height: 2940,
     sha256: 'a7b6638f370cf06800211280934da7ccf00d04eac7fb86654fe54b5784c96b46',
     size_class: 'large-base', reason: 'not_in_reviewed_case_matrix' }),
@@ -120,9 +184,10 @@ export const S1_INPUT_EXCLUDED_FIXTURES = Object.freeze([
 
 // The VTO payload is the base photo plus the selected garments, so it aggregates
 // several inputs into one provider payload. That aggregate is a different
-// quantity from the per-input bound and is NOT proven by this envelope: no VTO
-// generation has ever run in this workload. Garments are ordered smallest-first
-// so each shape carries the least payload it can.
+// quantity from the per-input bound and is NOT bounded by it, even though the
+// authorised `measure` run has now demonstrated it: eight generations, all
+// terminal `Complete`, at 933,902 B and 2,294,523 B. Garments are ordered
+// smallest-first so each shape carries the least payload it can.
 //
 // The pool is CONSTRAINED to the garment references the submission plan resolves
 // before the VTO cases. It was a five-id list, and only three of those ids survive:
@@ -143,7 +208,8 @@ export const S1_VTO_GARMENT_POOL = Object.freeze([
 ]);
 
 export const SIZING_VTO_AGGREGATE_LIMIT = 'per submitted input, not per aggregate: the VTO aggregate (base photo '
-  + 'plus garments) is a separate, unproven quantity recorded as aggregate_submitted_bytes per observation';
+  + 'plus garments) is a separate, measured quantity recorded as aggregate_submitted_bytes per observation, and '
+  + 'the per-input bound does not bound it';
 
 // The shape identifiers are reviewed bindings, so they keep their historical
 // names even where a name no longer describes the fixture. Saying so here stops a
@@ -154,8 +220,11 @@ export const S1_VTO_SHAPE_NAMING = 'the `large-base-*` shape identifiers are his
 
 // Deferred rather than silently dropped: the five-garment shape also carried the
 // representative larger 4K output, and its aggregate is the shape most likely to
-// reproduce the VTO large-payload failure. Its garment-only bytes are about 79% of
-// the 3,742,711-byte single input whose base64 payload exhausted the 60 s budget.
+// reproduce the VTO large-payload failure. Its 2,953,744-byte aggregate is now
+// below the promoted 3,742,711-byte per-input bound, so the deferral is not about
+// this bound at all: it stays deferred to the VTO base64-payload defect (#172) and
+// returns when a run passes with it. Its garment-only bytes are about 79% of the
+// 3,742,711-byte single input whose base64 payload exhausted the 60 s budget.
 // The PNG reference is the garment variant, so the recorded 2,408,024 B and
 // 2,953,744 B stay true now that the exact fixture is restored.
 export const S1_DEFERRED_VTO_SHAPE = Object.freeze({
@@ -187,21 +256,26 @@ export const S1_INPUT_ENVELOPE = Object.freeze({
   e2e_sha: S1_INPUT_ENVELOPE_REFERENCE.e2e_sha,
   workload: S1_INPUT_ENVELOPE_REFERENCE.workload_path,
   input_bytes_max: S1_INPUT_BYTES_MAX,
-  input_bytes_max_basis: 'per submitted input; a VTO aggregate is a separate quantity and is not proven by it',
+  input_bytes_max_basis: 'per submitted input; a VTO aggregate is a separate measured quantity that this '
+    + 'per-input number does not bound',
   measured_inputs_basis: S1_INPUT_MEASURED_BASIS,
-  largest_served_case_id: 'sequential-ordinary-jpg-1',
+  largest_served_case_id: 'burst-ordinary-png-0',
   largest_served_bytes: S1_INPUT_BYTES_MAX,
   measured_inputs: S1_INPUT_MEASURED_CASES,
+  measured_vto_cases: S1_INPUT_MEASURED_VTO_CASES,
   excluded_fixtures: S1_INPUT_EXCLUDED_FIXTURES,
-  excluded_reason: 'deferred to the #140 large-input defect: no case may submit an input above the largest input '
-    + 'this deployment is demonstrated to serve',
+  excluded_reason: 'excluded from the reviewed case matrix: inputs above the demonstrated bound stay deferred to '
+    + 'the #140 large-input defect until a run passes at those sizes, while a below-bound exclusion is a review '
+    + 'choice rather than evidence of failure',
   widening_candidate: S1_WIDENING_CANDIDATE,
   vto_aggregate_limit: SIZING_VTO_AGGREGATE_LIMIT,
   vto_shape_naming: S1_VTO_SHAPE_NAMING,
   deferred_vto_shape: S1_DEFERRED_VTO_SHAPE,
-  description: 'Largest single inputs a real S1 Beta Qualification run served to a terminal ready state. '
-    + 'Larger inputs are excluded rather than assumed to pass: they stay the #140 defect until a run passes at '
-    + 'those sizes. VTO aggregates are recorded per observation and remain unproven.',
+  description: 'The demonstrated S1 input envelope: the largest single input the authorised S1 `measure` run '
+    + '39529614042 served to a terminal ready state, now 3,742,711 B per submitted input. The recorded fixture '
+    + 'bytes are the committed frozen bytes. Larger inputs are excluded rather than assumed to pass: they stay '
+    + 'the #140 defect until a run passes at those sizes. VTO aggregates are recorded per observation and are '
+    + 'not bounded by the per-input number.',
 });
 
 export function assertSizingInputEnvelope(bytes, label, { bound = S1_INPUT_BYTES_MAX } = {}) {
@@ -244,27 +318,16 @@ export function assertSizingEnvelopeModeScope(mode, { operation, stage } = {}) {
   return mode;
 }
 
-// The bound a single submitted input is allowed under. The candidate allowance is
-// keyed on the reviewed case IDs AND the reviewed fixture: an above-demonstrated
-// input under any other case, or a different fixture under a candidate case, stays
-// on the demonstrated bound. A caller-supplied bound can only narrow it.
-export function sizingCaseInputBound(mode, caseId, fixtureId, { bound } = {}) {
-  assertSizingEnvelopeMode(mode);
-  if (mode === SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE
-    && S1_WIDENING_CANDIDATE.case_ids.includes(caseId) && fixtureId === S1_WIDENING_CANDIDATE.fixture) {
-    return bound === undefined ? S1_WIDENING_CANDIDATE.bound_bytes : Math.min(S1_WIDENING_CANDIDATE.bound_bytes, bound);
-  }
-  return bound === undefined ? S1_INPUT_BYTES_MAX : bound;
-}
-
 // The workload/plan record of the mode it ran under. The candidate and prior bounds
-// travel with the mode so a reader never has to infer which bound applied.
+// travel with the mode as promotion lineage - the candidate bound is now the
+// demonstrated bound, and `prior_bound_bytes` is the 697,437 B bound it replaced -
+// so a reader never has to infer which bound applied.
 export function sizingEnvelopeRecord(mode = SIZING_ENVELOPE_MODE_DEMONSTRATED) {
   assertSizingEnvelopeMode(mode);
   return Object.freeze({
     envelope_mode: mode,
     candidate_bound_bytes: S1_WIDENING_CANDIDATE.bound_bytes,
-    prior_bound_bytes: S1_INPUT_BYTES_MAX,
+    prior_bound_bytes: S1_WIDENING_CANDIDATE.prior_bound_bytes,
   });
 }
 
@@ -301,12 +364,14 @@ export function vtoAggregateSubmittedBytes(fixtures, baseFixture, garmentIds) {
 
 export function assertCaseInputsWithinEnvelope(fixtures, inputs,
   { mode = SIZING_ENVELOPE_MODE_DEMONSTRATED, bound } = {}) {
+  // The mode no longer changes the bound - the promoted candidate bound is the
+  // demonstrated bound - but it is still validated, because the mode selects the
+  // case matrix and a typo must not read as a bound.
   assertSizingEnvelopeMode(mode);
   const excluded = new Set(S1_INPUT_EXCLUDED_FIXTURES.map(fixture => fixture.id));
   for (const input of inputs) {
     // Upload cases name `fixture`; a VTO case submits `base_fixture` plus garments,
     // so the base photo and every garment reference are checked individually.
-    const caseId = typeof input === 'string' ? undefined : input?.case_id;
     const ids = typeof input === 'string'
       ? [input]
       : [input?.fixture, input?.base_fixture, ...(input?.garment_fixtures ?? [])];
@@ -316,8 +381,7 @@ export function assertCaseInputsWithinEnvelope(fixtures, inputs,
       if (excluded.has(id)) throw new Error(`Sizing case input ${id} is excluded from the demonstrated S1 envelope`);
       const fixture = fixtures.get(id);
       if (!fixture) throw new Error(`Sizing case input ${id} is not a frozen fixture`);
-      const inputBound = sizingCaseInputBound(mode, caseId, id, { bound });
-      assertSizingInputEnvelope(fixture.bytes, `Sizing case input ${id}`, { bound: inputBound });
+      assertSizingInputEnvelope(fixture.bytes, `Sizing case input ${id}`, { bound });
     }
   }
   return inputs;

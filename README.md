@@ -532,7 +532,7 @@ publication/execution intervals for each accepted task. Record every actual task
 scaling event in the evidence; configured desired count does not imply a constant
 replica count. Each VTO observation must report the aggregate it submitted, which the
 per-input bound does not cover: the VTO payload aggregates the base photo and the
-garments and is a separate, unproven quantity. The five-garment 4K shape is deferred to
+garments and is a separate measured quantity. The five-garment 4K shape is deferred to
 #172 for the VTO base64-payload defect, not asserted as an invented product maximum.
 Retain uncertain provider/model envelope limits.
 
@@ -671,72 +671,88 @@ identity around its own workload, so a rotated task definition during a measurem
 attributable too. The
 frozen shape set is untouched by any of this: the four VTO shapes, the three-garment
 shapes included, still run twice each, and the environment record bounds no payload -
-the VTO aggregate stays the separate, unproven quantity recorded per observation.
+the VTO aggregate stays the separate, measured quantity recorded per observation.
 
 ### Measured S1 input envelope and its limits
 
 The sizing case set submits only inputs this deployment is demonstrated to serve. The
 bound is not a provider maximum and not a guess: it is the largest input a real S1 run
-served to a terminal `ready` state, taken from this run's own artifact
-`beta-qualification-diagnostics-38768690421-1`
-([run 38768690421](https://github.com/git-malu/AnyWear-E2E/actions/runs/38768690421))
-at E2E `2fb06bce239e483eae77f7095062dc06fc395891`, stage S1, as recorded in
-`test-results/beta-sizing-workload.json`. The JPEG fixtures remain later re-encodes
-and are smaller than the figures below, while `sweater-ordinary.png` has been
-**restored byte-for-byte** to the exact 3,742,711-byte, 1200x1039 input the failed
-case submitted, so the artifact's numbers and the repository's bytes must not be
-confused for the JPEGs and now agree for that PNG.
+served to a terminal `ready` state, taken from the authorised S1 `measure` run
+[39529614042](https://github.com/git-malu/AnyWear-E2E/actions/runs/39529614042)
+(attempt 1), artifact `beta-measurement-39529614042-1`, at E2E
+`b95c55036d81cd284fb6e0ad55c160b7e7c25860`, stage S1, as recorded in
+`test-results/beta-sizing-workload.json`. The run was dispatched as `measure` in
+`widening-candidate` mode; it is measurement evidence, not `full` qualification
+evidence. It ran against Service `340df8cb79a878521b2a53fc3c2a2db09bbc9779`, image
+`sha256:14c42d5798f9d1ffb1ff748d6ff34cad76869b8e13761003a40bbf5b2e5eb927`. Every
+byte count in the table below is also the committed frozen fixture size, so the
+artifact and the repository agree for all 12 uploads.
 
 | Case | Fixture | Input | Outcome |
 | --- | --- | --- | --- |
-| `sequential-ordinary-jpg-0` | `trousers-ordinary.jpg` | 441,913 B, 1200x960 | `ready` in 25.7 s |
-| `sequential-ordinary-jpg-1` | `jacket-ordinary.jpg` | 697,437 B, 900x1200 | `ready` in 85.0 s |
-| `sequential-ordinary-png-0` | `sweater-ordinary.png` | 3,742,711 B, 1200x1039 | `failed` |
+| `sequential-ordinary-jpg-0` | `trousers-ordinary.jpg` | 388,182 B, 1200x960 | `ready` |
+| `sequential-ordinary-jpg-1` | `jacket-ordinary.jpg` | 664,453 B, 900x1200 | `ready` |
+| `sequential-ordinary-png-0` | `sweater-ordinary-garment.png` | 696,168 B, 879x761 | `ready` |
+| `sequential-ordinary-png-1` | `sweater-ordinary-garment.png` | 696,168 B, 879x761 | `ready` |
+| `sequential-ordinary-webp-0` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
+| `sequential-ordinary-webp-1` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
+| `burst-ordinary-jpg-0` | `shoes-ordinary.jpg` | 339,830 B, 1200x800 | `ready` |
+| `burst-ordinary-jpg-1` | `bag-ordinary.jpg` | 319,391 B, 800x1200 | `ready` |
+| `burst-ordinary-png-0` | `sweater-ordinary.png` | 3,742,711 B, 1200x1039 | `ready` |
+| `burst-ordinary-png-1` | `sweater-ordinary.png` | 3,742,711 B, 1200x1039 | `ready` |
+| `burst-ordinary-webp-0` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
+| `burst-ordinary-webp-1` | `sweater-ordinary.webp` | 686,274 B, 1200x1039 | `ready` |
 
-`S1_INPUT_BYTES_MAX` therefore remains **697,437 B**, the largest input demonstrated
-served; restoring the failed fixture does not raise it. The restored fixture is
-recorded as a **widening candidate** instead, not as a bound:
+`S1_INPUT_BYTES_MAX` is therefore **3,742,711 B**, the largest input demonstrated
+served: `burst-ordinary-png-0`, the largest served case, submits the exact
+`sweater-ordinary.png` at exactly that size, and `burst-ordinary-png-1` submits the
+same bytes. The prior demonstrated bound was 697,437 B. The promotion is metadata
+only: no fixture or workload bytes changed. Because the promoted bound equals the
+demonstrated bound, there is no per-case allowance left - every submitted input is
+bounded by this one number in both modes:
 
-- `S1_INPUT_ENVELOPE.widening_candidate` names the bound under measurement
-  (3,742,711 B), the fixture (`sweater-ordinary.png`), the only two case IDs allowed
-  to submit it (`burst-ordinary-png-0`, `burst-ordinary-png-1`), the prior bound
-  (697,437 B), authorising issue 140 and `status: 'candidate'`. The manifest mirrors
-  the record, and the loader refuses a manifest whose candidate differs.
+- `S1_INPUT_ENVELOPE.widening_candidate` is now the promotion record
+  (`status: 'demonstrated'`): the bound (3,742,711 B), the fixture
+  (`sweater-ordinary.png`), the only two case IDs allowed to submit it
+  (`burst-ordinary-png-0`, `burst-ordinary-png-1`), the prior bound (697,437 B) and
+  authorising issue 140. The manifest mirrors the record, and the loader refuses a
+  manifest whose candidate differs.
 - `BETA_SIZING_ENVELOPE_MODE=demonstrated|widening-candidate` selects the mode. The
   default is `demonstrated`, and only the protected `measure` operation at stage S1
   accepts `widening-candidate`; the workflow validates that before any credential
-  job, and the spec asserts the same scope before reading a fixture. A demonstrated
-  run refuses to submit the exact fixture; a candidate run admits it only for those
-  two burst PNG case IDs, and everything else stays on the 697,437 B bound.
-- The workload and plan record `envelope_mode`, `candidate_bound_bytes` and
-  `prior_bound_bytes`, so the artifact states which bound it measured rather than
-  leaving it to be inferred. Promotion of the candidate to the demonstrated bound is
-  the post-run step 5 finalisation and is outside this change; until that run passes,
-  the demonstrated bound stays conservative.
+  job, and the spec asserts the same scope before reading a fixture. The mode no
+  longer selects a bound: it selects the measurement case matrix. A demonstrated run
+  never names the exact fixture; a candidate run adds the two burst PNG cases that do,
+  and the diagnostic probe. Every other case is unchanged.
+- The workload and plan record `envelope_mode`, `candidate_bound_bytes` (3,742,711 B)
+  and `prior_bound_bytes` (697,437 B) in both modes. Those two numbers are promotion
+  lineage, not a second bound: the artifact states which matrix it ran and which bound
+  the candidate replaced.
 
 The basis is **one submitted input**: it was derived from single-image uploads, where
 one input is one provider payload. A VTO generation aggregates a base photo plus the
-garments and is a separate quantity, so it is not bounded by, and not proven by, this
-number.
+garments and is a separately recorded quantity, so it is not bounded by this number.
+The same measure run supplies that record: eight VTO generations, all terminal
+`Complete`, at the two shipped aggregates of 933,902 B and 2,294,523 B (see below).
 
 The bound is on what is submitted, never a relaxation of what must pass: a case above
 it is not made passable, it is not submitted. The constraint lives in
 `scripts/beta-sizing-envelope.mjs` as explicit constants, and every path that could
 exceed it fails loudly instead: `sizingUploadCases()` builds the matrix only from
 `SIZING_WORKLOAD.size_classes` and asserts the resulting count, `loadSizingFixtures`
-accepts a frozen fixture above the demonstrated bound only when it is the candidate
-fixture and only up to the candidate bound (the exact fixture's hash is still checked),
-refuses any case input naming an excluded fixture, any garment outside
-`S1_VTO_GARMENT_POOL`, and any garment list that is not the canonical smallest-first
-one. `assertCaseInputsWithinEnvelope` keys the candidate allowance on both the reviewed
-case ID and the candidate fixture, so a demonstrated run refuses the exact fixture and a
-candidate run admits it only for the two burst PNG cases. `evidenceGap` reads the
-recorded `envelope_mode`, applies the same per-case bound to a recorded upload, marks a
-VTO base photo or VTO garment above the demonstrated bound, or a VTO observation that
-does not report its aggregate, unqualified. The fixture manifest repeats the bound, its
-per-input basis, the measured inputs, the excluded fixtures with their reviewed reasons,
-the widening candidate, the historical VTO shape names and the deferred VTO shape, and
-the loader refuses a manifest whose declared envelope differs from these constants.
+accepts a frozen fixture only up to the demonstrated bound (the exact fixture sits
+exactly at it and its hash is still checked), refuses any case input naming an excluded
+fixture, any garment outside `S1_VTO_GARMENT_POOL`, and any garment list that is not
+the canonical smallest-first one. `assertCaseInputsWithinEnvelope` applies the one
+demonstrated bound to every named input in both modes; the mode only chooses the
+matrix. `evidenceGap` reads the recorded `envelope_mode`, bounds a recorded upload
+directly by `S1_INPUT_BYTES_MAX`, marks a VTO base photo or VTO garment above the
+demonstrated bound, or a VTO observation that does not report the exact recomputed
+aggregate, unqualified. The fixture manifest repeats the bound, its per-input basis,
+the measured uploads, the measured VTO observations, the excluded fixtures with their
+reviewed reasons, the promotion record, the historical VTO shape names and the
+deferred VTO shape, and the loader refuses a manifest whose declared envelope differs
+from these constants.
 
 **The VTO garment pool and its rule.** A VTO case must resolve each garment to the
 wardrobe item its upload created, so a garment may only be a fixture the run submits
@@ -759,9 +775,9 @@ half submits four distinct fixtures and the pool holds three:
   WebP format-coverage fixture, not a garment reference. It is submitted sequentially,
   so it is excluded by the format rule rather than by timing.
 - `sweater-ordinary-garment.png` **is** a pool garment. It is submitted sequentially as
-  `sequential-ordinary-png-0` - the 696,168-byte garment variant whose earlier upload
-  reached terminal `ready` in run 38844432804 - and it is not burst-only. The restored
-  exact `sweater-ordinary.png` is deliberately **not** a pool garment: its only
+  `sequential-ordinary-png-0` - the 696,168-byte garment variant, `ready` in the
+  measure run above - and it is not burst-only. The restored exact
+  `sweater-ordinary.png` is deliberately **not** a pool garment: its only
   submissions are the two burst PNG cases, so the VTO garment select stays on the
   garment variant and the three-garment aggregate stays 2,294,523 B.
 
@@ -769,47 +785,51 @@ So VTO coverage no longer includes the two smallest fixtures. The submitted shap
 their one/three garment counts and their smallest-first order within the pool, and the
 aggregates that follow from the frozen bytes are stated in the aggregate bullet below.
 
-The run aborted at that third case, so **no VTO generation has ever run in this
-workload** and every route sample count is 0. The VTO cases are therefore unobserved
-at every payload size. Each generated input is inside the bound - the base photo is the
-served ordinary photo and the garment references are frozen upload fixtures - and each
-observation reports the `aggregate_submitted_bytes` it actually sent, so the real
-payload is visible in the evidence instead of left to be added up. That aggregate stays
-**unproven**. The `large-base-*` shape identifiers are historical names retained for
-binding stability, not a description of the fixture: every submitted shape uses
-`base-photo-ordinary.jpg`, and the only shape that carried the large base photo is the
-deferred five-garment one.
+The measure run completed the whole workload: all 12 uploads reached `ready` and all
+8 VTO generations reached terminal `Complete`, so the VTO cases are now observed at
+every submitted payload size. Each generated input is inside the bound - the base photo
+is the served ordinary photo and the garment references are frozen upload fixtures -
+and each observation reports the `aggregate_submitted_bytes` it actually sent, so the
+real payload is visible in the evidence instead of left to be added up. The two
+shipped aggregates are 933,902 B (545,720 + 388,182) for the one-garment shapes and
+2,294,523 B (545,720 + 388,182 + 664,453 + 696,168) for the three-garment shapes.
+They are recorded per observation and recomputed rather than restated; they remain a
+separate quantity that the per-input bound does not bound. The `large-base-*` shape
+identifiers are historical names retained for binding stability, not a description of
+the fixture: every submitted shape uses `base-photo-ordinary.jpg`, and the only shape
+that carried the large base photo is the deferred five-garment one.
 
 What this measurement covers, and what it does not:
 
 - **This envelope only.** A green sizing run states that the 12 uploads and 8 VTO cases
-  above passed, per submitted input, inside the bound it recorded: 697,437 B in
-  `demonstrated` mode, or 3,742,711 B only for the two candidate burst PNG cases in
-  `widening-candidate` mode. It is not evidence for anything larger, and it says
-  nothing about the VTO aggregate.
-- **The large-input defect is the reason for the candidate.** The failed third case is
-  the known defect tracked as **#140** (the pipeline base64-encoded original bytes to
-  the VLM, the fixed 60 s budget expired and the case ended terminal). This change
-  restores that exact fixture as a measured candidate and adds the sanitized failure
-  code and diagnostic probe to the run artifact; the removal of the other oversized
-  fixtures and the deferred VTO shape stay recorded in the manifest and in
-  `scripts/beta-sizing-envelope.mjs` rather than disappearing.
-- **The VTO aggregate is deferred, not measured.** The five-garment shape that also
+  above passed, per submitted input, inside the demonstrated 3,742,711 B bound. It is
+  not evidence for anything larger, and it says nothing about the VTO aggregate.
+- **The large-input defect is why the bound moved.** The case that once failed is the
+  known defect tracked as **#140** (the pipeline base64-encoded original bytes to the
+  VLM, the fixed 60 s budget expired and the case ended terminal). The authorised S1
+  `measure` run served that exact 3,742,711-byte fixture to `ready` through the two
+  burst PNG cases, and this change promotes the demonstrated bound to those bytes; the
+  sanitized failure code and diagnostic probe stay in the run artifact. That run was
+  `measure` at S1 in `widening-candidate` mode: measurement evidence, not `full`
+  qualification evidence. The removal of the other oversized fixtures and the deferred
+  VTO shape stay recorded in the manifest and in `scripts/beta-sizing-envelope.mjs`
+  rather than disappearing.
+- **The VTO aggregate is separate and measured.** The five-garment shape that also
   carried the representative larger 4K output is deferred to **#172** for the separate
   VTO base64-payload defect, with the exact reason
   `deferred_to_172_vto_base64_payload`, and recorded in
   `s1_input_envelope.deferred_vto_shape`: 2,408,024 B of garments plus the 545,720-byte
   base photo is a 2,953,744-byte aggregate, about 79% of the 3,742,711-byte single input
-  whose base64 payload exhausted the 60 s budget. Its PNG garment reference is the
-  garment variant, so those figures stay true now that the exact fixture is restored.
-  Keeping it would stake the measurement on the shape this tagging fix does not cover.
-  It returns when a run passes with it, with its aggregate recorded. The aggregates the
-  **submitted** shapes carry are not frozen numbers but the sum of the frozen fixture
-  bytes each case names: for the shipped bytes the one-garment shapes submit 933,902 B
-  (545,720 + 388,182) and the three-garment shapes 2,294,523 B
-  (545,720 + 388,182 + 664,453 + 696,168), both above the per-input bound and both
-  recorded per observation, recomputed by `vtoAggregateSubmittedBytes` rather than
-  restated, so a fixture re-encode cannot leave a stale claim behind.
+  whose base64 payload exhausted the 60 s budget. That aggregate is **below** the
+  promoted per-input bound, so the deferral is not a bound decision: it stays deferred
+  to #172 and returns when a run passes with it. Its PNG garment reference is the
+  garment variant, so those figures stay true now that the exact fixture is the
+  demonstrated bound. The aggregates the **submitted** shapes carry are not frozen
+  numbers but the sum of the frozen fixture bytes each case names: the one-garment
+  shapes submit 933,902 B (545,720 + 388,182) and the three-garment shapes 2,294,523 B
+  (545,720 + 388,182 + 664,453 + 696,168), both recorded per observation and recomputed
+  by `vtoAggregateSubmittedBytes` rather than restated, so a fixture re-encode cannot
+  leave a stale claim behind.
 - **The submitted-shape aggregates follow the pool.** The 933,902 B and 2,294,523 B
   above are the sums the current pool produces, not independent limits. Adding a fixture
   back as a garment - `bag-ordinary.jpg`, `shoes-ordinary.jpg` or
@@ -818,14 +838,13 @@ What this measurement covers, and what it does not:
   2,953,744 B are restated constants, so the test recomputes all three from the frozen
   fixtures and fails on any difference: those figures may not outlive the bytes they
   describe.
-- **Widening needs a passing run.** The restored exact fixture is committed as a
-  candidate and the fresh authorised S1 run that uses
-  `BETA_SIZING_ENVELOPE_MODE=widening-candidate` supplies the evidence; only then may
-  step 5 promote the candidate to the demonstrated bound (metadata only, no fixture or
-  workload bytes change). The other above-bound inputs - the removed
-  `near-supported-limit` class, `base-photo-large.jpg` and the deferred five-garment 4K
-  VTO shape - still require their own passing run. A demonstrated run inside the
-  current envelope cannot qualify a wider one.
+- **Widening again needs a passing run.** The promotion is complete: the authorised S1
+  `measure` run supplied the evidence and step 5 moved the demonstrated bound to
+  3,742,711 B (metadata only, no fixture or workload bytes change). Only an input above
+  that bound still requires its own passing run; a below-bound exclusion such as
+  `base-photo-large.jpg` is a review choice rather than an unmeasured size, and the
+  deferred five-garment shape waits on #172 rather than on a larger input bound. A
+  demonstrated run inside the current envelope cannot qualify a wider one.
 - **Submitted bytes are not provider cost.** The bound is measured in input bytes
   because that is what the evidence and the failure mechanism show; it is not a claim
   about pixel count, decode time or provider latency at the bound.
@@ -842,9 +861,10 @@ record, so a rebuilt fixture cannot pass as the original:
   did**, so this is a re-encode and not a byte-identical pass-through. Each manifest
   `derivation` states that per fixture with its own byte delta.
 - `sweater-ordinary.png` is the **restored exact fixture**: byte-for-byte the
-  3,742,711-byte, 1200x1039 input with SHA-256 `4341430c...` from E2E `1af6f019`, kept
-  as the widening candidate. Neither the builder nor a demonstrated run re-encodes or
-  submits it; only the two candidate burst PNG cases may.
+  3,742,711-byte, 1200x1039 input with SHA-256 `4341430c...` from E2E `1af6f019`, and
+  the fixture that sets the demonstrated bound. The builder neither re-encodes nor
+  submits it, and the measured matrix submits it only through the two
+  `widening-candidate` burst PNG cases.
 - `sweater-ordinary-garment.png` is the former lossless PNG transcode retained as the
   garment variant: the same pixels reduced to 879x761 with the aspect ratio retained
   (Lanczos, `compress_level: 9`) for 696,168 B, SHA-256 `932e4804...`. The sequential
@@ -854,15 +874,15 @@ record, so a rebuilt fixture cannot pass as the original:
 
 The excluded fixtures are recorded at their original sizes and SHA-256 values in the
 manifest's `s1_input_envelope.excluded_fixtures` with their reviewed reasons:
-`base-photo-large.jpg` (2,611,145 B) is below the candidate bound, so it is excluded
-because it is `not_in_reviewed_case_matrix`; the three 9.2-9.7 MB
-`near-supported-limit` fixtures are `input_bytes_above_envelope` and stay above the
-candidate bound. A below-candidate-bound exclusion is accepted only with the first
-reason, and a later reader must not read any of them as passing cases. Valid codec
-encoding/resize creates the fixtures; no padding or noise is added. The Pillow builder
-enforces each fixture's bound itself, copies the two preserved PNG variants through
-byte-for-byte after checking their size/SHA-256/dimensions, and refuses to write above
-its bound.
+`base-photo-large.jpg` (2,611,145 B) is below the demonstrated 3,742,711 B bound, so it
+is excluded as `not_in_reviewed_case_matrix` - a review choice, not an above-envelope
+observation; the three 9.2-9.7 MB `near-supported-limit` fixtures are
+`input_bytes_above_envelope` and stay above the demonstrated bound. A below-bound
+exclusion is accepted only with the first reason, and a later reader must not read any
+of them as passing cases. Valid codec encoding/resize creates the fixtures; no padding
+or noise is added. The Pillow builder enforces each fixture's bound itself, copies the
+two preserved PNG variants through byte-for-byte after checking their
+size/SHA-256/dimensions, and refuses to write above its bound.
 
 **Failure codes and the diagnostic probe.** `tests/beta-sizing.spec.ts` records
 `state.taggingErrorCode` as `failure_code` on a failed case before it throws, so
@@ -879,7 +899,10 @@ The probe is `tests/fixtures/beta-sizing/diagnostic/truncated.png`: 400 bytes wi
 valid PNG signature, a complete IHDR and an IDAT body truncated before IEND, recorded in
 the manifest's `diagnostic` block with its size, SHA-256 and expected
 `input_image_decode_failed`. Only the `widening-candidate` measure run submits it, after
-the measured cases. Its expected failure is evidence and does not fail the suite; an
+the measured cases. In the promotion run the probe is recorded as
+`state: failed_as_expected` with observed code `input_image_decode_failed`, so the
+deterministic failure path is visible in the same artifact as the successful
+measurements. Its expected failure is evidence and does not fail the suite; an
 unexpected success, a different code, more than one execution or a nonzero provider-call
 count fails clearly, and the collector verifies the execution and provider-call counts
 from telemetry before writing `measured.failure_path`.

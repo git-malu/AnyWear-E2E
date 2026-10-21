@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { assertSizingCompatibilityEqual, validateSizingSource } from './beta-sizing-source.mjs';
 import { S1_INPUT_BYTES_MAX, S1_GARMENT_PNG_FIXTURE, S1_WIDENING_CANDIDATE,
   SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, SIZING_ENVELOPE_MODES,
-  assertSizingEnvelopeMode, sizingCaseInputBound, sizingEnvelopeRecord } from './beta-sizing-envelope.mjs';
+  assertSizingEnvelopeMode, sizingEnvelopeRecord } from './beta-sizing-envelope.mjs';
 import { sizingVtoCases } from './beta-sizing-workload.mjs';
 
 const STAGE_DEFINITIONS = Object.freeze([
@@ -23,22 +23,23 @@ export const SIZING_WORKLOAD = Object.freeze({
   overlap_cases: 2,
   image_formats: Object.freeze(['image/jpeg', 'image/png', 'image/webp']),
   // Four shapes, twice. The fifth reviewed shape carried five garments and the
-  // representative larger 4K output; it is deferred to #140 with its aggregate
-  // recorded in `S1_DEFERRED_VTO_SHAPE`, because that payload is the one most
-  // likely to reproduce the large-input failure this bound works around. The
-  // `large-base-*` names are historical bindings retained for stability: every
-  // submitted shape uses the served ordinary base photo (see `S1_VTO_SHAPE_NAMING`).
+  // representative larger 4K output; it is deferred to #172 for the separate VTO
+  // base64-payload defect, with its aggregate recorded in `S1_DEFERRED_VTO_SHAPE`.
+  // Its aggregate is below the promoted per-input bound, so it is the VTO payload
+  // defect - not this input bound - that keeps it out. The `large-base-*` names are
+  // historical bindings retained for stability: every submitted shape uses the
+  // served ordinary base photo (see `S1_VTO_SHAPE_NAMING`).
   vto_shapes: Object.freeze(['ordinary-base-one-garment', 'large-base-one-garment', 'ordinary-base-three-garments', 'large-base-three-garments']),
   submission_modes: Object.freeze(['sequential', 'burst']),
-  // The reviewed matrix had a second `near-supported-limit` class. Those inputs
-  // were above the demonstrated S1 envelope, so the class is not part of the
-  // submitted set: `sizingUploadCases()` may only build cases from these classes.
-  // The restored exact fixture is committed for the widening candidate, but only
-  // the candidate case IDs may submit it (see `S1_WIDENING_CANDIDATE`).
+  // The reviewed matrix had a second `near-supported-limit` class. Those inputs are
+  // still excluded from the submitted set: `sizingUploadCases()` may only build
+  // cases from these classes. The restored exact fixture is now the demonstrated
+  // bound, but only the two candidate burst PNG case IDs submit it, because the
+  // envelope mode still selects the measurement case matrix.
   size_classes: Object.freeze(['ordinary']),
   // The bound is per submitted input. A VTO generation aggregates the base photo
   // plus the garments; that aggregate is recorded per observation and is not
-  // bounded or proven by this number.
+  // bounded by this number.
   per_input_bytes_max: S1_INPUT_BYTES_MAX,
 });
 
@@ -71,8 +72,11 @@ export function sizingUploadCases(mode = SIZING_ENVELOPE_MODE_DEMONSTRATED) {
           const fixture = size === 'ordinary' && ext === 'jpg'
             ? `${extraGarments[extra++]}-ordinary.jpg`
             // The exact fixture is submitted ONLY by the two burst PNG cases, and
-            // ONLY under the widening-candidate mode. Every other PNG case submits
-            // the garment variant, so the demonstrated run refuses the exact bytes.
+            // ONLY under the widening-candidate mode, because that mode selects the
+            // measurement case matrix (it also runs the diagnostic probe). Every
+            // other PNG case submits the garment variant, and the demonstrated
+            // matrix never names the exact fixture, although it is now inside the
+            // demonstrated bound.
             : ext === 'png' && mode === SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE && submission === 'burst'
               ? S1_WIDENING_CANDIDATE.fixture
               : ext === 'png'
@@ -262,10 +266,11 @@ function evidenceGap(result, stage) {
       || item.fixture_dimensions[0] !== fixture.width || item.fixture_dimensions[1] !== fixture.height) {
       return 'Upload matrix or frozen fixture binding differs from the reviewed case';
     }
-    // Only the reviewed candidate case IDs may report an above-demonstrated input;
-    // every other upload stays on the demonstrated bound.
-    if (item.fixture_bytes > sizingCaseInputBound(envelopeMode, item.case_id, item.fixture)) {
-      return `Upload input ${item.case_id} exceeds the ${envelopeMode} S1 input envelope`;
+    // Every submitted input is bounded by the one demonstrated S1 input envelope.
+    // The envelope mode selects which fixtures the measurement matrix submits, not
+    // the bound those inputs are held to.
+    if (item.fixture_bytes > S1_INPUT_BYTES_MAX) {
+      return `Upload input ${item.case_id} exceeds the S1 input envelope`;
     }
   }
   const vto = result.workload?.vto;
@@ -274,7 +279,8 @@ function evidenceGap(result, stage) {
   // inputs must be inside the per-input bound, the garment list must be the
   // canonical smallest-first one, and the observation must report the aggregate
   // it actually submitted so the payload is visible rather than left to be added
-  // up. That aggregate is not bounded by the per-input number and stays unproven.
+  // up. That aggregate is a separate measured quantity: the per-input bound does
+  // not bound it, and it is not compared against the per-input number here.
   const vtoCases = new Map(sizingVtoCases().map(item => [item.case_id, item]));
   for (const item of vto) {
     const expected = vtoCases.get(item.case_id);
@@ -291,7 +297,7 @@ function evidenceGap(result, stage) {
       return 'VTO garment binding must be the canonical inside-envelope list submitted smallest-first';
     }
     const aggregate = base.bytes + garments.reduce((total, id) => total + frozenFixtures.get(id).bytes, 0);
-    if (item.aggregate_submitted_bytes !== aggregate || aggregate <= S1_INPUT_BYTES_MAX) {
+    if (item.aggregate_submitted_bytes !== aggregate) {
       return 'VTO observations must report the aggregate they submitted, which the per-input bound does not cover';
     }
   }
