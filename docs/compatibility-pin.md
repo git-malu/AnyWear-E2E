@@ -5,9 +5,9 @@
 > qualification record v3, and the pin, its tools and this document are kept only as the
 > revert target until a real `full` run passes against the live tuple. No
 > **release-qualification** path reads this contract: `beta-qualification.yml`, `pnpm check`,
-> `test:core` and `test:list` are pin-free. The one remaining executed read is the `measure`
-> sizing workload (`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`), which is a
-> measurement, not qualification, and is #141's deletion set. The retained pin tools are inert
+> `test:core` and `test:list` are pin-free. The former measurement workload was the last
+> executed reader of the pin, and it is deleted with the sizing apparatus. The retained pin
+> tools are inert
 > after Wave 1: `validate-compatibility-pin.mjs` and `migrate-compatibility.mjs` import the
 > deleted `trusted-deployment-inputs.mjs`, so they are **not runnable** and work only after
 > reverting the Wave-1 PR; no `compatibility:*` script exists. Do not follow this document for
@@ -277,7 +277,7 @@ Client:
 
 The second leg is evidence, not a new record member: the qualification record's `test`
 member still derives from the primary deployed report, and the oldest leg's report is
-retained beside it. `smoke`, `measure` and `recover` never run the second leg, and
+retained beside it. `smoke` and `recover` never run the second leg, and
 `collectDeploymentEvidence` checks the live Service floor and the deployed Client's
 `client_version` whenever the pin carries `minimum_supported_client`.
 

@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { buildQualificationRecord } from './qualification-record.mjs';
-import { ENVIRONMENT_VERDICT_PATH, readOptionalEnvironmentJson } from './beta-sizing-environment.mjs';
+import { ENVIRONMENT_VERDICT_PATH, readOptionalEnvironmentJson } from './qualification-environment.mjs';
 import { parseStrictJson } from './evidence-contract.mjs';
 import { QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, repositoryRoot } from './test-selection.mjs';
 
@@ -36,8 +36,7 @@ try {
 const record = buildQualificationRecord({
   result: process.env.QUALIFICATION_RESULT,
   // The dispatched operation, not a workflow file: the record path refuses anything but
-  // `full`, so the shared `qualify` entry cannot issue a record from smoke, measure or
-  // recover.
+  // `full`, so the shared `qualify` entry cannot issue a record from smoke or recover.
   operation: process.env.E2E_OPERATION,
   e2eSha: process.env.GITHUB_SHA,
   repository: process.env.GITHUB_REPOSITORY,

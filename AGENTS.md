@@ -30,8 +30,6 @@ boundaries. It uses TypeScript, Playwright Test, Node.js 24, and pnpm 11.18.0.
 - Smoke tests: `pnpm test:smoke`
 - Release-gating deployed selection: `pnpm test:regression`; `pnpm test` runs the same
   selection, and the protected qualification step runs it as the release gate
-- Measurement or drill: `pnpm test:instrumentation`; never part of the release-gating
-  selection
 - Scenario classification: [docs/scenario-inventory.md](docs/scenario-inventory.md)
 
 Run install and build commands from this repository.
@@ -39,9 +37,7 @@ Run install and build commands from this repository.
 ## Test Design
 
 - Tag stable critical paths with `@smoke`, release-gating scenarios with
-  `@regression`, and all cross-repository scenarios with `@full-stack`. Tag a
-  measurement workload or drill with `@instrumentation`: it is admitted as
-  measurement and can neither satisfy nor fail release qualification.
+  `@regression`, and all cross-repository scenarios with `@full-stack`.
 - Classify every scenario in the [scenario inventory](docs/scenario-inventory.md):
   its policy class, intent, selecting invocation, evidence level, cleanup contract
   and what a red result means. A new scenario is admitted only under the testing
@@ -85,11 +81,9 @@ Run install and build commands from this repository.
   pin-free); the repository keeps them only as the revert target until a real `full` run passes
   against the live tuple. Do not add new readers, and do not delete them in a Wave-1 change.
   The retained pin tools are not runnable after Wave 1: they import the deleted
-  `trusted-deployment-inputs.mjs` and only work after reverting the Wave-1 PR. The only
-  remaining executed pin read is the `measure` sizing workload (`beta-sizing-*`,
-  `collect-beta-sizing-evidence.mjs`, `tests/beta-sizing.spec.ts`), which is measurement, not
-  qualification; those are #141's deletion set, and #141 must merge after #180 and rebase onto
-  it. `runtime-drill.mjs` and `runtime-recovery-artifact.mjs` read the pin only in their manual
+  `trusted-deployment-inputs.mjs` and only work after reverting the Wave-1 PR. No executed
+  path reads the pin: the former measurement workload that did is deleted with the sizing
+  apparatus. `runtime-drill.mjs` and `runtime-recovery-artifact.mjs` read the pin only in their manual
   CLI entry points; no workflow, `pnpm check`, `test:core` or `test:list` path reads that
   branch, and Wave 2 replaces the input with the qualification tuple or deletes the CLI with
   the pin.
@@ -99,10 +93,10 @@ Run install and build commands from this repository.
   record tuple. Do not add an approval Environment or approval/`Approved`/`Rejected` states.
 - The single protected `qualify` entry in `beta-qualification.yml` owns the deployed
   operations for beta and later stages; it must not target dev. Separation between
-  qualification, the smoke diagnostic, measurement and account recovery now lives in the
+  qualification, the smoke diagnostic and account recovery now lives in the
   signed `operation` field, not in a workflow-file boundary: `qualification-record.json` is
   produced only by the `full` operation, the record binds the operation that was dispatched,
   and both this repository's producer/verifier and the Infra-side executor allow-list require
-  `operation: full`. A `smoke`, `measure` or `recover` run therefore can neither produce nor
-  withhold the record the release gate produced, and a measurement or recovery result is
+  `operation: full`. A `smoke` or `recover` run therefore can neither produce nor
+  withhold the record the release gate produced, and a recovery result is
   never substituted for qualification evidence.

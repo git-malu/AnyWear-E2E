@@ -20,9 +20,8 @@ import { collectDeploymentEvidence, serviceArtifactsTag } from './qualification-
 export const SERVICE_MANIFEST_NAME = 'service-artifacts.json';
 export const SERVICE_MANIFEST_RECORD_TYPE = 'anywear_service_artifacts';
 export const SERVICE_MANIFEST_SCHEMA_VERSION = 1;
-// The operations whose gate depends on the live deployed tuple. `measure` and `recover`
-// deliberately do not consult it: a measurement binds the identity it observes itself,
-// and recovery must stay available when the live environment is unhealthy.
+// The operations whose gate depends on the live deployed tuple. `recover` deliberately
+// does not consult it: recovery must stay available when the live environment is unhealthy.
 export const LIVE_OPERATIONS = Object.freeze(['full', 'smoke']);
 
 const describe = (value) => {
@@ -115,7 +114,7 @@ export async function readServiceRelease({ serviceSha, imageDigest, repository =
   };
 }
 
-const USAGE = `Usage: node scripts/service-release.mjs --operation <full|smoke|measure|recover> --client-url <url> --service-url <url> [--expected-service-commit <sha>] [--expected-client-commit <sha>] [--inputs-dir <dir>]
+const USAGE = `Usage: node scripts/service-release.mjs --operation <full|smoke|recover> --client-url <url> --service-url <url> [--expected-service-commit <sha>] [--expected-client-commit <sha>] [--inputs-dir <dir>]
 
 Reads the live Client build metadata and Service health, compares them with the
 dispatch expectation, enforces the committed supported-Client floor, and verifies
@@ -147,7 +146,7 @@ export function serviceReleaseArguments(argv = []) {
     options[key] = value;
   }
   if (!options.operation) throw new Error('service-release requires --operation');
-  if (!['full', 'smoke', 'measure', 'recover'].includes(options.operation)) {
+  if (!['full', 'smoke', 'recover'].includes(options.operation)) {
     throw new Error(`service-release does not know the operation ${describe(options.operation)}`);
   }
   if (LIVE_OPERATIONS.includes(options.operation)) {

@@ -5,12 +5,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENVIRONMENT_VERDICT_PATH, SIZING_TASK_RECOVERY_FLOOR_MS, SIZING_TAGGING_TERMINAL_WAIT_MS, SIZING_VTO_TERMINAL_WAIT_MS,
-  assertQualificationEnvironment, assertTerminalWaitCoversRecoveryFloor, compareWorkerIdentity, environmentVerdict,
-  qualificationRefusalMessage, readOptionalEnvironmentJson, terminalWaitMs, unavailableWorkerIdentityComparison,
-  validateWorkerIdentity, workerIdentitySnapshot } from './beta-sizing-environment.mjs';
-import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
-import { sizingVtoCases } from './beta-sizing-workload.mjs';
+import { ENVIRONMENT_VERDICT_PATH, assertQualificationEnvironment, compareWorkerIdentity, environmentVerdict,
+  qualificationRefusalMessage, readOptionalEnvironmentJson, unavailableWorkerIdentityComparison,
+  validateWorkerIdentity, workerIdentitySnapshot } from './qualification-environment.mjs';
 
 const ACCOUNT = '650880818323';
 const WORKER_DEFINITION = `arn:aws:ecs:ap-east-1:${ACCOUNT}:task-definition/beta-anywear-worker:64`;
@@ -20,8 +17,8 @@ const workerTask = (suffix, definition = WORKER_DEFINITION) => ({
   taskArn: taskArn(suffix), taskDefinitionArn: definition, lastStatus: 'RUNNING', startedAt: '2026-10-16T07:05:00.000Z',
 });
 
-// The capture is offline-tested against an injected reader, the same way the
-// sizing runtime snapshot is, because the real reader shells out to the AWS CLI.
+// The capture is offline-tested against an injected reader, because the real reader
+// shells out to the AWS CLI.
 function awsStub({ tasks, definition = WORKER_DEFINITION, rolloutStates = ['COMPLETED'] } = {}) {
   const calls = [];
   const aws = args => {
@@ -66,22 +63,6 @@ function suiteWindow({ beforeTasks = [workerTask('a')], afterTasks = [workerTask
     after: { ...captured.identity, observed_at: new Date(Date.parse(before.observed_at) + 60_000).toISOString() },
   };
 }
-
-test('the VTO terminal wait outlasts the platform recovery floor and is not a latency measurement', () => {
-  assert.equal(SIZING_VTO_TERMINAL_WAIT_MS, 1_200_000);
-  assert.ok(SIZING_VTO_TERMINAL_WAIT_MS >= 1_200_000, 'the reviewed budget is the acceptance floor');
-  assert.equal(SIZING_TASK_RECOVERY_FLOOR_MS.vto, 960_000, 'the vto floor is its 960 s database lease');
-  assert.ok(SIZING_VTO_TERMINAL_WAIT_MS > SIZING_TASK_RECOVERY_FLOOR_MS.vto);
-  assert.equal(terminalWaitMs('vto'), 1_200_000);
-  // The tagging budget is untouched and still clears its own, smaller floor.
-  assert.equal(terminalWaitMs('tagging'), 600_000);
-  assert.equal(SIZING_TAGGING_TERMINAL_WAIT_MS, 600_000);
-  assert.ok(SIZING_TAGGING_TERMINAL_WAIT_MS > SIZING_TASK_RECOVERY_FLOOR_MS.tagging);
-  // The old 600 s VTO budget is exactly the defect: it gave up before the platform
-  // was allowed to redeliver the killed execution.
-  assert.throws(() => assertTerminalWaitCoversRecoveryFloor('vto', 600_000), /recovery floor/);
-  assert.throws(() => terminalWaitMs('unknown'), /Unknown sizing task kind/);
-});
 
 test('captures the worker identity and rejects a record that no longer matches it', () => {
   const { identity, calls } = capture({ tasks: [workerTask('a')] });
@@ -307,7 +288,7 @@ test('the qualification-gate command fails the run for a definition change and p
   const gate = async (record) => {
     const verdictPath = join(directory, `verdict-${written += 1}.json`);
     await writeFile(verdictPath, `${JSON.stringify(record, null, 2)}\n`);
-    const result = spawnSync(process.execPath, ['scripts/beta-sizing-environment.mjs', 'qualification-gate',
+    const result = spawnSync(process.execPath, ['scripts/qualification-environment.mjs', 'qualification-gate',
       '--output', verdictPath], { cwd: repository, encoding: 'utf8',
       env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
     assert.equal(result.error, undefined);
@@ -363,20 +344,6 @@ test('records an unusable identity pair as unavailable without inventing a chang
   assert.match(reversed.reason, /not in suite order/);
 });
 
-test('binds the sizing workload record to the identity the suite started in', () => {
-  const window = suiteWindow();
-  const comparison = compareWorkerIdentity(window.before, window.after);
-  const bound = environmentVerdict({ comparison, suiteOutcome: 'failure',
-    workload: { result: 'failed-or-incomplete', worker_identity_before_sha256: window.before.identity_sha256 } });
-  assert.equal(bound.workload_binding.record_present, true);
-  assert.equal(bound.workload_binding.record_result, 'failed-or-incomplete');
-  assert.equal(bound.workload_binding.matches_before_identity, true);
-  const mismatched = environmentVerdict({ comparison, suiteOutcome: 'failure',
-    workload: { result: 'failed-or-incomplete', worker_identity_before_sha256: 'f'.repeat(64) } });
-  assert.equal(mismatched.workload_binding.matches_before_identity, false);
-  assert.equal(environmentVerdict({ comparison, suiteOutcome: 'success' }).workload_binding.record_present, false);
-});
-
 test('asserts no product failure for a suite that neither passed nor failed', () => {
   // A cancelled suite and a suite ended by the job timeout both arrive as
   // `incomplete`. No product failure was established, so none may be recorded; the
@@ -412,46 +379,5 @@ test('reads a missing or malformed environment input as a recorded problem', asy
     assert.match((await readOptionalEnvironmentJson(join(directory, 'absent.json'))).problem, /is missing/);
   } finally {
     await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test('plumbs the sizing envelope mode only into the measure environment', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
-  const jobSection = name => {
-    const marker = `\n  ${name}:\n`;
-    const start = workflow.indexOf(marker);
-    if (start < 0) return '';
-    const rest = workflow.slice(start + marker.length);
-    const next = rest.search(/\n {2}[a-z][a-z0-9-]*:\n/);
-    return marker + (next < 0 ? rest : rest.slice(0, next));
-  };
-  // The dispatch input defaults to the demonstrated bound and offers the candidate
-  // mode; only measure carries it into the measured environment.
-  assert.match(workflow, /envelope_mode:[\s\S]*?default: demonstrated[\s\S]*?options: \[demonstrated, widening-candidate\]/);
-  assert.match(jobSection('measure'), /BETA_SIZING_ENVELOPE_MODE: \$\{\{ inputs\.envelope_mode \}\}/);
-  for (const name of ['full', 'smoke', 'record']) {
-    assert.doesNotMatch(jobSection(name), /BETA_SIZING_ENVELOPE_MODE/, `${name} must not carry an envelope mode`);
-  }
-  // The preflight is the gate that refuses every combination but measure at S1, and
-  // it runs before any credential job.
-  const preflight = jobSection('preflight');
-  assert.match(preflight, /ENVELOPE_MODE: \$\{\{ inputs\.envelope_mode \}\}/);
-  assert.match(preflight, /envelope_mode widening-candidate is only accepted by operation measure at stage S1/);
-  assert.match(preflight, /\$OPERATION" != "measure" \|\| "\$SIZING_STAGE" != "S1"/);
-});
-
-test('keeps the frozen VTO shape set at four reviewed shapes, each run twice', () => {
-  const cases = sizingVtoCases();
-  assert.deepEqual([...SIZING_WORKLOAD.vto_shapes], ['ordinary-base-one-garment', 'large-base-one-garment',
-    'ordinary-base-three-garments', 'large-base-three-garments']);
-  assert.equal(SIZING_WORKLOAD.vto_generations, 8);
-  assert.equal(cases.length, 8);
-  assert.equal(new Set(cases.map(entry => entry.shape)).size, 4);
-  for (const shape of SIZING_WORKLOAD.vto_shapes) {
-    assert.equal(cases.filter(entry => entry.shape === shape).length, 2, `${shape} must still run twice`);
-  }
-  // The three-garment shapes are neither shrunk nor excluded.
-  for (const shape of ['ordinary-base-three-garments', 'large-base-three-garments']) {
-    for (const entry of cases.filter(item => item.shape === shape)) assert.equal(entry.garment_count, 3);
   }
 });

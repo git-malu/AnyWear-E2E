@@ -162,12 +162,11 @@ export function parseStrictJson(bytes) {
 // Retained inert until Wave 2 (#180): the compatibility-pin schema.
 //
 // Qualification no longer reads a committed compatibility file. This schema stays only
-// because two retained, non-qualification consumers still load it and must remain
-// importable in Wave 1: `beta-sizing-source.mjs` (the sizing measurement, #141's deletion
-// set) and the offline pin tools (`validate-compatibility-pin.mjs`,
+// because one retained, non-qualification consumer still loads it and must remain
+// importable in Wave 1: the offline pin tools (`validate-compatibility-pin.mjs`,
 // `migrate-compatibility.mjs`, `check-compatibility.mjs`) kept as the revert target.
 // No qualification module may import or call anything in this block. Wave 2 deletes it
-// together with the pin, the pin tools and the sizing apparatus.
+// together with the pin and the pin tools.
 //
 // Compatibility v3 names two deployment producers. A record identity is either
 // deferred (the producer is named, no record is pinned yet) or recorded (the exact
