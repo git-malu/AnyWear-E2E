@@ -2,7 +2,9 @@ import { execFile } from 'node:child_process';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { collectDeploymentEvidence } from './qualification-record.mjs';
+import {
+  collectDeploymentEvidence, qualificationTuplePath, readQualificationTuple, requireQualificationTuplePath,
+} from './qualification-record.mjs';
 import { readFencingCiEvidence, verifyFencingCiEvidence } from './runtime-fencing-evidence.mjs';
 import { assertStableAudits, TERMINAL_STABILITY_MS, validateTaskAudit } from './runtime-task-audit.mjs';
 import { parseRuntimeRecovery } from './runtime-recovery.mjs';
@@ -99,7 +101,7 @@ export function assertRuntimeDrillExecutionEnvironment(environment = process.env
   }
   if (environment.RUNTIME_DRILL_CLIENT_SHA !== compatibility?.client?.sha
     || environment.RUNTIME_DRILL_SERVICE_SHA !== compatibility?.service?.sha) {
-    throw new Error('Runtime mutations require Client and Service pins to match compatibility.json');
+    throw new Error('Runtime mutations require RUNTIME_DRILL_CLIENT_SHA and RUNTIME_DRILL_SERVICE_SHA to match the qualification tuple (--tuple <qualification-record.json> or RUNTIME_DRILL_TUPLE)');
   }
   if (!RUN_SCOPE_PATTERN.test(environment.RUNTIME_DRILL_RUN_SCOPE ?? '')) {
     throw new Error('Runtime mutations require a bounded RUNTIME_DRILL_RUN_SCOPE');
@@ -113,7 +115,7 @@ export function assertRuntimeDrillExecutionEnvironment(environment = process.env
   }
   if (!compatibility?.client?.sha || !COMMIT_PATTERN.test(compatibility.client.sha)
     || !compatibility?.service?.sha || !COMMIT_PATTERN.test(compatibility.service.sha)) {
-    throw new Error('Runtime mutations require full pinned Client and Service commit SHAs');
+    throw new Error('Runtime mutations require full Client and Service commit SHAs from the qualification tuple');
   }
   return { ...config, drillId: environment.RUNTIME_DRILL_ID, concurrency: RUNTIME_DRILL_CONCURRENCY };
 }
@@ -259,10 +261,10 @@ function assertDeploymentBinding(record, compatibility) {
 
   const deployment = record.deployment;
   if (!deployment || deployment.client_source_commit !== compatibility.client.sha) {
-    throw new Error('Evidence Client commit does not match compatibility.json');
+    throw new Error('Evidence Client commit does not match the qualification tuple revisions.client.sha (--tuple <qualification-record.json> or RUNTIME_DRILL_TUPLE)');
   }
   if (!deployment.service_source_commit || deployment.service_source_commit !== compatibility.service.sha) {
-    throw new Error('Evidence Service commit does not match compatibility.json');
+    throw new Error('Evidence Service commit does not match the qualification tuple revisions.service.sha (--tuple <qualification-record.json> or RUNTIME_DRILL_TUPLE)');
   }
   if (!DIGEST_PATTERN.test(deployment.service_image_digest ?? '')) {
     throw new Error('Evidence Service image digest is invalid');
@@ -527,7 +529,26 @@ async function awsJson(args) {
   }
 }
 
-async function collectPreflight(config, compatibility) {
+// `collectDeploymentEvidence` compares `{ client_commit, service_commit }`; the drill's tuple
+// is `{ client: { sha }, service: { sha } }`. This adapter is the one place the two shapes
+// meet, so a supplied qualification tuple actually drives the live comparison and an absent
+// one passes `{}` without inventing an expectation.
+export function qualificationTupleExpectation(tuple) {
+  if (!tuple) return {};
+  return {
+    client_commit: tuple.client?.sha ?? null,
+    service_commit: tuple.service?.sha ?? null,
+  };
+}
+
+export async function collectPreflightDeployment(config, tuple, fetcher = fetch) {
+  return collectDeploymentEvidence({
+    clientUrl: config.clientUrl,
+    serviceUrl: config.serviceUrl,
+  }, qualificationTupleExpectation(tuple), fetcher);
+}
+
+async function collectPreflight(config, tuple) {
   const identity = await awsJson(['sts', 'get-caller-identity']);
   if (identity.Account !== TARGET_ACCOUNT) throw new Error(`AWS identity account ${identity.Account ?? 'unknown'} is not Beta NonProd`);
 
@@ -601,16 +622,16 @@ async function collectPreflight(config, compatibility) {
     record_type: 'anywear_beta_runtime_preflight',
     collected_at: new Date().toISOString(),
     environment: config,
-    deployment: await collectDeploymentEvidence({
-      clientUrl: config.clientUrl,
-      serviceUrl: config.serviceUrl,
-    }, compatibility),
+    deployment: await collectPreflightDeployment(config, tuple),
     stack,
     services: services.services ?? [],
     admission_mode: admissionMode.mode,
     queues,
     notes: [
       'Preflight is read-only and does not restart ECS tasks, publish SQS messages, or mutate database state.',
+      tuple
+        ? 'Preflight compared the live Client and Service identities with the supplied qualification tuple (--tuple or RUNTIME_DRILL_TUPLE).'
+        : 'No qualification tuple was supplied: preflight observed the live Client and Service identities without comparing them. Pass --tuple <qualification-record.json> or set RUNTIME_DRILL_TUPLE to compare.',
       `Task-bearing runtime drills open admission to their own run-owned tester from /anywear/beta/admission_mode=${admissionMode.mode} and restore that decision and the tester list afterwards.`,
       'A passing preflight is not runtime reliability evidence.',
     ],
@@ -751,8 +772,24 @@ export async function executeRuntimeDrill(environment, compatibility, adapter, {
   return result;
 }
 
-async function loadCompatibility() {
-  return JSON.parse(await readFile(new URL('../compatibility.json', import.meta.url), 'utf8'));
+// `--tuple` travels alongside the documented positional evidence/recovery paths without
+// changing their meaning; `--` is ignored and every other argument stays positional.
+export function parseRuntimeDrillArguments(argv) {
+  const [mode, ...rest] = argv;
+  const positional = [];
+  let tuple;
+  for (let index = 0; index < rest.length; index += 1) {
+    const argument = rest[index];
+    if (argument === '--tuple') {
+      const value = rest[index + 1];
+      if (value === undefined || value.startsWith('--')) throw new Error('--tuple requires a qualification-record.json path');
+      tuple = value;
+      index += 1;
+    } else if (argument !== '--') {
+      positional.push(argument);
+    }
+  }
+  return { mode, tuple, positional };
 }
 
 export async function loadExecutionAdapter(environment) {
@@ -766,64 +803,79 @@ export async function loadExecutionAdapter(environment) {
   return module.default ?? module.runtimeDrillAdapter;
 }
 
+const TUPLE_REQUIRED_MODES = Object.freeze(['--verify', '--execute', '--recover']);
+
 function usage() {
   console.log([
     'Usage:',
     '  node scripts/runtime-drill.mjs --plan',
-    '  node scripts/runtime-drill.mjs --preflight',
-    '  node scripts/runtime-drill.mjs --execute',
-    '  node scripts/runtime-drill.mjs --verify <evidence.json>',
-    '  node scripts/runtime-drill.mjs --recover <recovery.json>',
+    '  node scripts/runtime-drill.mjs --preflight [--tuple <qualification-record.json>]',
+    '  node scripts/runtime-drill.mjs --execute --tuple <qualification-record.json>',
+    '  node scripts/runtime-drill.mjs --verify <evidence.json> --tuple <qualification-record.json>',
+    '  node scripts/runtime-drill.mjs --recover <recovery.json> --tuple <qualification-record.json>',
     '',
     'All modes are Beta-only. --plan and --preflight are read-only.',
+    'The expected deployed tuple is read from a qualification-record.json v3 (revisions.client.sha',
+    'and revisions.service.sha) named by --tuple <path> or the RUNTIME_DRILL_TUPLE environment variable.',
+    '--plan needs no tuple; --preflight compares only when one is supplied; --verify, --execute and',
+    '--recover refuse without one.',
     '--execute requires main, anywear-beta-runtime concurrency, explicit confirmation, and an approved provider-failure fixture.',
   ].join('\n'));
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  const mode = process.argv[2];
-  if (mode === '--help' || !mode) {
+  const initialMode = process.argv[2];
+  if (initialMode === '--help' || !initialMode) {
     usage();
   } else {
     try {
-      const compatibility = await loadCompatibility();
-      if (mode === '--verify') {
-        const evidencePath = process.argv.slice(3).find((argument) => argument !== '--')
-          ?? process.env.RUNTIME_DRILL_EVIDENCE_PATH;
-        const record = JSON.parse(await readFile(requireString(evidencePath, 'Evidence path'), 'utf8'));
-        const result = verifyRuntimeDrillEvidence(record, compatibility);
-        console.log(`Verified Beta runtime drill evidence: ${result.required_drills.join(', ')}; rollback=${result.rollback}`);
-      } else if (mode === '--recover') {
-        assertLiveRuntimeSourceReady();
-        const record = parseRuntimeRecovery(await readFile(requireString(process.argv[3], 'Recovery path'), 'utf8'));
-        const environment = { ...process.env };
-        assertRuntimeRecoveryExecutionEnvironment(environment, compatibility, record);
-        const adapter = await loadExecutionAdapter(environment);
-        if (typeof adapter?.recoverOwnedRuntime !== 'function') throw new Error('Protected adapter has no runtime recovery hook');
-        console.log(JSON.stringify(await adapter.recoverOwnedRuntime(record)));
-      } else if (mode === '--execute') {
-        assertLiveRuntimeSourceReady();
-        const adapter = await loadExecutionAdapter(process.env);
-        const execution = await executeRuntimeDrill(process.env, compatibility, adapter);
-        const outputPath = process.env.RUNTIME_DRILL_EVIDENCE_PATH ?? 'runtime-drill-evidence.json';
-        await writeFile(outputPath, `${JSON.stringify(execution, null, 2)}\n`, 'utf8');
-        console.log(`Wrote Beta runtime drill evidence to ${outputPath}`);
-      } else {
-        const config = assertRuntimeDrillEnvironment();
-        if (mode === '--plan') {
-          const outputPath = process.env.RUNTIME_DRILL_PLAN_PATH ?? 'runtime-drill-plan.json';
-          await writeFile(outputPath, `${JSON.stringify(buildRuntimeDrillPlan(config), null, 2)}\n`, 'utf8');
-          console.log(`Wrote read-only Beta runtime drill plan to ${outputPath}`);
-        } else if (mode === '--preflight') {
-          const preflight = await collectPreflight(config, compatibility);
-          const outputPath = process.env.RUNTIME_PREFLIGHT_OUTPUT_PATH ?? 'runtime-preflight.json';
-          await writeFile(outputPath, `${JSON.stringify(preflight, null, 2)}\n`, 'utf8');
-          console.log(`Wrote read-only Beta runtime preflight to ${outputPath}`);
+      const { mode, tuple: tupleArgument, positional } = parseRuntimeDrillArguments(process.argv.slice(2));
+      if (TUPLE_REQUIRED_MODES.includes(mode)) {
+        // The expected tuple is resolved before any evidence read, environment assertion or
+        // mutation, so a missing input refuses with the operator's next action.
+        const tuple = await readQualificationTuple(requireQualificationTuplePath({
+          tuple: tupleArgument,
+          environment: process.env,
+          label: `Runtime drill ${mode}`,
+        }));
+        if (mode === '--verify') {
+          const evidencePath = positional[0] ?? process.env.RUNTIME_DRILL_EVIDENCE_PATH;
+          const record = JSON.parse(await readFile(requireString(evidencePath, 'Evidence path'), 'utf8'));
+          const result = verifyRuntimeDrillEvidence(record, tuple);
+          console.log(`Verified Beta runtime drill evidence: ${result.required_drills.join(', ')}; rollback=${result.rollback}`);
+        } else if (mode === '--recover') {
+          assertLiveRuntimeSourceReady();
+          const record = parseRuntimeRecovery(await readFile(requireString(positional[0], 'Recovery path'), 'utf8'));
+          const environment = { ...process.env };
+          assertRuntimeRecoveryExecutionEnvironment(environment, tuple, record);
+          const adapter = await loadExecutionAdapter(environment);
+          if (typeof adapter?.recoverOwnedRuntime !== 'function') throw new Error('Protected adapter has no runtime recovery hook');
+          console.log(JSON.stringify(await adapter.recoverOwnedRuntime(record)));
         } else {
-          usage();
-          process.exitCode = 2;
+          assertLiveRuntimeSourceReady();
+          const adapter = await loadExecutionAdapter(process.env);
+          const execution = await executeRuntimeDrill(process.env, tuple, adapter);
+          const outputPath = process.env.RUNTIME_DRILL_EVIDENCE_PATH ?? 'runtime-drill-evidence.json';
+          await writeFile(outputPath, `${JSON.stringify(execution, null, 2)}\n`, 'utf8');
+          console.log(`Wrote Beta runtime drill evidence to ${outputPath}`);
         }
+      } else if (mode === '--plan') {
+        const config = assertRuntimeDrillEnvironment();
+        const outputPath = process.env.RUNTIME_DRILL_PLAN_PATH ?? 'runtime-drill-plan.json';
+        await writeFile(outputPath, `${JSON.stringify(buildRuntimeDrillPlan(config), null, 2)}\n`, 'utf8');
+        console.log(`Wrote read-only Beta runtime drill plan to ${outputPath}`);
+      } else if (mode === '--preflight') {
+        const tuplePath = qualificationTuplePath({ tuple: tupleArgument, environment: process.env });
+        const tuple = tuplePath ? await readQualificationTuple(tuplePath) : null;
+        const config = assertRuntimeDrillEnvironment();
+        const preflight = await collectPreflight(config, tuple);
+        const outputPath = process.env.RUNTIME_PREFLIGHT_OUTPUT_PATH ?? 'runtime-preflight.json';
+        await writeFile(outputPath, `${JSON.stringify(preflight, null, 2)}\n`, 'utf8');
+        console.log(`Wrote read-only Beta runtime preflight to ${outputPath}`);
+      } else {
+        usage();
+        process.exitCode = 2;
       }
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));

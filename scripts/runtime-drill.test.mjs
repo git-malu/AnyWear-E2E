@@ -1,20 +1,30 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { cleanupFixture, fencingCiFixture, scopeFixture, stableAuditFixture, windowFixture } from './fixtures/runtime-evidence.mjs';
+import { readQualificationTuple, requireQualificationTuplePath } from './qualification-record.mjs';
 import {
   assertRuntimeDrillEnvironment,
   assertRuntimeDrillExecutionEnvironment,
   assertRuntimeDrillExecutorAdapter,
   assertRuntimeDrillMutationConfirmation,
   buildRuntimeDrillPlan,
+  collectPreflightDeployment,
   executeRuntimeDrill,
   loadExecutionAdapter,
+  parseRuntimeDrillArguments,
+  qualificationTupleExpectation,
   readProviderFailureFixture,
   verifyRuntimeDrillEvidence,
 } from './runtime-drill.mjs';
+import { repositoryRoot } from './test-selection.mjs';
+
+const exec = promisify(execFile);
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const environment = {
   E2E_STAGE: 'beta',
@@ -373,8 +383,133 @@ test('runtime evidence rejects a changed service identity', () => {
   evidence.deployment.service_source_commit = 'd'.repeat(40);
   assert.throws(
     () => verifyRuntimeDrillEvidence(evidence, compatibility),
-    /Service commit does not match compatibility.json/,
+    /Service commit does not match the qualification tuple revisions\.service\.sha/,
   );
+});
+
+function drillEnvironment(directory) {
+  const env = {
+    ...process.env,
+    E2E_STAGE: 'beta',
+    AWS_ACCOUNT_ID: '650880818323',
+    AWS_REGION: 'ap-east-1',
+    E2E_CLIENT_URL: environment.E2E_CLIENT_URL,
+    E2E_SERVICE_URL: environment.E2E_SERVICE_URL,
+    RUNTIME_DRILL_PLAN_PATH: path.join(directory, 'runtime-drill-plan.json'),
+  };
+  delete env.RUNTIME_DRILL_TUPLE;
+  delete env.RUNTIME_DRILL_EVIDENCE_PATH;
+  return env;
+}
+
+async function runDrill(args, env) {
+  try {
+    const { stdout, stderr } = await exec('node', ['scripts/runtime-drill.mjs', ...args], { cwd: repositoryRoot, env });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    return { code: error.code ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
+  }
+}
+
+test('tuple-required drill modes refuse without a qualification record while --plan stays offline', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'anywear-runtime-drill-'));
+  try {
+    const env = drillEnvironment(directory);
+    for (const args of [
+      ['--verify', path.join(directory, 'absent-evidence.json')],
+      ['--execute'],
+      ['--recover', path.join(directory, 'absent-recovery.json')],
+    ]) {
+      const result = await runDrill(args, env);
+      assert.equal(result.code, 1, `${args[0]} exits non-zero`);
+      // The tuple refusal precedes any evidence read or environment assertion: the named
+      // error is the only thing reported and no absent input file is opened.
+      assert.match(result.stderr, /requires the expected deployed tuple from a qualification-record\.json v3/);
+      assert.match(result.stderr, /--tuple <qualification-record\.json>/);
+      assert.match(result.stderr, /RUNTIME_DRILL_TUPLE/);
+      assert.doesNotMatch(result.stderr, /absent-(evidence|recovery)|Evidence path|Recovery path/);
+    }
+    // `--plan` needs no tuple and ignores a set-but-unused one: it never opens a file by that name.
+    const plan = await runDrill(['--plan'], { ...env, RUNTIME_DRILL_TUPLE: path.join(directory, 'absent-tuple.json') });
+    assert.equal(plan.code, 0, plan.stderr);
+    const written = JSON.parse(await readFile(env.RUNTIME_DRILL_PLAN_PATH, 'utf8'));
+    assert.equal(written.record_type, 'anywear_beta_runtime_drill_plan');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('drill arguments keep the documented positional paths while accepting --tuple alongside them', () => {
+  assert.deepEqual(parseRuntimeDrillArguments(['--verify', '--', 'evidence.json']),
+    { mode: '--verify', tuple: undefined, positional: ['evidence.json'] });
+  assert.deepEqual(parseRuntimeDrillArguments(['--verify', 'evidence.json', '--tuple', 'qualification-record.json']),
+    { mode: '--verify', tuple: 'qualification-record.json', positional: ['evidence.json'] });
+  assert.deepEqual(parseRuntimeDrillArguments(['--recover', '--tuple', 'qualification-record.json', 'recovery.json']),
+    { mode: '--recover', tuple: 'qualification-record.json', positional: ['recovery.json'] });
+  assert.throws(() => parseRuntimeDrillArguments(['--verify', 'evidence.json', '--tuple']), /--tuple requires a qualification-record\.json path/);
+});
+
+test('the qualification tuple reader refuses an absent, malformed, incomplete or non-commit record and names the field and file', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'anywear-qualification-tuple-'));
+  const write = async (name, value) => {
+    const file = path.join(directory, name);
+    await writeFile(file, typeof value === 'string' ? value : JSON.stringify(value));
+    return file;
+  };
+  const named = (file, detail) => new RegExp(`Qualification tuple ${escapeRegExp(file)} ${detail}`);
+  try {
+    const absent = path.join(directory, 'absent.json');
+    await assert.rejects(readQualificationTuple(absent), named(absent, 'could not be read'));
+
+    const invalid = await write('invalid.json', '{"revisions":');
+    await assert.rejects(readQualificationTuple(invalid), named(invalid, 'is not valid JSON'));
+
+    const noClient = await write('no-client.json', { revisions: { service: { sha: 'b'.repeat(40) } } });
+    await assert.rejects(readQualificationTuple(noClient), named(noClient, 'is missing revisions\\.client'));
+    const noClientSha = await write('no-client-sha.json', { revisions: { client: {}, service: { sha: 'b'.repeat(40) } } });
+    await assert.rejects(readQualificationTuple(noClientSha), named(noClientSha, 'is missing revisions\\.client\\.sha'));
+
+    const noService = await write('no-service.json', { revisions: { client: { sha: 'a'.repeat(40) } } });
+    await assert.rejects(readQualificationTuple(noService), named(noService, 'is missing revisions\\.service'));
+
+    const badClient = await write('bad-client.json', { revisions: { client: { sha: 'A'.repeat(40) }, service: { sha: 'b'.repeat(40) } } });
+    await assert.rejects(readQualificationTuple(badClient), named(badClient, 'revisions\\.client\\.sha must be a full lowercase 40-character commit SHA'));
+    const badService = await write('bad-service.json', { revisions: { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(39) } } });
+    await assert.rejects(readQualificationTuple(badService), named(badService, 'revisions\\.service\\.sha must be a full lowercase 40-character commit SHA'));
+
+    const valid = await write('valid.json', { schema_version: 3, revisions: { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } } });
+    assert.deepEqual(await readQualificationTuple(valid), { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } });
+
+    assert.throws(() => requireQualificationTuplePath({ tuple: undefined, environment: {}, label: 'Runtime drill --verify' }),
+      /Runtime drill --verify requires the expected deployed tuple from a qualification-record\.json v3: pass --tuple <qualification-record\.json> or set RUNTIME_DRILL_TUPLE/);
+    assert.equal(requireQualificationTuplePath({ environment: { RUNTIME_DRILL_TUPLE: 'qualification-record.json' }, label: 'Runtime drill --verify' }), 'qualification-record.json');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the qualification tuple becomes the {client_commit, service_commit} expectation that drives the live comparison', async () => {
+  const tuple = { client: { sha: 'a'.repeat(40) }, service: { sha: 'b'.repeat(40) } };
+  assert.deepEqual(qualificationTupleExpectation(tuple), { client_commit: 'a'.repeat(40), service_commit: 'b'.repeat(40) });
+  assert.deepEqual(qualificationTupleExpectation(null), {});
+  const config = { clientUrl: environment.E2E_CLIENT_URL, serviceUrl: environment.E2E_SERVICE_URL };
+  const liveFetcher = (clientCommit, serviceCommit) => async (url) => new Response(JSON.stringify(
+    url.pathname === '/build-metadata.json'
+      ? { component: 'AnyWear-Client', schema_version: 3, source_commit: clientCommit, client_version: 0, built_at: '2026-10-07T00:00:00.000Z' }
+      : { status: 'ok', service_commit: serviceCommit, image_digest: `sha256:${'c'.repeat(64)}`, minimum_client_version: 0 },
+  ), { status: 200 });
+
+  const collected = await collectPreflightDeployment(config, tuple, liveFetcher(tuple.client.sha, tuple.service.sha));
+  assert.equal(collected.client.source_commit, tuple.client.sha);
+  assert.equal(collected.service.service_commit, tuple.service.sha);
+
+  // An absent tuple observes the same live identities without comparing them.
+  await assert.doesNotReject(collectPreflightDeployment(config, null, liveFetcher('d'.repeat(40), 'e'.repeat(40))));
+
+  await assert.rejects(collectPreflightDeployment(config, tuple, liveFetcher(tuple.client.sha, 'e'.repeat(40))),
+    new RegExp(`Deployed Service service_commit mismatch[^\\n]*expected ${tuple.service.sha} \\(dispatch input\\), observed ${'e'.repeat(40)} \\(live\\)`));
+  await assert.rejects(collectPreflightDeployment(config, tuple, liveFetcher('d'.repeat(40), tuple.service.sha)),
+    new RegExp(`Deployed Client source_commit mismatch[^\\n]*expected ${tuple.client.sha} \\(dispatch input\\), observed ${'d'.repeat(40)} \\(live\\)`));
 });
 
 test('runtime evidence rejects an explicitly failed rollback drill', () => {

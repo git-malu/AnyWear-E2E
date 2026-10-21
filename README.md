@@ -76,7 +76,7 @@ scenario must satisfy.
 | `test:smoke` | E2E maintainers; the `smoke` operation of the protected `qualify` entry | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
 | `test:regression` / `test` | E2E maintainers; the `full` operation's protected Beta qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this operation and its evidence can qualify a release |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario; not a release-gating selection on its own |
-| `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; never live drill execution |
+| `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; `--plan` needs no expected tuple, `--preflight` compares the live identities only when a `qualification-record.json` v3 is supplied with `--tuple`/`RUNTIME_DRILL_TUPLE`, and `--verify` requires one; never live drill execution |
 
 The release-gating selection, the smoke diagnostic and account recovery are
 separated by the signed `operation` field, not by a workflow boundary, a step or a job. One
@@ -237,15 +237,19 @@ They are separate from `pnpm test` and do not start or restore runtime drills:
 ```bash
 pnpm runtime:plan                 # writes runtime-drill-plan.json; no AWS calls
 pnpm runtime:preflight            # reads Beta health, stacks, ECS services, and queue attributes
-pnpm runtime:verify -- evidence.json
+pnpm runtime:verify -- evidence.json --tuple qualification-record.json
 ```
 
 Set `E2E_STAGE=beta`, `AWS_ACCOUNT_ID=650880818323`, `AWS_REGION=ap-east-1`, and both
-HTTPS endpoint variables before the AWS-backed preflight. It checks deployed Client and
-Service identities against the retained pin (`compatibility.json`) and performs read-only
-observations. These drill CLIs are **manual-only**: no workflow, `pnpm check`, `test:core`
-or `test:list` path reads that pin branch, and Wave 2 replaces the input with the
-qualification tuple or deletes the CLI with the pin.
+HTTPS endpoint variables before the AWS-backed preflight. The manual drill and recovery
+CLIs take the expected deployed tuple from a `qualification-record.json` v3
+(`revisions.client.sha` / `revisions.service.sha`) named by `--tuple <path>` or the
+`RUNTIME_DRILL_TUPLE` environment variable; the former committed pin is deleted.
+`--plan` needs no tuple and stays offline;
+`--preflight` observes the live identities without comparing when no tuple is supplied,
+and compares them when one is; `--verify`, `--execute` and `--recover` refuse without one.
+These drill CLIs are **manual-only**: no workflow, `pnpm check`, `test:core` or `test:list`
+path reads that input.
 Any future expanded-release work must first select the smallest required risk-based scope
 in issue #58; the historical fault-injection design is not an instruction to rerun its
 full matrix or rebuild a separate control platform.
@@ -261,15 +265,16 @@ workflow constants move with it in one reviewed change.
 
 ## CI Model
 
-Qualification reads the live deployed tuple; `compatibility.json` is **retained inert until
-Wave 2**, and no release-qualification path reads it: `beta-qualification.yml`, `pnpm check`,
-`test:core` and `test:list` are pin-free. The former measurement workload was the last
-executed reader of the pin, and it is deleted with the sizing apparatus.
-[docs/compatibility-pin.md](docs/compatibility-pin.md),
-[docs/compatibility-v3.md](docs/compatibility-v3.md) and the pin tools describe the retired
-contract and the revert target; the tools are not runnable after Wave 1 (they import the
-deleted `trusted-deployment-inputs.mjs`), and all of it is deleted in Wave 2 after a real
-`full` run passes against the live tuple. Do not add a new reader of either.
+Qualification reads the live deployed tuple; the committed compatibility pin, its tools and
+its two documents are **deleted** (#192), and no release-qualification path reads a committed
+deployment file: `beta-qualification.yml`, `pnpm check`, `test:core` and `test:list` were
+already pin-free. The former measurement workload was the last executed reader of the pin,
+and it was deleted with the sizing apparatus. Only the manual
+`runtime-drill.mjs` / `runtime-recovery-artifact.mjs` CLIs take an expected tuple, from a
+`qualification-record.json` v3 passed with `--tuple <path>` or `RUNTIME_DRILL_TUPLE`:
+`--plan` needs none, `--preflight` compares only when one is supplied, and `--verify`,
+`--execute` and `--recover` require one. No workflow or tracked command runs them, and no
+new reader of a committed deployment file may be added.
 
 The live tuple is:
 

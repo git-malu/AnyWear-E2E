@@ -6,7 +6,7 @@ The `recover` operation of the protected `beta-qualification.yml` entry restores
 
 - The original run is a completed `workflow_dispatch` on `main` of `.github/workflows/beta-qualification.yml`, or a historical `integration.yml` original a retained artifact still binds. Its exact `beta-account-lifecycle-<run>-<attempt>` artifact exists uniquely and is unexpired.
 - The retained `account-budget.json` binds that exact run and attempt, and every identity recovery may touch is captured there with its subject and address.
-- A validated Beta cleanup diagnostic record exists for the currently deployed cleanup tuple: state-machine version ARN, Service source commit and Service image digest. The reviewed compatibility pin is current.
+- A validated Beta cleanup diagnostic record exists for the currently deployed cleanup tuple: state-machine version ARN, Service source commit and Service image digest. The diagnostic record matches the currently deployed cleanup tuple.
 - The dispatch runs from `main` in the `beta` environment, with the repository variable `ENABLE_BETA_MUTATION` set to `true` and the dedicated `beta-e2e-qualification-role` principal.
 - The Beta environment writer is released to this dispatch: verify every local, Actions, CloudFormation, ECS and nested Service job has ceased and record the post-state. A timeout never releases the writer.
 
