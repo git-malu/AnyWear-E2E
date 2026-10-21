@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SIZING_WORKLOAD, sizingUploadCases } from './beta-sizing-benchmark.mjs';
 import { S1_INPUT_BYTES_MAX, S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_DEFERRED_VTO_SHAPE,
+  S1_INPUT_MEASURED_CASES, S1_INPUT_MEASURED_VTO_CASES,
   S1_VTO_GARMENT_POOL, S1_WIDENING_CANDIDATE, S1_DIAGNOSTIC_PROBE, SIZING_ENVELOPE_MODE_DEMONSTRATED,
   assertCaseInputsWithinEnvelope, assertSizingEnvelopeMode, assertSizingInputEnvelope,
   orderedSizingGarments } from './beta-sizing-envelope.mjs';
@@ -158,18 +159,42 @@ export const SIZING_PROVIDER_ENVELOPE = Object.freeze({
 
 // The manifest's declared envelope mirrors the reviewed constants. The frozen
 // fixture bytes decide what a case can submit, so the manifest must state the
-// same bound the loader enforces and must carry removed oversized fixtures as
-// explicit, non-submittable records. The widening candidate is a separate record:
-// it never raises `input_bytes_max`, and its bound, fixture and case IDs are held
-// to the module's reviewed values.
+// same bound the loader enforces, the measured records the promotion rests on, and
+// the removed oversized fixtures as explicit, non-submittable records. The
+// widening candidate is now the demonstrated bound: its record is retained as
+// promotion lineage (prior bound, fixture, case IDs) and the manifest must mirror
+// its `demonstrated` status and both bounds.
+function sameMeasuredInputs(declared, expected) {
+  if (!Array.isArray(declared) || declared.length !== expected.length) return false;
+  return declared.every((item, index) => {
+    const wanted = expected[index];
+    return item?.case_id === wanted.case_id && item.fixture === wanted.fixture
+      && item.bytes === wanted.bytes && item.width === wanted.width && item.height === wanted.height
+      && item.terminal_state === wanted.terminal_state;
+  });
+}
+
+function sameMeasuredVtoCases(declared, expected) {
+  if (!Array.isArray(declared) || declared.length !== expected.length) return false;
+  return declared.every((item, index) => {
+    const wanted = expected[index];
+    return item?.case_id === wanted.case_id && item.shape === wanted.shape
+      && item.base_fixture === wanted.base_fixture && item.garment_count === wanted.garment_count
+      && JSON.stringify(item.garment_fixtures) === JSON.stringify(wanted.garment_fixtures)
+      && item.aggregate_submitted_bytes === wanted.aggregate_submitted_bytes
+      && item.terminal_state === wanted.terminal_state;
+  });
+}
+
 function validateDeclaredEnvelope(manifest) {
   const declared = manifest.s1_input_envelope;
   if (!declared) throw new Error('Frozen sizing manifest must declare the demonstrated S1 input envelope');
-  for (const field of ['reference', 'run_url', 'stage', 'e2e_sha']) {
+  for (const field of ['reference', 'run_url', 'run_id', 'run_attempt', 'stage', 'e2e_sha', 'workload']) {
     if (declared[field] !== S1_INPUT_ENVELOPE[field]) throw new Error(`Declared sizing input envelope ${field} changed`);
   }
   if (declared.input_bytes_max !== S1_INPUT_BYTES_MAX
-    || declared.largest_served_bytes !== S1_INPUT_ENVELOPE.largest_served_bytes) {
+    || declared.largest_served_bytes !== S1_INPUT_ENVELOPE.largest_served_bytes
+    || declared.largest_served_case_id !== S1_INPUT_ENVELOPE.largest_served_case_id) {
     throw new Error('Declared sizing input envelope bound differs from the enforced S1 input bound');
   }
   // The bound is only meaningful with its basis: per submitted input. A manifest
@@ -179,9 +204,20 @@ function validateDeclaredEnvelope(manifest) {
   if (declared.input_bytes_max_basis !== S1_INPUT_ENVELOPE.input_bytes_max_basis
     || declared.measured_inputs_basis !== S1_INPUT_ENVELOPE.measured_inputs_basis
     || declared.vto_aggregate_limit !== S1_INPUT_ENVELOPE.vto_aggregate_limit
-    || declared.vto_shape_naming !== S1_INPUT_ENVELOPE.vto_shape_naming) {
-    throw new Error('Declared sizing input envelope must state the per-input basis, the separate VTO aggregate and '
-      + 'the historical VTO shape names');
+    || declared.vto_shape_naming !== S1_INPUT_ENVELOPE.vto_shape_naming
+    || declared.excluded_reason !== S1_INPUT_ENVELOPE.excluded_reason
+    || declared.description !== S1_INPUT_ENVELOPE.description) {
+    throw new Error('Declared sizing input envelope must state the per-input basis, the separate VTO aggregate, '
+      + 'the historical VTO shape names and the exclusion reason');
+  }
+  // The measured records are the promotion's evidence. They are mirrored exactly,
+  // not summarised: the 12 ready uploads and the 8 Complete VTO observations, each
+  // with the bytes the frozen manifest also records.
+  if (!sameMeasuredInputs(declared.measured_inputs, S1_INPUT_MEASURED_CASES)) {
+    throw new Error('Declared measured inputs must be the uploads the authorised S1 measure run recorded');
+  }
+  if (!sameMeasuredVtoCases(declared.measured_vto_cases, S1_INPUT_MEASURED_VTO_CASES)) {
+    throw new Error('Declared measured VTO cases must be the observations the authorised S1 measure run recorded');
   }
   const candidate = declared.widening_candidate;
   if (!candidate || candidate.bound_bytes !== S1_WIDENING_CANDIDATE.bound_bytes
@@ -211,14 +247,15 @@ function validateDeclaredEnvelope(manifest) {
     if (fixture.id !== expected.id || fixture.bytes !== expected.bytes || !HASH.test(fixture.sha256 ?? '')) {
       throw new Error(`Declared excluded sizing fixture ${fixture.id} differs from the reviewed exclusion`);
     }
-    if (fixture.bytes <= S1_INPUT_BYTES_MAX || !EXCLUDED_IDS.has(fixture.id)) {
-      throw new Error(`Declared excluded sizing fixture ${fixture.id} is not an above-envelope fixture`);
+    if (!EXCLUDED_IDS.has(fixture.id)) {
+      throw new Error(`Declared excluded sizing fixture ${fixture.id} is not a reviewed exclusion`);
     }
-    // Two reviews, two reasons: a fixture above the widening candidate is above the
-    // envelope under measurement; one between the demonstrated and candidate bounds
-    // is a review choice that must say it is outside the reviewed case matrix. Any
-    // other spelling is refused rather than accepted as free text.
-    const reviewedReason = fixture.bytes > S1_WIDENING_CANDIDATE.bound_bytes
+    // Two reviews, two reasons: a fixture above the demonstrated bound is an
+    // above-envelope observation, while one below it is a review choice that must
+    // say it is outside the reviewed case matrix. The reason is keyed on the
+    // demonstrated bound, not on the old candidate bound, so a below-bound
+    // exclusion is legitimate only with the reviewed `not_in_reviewed_case_matrix`.
+    const reviewedReason = fixture.bytes > S1_INPUT_BYTES_MAX
       ? 'input_bytes_above_envelope' : 'not_in_reviewed_case_matrix';
     if (fixture.reason !== reviewedReason) {
       throw new Error(`Declared excluded sizing fixture ${fixture.id} needs the reviewed reason ${reviewedReason}`);
@@ -271,15 +308,13 @@ export async function loadSizingFixtures(directory, mode = SIZING_ENVELOPE_MODE_
       || !Number.isInteger(fixture.width) || !Number.isInteger(fixture.height)
       || Math.min(fixture.width, fixture.height) <= 14 || fixture.width * fixture.height > SIZING_PROVIDER_ENVELOPE.fixture_pixels_max
       || Math.max(fixture.width / fixture.height, fixture.height / fixture.width) > 16) throw new Error('Invalid frozen image envelope');
-    if (EXCLUDED_IDS.has(fixture.id)) throw new Error(`Above-envelope sizing fixture ${fixture.id} must not be frozen for submission`);
-    // The restored exact fixture is committed above the demonstrated bound because
-    // it is the widening candidate. It may be loaded (so its hash is checked) but
-    // only the candidate case IDs can submit it, which
-    // `assertCaseInputsWithinEnvelope` enforces below. Every other fixture stays on
-    // the demonstrated bound.
-    const loadBound = fixture.id === S1_WIDENING_CANDIDATE.fixture
-      ? S1_WIDENING_CANDIDATE.bound_bytes : S1_INPUT_BYTES_MAX;
-    assertSizingInputEnvelope(fixture.bytes, `Frozen sizing fixture ${fixture.id}`, { bound: loadBound });
+    if (EXCLUDED_IDS.has(fixture.id)) throw new Error(`Excluded sizing fixture ${fixture.id} must not be frozen for submission`);
+    // Every frozen fixture is bounded by the one demonstrated envelope. The exact
+    // fixture sits exactly at the bound and may be loaded (so its hash is checked);
+    // `sizingUploadCases()` keeps its only submissions on the two burst PNG case IDs
+    // of the candidate matrix, and `assertCaseInputsWithinEnvelope` applies the one
+    // bound to every named input below.
+    assertSizingInputEnvelope(fixture.bytes, `Frozen sizing fixture ${fixture.id}`);
     const data = await readFile(new URL(fixture.file, directory));
     if (hashBytes(data) !== fixture.sha256 || data.length !== fixture.bytes) throw new Error(`Frozen fixture bytes changed: ${fixture.id}`);
     fixtures.set(fixture.id, { ...fixture, data });
@@ -303,12 +338,15 @@ export async function loadSizingFixtures(directory, mode = SIZING_ENVELOPE_MODE_
 
 // Every VTO generation sends the base photo plus the selected garments. Each of
 // those inputs is inside the per-input bound, but the aggregate they add up to is
-// a different quantity and stays unproven: no VTO generation has run in this
-// workload. Garments are ordered smallest-first so each shape carries the least
-// payload it can; the PNG garment is the 696,168-byte garment variant, not the
-// exact fixture. The five-garment shape that also carried the representative
-// larger 4K output is deferred to #172 with its aggregate recorded in
-// `S1_DEFERRED_VTO_SHAPE` rather than silently dropped.
+// a different quantity that the per-input bound does not bound: the authorised
+// `measure` run has now served every submitted shape to terminal `Complete`, and
+// the aggregates are recorded in `S1_INPUT_MEASURED_VTO_CASES`. Garments are
+// ordered smallest-first so each shape carries the least payload it can; the PNG
+// garment is the 696,168-byte garment variant, not the exact fixture. The
+// five-garment shape that also carried the representative larger 4K output is
+// deferred to #172 with its aggregate recorded in `S1_DEFERRED_VTO_SHAPE` rather
+// than silently dropped; its 2,953,744-byte aggregate is below the promoted
+// per-input bound, so the deferral is about the #172 base64-payload defect.
 export function sizingVtoCases() {
   return [0, 1].flatMap(repeat => SIZING_WORKLOAD.vto_shapes.map((shape, index) => {
     const garment_count = index < 2 ? 1 : 3;

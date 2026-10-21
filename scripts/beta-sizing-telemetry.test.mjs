@@ -11,8 +11,10 @@ import { hashBytes, loadSizingFixtures, sizingUploadCases, sizingVtoCases, order
   S1_VTO_GARMENT_POOL, VTO_GARMENT_FORMATS } from './beta-sizing-workload.mjs';
 import { SIZING_WORKLOAD } from './beta-sizing-benchmark.mjs';
 import { S1_DEFERRED_VTO_SHAPE, S1_DIAGNOSTIC_PROBE, S1_GARMENT_PNG_FIXTURE, S1_INPUT_BYTES_MAX,
-  S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_VTO_SHAPE_NAMING, S1_WIDENING_CANDIDATE,
-  SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE, assertCaseInputsWithinEnvelope,
+  S1_INPUT_ENVELOPE, S1_INPUT_EXCLUDED_FIXTURES, S1_INPUT_MEASURED_VTO_CASES,
+  S1_VTO_SHAPE_NAMING, S1_WIDENING_CANDIDATE,
+  SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE,
+  assertCaseInputsWithinEnvelope,
   assertSizingInputEnvelope } from './beta-sizing-envelope.mjs';
 
 function logs() {
@@ -129,23 +131,37 @@ test('freezes valid representative image bytes and exactly 12 uploads / eight VT
 
 test('keeps every sizing case input inside the demonstrated S1 envelope', async () => {
   const frozen = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
-  assert.equal(S1_INPUT_BYTES_MAX, 697_437);
-  assert.equal(S1_INPUT_ENVELOPE.largest_served_case_id, 'sequential-ordinary-jpg-1');
-  assert.deepEqual(S1_INPUT_ENVELOPE.measured_inputs.map(item => [item.case_id, item.bytes, item.terminal_state]), [
-    ['sequential-ordinary-jpg-0', 441_913, 'ready'],
-    ['sequential-ordinary-jpg-1', 697_437, 'ready'],
-    ['sequential-ordinary-png-0', 3_742_711, 'failed'],
-  ]);
-  // The measured inputs are the run's historical figures, not the shipped bytes.
-  assert.match(S1_INPUT_ENVELOPE.measured_inputs_basis, /historical run evidence/);
-  assert.equal(frozen.fixtures.get('trousers-ordinary.jpg').bytes, 388_182);
-  assert.equal(frozen.fixtures.get('jacket-ordinary.jpg').bytes, 664_453);
+  assert.equal(S1_INPUT_BYTES_MAX, 3_742_711);
+  assert.equal(S1_INPUT_ENVELOPE.largest_served_case_id, 'burst-ordinary-png-0');
+  assert.equal(S1_INPUT_ENVELOPE.largest_served_bytes, S1_INPUT_BYTES_MAX);
+  assert.equal(S1_INPUT_ENVELOPE.reference, 'beta-measurement-39529614042-1');
+  assert.equal(S1_INPUT_ENVELOPE.run_id, 39529614042);
+  assert.equal(S1_INPUT_ENVELOPE.run_attempt, 1);
+  assert.equal(S1_INPUT_ENVELOPE.stage, 'S1');
+  assert.equal(S1_INPUT_ENVELOPE.e2e_sha, 'b95c55036d81cd284fb6e0ad55c160b7e7c25860');
+  // The 12 measured uploads are the authorised measure run's cases, and their byte
+  // counts are the committed frozen bytes rather than historical figures.
+  const measured = S1_INPUT_ENVELOPE.measured_inputs;
+  assert.equal(measured.length, 12);
+  assert.equal(measured.length, SIZING_WORKLOAD.upload_tagging_cases);
+  assert.ok(measured.every(item => item.terminal_state === 'ready'));
+  assert.deepEqual(measured.map(item => item.case_id), sizingUploadCases().map(item => item.case_id));
+  for (const item of measured) {
+    const fixture = frozen.fixtures.get(item.fixture);
+    assert.ok(fixture, `${item.fixture} must be a frozen fixture`);
+    assert.equal(item.bytes, fixture.bytes, `${item.case_id} must record the frozen fixture bytes`);
+    assert.equal(item.width, fixture.width);
+    assert.equal(item.height, fixture.height);
+  }
+  assert.match(S1_INPUT_ENVELOPE.measured_inputs_basis, /authorised S1 `measure` run/);
+  assert.match(S1_INPUT_ENVELOPE.measured_inputs_basis, /committed frozen bytes/);
+  assert.match(S1_INPUT_ENVELOPE.measured_inputs_basis, /demonstrated bound/);
   // The bound is per submitted input, and says so.
   assert.match(S1_INPUT_ENVELOPE.input_bytes_max_basis, /per submitted input/);
   assert.match(S1_INPUT_ENVELOPE.vto_aggregate_limit, /not per aggregate/);
+  assert.match(S1_INPUT_ENVELOPE.vto_aggregate_limit, /does not bound/);
   // The bound is the largest input a passing case submitted, not a hopeful limit.
-  const served = S1_INPUT_ENVELOPE.measured_inputs.filter(item => item.terminal_state === 'ready');
-  assert.equal(Math.max(...served.map(item => item.bytes)), S1_INPUT_BYTES_MAX);
+  assert.equal(Math.max(...measured.map(item => item.bytes)), S1_INPUT_BYTES_MAX);
   const caseInputs = [...new Set([...sizingUploadCases(), ...sizingVtoCases()]
     .flatMap(entry => [entry.fixture, entry.base_fixture, ...(entry.garment_fixtures ?? [])].filter(Boolean)))];
   for (const id of caseInputs) {
@@ -153,13 +169,53 @@ test('keeps every sizing case input inside the demonstrated S1 envelope', async 
     assert.ok(fixture, `${id} must be a frozen fixture`);
     assert.ok(fixture.bytes <= S1_INPUT_BYTES_MAX, `${id} exceeds the S1 input envelope`);
   }
-  // A previously oversized fixture may not return as a submittable case, and the
-  // excluded record must keep naming it at its original size.
+  // The exact PNG sits exactly at the promoted bound; the bound is demonstrated, not
+  // an upper limit left above every served byte.
+  assert.equal(frozen.fixtures.get('sweater-ordinary.png').bytes, S1_INPUT_BYTES_MAX);
+  assert.ok(S1_INPUT_ENVELOPE.measured_inputs.some(item => item.case_id === 'burst-ordinary-png-0'
+    && item.fixture === 'sweater-ordinary.png' && item.bytes === S1_INPUT_BYTES_MAX));
+  // Exclusions keep their reviewed reason: below the bound is a review choice, above
+  // it is an above-envelope observation. None may be frozen or submitted.
   for (const excluded of S1_INPUT_EXCLUDED_FIXTURES) {
-    assert.ok(excluded.bytes > S1_INPUT_BYTES_MAX);
+    assert.equal(excluded.reason, excluded.bytes > S1_INPUT_BYTES_MAX
+      ? 'input_bytes_above_envelope' : 'not_in_reviewed_case_matrix');
     assert.equal(frozen.fixtures.has(excluded.id), false);
     assert.ok(caseInputs.every(id => id !== excluded.id));
   }
+  assert.ok(S1_INPUT_EXCLUDED_FIXTURES.find(item => item.id === 'base-photo-large.jpg').bytes < S1_INPUT_BYTES_MAX);
+});
+
+// The eight VTO observations are a separate measured record, not part of the
+// per-input bound. Each aggregate is recomputed from the frozen bytes and the
+// manifest is held to the same record, so a fixture re-encode cannot leave a stale
+// aggregate behind.
+test('records the eight measured VTO observations and recomputes their aggregates', async () => {
+  const frozen = await loadSizingFixtures(new URL('../tests/fixtures/beta-sizing/', import.meta.url));
+  const measured = S1_INPUT_MEASURED_VTO_CASES;
+  const cases = sizingVtoCases();
+  assert.equal(measured.length, SIZING_WORKLOAD.vto_generations);
+  assert.equal(measured.length, 8);
+  assert.deepEqual(measured.map(item => item.case_id), cases.map(item => item.case_id));
+  assert.deepEqual([...new Set(measured.map(item => item.shape))], [...SIZING_WORKLOAD.vto_shapes]);
+  for (const shape of SIZING_WORKLOAD.vto_shapes) assert.equal(measured.filter(item => item.shape === shape).length, 2);
+  assert.ok(measured.every(item => item.terminal_state === 'Complete'));
+  for (const [index, item] of measured.entries()) {
+    const expected = cases[index];
+    assert.equal(item.shape, expected.shape);
+    assert.equal(item.base_fixture, expected.base_fixture);
+    assert.equal(item.garment_count, expected.garment_count);
+    assert.deepEqual([...item.garment_fixtures], [...expected.garment_fixtures]);
+    assert.equal(item.aggregate_submitted_bytes,
+      vtoAggregateSubmittedBytes(frozen.fixtures, item.base_fixture, item.garment_fixtures));
+  }
+  // The two shipped aggregates are measured, and they are a separate quantity from
+  // the per-input bound: neither is required to be above or below it.
+  assert.deepEqual([...new Set(measured.map(item => item.aggregate_submitted_bytes))].sort((left, right) => left - right),
+    [933_902, 2_294_523]);
+  const manifest = JSON.parse(await readFile(new URL('../tests/fixtures/beta-sizing/fixture-manifest.json',
+    import.meta.url)));
+  assert.deepEqual(manifest.s1_input_envelope.measured_vto_cases, measured.map(item => ({
+    ...item, garment_fixtures: [...item.garment_fixtures] })));
 });
 
 test('orders VTO garments smallest-first and reports the aggregate the per-input bound does not cover', async () => {
@@ -170,10 +226,13 @@ test('orders VTO garments smallest-first and reports the aggregate the per-input
     assert.deepEqual(bytes, [...bytes].sort((left, right) => left - right),
       `${entry.case_id} must submit its garments smallest-first`);
     assert.equal(entry.garment_fixtures.length, entry.garment_count);
-    // The aggregate is reported for every observation and exceeds the single-input
-    // bound, which is exactly why it is a separate, unproven quantity.
+    // The aggregate is reported for every observation and is a separate measured
+    // quantity the per-input bound does not bound; each submitted garment itself is
+    // inside the per-input bound.
     const aggregate = vtoAggregateSubmittedBytes(frozen.fixtures, entry.base_fixture, entry.garment_fixtures);
-    assert.ok(Number.isInteger(aggregate) && aggregate > S1_INPUT_BYTES_MAX);
+    assert.ok(Number.isInteger(aggregate) && aggregate > 0);
+    assert.equal(S1_INPUT_MEASURED_VTO_CASES.find(item => item.case_id === entry.case_id)
+      .aggregate_submitted_bytes, aggregate);
     assert.ok(entry.garment_fixtures.every(id => frozen.fixtures.get(id).bytes <= S1_INPUT_BYTES_MAX));
   }
   assert.equal(orderedSizingGarments(frozen.fixtures, 1)[0].id, 'trousers-ordinary.jpg');
@@ -282,7 +341,9 @@ test('records the deferred five-garment 4K VTO shape rather than dropping it', a
     'the deferred base-photo figure must be the frozen base photo bytes');
   assert.equal(deferred.aggregate_submitted_bytes, recomputedGarments + recomputedBase,
     'the deferred aggregate must be the sum of the frozen inputs it names');
-  assert.ok(deferred.aggregate_submitted_bytes > S1_INPUT_BYTES_MAX);
+  // The deferred aggregate is now below the promoted per-input bound, so it stays
+  // deferred for the #172 VTO base64-payload defect, not because of this bound.
+  assert.ok(deferred.aggregate_submitted_bytes < S1_INPUT_BYTES_MAX);
   // It is about 79% of the single input whose base64 payload exhausted the budget.
   assert.ok(deferred.garment_only_bytes / 3_742_711 > 0.6);
   // The record may not be left behind by a re-encode: the figures above are held to
@@ -322,7 +383,7 @@ test('refuses a manifest fixture or case input outside its reviewed envelope', a
     // Mirrors the reviewed exclusion record's shape, with a synthetic id and byte
     // count so this test can place any fixture in the excluded list.
     const excludedRecord = (id, bytes, reason) => ({ id, bytes, sha256: 'b'.repeat(64),
-      reason: reason ?? (bytes > S1_WIDENING_CANDIDATE.bound_bytes
+      reason: reason ?? (bytes > S1_INPUT_BYTES_MAX
         ? 'input_bytes_above_envelope' : 'not_in_reviewed_case_matrix') });
     const frozenEntry = (id, bytes) => ({ ...shape(id), bytes: bytes.length, sha256: hashBytes(bytes) });
     const writeFixture = async (id, bytes) => {
@@ -352,17 +413,11 @@ test('refuses a manifest fixture or case input outside its reviewed envelope', a
     };
     const manifest = (fixtures, { excluded, deferred, candidate, diagnostic } = {}) => ({ schema_version: 1, fixtures,
       diagnostic: diagnostic ?? diagnosticRecord,
-      s1_input_envelope: { reference: S1_INPUT_ENVELOPE.reference, run_url: S1_INPUT_ENVELOPE.run_url,
-        stage: S1_INPUT_ENVELOPE.stage, e2e_sha: S1_INPUT_ENVELOPE.e2e_sha,
-        input_bytes_max: S1_INPUT_BYTES_MAX, largest_served_bytes: S1_INPUT_BYTES_MAX,
-        input_bytes_max_basis: S1_INPUT_ENVELOPE.input_bytes_max_basis,
-        measured_inputs_basis: S1_INPUT_ENVELOPE.measured_inputs_basis,
-        vto_aggregate_limit: S1_INPUT_ENVELOPE.vto_aggregate_limit,
-        vto_shape_naming: S1_INPUT_ENVELOPE.vto_shape_naming,
-        widening_candidate: candidate ?? { ...S1_WIDENING_CANDIDATE,
-          case_ids: [...S1_WIDENING_CANDIDATE.case_ids] },
+      // The declared envelope is the reviewed module envelope, with only the records
+      // this test deliberately reshapes overridden.
+      s1_input_envelope: { ...S1_INPUT_ENVELOPE,
+        widening_candidate: candidate ?? S1_WIDENING_CANDIDATE,
         deferred_vto_shape: deferred ?? S1_DEFERRED_VTO_SHAPE,
-        measured_inputs: S1_INPUT_ENVELOPE.measured_inputs,
         excluded_fixtures: excluded ?? S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes)) } });
     // The frozen manifest is strict JSON with no byte-order mark; write the same here.
     const write = value => writeFile(join(directory, 'fixture-manifest.json'),
@@ -382,31 +437,33 @@ test('refuses a manifest fixture or case input outside its reviewed envelope', a
     assert.equal((await loadSizingFixtures(directoryUrl, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE)).fixtures.size,
       inEnvelope.length);
 
-    // A frozen fixture above its reviewed bound is refused, even though the manifest
-    // and the file bytes agree with each other. Only the candidate fixture may exceed
-    // the demonstrated bound, and then only up to the candidate bound.
+    // A frozen fixture above the demonstrated bound is refused, even though the
+    // manifest and the file bytes agree with each other. There is no per-case
+    // allowance left: the exact fixture is bounded by the same number in both modes.
     const replace = entry => inEnvelope.map(item => item.id === entry.id ? entry : item);
     const oversizedWebp = await writeFixture('sweater-ordinary.webp', Buffer.alloc(S1_INPUT_BYTES_MAX + 1, 7));
     await write(manifest(replace(oversizedWebp)));
     await assert.rejects(() => loadSizingFixtures(directoryUrl), /above the demonstrated S1 input envelope/);
     // Restore the file the later manifests describe, so each rejection is isolated.
     await writeFile(join(directory, 'sweater-ordinary.webp'), Buffer.alloc(1_000, 7));
-    const overCandidate = await writeFixture(S1_WIDENING_CANDIDATE.fixture,
-      Buffer.alloc(S1_WIDENING_CANDIDATE.bound_bytes + 1, 7));
-    await write(manifest(replace(overCandidate)));
-    await assert.rejects(() => loadSizingFixtures(directoryUrl), /above the demonstrated S1 input envelope/);
-    const candidateSized = await writeFixture(S1_WIDENING_CANDIDATE.fixture,
-      Buffer.alloc(S1_WIDENING_CANDIDATE.bound_bytes, 7));
-    await write(manifest(replace(candidateSized)));
-    const candidateLoaded = await loadSizingFixtures(directoryUrl, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
-    assert.equal(candidateLoaded.fixtures.get(S1_WIDENING_CANDIDATE.fixture).bytes,
-      S1_WIDENING_CANDIDATE.bound_bytes);
-    assert.equal(candidateLoaded.envelopeMode, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE);
+    const overBound = await writeFixture(S1_WIDENING_CANDIDATE.fixture,
+      Buffer.alloc(S1_INPUT_BYTES_MAX + 1, 7));
+    await write(manifest(replace(overBound)));
+    for (const mode of [SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE]) {
+      await assert.rejects(() => loadSizingFixtures(directoryUrl, mode), /above the demonstrated S1 input envelope/);
+    }
+    const atBound = await writeFixture(S1_WIDENING_CANDIDATE.fixture, Buffer.alloc(S1_INPUT_BYTES_MAX, 7));
+    await write(manifest(replace(atBound)));
+    for (const mode of [SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE]) {
+      const loaded = await loadSizingFixtures(directoryUrl, mode);
+      assert.equal(loaded.fixtures.get(S1_WIDENING_CANDIDATE.fixture).bytes, S1_INPUT_BYTES_MAX);
+      assert.equal(loaded.envelopeMode, mode);
+    }
 
     // A declared exclusion that disagrees with the reviewed one is refused: the
     // manifest may not quietly re-label, resize or re-order an excluded fixture. The
-    // reason is bound to the candidate bound, so a below-candidate exclusion is only
-    // accepted with `not_in_reviewed_case_matrix` and an above-candidate one only with
+    // reason is bound to the demonstrated bound, so a below-bound exclusion is only
+    // accepted with `not_in_reviewed_case_matrix` and an above-bound one only with
     // `input_bytes_above_envelope`.
     const stated = S1_INPUT_EXCLUDED_FIXTURES.map(item => excludedRecord(item.id, item.bytes, item.reason));
     await write(manifest(inEnvelope, { excluded: [{ ...stated[0], bytes: 1_000 }, ...stated.slice(1)] }));
@@ -444,17 +501,16 @@ test('refuses a manifest fixture or case input outside its reviewed envelope', a
     assert.doesNotThrow(() => assertSizingInputEnvelope(S1_INPUT_BYTES_MAX, 'case input'));
     const oversized = new Map(accepted.fixtures);
     oversized.set(S1_WIDENING_CANDIDATE.fixture, { bytes: S1_INPUT_BYTES_MAX + 1 });
-    // Demonstrated mode refuses the exact fixture even under a candidate case ID.
+    // Both modes refuse an above-bound input, even under a reviewed burst PNG case
+    // ID: there is no per-case allowance left, and the mode only selects the matrix.
+    for (const mode of [SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE]) {
+      assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
+        [{ case_id: 'burst-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }], { mode }),
+      /above the demonstrated S1 input envelope/);
+    }
     assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
-      [{ case_id: 'burst-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }]),
-    /above the demonstrated S1 input envelope/);
-    // Candidate mode admits it only for the reviewed case IDs and only as `fixture`.
-    assert.doesNotThrow(() => assertCaseInputsWithinEnvelope(oversized,
-      [{ case_id: 'burst-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }],
-      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }));
-    assert.doesNotThrow(() => assertCaseInputsWithinEnvelope(oversized,
       [{ case_id: 'burst-ordinary-png-1', fixture: S1_WIDENING_CANDIDATE.fixture }],
-      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }));
+      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
     assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
       [{ case_id: 'sequential-ordinary-png-0', fixture: S1_WIDENING_CANDIDATE.fixture }],
       { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
@@ -467,12 +523,14 @@ test('refuses a manifest fixture or case input outside its reviewed envelope', a
     assert.throws(() => assertCaseInputsWithinEnvelope(oversized,
       [{ base_fixture: 'base-photo-ordinary.jpg', garment_fixtures: ['bag-ordinary.jpg', S1_WIDENING_CANDIDATE.fixture] }],
       { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
-    // A different fixture is not admitted by a candidate case ID.
+    // A different fixture above the bound is refused under a candidate case ID too.
     const oversizedOther = new Map(accepted.fixtures);
     oversizedOther.set('sweater-ordinary.webp', { bytes: S1_INPUT_BYTES_MAX + 1 });
-    assert.throws(() => assertCaseInputsWithinEnvelope(oversizedOther,
-      [{ case_id: 'burst-ordinary-png-0', fixture: 'sweater-ordinary.webp' }],
-      { mode: SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE }), /above the demonstrated S1 input envelope/);
+    for (const mode of [SIZING_ENVELOPE_MODE_DEMONSTRATED, SIZING_ENVELOPE_MODE_WIDENING_CANDIDATE]) {
+      assert.throws(() => assertCaseInputsWithinEnvelope(oversizedOther,
+        [{ case_id: 'burst-ordinary-png-0', fixture: 'sweater-ordinary.webp' }], { mode }),
+      /above the demonstrated S1 input envelope/);
+    }
     assert.throws(() => assertCaseInputsWithinEnvelope(accepted.fixtures, [{ fixture: 'sweater-large.png' }]),
       /excluded from the demonstrated S1 envelope/);
     assert.throws(() => assertCaseInputsWithinEnvelope(accepted.fixtures, [{ base_fixture: 'base-photo-large.jpg' }]),

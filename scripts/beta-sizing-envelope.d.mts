@@ -1,6 +1,9 @@
 export interface SizingInputCaseReference {
-  case_id: string; fixture: string; bytes: number; width: number; height: number;
-  terminal_state: string; seconds?: number;
+  case_id: string; fixture: string; bytes: number; width: number; height: number; terminal_state: string;
+}
+export interface SizingMeasuredVtoCase {
+  case_id: string; shape: string; base_fixture: string; garment_count: number;
+  garment_fixtures: readonly string[]; aggregate_submitted_bytes: number; terminal_state: string;
 }
 export interface SizingExcludedFixture {
   id: string; bytes: number; width: number; height: number; sha256: string; size_class: string; reason: string;
@@ -26,7 +29,9 @@ export interface SizingInputEnvelope {
   schema_version: number; reference: string; run_url: string; run_id: number; run_attempt: number;
   stage: string; e2e_sha: string; workload: string; input_bytes_max: number; input_bytes_max_basis: string;
   measured_inputs_basis: string; largest_served_case_id: string; largest_served_bytes: number;
-  measured_inputs: readonly SizingInputCaseReference[]; excluded_fixtures: readonly SizingExcludedFixture[];
+  measured_inputs: readonly SizingInputCaseReference[];
+  measured_vto_cases: readonly SizingMeasuredVtoCase[];
+  excluded_fixtures: readonly SizingExcludedFixture[];
   excluded_reason: string; widening_candidate: SizingWideningCandidate;
   vto_aggregate_limit: string; vto_shape_naming: string;
   deferred_vto_shape: SizingDeferredVtoShape; description: string;
@@ -36,6 +41,7 @@ export const S1_INPUT_ENVELOPE: SizingInputEnvelope;
 export const S1_INPUT_ENVELOPE_REFERENCE: Record<string, string | number>;
 export const S1_INPUT_MEASURED_BASIS: string;
 export const S1_INPUT_MEASURED_CASES: readonly SizingInputCaseReference[];
+export const S1_INPUT_MEASURED_VTO_CASES: readonly SizingMeasuredVtoCase[];
 export const S1_INPUT_EXCLUDED_FIXTURES: readonly SizingExcludedFixture[];
 export const S1_WIDENING_CANDIDATE: SizingWideningCandidate;
 export const S1_GARMENT_PNG_FIXTURE: string;
@@ -51,9 +57,6 @@ export const SIZING_VTO_AGGREGATE_LIMIT: string;
 export function assertSizingEnvelopeMode(mode: string): string;
 export function resolveSizingEnvelopeMode(value?: string | undefined): string;
 export function assertSizingEnvelopeModeScope(mode: string, scope?: { operation?: string; stage?: string }): string;
-export function sizingCaseInputBound(
-  mode: string, caseId: string | undefined, fixtureId: string, options?: { bound?: number },
-): number;
 export function sizingEnvelopeRecord(mode?: string): SizingEnvelopeRecord;
 export function assertSizingInputEnvelope(bytes: number, label: string, options?: { bound?: number }): number;
 export function orderedSizingGarments(
