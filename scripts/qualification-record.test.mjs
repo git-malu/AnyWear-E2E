@@ -144,6 +144,7 @@ test('creates and verifies a checksummed passing v3 record from the live tuple',
   assert.deepEqual(record.test.scenarios, [
     { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 },
+    { file: 'tests/vto.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/wardrobe.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/worker-smoke.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
   ]);

@@ -253,21 +253,21 @@ test('derives each invocation tag from package.json and refuses any that selects
   }
 });
 
-test('the spec titles, the scenario inventory and the release-gating selection agree on the four members', () => {
+test('the spec titles, the scenario inventory and the release-gating selection agree on the five members', () => {
   const declarations = assertScenarioDeclarations();
   assert.deepEqual(declarations.map(({ file }) => file), [
     'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
-    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(qualificationSelection(), { invocation: 'test', tag: '@regression' });
   assert.deepEqual(selectedScenarios('@regression').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   // Discovery is wider than the gate: the measurement scenario is selected by @full-stack
   // and by nothing the release gate runs.
   assert.deepEqual(selectedScenarios('@full-stack').map(({ file }) => file), [
     'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
-    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(selectedScenarios('@instrumentation').map(({ file }) => file), ['tests/beta-sizing.spec.ts']);
 });
@@ -314,10 +314,11 @@ test('refuses a report with no scenario, an unknown status, or a file that disag
 });
 
 test('refuses a selection that omits a declared member or adds one the tag does not select', () => {
-  const regression = ['tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
+  const regression = ['tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
   // A record that drops a declared member silently narrows what it claims to have qualified.
   assert.throws(() => assertTestSelection(testMember('@regression', [
-    scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }), scenario('tests/worker-smoke.spec.ts'),
+    scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
   ])), /omits tests\/wardrobe\.spec\.ts/);
   // `tests/beta-sizing.spec.ts` is selected by `@full-stack` and by nothing the release gate
   // runs, so listing it claims a scenario the gate did not run — the discovery-versus-gated
@@ -334,6 +335,7 @@ test('refuses a selection that omits a declared member or adds one the tag does 
   assert.doesNotThrow(() => assertTestSelection(testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts'),
     scenario('tests/worker-smoke.spec.ts'),
   ])));
@@ -343,6 +345,7 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   const member = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     // wardrobe.spec.ts has no `test.skip(condition)` at all: a collected-and-skipped entry
     // here would excuse an acceptance path that never ran.
     scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
@@ -354,6 +357,7 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   assert.throws(() => assertTestSelection(testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { collected: 2, skipped: 1 }),
     scenario('tests/worker-smoke.spec.ts'),
   ])), /tests\/wardrobe\.spec\.ts records 1 skipped test/);
@@ -363,6 +367,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   const failed = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { outcome: 'failed' }),
     scenario('tests/worker-smoke.spec.ts'),
   ]);
@@ -373,6 +378,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   assert.throws(() => buildTestMember(reportBytes([
     fileSuite('tests/auth-startup.spec.ts', ['expected']),
     fileSuite('tests/auth.spec.ts', ['skipped']),
+    fileSuite('tests/vto.spec.ts', ['expected']),
     fileSuite('tests/wardrobe.spec.ts', ['unexpected']),
     fileSuite('tests/worker-smoke.spec.ts', ['expected']),
   ])), /tests\/wardrobe\.spec\.ts failed/);
@@ -382,6 +388,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   const nothing = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/worker-smoke.spec.ts', { outcome: 'skipped', skipped: 1 }),
   ]);
