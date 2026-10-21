@@ -404,8 +404,11 @@ The Infra-owned versioned Step Functions cleanup capability invokes Service's fi
 application-data task. An ordinary qualification cleanup and a protected `recover`
 dispatch submit the same strict normal-mode envelope and enter the same resume/verify/
 retry rule. Recovery validates the completed original E2E owner and captured worker
-subjects; unknown or unrecovered identities and quarantined leases remain in its
-manifest and fail recovery. The account artifact preserves the capability execution,
+subjects. A quarantined record whose captured subject and run-scoped address are intact is
+repaired by the same reviewed cleanup — capability tuple, Service commit proof, absence
+readback and ledger `deleted` with the original reason preserved — while a record whose
+ownership is unproven stays terminal, remains in the manifest and fails recovery. The
+operator path is in [docs/account-recovery.md](docs/account-recovery.md). The account artifact preserves the capability execution,
 source/image binding and exact cleanup request before any Cognito deletion, including
 when later cleanup fails. Legacy `service-cleanup-run.json` records remain accepted as
 historical recovery input; new runs use `service-cleanup-operation.json`. E2E does not

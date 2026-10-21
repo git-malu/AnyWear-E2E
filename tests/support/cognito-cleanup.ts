@@ -38,3 +38,19 @@ export async function deleteCapturedCognitoIdentity(identity: CapturedIdentity, 
     if ((error as Error).name !== 'UserNotFoundException' && !/UserNotFoundException/.test((error as Error).message)) throw error;
   }
 }
+
+/**
+ * The subject-verified absence readback that a transport deletion alone cannot
+ * prove. The identity is only terminal when a fresh read of the captured email
+ * ends in `UserNotFoundException`; a returned identity, or a read that cannot
+ * complete, keeps the record non-terminal so the caller retains and reports it.
+ */
+export async function assertCapturedCognitoAbsence(identity: CapturedIdentity, io: CognitoCleanupIo): Promise<void> {
+  try {
+    await io.getUser(identity.email);
+  } catch (error) {
+    if ((error as Error).name === 'UserNotFoundException' || /UserNotFoundException/.test((error as Error).message)) return;
+    throw error;
+  }
+  throw new Error('Cognito identity is still present after deletion');
+}

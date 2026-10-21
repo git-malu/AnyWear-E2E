@@ -63,6 +63,29 @@ agreeing about the invocations that exist.
 
 ## Scenarios
 
+### `tests/vto.spec.ts`
+
+| Field | Value |
+| --- | --- |
+| Declared title | `Virtual try-on @regression @full-stack` |
+| Policy class | Full deployed system E2E |
+| Tags | `@regression @full-stack` |
+| Intent | One single-garment virtual try-on completes end to end against the deployed Client and Service: the garment reaches terminal `ready`, the base photo is accepted, the generation is accepted with exactly one credit debit, reaches terminal `Complete` with a monotonic state version, returns retrievable image bytes, renders in the Client, and takes no second debit |
+| Current caller | The `full` operation of the protected `qualify` entry, through the release-gating selection. `test:smoke` does not select it |
+| Assertion boundary | Deployed Client UI and Service HTTP API together, with the Service's real auto-tagging and VTO provider calls in the path |
+| Actual operation | Leases a synthetic Cognito identity, creates a wardrobe item through the real Client upload flow, uploads one base photo through the Mirror UI, submits one VTO generation with that garment, polls it to terminal `Complete`, retrieves the generated image, and asserts the Client's rendered result |
+| Owner | AnyWear-E2E maintainers |
+| Lifecycle | Current. It is the only end-to-end coverage of the VTO path; the sizing workload that also exercised it is retired by this issue's separate deletion PR |
+| Command | `pnpm test:regression`, and `pnpm test` because the suite step runs the same selection |
+| Default trigger | The `full` operation of the `qualify` entry, whose selection this scenario is part of |
+| Cost | External write and paid provider cost: one leased identity, one uploaded garment object, one uploaded base photo, one auto-tagging task and one VTO generation per attempt. Not separately metered |
+| Side effects | Application rows, two uploaded S3 objects, provider spend, and a Cognito identity |
+| Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |
+| Disposition | Retain |
+| Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation` as they are created, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) for the routed resources and the captured base-photo id's absence from the authenticated `GET /vto/base-photos` list, independently of the product assertion, and a teardown that is not `passed` quarantines the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
+| Verification rationale | The product assertion stands alone; teardown is reported beside it and never rewrites it. The terminal wait is a bound on the platform's 900 s VTO recovery floor, not a measurement of observed provider latency, so the scenario does not report the platform's own recovery as a product failure. `retries: 0` is configured, because each attempt spends real provider budget and a failed attempt must not be repeated automatically. The terminal `Complete`, the image bytes, the single debit and the Client render can only be proven by a deployed run |
+| Red result means | A release-gating product failure in the try-on path, or an environment/provider condition. A `Failed` generation fails immediately instead of waiting out the recovery floor |
+
 ### `tests/wardrobe.spec.ts`
 
 | Field | Value |

@@ -70,6 +70,18 @@ test('recovery captures this run scope\u2019s scoped worker addresses and refuse
   // The retained stable rows a pre-#129 artifact captured stay recoverable.
   assert.deepEqual(prepareAccountRecovery(structuredClone(manifest), run, 123, 1).accounts.map(account => account.status),
     ['cleanup_pending', 'cleanup_pending']);
+  // A quarantined record whose captured subject and address are intact is the
+  // same request; the quarantine changed the status, not the ownership.
+  const quarantined = structuredClone(manifest);
+  quarantined.accounts[0].status = 'quarantined';
+  assert.deepEqual(prepareAccountRecovery(quarantined, run, 123, 1).accounts.map(account => account.status),
+    ['cleanup_pending', 'cleanup_pending']);
+  // Without the captured subject nothing proves the identity, so quarantine
+  // stays terminal and no request may name it.
+  const unproven = structuredClone(manifest);
+  unproven.accounts[0].status = 'quarantined';
+  delete unproven.accounts[0].subject;
+  assert.equal(prepareAccountRecovery(unproven, run, 123, 1).accounts[0].status, 'quarantined');
 });
 
 test('recovery artifact uses its own trusted run/attempt and downloaded digest', async () => {
@@ -116,6 +128,34 @@ test('recovery artifact uses its own trusted run/attempt and downloaded digest',
     const legacyWrongHash = operation(legacy); legacyWrongHash.operation.input_sha256 = 'f'.repeat(64);
     await assert.rejects(prepareRecoveryFiles(env, { api, extract: () => ({ ...files, 'service-cleanup-operation.json': encode(legacyWrongHash) }), loadDiagnostic: async () => diagnostic }), /bind/);
     await assert.rejects(prepareRecoveryFiles({ ...env, RECOVERY_PREVIOUS_RUN_ID: '456' }, { api: () => { throw new Error('must refuse before API access'); }, loadDiagnostic: async () => diagnostic }), /captured identities only/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('an artifact without cleanup-operation evidence originates the canonical request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'account-recovery-originate-'));
+  const archive = Buffer.from('authenticated archive bytes without operation evidence');
+  const artifact = { id: 56, name: 'beta-account-lifecycle-123-1', digest: `sha256:${byteHash(archive)}`, expired: false,
+    created_at: '2026-10-08T00:10:00Z', expires_at: '2099-01-01T00:00:00Z', workflow_run: { id: run.id, head_sha: run.head_sha } };
+  // The teardown quarantined one worker; no account-level operation was ever
+  // attempted, so the artifact carries only the manifest.
+  const quarantined = structuredClone(manifest);
+  quarantined.accounts[0].status = 'quarantined';
+  const api = path => {
+    if (path.endsWith('/attempts/1')) return JSON.stringify(run);
+    if (path.includes('/artifacts?')) return JSON.stringify({ total_count: 1, artifacts: [artifact] });
+    if (path.endsWith('/zip')) return archive;
+    throw new Error('Unexpected API read');
+  };
+  const env = { ...base, E2E_ACCOUNT_BUDGET_PATH: join(directory, 'account-budget.json'), GITHUB_OUTPUT: join(directory, 'outputs') };
+  try {
+    await prepareRecoveryFiles(env, { api, extract: () => ({ 'account-budget.json': encode(quarantined) }), loadDiagnostic: async () => diagnostic });
+    const written = JSON.parse(await readFile(env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
+    // The proven quarantined record is the canonical request now; the ordinary
+    // cleanup originates it instead of the dispatch refusing.
+    assert.deepEqual(written.accounts.map(account => account.status), ['cleanup_pending', 'cleanup_pending']);
+    const output = await readFile(env.GITHUB_OUTPUT, 'utf8');
+    assert.match(output, /original_operation_path=\n/);
+    assert.equal(existsSync(join(directory, 'original-service-cleanup-operation.json')), false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -174,8 +214,16 @@ test('the formal cleanup caller runs the single operation and never shrinks the 
   await writeFile(original, JSON.stringify(operation(legacy)));
   const env = { ...base, E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: original, E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: join(directory, 'diagnostic.json') };
   const calls = [];
-  const io = { getUser: async username => { calls.push('get'); return { Username: manifest.accounts.find(account => account.email === username).subject, UserAttributes: [{ Name: 'sub', Value: manifest.accounts.find(account => account.email === username).subject }, { Name: 'email', Value: username }] }; },
-    deleteUser: async () => { calls.push('delete'); } };
+  const deleted = new Set();
+  const io = { getUser: async username => {
+      calls.push('get');
+      const account = manifest.accounts.find(candidate => candidate.email === username);
+      if (!account) throw new Error('Unexpected Cognito read');
+      // A deleted subject is absent on the readback; a live one still resolves.
+      if (deleted.has(account.subject)) throw Object.assign(new Error('User does not exist.'), { name: 'UserNotFoundException' });
+      return { Username: account.subject, UserAttributes: [{ Name: 'sub', Value: account.subject }, { Name: 'email', Value: username }] };
+    },
+    deleteUser: async username => { calls.push('delete'); deleted.add(username); } };
   const partial = structuredClone(manifest); partial.accounts[0].status = 'deleted';
   let proved = false;
   let bound;
