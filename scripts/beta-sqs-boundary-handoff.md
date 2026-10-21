@@ -2,8 +2,9 @@
 
 Wire producer: Service PR [#42](https://github.com/git-malu/AnyWear-Service/pull/42),
 immutable source `80bb9deebec57e6c302439c2a6030c1744ef7a9e`.
-This prospective producer remains unmerged. The E2E compatibility pin is unchanged;
-this module does not claim that Beta runs the prospective wire contract.
+This prospective producer remains unmerged. Since AnyWear #180 the qualification path
+reads the live deployed tuple and does not read the retained compatibility pin; this module
+does not claim that Beta runs the prospective wire contract.
 
 `beta-sqs-boundary-protocol.mjs` independently consumes a strict supported Beta subset
 of the producer schema, sorted-key JSON bytes, SHA256 intent/document hashes and Ed25519

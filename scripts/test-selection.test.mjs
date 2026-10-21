@@ -413,3 +413,27 @@ test('the qualification workflow writes the report the record reads, in every ar
   assert.deepEqual(suite.run.map((line) => line.trim()).filter(Boolean), ['node scripts/execution-guard.mjs', 'pnpm test']);
   assert.doesNotMatch(suite.run.join('\n'), /--reporter|--output/);
 });
+
+// #180: the entries that carry a qualification are the live-tuple dispatch and the recorded
+// release approval. This is a source assertion so the next workflow change cannot quietly
+// reintroduce a committed compatibility read into the active qualification path.
+test('the qualification entry dispatches the live tuple and approves through the recorded gate', () => {
+  assert.doesNotMatch(workflow, /compatibility\.json/);
+  assert.doesNotMatch(workflow, /check-compatibility\.mjs/);
+  assert.doesNotMatch(workflow, /trusted-deployment-inputs\.mjs/);
+  assert.doesNotMatch(workflow, /\.infra-source/);
+  assert.match(workflow, /node scripts\/service-release\.mjs/);
+  assert.match(workflow, /minimum-supported-client\.json/);
+  for (const input of ['expected_service_commit', 'expected_client_commit', 'trigger', 'dispatched_by']) {
+    assert.ok(workflow.includes(`\n      ${input}:\n`), `${input} must be a declared dispatch input`);
+  }
+  assert.match(workflow, /options: \[manual, deploy-smoke, release-qualify\]/);
+  // The release decision is the green full run plus the sealed record: no approval
+  // Environment and no approval job exist.
+  assert.doesNotMatch(workflow, /beta-release-approval|\n {2}approve:\n|AwaitingApproval/);
+  assert.match(workflow, /node scripts\/verify-qualification-record\.mjs/);
+  // The live endpoints the preflight compares are workflow constants, so they are readable
+  // without the protected environment.
+  assert.match(workflow, /E2E_CLIENT_URL: 'https:\/\/[a-z0-9-]+\.cloudfront\.net'/);
+  assert.match(workflow, /E2E_SERVICE_URL: 'https:\/\/[a-z0-9-]+\.cloudfront\.net'/);
+});

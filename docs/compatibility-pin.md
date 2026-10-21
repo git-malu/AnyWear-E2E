@@ -1,5 +1,19 @@
 # Moving the system-test compatibility pin
 
+> **Retained inert until Wave 2 (#180).** Qualification no longer reads `compatibility.json`.
+> Since AnyWear #180 the release-qualification path reads the live deployed tuple and writes
+> qualification record v3, and the pin, its tools and this document are kept only as the
+> revert target until a real `full` run passes against the live tuple. No
+> **release-qualification** path reads this contract: `beta-qualification.yml`, `pnpm check`,
+> `test:core` and `test:list` are pin-free. The one remaining executed read is the `measure`
+> sizing workload (`tests/beta-sizing.spec.ts` → `scripts/beta-sizing-source.mjs`), which is a
+> measurement, not qualification, and is #141's deletion set. The retained pin tools are inert
+> after Wave 1: `validate-compatibility-pin.mjs` and `migrate-compatibility.mjs` import the
+> deleted `trusted-deployment-inputs.mjs`, so they are **not runnable** and work only after
+> reverting the Wave-1 PR; no `compatibility:*` script exists. Do not follow this document for
+> a deployment; see [README](../README.md#ci-model) and
+> [scenario-inventory.md](scenario-inventory.md). It is deleted in Wave 2.
+
 `compatibility.json` is the system-test compatibility contract: it records the
 deployed identity that Beta qualification accepts. Qualification refuses an
 environment whose live tuple no longer matches it, so the pin has to move when the
@@ -14,11 +28,9 @@ itself is documented in [compatibility-v3.md](compatibility-v3.md).
 
 A move also pins the oldest supported Client: `minimum_supported_client: { version, sha }`.
 The floor is the deployed Service's live `/health.minimum_client_version`; the SHA is the
-Client commit whose `client-version.json` declares that version. `version` and `sha` are
-required by `scripts/validate-compatibility-pin.mjs` on every move. The committed pin
-deliberately moves **after** the deployment that first serves the floor: before that move
-it has no member, `pnpm check` still accepts it, and operation `full` refuses to write a
-qualification record until the member exists.
+Client commit whose `client-version.json` declares that version. After Wave 1 the live floor
+lives in `minimum-supported-client.json` and is enforced against the live Service by the
+qualification path; the pin's member is read only by the retained inert tools described below.
 
 ## Who owns moving it
 
@@ -222,7 +234,9 @@ records](#deferred-records-contract-history) as contract history. The
 the pre-deployment committed pin does not have it, and `full` stays closed until
 that move lands.
 
-Four places bind it, by symbol:
+Four places bind it, by symbol. **After Wave 1 this table describes the reverted tree:**
+`trusted-deployment-inputs.mjs` and `validateInfraEvidence` no longer exist, and the validator
+cannot run (see [The offline validator](#the-offline-validator-inert-after-wave-1)).
 
 | Code | What it binds |
 | --- | --- |
@@ -322,12 +336,16 @@ parameters, deploy order no longer matters. One authorized Platform → Workload
 deployment succeeded; Issue #166 renamed that slice to Runtime without changing
 the record shape.
 
-## The offline validator
+## The offline validator (inert after Wave 1)
 
-`scripts/validate-compatibility-pin.mjs`, exposed as `pnpm compatibility:pin`. No
-token, no network, no AWS.
+`scripts/validate-compatibility-pin.mjs` (formerly `pnpm compatibility:pin`) is **not runnable
+after Wave 1**. It imports `assertDeploymentBinding` from the deleted
+`scripts/trusted-deployment-inputs.mjs`, and the `compatibility:*` scripts were removed from
+`package.json`; it works only after reverting the Wave-1 PR. The description below is retained
+as the revert-target procedure, not as a current command. No token, no network, no AWS.
 
 ```bash
+# Only on a tree with the Wave-1 PR reverted; this command does not work on the current branch.
 node scripts/validate-compatibility-pin.mjs \
   --platform-record .qualification-inputs/platform-deployment-record.json \
   --deployment-record .qualification-inputs/deployment-record.json \
@@ -368,13 +386,19 @@ The documented hole: neither record carries its artifact id, so no offline input
 constrains `platform.record.artifact_id` or `deployment.artifact_id`. The other
 properties only the live GitHub API can supply are out of reach here too: each
 run's conclusion, branch, dispatch type and head, each artifact's name and
-lifetime, and the Service release's immutability and manifest bytes. Those stay
-enforced at qualification time by `scripts/trusted-deployment-inputs.mjs`.
+lifetime, and the Service release's immutability and manifest bytes. The retired
+consumer enforced those while it existed; after Wave 1 they moved to the live
+path — `scripts/service-release.mjs` (immutable release and manifest bytes),
+`verifyQualificationForPromotion` and the credential-free `record` job (run,
+artifact, lifetime), and the Infra production preflight as the record consumer —
+and the pin validator is inert, so it enforces nothing on this branch.
 
-It is **not a gate**. The validator does not join `pnpm check`; only its test joins
-the `test:core` list that `pnpm check` already runs. There is no new workflow, no
-new required check and no new release gate. Green means the pin is coherent with
-both records and with the previous pin — **coherence, not authority**.
+It is **not a gate**. The validator and its test are both inert after Wave 1:
+neither joins `pnpm check`, because `test:core` no longer lists
+`validate-compatibility-pin.test.mjs` (or `migrate-compatibility.test.mjs`) and
+the validator itself is not runnable. There is no new workflow, no new required
+check and no new release gate. On a reverted tree, green meant the pin is coherent
+with both records and with the previous pin — **coherence, not authority**.
 
 ## Checklist
 
@@ -397,9 +421,9 @@ One pass, end to end. Every step carries the command or the exact field to read.
    `gh api repos/git-malu/AnyWear-Service/actions/runs/<workload_run_id>/artifacts --jq '.artifacts[] | select(.name == "service-deployment-<workload_run_id>-<workload_run_attempt>") | .id'`.
 8. Save the pin as committed before the change: `git fetch origin`, then `git show origin/main:compatibility.json > .qualification-inputs/previous-compatibility.json`.
 9. Move `client.sha`, `service.sha`, `infra.sha`, `platform`, `workload`, the four `service_artifacts` fields, `deployment`, `platform.record` and `minimum_supported_client` in one commit. The producer SHAs and run/attempt values come from each record's `producer` member; `infra.sha` is the reviewed observation source; `minimum_supported_client.version` is the workload record's `observed.minimum_client_version`; `minimum_supported_client.sha` is the reviewed oldest supported Client commit. Leave `version` alone.
-10. Run the validator and require exit 0: `node scripts/validate-compatibility-pin.mjs --platform-record .qualification-inputs/platform-deployment-record.json --deployment-record .qualification-inputs/deployment-record.json --previous .qualification-inputs/previous-compatibility.json`. A candidate without `minimum_supported_client`, or whose floor differs from the workload record, is refused.
+10. **Inert after Wave 1.** The validator is not runnable on this branch: `scripts/validate-compatibility-pin.mjs` imports the deleted `scripts/trusted-deployment-inputs.mjs`, and `pnpm compatibility:pin` no longer exists. On a tree with the Wave-1 PR reverted the step was: run the validator and require exit 0 (`node scripts/validate-compatibility-pin.mjs --platform-record .qualification-inputs/platform-deployment-record.json --deployment-record .qualification-inputs/deployment-record.json --previous .qualification-inputs/previous-compatibility.json`); a candidate without `minimum_supported_client`, or whose floor differs from the workload record, was refused. Do not attempt this command on the current branch.
 11. Commit, open the PR, review and merge; the PR states the source and value of each moved member and links both producer runs. Record both runs and the pin commit on the work item that owns the move.
-12. Run qualification on the merged pin: `gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main -f operation=full -f worker_slot_offset=<first of an unused captured worker-slot pair>`. Operation `full` runs both legs, including the oldest supported Client build at `minimum_supported_client.sha`; record that run's id on the same work item, so the move, the pin, both legs and the qualification are one trail.
+12. **Obsolete after Wave 1.** A pin move no longer triggers or gates qualification: `full` runs on the live tuple the release action dispatches (`trigger=release-qualify`, `expected_service_commit` from the deployment record), and `minimum-supported-client.json` carries the oldest-Client floor. The former dispatch instruction (`gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main -f operation=full -f worker_slot_offset=<first of an unused captured worker-slot pair>`) is retained only for the reverted tree; on the current branch the release chain dispatches `full`, and a manual re-run uses the same entry without a pin move.
 
 Do not move one producer at a time — the identity members move in one commit.
 

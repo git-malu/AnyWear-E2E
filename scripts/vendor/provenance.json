@@ -1,18 +1,26 @@
 {
   "source_repository": "git-malu/AnyWear-Infra",
-  "source_sha": "c9983520edbff92c425d7db4261fd55e8f2ecbfb",
-  "source_note": "0.3.0 Base/Egress/Runtime contract source (Issue #166). stage-contracts.mjs, json-contract.mjs and operation-stacks.mjs are exact byte copies from that commit. deployment-contract.mjs is the raw producer file with exactly one declared import rewrite, recorded in import_rewrites: the bare package specifier is replaced with the vendored package entry because this repository consumes the dependency-free package source instead of installing a tarball. The loader reverses the declared rewrite, asserts the raw producer hash from producer_files and refuses any other difference. The Service release slice is the Runtime stack: SERVICE_RUNTIME_STACK (AnyWearRuntimeStack-beta, ap-east-1), runtimeStackName and runtimeStageFromStack replace the former Workload identity, and the stage contract adds the unconditional api_base_url parameter (36 definitions, 35 unconditional, 1 conditional). AnyWearEgressStack-beta is operation-owned and is never part of the configured three-stack Infra manifest, so the recorded tuple stays three Infra stacks plus one Service stack.",
+  "source_sha": "9382e40810fa451b626f13a3303fe205614305f7",
+  "source_note": "0.3.0 Base/Egress/Runtime contract source (Issues #166 and #180). stage-contracts.mjs, json-contract.mjs and operation-stacks.mjs are exact byte copies from that commit; their producer blobs are byte-identical at the previous pin c9983520edbff92c425d7db4261fd55e8f2ecbfb, so only stage-contract-parameters.mjs moved between the two commits. stage-contract-parameters.mjs is E2E's own stage-input reader: AnyWear-E2E now performs the authenticated platform observation itself (#180) instead of checking out the Infra observer, so it reads the `/anywear/beta/...` stage contract in bounded `ssm get-parameters` batches from this copy. deployment-contract.mjs and stage-contract-parameters.mjs are raw producer files with exactly one declared import rewrite each, recorded in import_rewrites: the bare package specifier is replaced with the vendored package entry because this repository consumes the dependency-free package source instead of installing a tarball. The loader reverses each declared rewrite, asserts the raw producer hash from producer_files and refuses any other difference. The Service release slice is the Runtime stack: SERVICE_RUNTIME_STACK (AnyWearRuntimeStack-beta, ap-east-1), runtimeStackName and runtimeStageFromStack replace the former Workload identity, and the stage contract adds the unconditional api_base_url parameter (36 definitions, 35 unconditional, 1 conditional). AnyWearEgressStack-beta is operation-owned and is never part of the configured three-stack Infra manifest, so the recorded tuple stays three Infra stacks plus one Service stack.",
   "files": {
     "deployment-contract.mjs": "54a6986f9b399b6935f45829404a3e36b1bd7874da623ad8d56e3d7790728a21",
     "json-contract.mjs": "c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047",
     "operation-stacks.mjs": "7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab",
+    "stage-contract-parameters.mjs": "b6e506ebc74cf120d696779d5f0bc4376735e5a0cb76e5aa9c1411c9090e57f8",
     "stage-contracts.mjs": "4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784"
   },
   "producer_files": {
-    "deployment-contract.mjs": "c17ee5136d01f69309b55bfd18eb8b62b05c20d1306aea64e33a429e83754d5a"
+    "deployment-contract.mjs": "c17ee5136d01f69309b55bfd18eb8b62b05c20d1306aea64e33a429e83754d5a",
+    "stage-contract-parameters.mjs": "f5a5f82b289de57840821fcee4fb3f4a25b399a1b5f86fb0d5d4b3db52ef6b68"
   },
   "import_rewrites": {
     "deployment-contract.mjs": [
+      {
+        "from": "from '@git-malu/stage-contracts'",
+        "to": "from './stage-contracts.mjs'"
+      }
+    ],
+    "stage-contract-parameters.mjs": [
       {
         "from": "from '@git-malu/stage-contracts'",
         "to": "from './stage-contracts.mjs'"

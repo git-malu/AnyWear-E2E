@@ -2,16 +2,29 @@ name: Beta Qualification
 
 # The E2E deployable unit's single manual entry (#163): the `qualify` entry. One protected
 # dispatch surface carries four operations — `full` (release qualification), `smoke`
-# (deployed diagnostic), `measure` (sizing workload) and `recover` (account recovery).
+# (deployed diagnostic), `measure` (sizing workload) and `recover` (account recovery) —
+# and since #180 it is also dispatched by another workflow: a deployment smoke hook
+# (`trigger=deploy-smoke`) and the release action (`trigger=release-qualify`).
 #
-# Separation between those outcomes no longer lives in the workflow-file boundary: it
-# lives in the signed `operation` field. Only the `full` job can produce
-# `qualification-record.json`; the record binds the operation dispatched; and both this
-# repository's producer/verifier and the Infra-side executor allow-list require
-# `operation: full`. A `smoke`, `measure` or `recover` run can therefore neither produce
-# nor withhold a qualification record. The `record` job validates and attaches the record
-# without any credential. `execution-guard.mjs` maps each operation to this one entry and
-# refuses an operation that was not stated explicitly.
+# #180: qualification no longer reads a committed compatibility file. It reads the live
+# deployed tuple (Client `build-metadata.json`, Service `/health`), compares it with the
+# dispatch expectation, verifies the live Service commit resolves to an immutable Service
+# release, takes its own authenticated platform observation, runs the suite, re-observes
+# and writes qualification record v3. The credential-free preflight performs the live
+# identity, supported-Client floor and immutable-release checks before any credential job;
+# `full` repeats them before it assumes AWS credentials and records the release identity
+# it verified.
+#
+# Separation between the four outcomes lives in the signed `operation` field, not in a
+# workflow-file boundary. Only the `full` job can produce `qualification-record.json`; the
+# `record` job validates and attaches it without a credential and is the last qualification
+# job. A `smoke`, `measure` or `recover` run can therefore neither produce nor withhold a
+# qualification record, and a green `full` run whose record `record` has verified and
+# attached completes the release decision: the audit trail is the `qualify` dispatch event
+# (actor and time), the E2E `full` run/attempt and the sealed v3 record tuple, not a
+# separate approval action. There is no approval Environment.
+# `execution-guard.mjs` maps each operation to this one entry and refuses an operation
+# that was not stated explicitly.
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +33,29 @@ on:
         required: true
         type: choice
         options: [full, smoke, measure, recover]
+      expected_service_commit:
+        # #180: supplied by the release action (release-qualify) or by an operator who
+        # re-runs a qualification. Only `full` compares it with the live Service commit,
+        # and every other operation refuses it in the preflight.
+        description: Expected live Service commit (40-hex); optional, and only operation full accepts it
+        required: false
+        type: string
+      expected_client_commit:
+        description: Expected live Client source commit (40-hex); optional, and only operation full accepts it
+        required: false
+        type: string
+      trigger:
+        # The trigger is evidence, not a permission: the preflight validates the exact
+        # combination with the operation and the dispatch inputs, and the record states it.
+        description: 'Qualification trigger: manual, deploy-smoke (operation smoke only) or release-qualify (operation full only)'
+        required: false
+        default: manual
+        type: choice
+        options: [manual, deploy-smoke, release-qualify]
+      dispatched_by:
+        description: URL of the run that dispatched this qualification; only accepted for a non-manual trigger
+        required: false
+        type: string
       worker_slot_offset:
         description: First captured worker slot (full/smoke allocate two; measure allocates one; choose unused slots)
         required: false
@@ -61,9 +97,20 @@ permissions:
 # execution guard resolve the account and region before any job enters the `beta`
 # environment. No job may shadow them, and environment-only values stay in the jobs that
 # declare `environment: beta`.
+#
+# #180: the two public Beta endpoints are workflow constants for the same reason. The
+# preflight must read the live tuple before any credential job, and a job without
+# `environment: beta` cannot resolve the environment-scoped BETA_CLIENT_URL and
+# BETA_SERVICE_URL. Every job consumes these constants, so the preflight comparison, the
+# suite and the record all name the same endpoints. They are the current `beta`
+# environment values; if a CloudFront distribution is ever recreated, these constants
+# move with it in the same reviewed change (the environment-scoped copies are otherwise
+# unused, and moving them is an owner setting action, not part of a dispatch).
 env:
   AWS_ACCOUNT_ID: '650880818323'
   AWS_REGION: 'ap-east-1'
+  E2E_CLIENT_URL: 'https://d2rztl7o0y7rf8.cloudfront.net'
+  E2E_SERVICE_URL: 'https://d1pfqujqt29n11.cloudfront.net'
 
 concurrency:
   group: beta-e2e-account-pool
@@ -71,10 +118,12 @@ concurrency:
 
 jobs:
   # The gate that runs before any credential job. It holds no AWS credentials, declares no
-  # environment and verifies the source, the reviewed compatibility set, the read-only App
-  # tokens and the reviewed Infra observation checkout. Every credential job `needs` it.
+  # environment, and verifies the source, the operation/trigger combination, and the live
+  # deployed tuple — identity against the dispatch expectation, supported-Client floor and
+  # the immutable Service release — through the read-only Service App token. Every
+  # credential job `needs` it.
   preflight:
-    name: Verify the protected qualification source and inputs
+    name: Verify the protected qualification source and live tuple
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -115,8 +164,10 @@ jobs:
       # The entry is one dispatch surface, so the operation and the inputs that belong to
       # another operation are refused here rather than by file presence. `sizing_stage` is
       # required by measure and refused by every other operation; the captured identity
-      # inputs are rejected by every operation but recover.
-      - name: Validate the dispatch operation and its input scope
+      # inputs are rejected by every operation but recover; the expected commits are
+      # accepted only by `full`; and the trigger fixes which operation and inputs it may
+      # accompany (#180).
+      - name: Validate the dispatch operation, trigger and input scope
         id: operation-scope
         shell: bash
         env:
@@ -125,6 +176,11 @@ jobs:
           ENVELOPE_MODE: ${{ inputs.envelope_mode }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          TRIGGER: ${{ inputs.trigger }}
+          EXPECTED_SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
+          EXPECTED_CLIENT_COMMIT: ${{ inputs.expected_client_commit }}
+          DISPATCHED_BY: ${{ inputs.dispatched_by }}
+          WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
         run: |
           case "$OPERATION" in
             full|smoke|measure|recover) ;;
@@ -159,31 +215,83 @@ jobs:
               fi
             done
           fi
+          # #180: the dispatch trigger is a closed combination with the operation, the
+          # expected commits, the worker slot offset and the dispatching run URL.
+          case "$TRIGGER" in
+            manual)
+              if [[ -n "$DISPATCHED_BY" ]]; then
+                echo "::error::dispatched_by is only accepted for a non-manual trigger"
+                exit 1
+              fi
+              ;;
+            deploy-smoke)
+              if [[ "$OPERATION" != smoke ]]; then
+                echo "::error::trigger deploy-smoke requires operation smoke (got '$OPERATION')"
+                exit 1
+              fi
+              if [[ -n "$EXPECTED_SERVICE_COMMIT$EXPECTED_CLIENT_COMMIT" ]]; then
+                echo "::error::trigger deploy-smoke accepts no expected commits; the deployment smoke hook names none"
+                exit 1
+              fi
+              if [[ "$WORKER_SLOT_OFFSET" != 0 ]]; then
+                echo "::error::trigger deploy-smoke requires worker_slot_offset 0 (got '$WORKER_SLOT_OFFSET')"
+                exit 1
+              fi
+              ;;
+            release-qualify)
+              if [[ "$OPERATION" != full ]]; then
+                echo "::error::trigger release-qualify requires operation full (got '$OPERATION')"
+                exit 1
+              fi
+              if [[ -z "$EXPECTED_SERVICE_COMMIT" ]]; then
+                echo "::error::trigger release-qualify requires expected_service_commit"
+                exit 1
+              fi
+              if [[ "$WORKER_SLOT_OFFSET" != 0 ]]; then
+                echo "::error::trigger release-qualify requires worker_slot_offset 0 (got '$WORKER_SLOT_OFFSET')"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unknown qualification trigger '$TRIGGER'"
+              exit 1
+              ;;
+          esac
+          if [[ "$TRIGGER" != manual ]]; then
+            if [[ ! "$DISPATCHED_BY" =~ ^https://[^[:space:]]+$ ]]; then
+              echo "::error::trigger $TRIGGER requires dispatched_by as an HTTPS URL (got '$DISPATCHED_BY')"
+              exit 1
+            fi
+          fi
+          # Both expected commits are optional, and only the release-gating operation may
+          # compare them with the live deployment.
+          if [[ "$OPERATION" != full ]]; then
+            for name in EXPECTED_SERVICE_COMMIT EXPECTED_CLIENT_COMMIT; do
+              if [[ -n "${!name}" ]]; then
+                echo "::error::$name is only accepted by operation full"
+                exit 1
+              fi
+            done
+          fi
+          for name in EXPECTED_SERVICE_COMMIT EXPECTED_CLIENT_COMMIT; do
+            if [[ -n "${!name}" && ! "${!name}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$name must be a full lowercase 40-character commit SHA"
+              exit 1
+            fi
+          done
           # Publish the validated operation. The credential jobs gate on this output, so the
           # job that authorizes them is the job that checked the operation and its inputs.
           echo "operation=$OPERATION" >> "$GITHUB_OUTPUT"
 
-      - name: Check E2E source and reviewed compatibility set
+      - name: Check E2E source
         run: pnpm check
 
-      - name: Require Infra compatibility and protected execution
-        id: compatibility
-        run: |
-          node scripts/check-compatibility.mjs --require-infra
-          node scripts/execution-guard.mjs --source-only
-          echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
+      - name: Require protected execution
+        run: node scripts/execution-guard.mjs --source-only
 
-      - name: Generate Infra evidence read token
-        id: evidence-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Infra
-          permission-contents: read
-          permission-actions: read
-
+      # The live identity, the supported-Client floor and the immutable Service release are
+      # verified here, before any job holds a credential. The check reads only the two
+      # public Beta endpoints and the GitHub API.
       - name: Generate Service artifact read token
         id: service-artifact-token
         uses: actions/create-github-app-token@v3
@@ -193,32 +301,37 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: AnyWear-Service
           permission-contents: read
-          permission-actions: read
 
-      - name: Checkout exact reviewed Infra observation tools
-        uses: actions/checkout@v4
-        with:
-          repository: git-malu/AnyWear-Infra
-          ref: ${{ steps.compatibility.outputs.infra_sha }}
-          path: .infra-source
-          token: ${{ steps.evidence-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Install the reviewed Infra observation dependencies
-        working-directory: .infra-source
-        run: npm ci
-
-      - name: Verify trusted platform and workload deployment records and the immutable Service release
+      - name: Verify the live deployed tuple, supported-Client floor and immutable Service release
         env:
-          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
-        run: node scripts/trusted-deployment-inputs.mjs
+          GH_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+          OPERATION: ${{ steps.operation-scope.outputs.operation }}
+          EXPECTED_SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
+          EXPECTED_CLIENT_COMMIT: ${{ inputs.expected_client_commit }}
+        shell: bash
+        run: |
+          args=(--operation "$OPERATION" --client-url "$E2E_CLIENT_URL" --service-url "$E2E_SERVICE_URL")
+          if [[ -n "$EXPECTED_SERVICE_COMMIT" ]]; then args+=(--expected-service-commit "$EXPECTED_SERVICE_COMMIT"); fi
+          if [[ -n "$EXPECTED_CLIENT_COMMIT" ]]; then args+=(--expected-client-commit "$EXPECTED_CLIENT_COMMIT"); fi
+          node scripts/service-release.mjs "${args[@]}"
+          if [[ "$OPERATION" == full || "$OPERATION" == smoke ]]; then
+            {
+              echo "### Live Beta tuple"
+              echo
+              echo "- Client: \`$(jq -r '.client.source_commit' .qualification-inputs/live-identity.json)\` (version $(jq -r '.client.client_version' .qualification-inputs/live-identity.json))"
+              echo "- Service: \`$(jq -r '.service.service_commit' .qualification-inputs/live-identity.json)\`"
+              echo "- Image: \`$(jq -r '.service.image_digest' .qualification-inputs/live-identity.json)\`"
+              echo "- Minimum Client: $(jq -r '.service.minimum_client_version' .qualification-inputs/live-identity.json)"
+              echo "- Service release: \`$(jq -r '.tag' .qualification-inputs/service-artifacts.json)\` (manifest $(jq -r '.manifest_sha256' .qualification-inputs/service-artifacts.json))"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # The only job that may produce `qualification-record.json`. It carries the deployed
   # release-gating suite of the former Beta Qualification workflow. The record path binds
   # the dispatched operation and refuses anything but `full`.
   full:
-    name: Qualify reviewed revisions on Beta
+    name: Qualify the live deployed tuple on Beta
     needs: preflight
     if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'full'
     runs-on: ubuntu-latest
@@ -232,8 +345,6 @@ jobs:
       E2E_STAGE: beta
       E2E_OPERATION: ${{ inputs.operation }}
       E2E_EXTERNAL_SERVERS: true
-      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
-      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
@@ -270,26 +381,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check E2E source and reviewed compatibility set
+      - name: Check E2E source
         run: pnpm check
 
-      - name: Require Infra compatibility and protected execution
-        id: compatibility
-        run: |
-          node scripts/check-compatibility.mjs --require-infra
-          node scripts/execution-guard.mjs --source-only
-          echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Generate Infra evidence read token
-        id: evidence-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Infra
-          permission-contents: read
-          permission-actions: read
+      - name: Require protected execution
+        run: node scripts/execution-guard.mjs --source-only
 
       - name: Generate Service artifact read token
         id: service-artifact-token
@@ -300,26 +396,25 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: AnyWear-Service
           permission-contents: read
-          permission-actions: read
 
-      - name: Checkout exact reviewed Infra observation tools
-        uses: actions/checkout@v4
-        with:
-          repository: git-malu/AnyWear-Infra
-          ref: ${{ steps.compatibility.outputs.infra_sha }}
-          path: .infra-source
-          token: ${{ steps.evidence-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Install the reviewed Infra observation dependencies
-        working-directory: .infra-source
-        run: npm ci
-
-      - name: Verify trusted platform and workload deployment records and the immutable Service release
+      # #180: the credential-free gate is repeated here, in the job that writes the record,
+      # before it assumes any AWS credential. It compares the live identity with the
+      # dispatch expectation, enforces the supported-Client floor, verifies the immutable
+      # Service release and writes the two files the record is built from (live identity and
+      # release identity). The preflight already ran the same check; this run is what the
+      # record can name, and it fails before the suite starts.
+      - name: Verify the live deployed tuple and the immutable Service release
         env:
-          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
           SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
-        run: node scripts/trusted-deployment-inputs.mjs
+          GH_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
+          EXPECTED_SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
+          EXPECTED_CLIENT_COMMIT: ${{ inputs.expected_client_commit }}
+        shell: bash
+        run: |
+          args=(--operation full --client-url "$E2E_CLIENT_URL" --service-url "$E2E_SERVICE_URL")
+          if [[ -n "$EXPECTED_SERVICE_COMMIT" ]]; then args+=(--expected-service-commit "$EXPECTED_SERVICE_COMMIT"); fi
+          if [[ -n "$EXPECTED_CLIENT_COMMIT" ]]; then args+=(--expected-client-commit "$EXPECTED_CLIENT_COMMIT"); fi
+          node scripts/service-release.mjs "${args[@]}"
 
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -343,7 +438,6 @@ jobs:
 
       - name: Observe authenticated deployed tuple before suite
         env:
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
@@ -358,7 +452,7 @@ jobs:
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
           } >> "$GITHUB_ENV"
           echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.service_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Set unique cleanup run scope
         shell: bash
@@ -437,22 +531,27 @@ jobs:
           exit 1
 
       # The second release-gating leg: the oldest Client the deployed Service still
-      # supports. Only `full` runs it, and it fails closed when the reviewed pin does not
-      # name the floor. The primary report above is the one the qualification record's
-      # `test` member derives from; this leg writes its own report and its own cleanup
-      # scope, so neither its accounts nor its evidence can overwrite the primary leg.
+      # supports. Only `full` runs it, and it fails closed when the reviewed floor file is
+      # missing or malformed. The floor version is the live Service's own
+      # `minimum_client_version`; `minimum-supported-client.json` names the Client commit
+      # that declares it, because the Client has no version tag to resolve. #180 moved this
+      # read off the retired compatibility pin and onto that two-line file, whose version the
+      # live check already refused to disagree with. The primary report above is the one the
+      # qualification record's `test` member derives from; this leg writes its own report and
+      # its own cleanup scope, so neither its accounts nor its evidence can overwrite the
+      # primary leg.
       - name: Read the minimum supported Client floor
         id: minimum-supported-client
         shell: bash
         run: |
-          minimum_supported_client_sha="$(jq -r '.minimum_supported_client.sha // empty' compatibility.json)"
-          minimum_supported_client_version="$(jq -r '.minimum_supported_client.version // empty' compatibility.json)"
+          minimum_supported_client_sha="$(jq -r '.sha // empty' minimum-supported-client.json)"
+          minimum_supported_client_version="$(jq -r '.version // empty' minimum-supported-client.json)"
           if [[ ! "$minimum_supported_client_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::operation full requires compatibility.json minimum_supported_client.sha naming the oldest supported Client"
+            echo "::error::operation full requires minimum-supported-client.json sha naming the oldest supported Client"
             exit 1
           fi
           if [[ ! "$minimum_supported_client_version" =~ ^(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::operation full requires compatibility.json minimum_supported_client.version as a non-negative integer"
+            echo "::error::operation full requires minimum-supported-client.json version as a non-negative integer"
             exit 1
           fi
           {
@@ -498,7 +597,7 @@ jobs:
       - name: Build the oldest supported Client from its pinned commit
         working-directory: AnyWear-Client-oldest
         env:
-          VITE_API_BASE_URL: ${{ vars.BETA_SERVICE_URL }}
+          VITE_API_BASE_URL: ${{ env.E2E_SERVICE_URL }}
           SOURCE_COMMIT_SHA: ${{ steps.minimum-supported-client.outputs.sha }}
         run: |
           export VITE_COGNITO_USER_POOL_ID="${VITE_COGNITO_USER_POOL_ID:?the Beta Cognito user pool was not loaded}"
@@ -605,13 +704,22 @@ jobs:
 
       - name: Confirm deployed identities remained stable
         env:
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
       - name: Create and verify qualification record
         env:
           QUALIFICATION_RESULT: passed
+          # #180: the dispatch expectation and its source. A supplied Service commit is
+          # compared with the live deployment and recorded as `source: trigger`; a manual
+          # full without one records the live Service commit observed at run start as
+          # `source: live`. The trigger and the dispatching run (when there is one) are
+          # part of the record's `workflow` member.
+          EXPECTED_SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
+          EXPECTED_CLIENT_COMMIT: ${{ inputs.expected_client_commit }}
+          EXPECTED_SOURCE: ${{ inputs.expected_service_commit != '' && 'trigger' || 'live' }}
+          QUALIFICATION_TRIGGER: ${{ inputs.trigger }}
+          QUALIFICATION_DISPATCHED_BY: ${{ inputs.dispatched_by }}
         run: |
           pnpm qualification:generate
           pnpm qualification:verify
@@ -625,8 +733,7 @@ jobs:
         with:
           name: beta-qualification-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .qualification-inputs/platform-deployment-record.json
-            .qualification-inputs/deployment-record.json
+            .qualification-inputs/live-identity.json
             .qualification-inputs/service-artifacts.json
             .qualification-inputs/beta-environment-before.json
             .qualification-inputs/beta-environment-after.json
@@ -647,8 +754,7 @@ jobs:
         with:
           name: beta-qualification-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .qualification-inputs/platform-deployment-record.json
-            .qualification-inputs/deployment-record.json
+            .qualification-inputs/live-identity.json
             .qualification-inputs/service-artifacts.json
             .qualification-inputs/beta-environment-before.json
             .qualification-inputs/beta-environment-after.json
@@ -692,7 +798,7 @@ jobs:
   # The deployed smoke diagnostic of the former E2E Integration workflow. It never writes
   # qualification evidence.
   smoke:
-    name: Reviewed revisions on deployed Beta
+    name: Deployed Beta smoke diagnostic
     needs: preflight
     if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'smoke'
     runs-on: ubuntu-latest
@@ -706,8 +812,6 @@ jobs:
       E2E_STAGE: beta
       E2E_OPERATION: ${{ inputs.operation }}
       E2E_EXTERNAL_SERVERS: true
-      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
-      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
@@ -742,104 +846,8 @@ jobs:
       - name: Check E2E source
         run: pnpm check
 
-      - name: Generate source checkout token
-        id: generate-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            AnyWear-Client
-            AnyWear-Service
-            AnyWear-Service-API
-          permission-contents: read
-
-      - name: Generate Infra evidence read token
-        id: infra-evidence-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Infra
-          permission-contents: read
-          permission-actions: read
-
-      - name: Generate Service artifact read token
-        id: service-artifact-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Service
-          permission-contents: read
-          permission-actions: read
-
-      - name: Load pinned compatibility set
-        id: compatibility
-        shell: bash
-        run: |
-          node scripts/check-compatibility.mjs --require-infra
-          node scripts/execution-guard.mjs --source-only
-          {
-            echo "client_repository=$(jq -r '.client.repository' compatibility.json)"
-            echo "client_sha=$(jq -r '.client.sha' compatibility.json)"
-            echo "service_repository=$(jq -r '.service.repository' compatibility.json)"
-            echo "service_sha=$(jq -r '.service.sha' compatibility.json)"
-            echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Checkout pinned Client
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.compatibility.outputs.client_repository }}
-          ref: ${{ steps.compatibility.outputs.client_sha }}
-          path: AnyWear-Client
-          submodules: recursive
-          token: ${{ steps.generate-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Checkout pinned Service
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.compatibility.outputs.service_repository }}
-          ref: ${{ steps.compatibility.outputs.service_sha }}
-          path: AnyWear-Service
-          submodules: recursive
-          token: ${{ steps.generate-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Record tested revisions
-        shell: bash
-        run: |
-          {
-            echo "E2E $(git rev-parse HEAD)"
-            echo "Client $(git -C AnyWear-Client rev-parse HEAD)"
-            git -C AnyWear-Client submodule status --recursive
-            echo "Service $(git -C AnyWear-Service rev-parse HEAD)"
-            git -C AnyWear-Service submodule status --recursive
-          } | tee tested-revisions.txt
-
-      - name: Checkout exact reviewed Infra observation tools
-        uses: actions/checkout@v4
-        with:
-          repository: git-malu/AnyWear-Infra
-          ref: ${{ steps.compatibility.outputs.infra_sha }}
-          path: .infra-source
-          token: ${{ steps.infra-evidence-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Install the reviewed Infra observation dependencies
-        working-directory: .infra-source
-        run: npm ci
-
-      - name: Verify trusted platform and workload deployment records and the immutable Service release
-        env:
-          GH_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
-        run: node scripts/trusted-deployment-inputs.mjs
+      - name: Require protected execution
+        run: node scripts/execution-guard.mjs --source-only
 
       - name: Verify OIDC identity
         shell: bash
@@ -875,9 +883,22 @@ jobs:
 
       - name: Observe authenticated deployed tuple before smoke
         env:
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
+
+      # The live tuple this smoke run actually exercised. The retired pin printout named the
+      # reviewed Client and Service commits; the smoke run no longer checks those revisions
+      # out, so it states its own source and the live identity it observed instead (#180).
+      - name: Record tested revisions
+        shell: bash
+        run: |
+          {
+            echo "E2E $(git rev-parse HEAD)"
+            echo "Client $(jq -r '.client.source_commit' deployment-evidence-before.json)"
+            echo "Service $(jq -r '.service.service_commit' deployment-evidence-before.json)"
+            echo "Image $(jq -r '.service.image_digest' deployment-evidence-before.json)"
+            echo "Minimum Client $(jq -r '.service.minimum_client_version' .qualification-inputs/live-identity.json)"
+          } | tee tested-revisions.txt
 
       - name: Load Beta test identity configuration
         shell: bash
@@ -890,7 +911,7 @@ jobs:
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
           } >> "$GITHUB_ENV"
           echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.service_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Set unique cleanup run scope
         shell: bash
@@ -919,7 +940,6 @@ jobs:
 
       - name: Confirm authenticated deployed tuple remained stable
         env:
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_BASELINE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
@@ -973,8 +993,6 @@ jobs:
       E2E_STAGE: beta
       E2E_OPERATION: ${{ inputs.operation }}
       E2E_EXTERNAL_SERVERS: true
-      E2E_CLIENT_URL: ${{ vars.BETA_CLIENT_URL }}
-      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
       E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
       BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
@@ -1010,56 +1028,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check E2E source and reviewed compatibility set
+      - name: Check E2E source
         run: pnpm check
 
-      - name: Require Infra compatibility and protected execution
-        id: compatibility
-        run: |
-          node scripts/check-compatibility.mjs --require-infra
-          node scripts/execution-guard.mjs --source-only
-          echo "infra_sha=$(jq -r '.infra.sha' compatibility.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Generate Infra evidence read token
-        id: evidence-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Infra
-          permission-contents: read
-          permission-actions: read
-
-      - name: Generate Service artifact read token
-        id: service-artifact-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Service
-          permission-contents: read
-          permission-actions: read
-
-      - name: Checkout exact reviewed Infra observation tools
-        uses: actions/checkout@v4
-        with:
-          repository: git-malu/AnyWear-Infra
-          ref: ${{ steps.compatibility.outputs.infra_sha }}
-          path: .infra-source
-          token: ${{ steps.evidence-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Install the reviewed Infra observation dependencies
-        working-directory: .infra-source
-        run: npm ci
-
-      - name: Verify trusted platform and workload deployment records and the immutable Service release
-        env:
-          GH_TOKEN: ${{ steps.evidence-token.outputs.token }}
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
-        run: node scripts/trusted-deployment-inputs.mjs
+      - name: Require protected execution
+        run: node scripts/execution-guard.mjs --source-only
 
       - name: Configure Beta AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -1086,7 +1059,6 @@ jobs:
       # observation a qualification takes rather than a lighter substitute.
       - name: Observe authenticated deployed tuple before the measurement
         env:
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json
         run: pnpm qualification:collect
 
@@ -1101,7 +1073,7 @@ jobs:
             echo "VITE_COGNITO_CLIENT_ID=$client_id"
           } >> "$GITHUB_ENV"
           echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' deployment-evidence-before.json)" >> "$GITHUB_ENV"
-          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.source_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
+          echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.service_commit' deployment-evidence-before.json)" >> "$GITHUB_ENV"
 
       - name: Set unique cleanup run scope
         shell: bash
@@ -1175,7 +1147,6 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       E2E_STAGE: beta
       E2E_OPERATION: ${{ inputs.operation }}
-      E2E_SERVICE_URL: ${{ vars.BETA_SERVICE_URL }}
       E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
       E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: recovery/beta-cleanup-diagnostic.json
@@ -1225,10 +1196,11 @@ jobs:
           permission-contents: read
           permission-actions: read
 
-      - name: Require reviewed compatibility and protected recovery execution
-        run: |
-          node scripts/account-recovery-inputs.mjs --validate-inputs
-          node scripts/check-compatibility.mjs --require-infra
+      # #180: recovery is scoped to the captured original run and its original evidence, so
+      # it no longer consults the compatibility pin. The retired step also required the
+      # reviewed Infra source; recovery never read it.
+      - name: Require the captured recovery selection and protected execution
+        run: node scripts/account-recovery-inputs.mjs --validate-inputs
 
       - name: Verify exact original E2E owner artifact
         id: recovery-scope
@@ -1341,8 +1313,7 @@ jobs:
         with:
           name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .qualification-inputs/platform-deployment-record.json
-            .qualification-inputs/deployment-record.json
+            .qualification-inputs/live-identity.json
             .qualification-inputs/service-artifacts.json
             .qualification-inputs/beta-environment-before.json
             .qualification-inputs/beta-environment-after.json

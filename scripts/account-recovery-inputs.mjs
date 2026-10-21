@@ -2,7 +2,7 @@ import { writeFile, appendFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ghApi } from './trusted-deployment-inputs.mjs';
+import { ghApi } from './github-read.mjs';
 import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, requireImageDigest, requireMatch, repositories } from './evidence-contract.mjs';
 import { createServiceCleanupInputs } from '../tests/support/worker-cleanup.ts';
 import { assertCleanupOwnerEvidence } from '../tests/support/service-cleanup-operation.ts';

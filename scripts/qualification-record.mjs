@@ -1,17 +1,56 @@
 import {
   assertEqual, byteHash, exactKeys, payloadDigest as strictPayloadDigest, repositories,
-  parseStrictJson, requireId, requireHash, validateCompatibility,
+  parseStrictJson, requireHttpsUrl as requireContractHttpsUrl, requireId, requireHash,
 } from './evidence-contract.mjs';
-import { assertDeploymentBinding } from './trusted-deployment-inputs.mjs';
 import { assertQualificationEnvironment } from './beta-sizing-environment.mjs';
-import { validateDeploymentRecord, validateSnapshot, assertObservedMatchesDeployment } from './vendor/deployment-contract.mjs';
+import { assertLiveClientFloor, readMinimumSupportedClient } from './minimum-supported-client.mjs';
+import { configuredStacks } from './vendor/operation-stacks.mjs';
+import { stageContractSchemaHash } from './vendor/deployment-contract.mjs';
 import {
   QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, RECORDABLE_RESULTS, SCENARIO_KEYS, SELECTION_KEYS, TEST_KEYS,
   assertTestSelection, buildTestMember, reportScenarios,
 } from './test-selection.mjs';
 
+// AnyWear #180: the qualification record is schema v3 and it is written from the live
+// deployed tuple, not from a pre-submitted compatibility file. The record keeps the
+// members that describe *what was tested* (`revisions`, `observations`, `test`,
+// `workflow`, `integrity`) and the immutable Service release identity
+// (`service_artifacts`), adds the expectation the run was dispatched for (`expected`),
+// and drops the two members that only existed to carry a committed pin:
+// `compatibility` (the whole pin) and `deployment` (the two producer deployment-record
+// bodies). Removing them is what makes the record self-contained: qualification proves
+// the deployed content, and the deployment-record lineage belongs to the deployment
+// record (#181), not to the test evidence.
+//
+// The record cannot be issued from anything but the protected `full` operation: the
+// suite result, the environment verdict, the run report bytes and the dispatched
+// operation are all required arguments, so no caller can build one without stating what
+// it measured. The live identity and the immutable release are verified before the
+// suite and re-observed after it, and the two observations must be identical.
 const commitPattern = /^[0-9a-f]{40}$/;
 const imageDigestPattern = /^sha256:[0-9a-f]{64}$/;
+const parameterPattern = /^\/anywear\/[a-z0-9]+\/[a-z0-9_]+$/;
+const versionPattern = /^[1-9][0-9]*$/;
+const lambdaCodePattern = /^[A-Za-z0-9+/]{43}=$/;
+const cloudFrontDomainPattern = /^[a-z0-9][a-z0-9-]*\.cloudfront\.net$/;
+
+export const EXPECTED_SOURCES = Object.freeze(['trigger', 'live']);
+export const QUALIFICATION_TRIGGERS = Object.freeze(['manual', 'deploy-smoke', 'release-qualify']);
+export const OBSERVATION_KEYS = Object.freeze(['collected_at', 'client', 'service', 'platform', 'authenticated']);
+export const OBSERVED_CLIENT_KEYS = Object.freeze(['url', 'source_commit', 'built_at']);
+export const OBSERVED_SERVICE_KEYS = Object.freeze(['url', 'service_commit', 'image_digest']);
+export const PLATFORM_KEYS = Object.freeze(['stacks', 'inputs', 'schema_sha256', 'lambdas', 'queue_config_sha256', 'client_domain']);
+export const PLATFORM_STACK_KEYS = Object.freeze(['name', 'region', 'template_sha256']);
+export const PLATFORM_INPUT_KEYS = Object.freeze(['parameter', 'version', 'value_sha256']);
+export const LAMBDA_KEYS = Object.freeze(['pre-sign-up', 'post-confirmation']);
+export const LAMBDA_IDENTITY_KEYS = Object.freeze(['code_sha256', 'configuration_sha256']);
+export const SERVICE_ARTIFACTS_KEYS = Object.freeze(['repository', 'release_id', 'tag', 'manifest_asset_id', 'manifest_sha256']);
+export const EXPECTED_KEYS = Object.freeze(['service_commit', 'client_commit', 'source']);
+export const QUALIFICATION_RECORD_KEYS = Object.freeze([
+  'schema_version', 'record_type', 'qualification_id', 'result', 'operation', 'qualified_at', 'environment',
+  'expected', 'revisions', 'service_artifacts', 'observations', 'test', 'workflow', 'integrity',
+]);
+export const SERVICE_ARTIFACTS_PREFIX = 'service-artifacts-';
 
 function requireValue(value, label) {
   if (typeof value !== 'string' || value.length === 0) {
@@ -41,22 +80,47 @@ function requireNonNegativeSafeInteger(value, label) {
   return value;
 }
 
+function requireTimestamp(value, label) {
+  if (!Number.isFinite(Date.parse(requireValue(value, label)))) throw new Error(`${label} must be an ISO timestamp`);
+  return value;
+}
+
 function requireHttpsUrl(value, label) {
-  const url = new URL(requireValue(value, label));
-  if (url.protocol !== 'https:') throw new Error(`${label} must use HTTPS`);
-  return url.toString().replace(/\/$/, '');
+  return requireContractHttpsUrl(value, label);
+}
+
+function requireOneOf(value, allowed, label) {
+  if (!allowed.includes(value)) throw new Error(`${label} must be ${allowed.join(', ')} (observed ${JSON.stringify(value)})`);
+  return value;
 }
 
 async function fetchJson(fetcher, url, label) {
-  const response = await fetcher(url, {
-    headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
+  let response;
+  try {
+    response = await fetcher(url, {
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    throw new Error(`${label} could not be read from ${url} (${error.message})`, { cause: error });
+  }
+  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status} from ${url}`);
   return parseStrictJson(Buffer.from(await response.arrayBuffer()));
 }
 
-export async function collectDeploymentEvidence(input, compatibility, fetcher = fetch) {
+// Read only the two live identities qualification is allowed to trust: the Client's
+// `build-metadata.json` (schema 3: component, source_commit, client_version, built_at)
+// and the Service's `/health` (status ok, service_commit, image_digest,
+// minimum_client_version). Nothing here reads a repository file that describes the
+// deployment.
+//
+// `expected` carries the dispatch expectation; a null member means "not supplied" and
+// that member is not compared. A mismatch throws with both values and labels which is
+// which, because the operator's next action depends on it. The supported-Client floor
+// is compared against the committed `minimum-supported-client.json`; a disagreement is
+// a refusal that tells the operator to sync that file, never an automatic choice of the
+// oldest version.
+export async function collectDeploymentEvidence(input, expected = {}, fetcher = fetch) {
   const clientUrl = requireHttpsUrl(input.clientUrl, 'E2E_CLIENT_URL');
   const serviceUrl = requireHttpsUrl(input.serviceUrl, 'E2E_SERVICE_URL');
   const cacheBuster = encodeURIComponent(input.runId ?? Date.now().toString());
@@ -68,155 +132,216 @@ export async function collectDeploymentEvidence(input, compatibility, fetcher = 
     fetchJson(fetcher, new URL('/health', `${serviceUrl}/`), 'Service health'),
   ]);
 
+  if (clientMetadata.component !== 'AnyWear-Client') {
+    throw new Error(`Client build metadata component is ${JSON.stringify(clientMetadata.component)}, expected "AnyWear-Client" (${clientUrl}/build-metadata.json)`);
+  }
+  if (clientMetadata.schema_version !== 3) {
+    throw new Error(`Deployed Client build metadata schema_version is ${JSON.stringify(clientMetadata.schema_version)}, expected 3`);
+  }
   const clientCommit = requireCommit(clientMetadata.source_commit, 'Deployed Client source_commit');
+  const clientVersion = requireNonNegativeSafeInteger(clientMetadata.client_version, 'Deployed Client client_version');
+  const builtAt = requireTimestamp(clientMetadata.built_at, 'Deployed Client built_at');
+  if (serviceHealth.status !== 'ok') {
+    throw new Error(`Deployed Service /health status is ${JSON.stringify(serviceHealth.status)}, expected "ok" (${serviceUrl}/health)`);
+  }
   const serviceCommit = requireCommit(serviceHealth.service_commit, 'Deployed Service service_commit');
   const serviceImageDigest = requireImageDigest(serviceHealth.image_digest);
+  const minimumClientVersion = requireNonNegativeSafeInteger(serviceHealth.minimum_client_version, 'Deployed Service minimum_client_version');
 
-  if (clientMetadata.component !== 'AnyWear-Client') {
-    throw new Error('Client build metadata has an unexpected component identity');
+  const expectedService = expected?.service_commit ?? null;
+  const expectedClient = expected?.client_commit ?? null;
+  if (expectedService !== null && requireCommit(expectedService, 'Expected Service commit') !== serviceCommit) {
+    throw new Error(`Deployed Service service_commit mismatch at ${serviceUrl}/health: expected ${expectedService} (dispatch input), observed ${serviceCommit} (live)`);
   }
-  if (serviceHealth.status !== 'ok') throw new Error('Deployed Service is not healthy');
-  if (clientCommit !== compatibility.client.sha) {
-    throw new Error('Deployed Client does not match compatibility.json');
+  if (expectedClient !== null && requireCommit(expectedClient, 'Expected Client commit') !== clientCommit) {
+    throw new Error(`Deployed Client source_commit mismatch at ${clientUrl}/build-metadata.json: expected ${expectedClient} (dispatch input), observed ${clientCommit} (live)`);
   }
-  if (serviceCommit !== compatibility.service.sha) {
-    throw new Error('Deployed Service does not match compatibility.json');
-  }
-  // The supported-Client floor is enforced against the live deployments, not inferred
-  // from the pin: the Client states the version it built, and the Service states the
-  // floor it is enforcing. The member is optional until the post-deployment pin move,
-  // so smoke and measure keep working against the current pin; `full` requires it in
-  // `buildQualificationRecord`. The values are checked here and not written into the
-  // record, whose member set stays unchanged.
-  const minimumSupportedClient = compatibility.minimum_supported_client;
-  if (minimumSupportedClient !== undefined) {
-    requireNonNegativeSafeInteger(minimumSupportedClient.version, 'compatibility.minimum_supported_client.version');
-    requireCommit(minimumSupportedClient.sha, 'compatibility.minimum_supported_client.sha');
-    if (clientMetadata.schema_version !== 3) {
-      throw new Error('Deployed Client build metadata must use schema_version 3 when compatibility.minimum_supported_client is pinned');
-    }
-    const clientVersion = requireNonNegativeSafeInteger(clientMetadata.client_version, 'Deployed Client client_version');
-    if (clientVersion < minimumSupportedClient.version) {
-      throw new Error(`Deployed Client client_version ${clientVersion} is below compatibility.minimum_supported_client.version ${minimumSupportedClient.version}`);
-    }
-    const serviceMinimumClientVersion = requireNonNegativeSafeInteger(serviceHealth.minimum_client_version, 'Deployed Service minimum_client_version');
-    if (serviceMinimumClientVersion !== minimumSupportedClient.version) {
-      throw new Error(`Deployed Service minimum_client_version ${serviceMinimumClientVersion} differs from compatibility.minimum_supported_client.version ${minimumSupportedClient.version}`);
-    }
-  }
+
+  const floor = input.minimumSupportedClient ?? readMinimumSupportedClient();
+  assertLiveClientFloor({ clientVersion, minimumClientVersion }, floor);
 
   return {
-    schema_version: 1,
-    collected_at: new Date().toISOString(),
-    client: {
-      url: clientUrl,
-      source_commit: clientCommit,
-      built_at: requireValue(clientMetadata.built_at, 'Client built_at'),
-    },
-    service: {
-      url: serviceUrl,
-      source_commit: serviceCommit,
-      image_digest: serviceImageDigest,
-    },
+    client: { url: clientUrl, source_commit: clientCommit, built_at: builtAt },
+    service: { url: serviceUrl, service_commit: serviceCommit, image_digest: serviceImageDigest },
+    client_version: clientVersion,
+    minimum_client_version: minimumClientVersion,
   };
 }
 
-export function assertStableDeploymentEvidence(before, after) {
-  for (const [component, fields] of [
-    ['client', ['url', 'source_commit', 'built_at']],
-    ['service', ['url', 'source_commit', 'image_digest']],
-  ]) {
-    for (const field of fields) {
-      const original = requireValue(before[component]?.[field], `Initial ${component} ${field}`);
-      const current = requireValue(after[component]?.[field], `Final ${component} ${field}`);
-      if (original !== current) {
-        throw new Error(`Deployed ${component} ${field} changed during qualification: expected ${original}, observed ${current}`);
-      }
+export const serviceArtifactsTag = (serviceSha) => `${SERVICE_ARTIFACTS_PREFIX}${requireCommit(serviceSha, 'Service commit')}`;
+
+// One observation, exactly the shape the record stores. The platform member is the
+// E2E's own authenticated read (`infra-observation.mjs`), flattened and producer-free.
+// `authenticated: true` is a literal assertion that the observation was taken with the
+// verified Beta principal; a record cannot claim an unauthenticated observation.
+export function validateObservation(observation, label = 'observation') {
+  exactKeys(observation, [...OBSERVATION_KEYS], label);
+  requireTimestamp(observation.collected_at, `${label}.collected_at`);
+  exactKeys(observation.client, [...OBSERVED_CLIENT_KEYS], `${label} client`);
+  requireHttpsUrl(observation.client.url, `${label} client.url`);
+  requireCommit(observation.client.source_commit, `${label} client.source_commit`);
+  requireTimestamp(observation.client.built_at, `${label} client.built_at`);
+  exactKeys(observation.service, [...OBSERVED_SERVICE_KEYS], `${label} service`);
+  requireHttpsUrl(observation.service.url, `${label} service.url`);
+  requireCommit(observation.service.service_commit, `${label} service.service_commit`);
+  requireImageDigest(observation.service.image_digest);
+
+  exactKeys(observation.platform, [...PLATFORM_KEYS], `${label} platform`);
+  if (!Array.isArray(observation.platform.stacks) || observation.platform.stacks.length !== configuredStacks.length) {
+    throw new Error(`${label} platform must list exactly the ${configuredStacks.length} configured stacks`);
+  }
+  const expectedStacks = [...configuredStacks]
+    .map(({ stack_name: name, region }) => ({ name, region }))
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  const seenStacks = [];
+  for (const row of observation.platform.stacks) {
+    exactKeys(row, [...PLATFORM_STACK_KEYS], `${label} platform stack`);
+    const configured = expectedStacks.find((stack) => stack.name === row.name);
+    if (!configured || configured.region !== row.region) throw new Error(`${label} platform stack ${row.name} is not a configured stack in its reviewed region`);
+    if (seenStacks.includes(row.name)) throw new Error(`${label} platform stack ${row.name} is duplicated`);
+    seenStacks.push(row.name);
+    requireHash(row.template_sha256, `${label} platform stack ${row.name} template hash`);
+  }
+  assertEqual(seenStacks, expectedStacks.map(({ name }) => name), `${label} platform stack order`);
+
+  if (!Array.isArray(observation.platform.inputs)) throw new Error(`${label} platform inputs must be a list`);
+  const seenParameters = [];
+  for (const row of observation.platform.inputs) {
+    exactKeys(row, [...PLATFORM_INPUT_KEYS], `${label} platform input`);
+    if (typeof row.parameter !== 'string' || !parameterPattern.test(row.parameter)) {
+      throw new Error(`${label} platform input parameter ${JSON.stringify(row.parameter)} is not a stage parameter path`);
     }
+    if (typeof row.version !== 'string' || !versionPattern.test(row.version) || !Number.isSafeInteger(Number(row.version))) {
+      throw new Error(`${label} platform input ${row.parameter} version is not a positive integer string`);
+    }
+    requireHash(row.value_sha256, `${label} platform input ${row.parameter} value hash`);
+    if (seenParameters.includes(row.parameter)) throw new Error(`${label} platform input ${row.parameter} is duplicated`);
+    seenParameters.push(row.parameter);
   }
-  if (before.schema_version === 3 || after.schema_version === 3) {
-    if (before.schema_version !== 3 || after.schema_version !== 3) throw new Error('Observation schema changed during qualification');
-    assertEqual(before.compatibility, after.compatibility, 'Reviewed compatibility');
-    assertEqual(before.platform, after.platform, 'Trusted platform deployment evidence');
-    assertEqual(before.workload, after.workload, 'Trusted workload deployment evidence');
-    assertEqual(before.service_artifacts, after.service_artifacts, 'Immutable Service artifacts');
-    const stable = (snapshot) => {
-      const copy = structuredClone(snapshot);
-      if (copy.schema?.verification) {
-        delete copy.schema.verification.executor;
-        delete copy.schema.verification.task_arn;
-        delete copy.schema.verification.task_definition_arn;
-      }
-      // An ECS task-definition revision is audit information, never identity (AnyWear #138).
-      for (const identity of Object.values(copy.observed?.ecs ?? {})) delete identity.task_definition_arn;
-      return copy;
-    };
-    assertEqual(stable(before.authenticated), stable(after.authenticated), 'Authenticated deployment changed during qualification');
+  const sortedParameters = [...seenParameters].sort();
+  assertEqual(seenParameters, sortedParameters, `${label} platform input order`);
+  requireHash(observation.platform.schema_sha256, `${label} platform schema hash`);
+  if (observation.platform.schema_sha256 !== stageContractSchemaHash(observation.platform.inputs)) {
+    throw new Error(`${label} platform schema_sha256 is not the content hash of its recorded inputs`);
   }
+
+  exactKeys(observation.platform.lambdas, [...LAMBDA_KEYS], `${label} platform lambdas`);
+  for (const key of LAMBDA_KEYS) {
+    const identity = exactKeys(observation.platform.lambdas[key], [...LAMBDA_IDENTITY_KEYS], `${label} platform lambda ${key}`);
+    if (!lambdaCodePattern.test(identity.code_sha256)) throw new Error(`${label} platform lambda ${key} code_sha256 is not a Lambda CodeSha256`);
+    requireHash(identity.configuration_sha256, `${label} platform lambda ${key} configuration hash`);
+  }
+  requireHash(observation.platform.queue_config_sha256, `${label} platform queue configuration hash`);
+  if (typeof observation.platform.client_domain !== 'string' || !cloudFrontDomainPattern.test(observation.platform.client_domain)) {
+    throw new Error(`${label} platform client_domain must be a bare CloudFront distribution host`);
+  }
+  if (new URL(observation.client.url).host !== observation.platform.client_domain) {
+    throw new Error(`${label} platform client_domain ${observation.platform.client_domain} differs from the observed Client host ${new URL(observation.client.url).host}`);
+  }
+
+  if (observation.authenticated !== true) {
+    throw new Error(`${label} must state authenticated: true; the platform observation is taken with the verified Beta principal`);
+  }
+  return observation;
 }
 
-export function validateInfraEvidence(evidence, compatibility) {
-  validateCompatibility(compatibility);
-  exactKeys(evidence, ['schema_version', 'collected_at', 'client', 'service', 'compatibility', 'platform', 'workload', 'service_artifacts', 'authenticated'], 'deployment evidence');
-  if (evidence.schema_version !== 3 || !Number.isFinite(Date.parse(evidence.collected_at))) throw new Error('Unsupported authenticated evidence schema/date');
-  assertEqual(evidence.compatibility, compatibility, 'Observation compatibility');
-  assertEqual(evidence.service_artifacts, compatibility.service_artifacts, 'Observation artifact binding');
-  exactKeys(evidence.platform, ['identity', 'record'], 'platform deployment evidence');
-  exactKeys(evidence.workload, ['identity', 'record'], 'workload deployment evidence');
-  assertEqual(evidence.platform.identity, compatibility.platform.record, 'Platform deployment identity');
-  assertEqual(evidence.workload.identity, compatibility.deployment, 'Workload deployment identity');
-  validateDeploymentRecord(evidence.platform.record);
-  validateDeploymentRecord(evidence.workload.record);
-  assertDeploymentBinding(evidence.platform.record, compatibility);
-  assertDeploymentBinding(evidence.workload.record, compatibility);
-  // The authenticated observation body is the Infra record's own body: the stage
-  // base's three stacks, inputs, observed platform tuple and schema content hash.
-  // The Service record's observed workload tuple is bound by the HTTP identity
-  // below, because it belongs to the release chain's record, not to Infra's
-  // observation.
-  validateSnapshot({ stacks: evidence.authenticated.stacks, observed: evidence.authenticated.observed, schema: evidence.authenticated.schema });
-  assertObservedMatchesDeployment(evidence.platform.record, evidence.authenticated);
-  exactKeys(evidence.client, ['url', 'source_commit', 'built_at'], 'observed Client');
-  exactKeys(evidence.service, ['url', 'source_commit', 'image_digest'], 'observed Service');
-  if (evidence.client.source_commit !== compatibility.client.sha || evidence.service.source_commit !== compatibility.service.sha
-    || evidence.client.source_commit !== evidence.platform.record.observed.client_sha
-    || evidence.service.source_commit !== evidence.workload.record.observed.service_sha
-    || evidence.service.image_digest !== evidence.workload.record.observed.image_digest
-    || evidence.client.url !== evidence.platform.record.observed.endpoints.client
-    || evidence.service.url !== evidence.workload.record.observed.endpoints.api) throw new Error('HTTP and authenticated deployment identities disagree');
-  requireCommit(evidence.client.source_commit, 'Observed Client SHA');
-  requireCommit(evidence.service.source_commit, 'Observed Service SHA');
-  requireImageDigest(evidence.service.image_digest);
-  requireHttpsUrl(evidence.client.url, 'Observed Client endpoint');
-  requireHttpsUrl(evidence.service.url, 'Observed Service endpoint');
-  if (!Number.isFinite(Date.parse(evidence.client.built_at))) throw new Error('Invalid Client build timestamp');
-  return evidence;
+// The full observed identity must be equal before and after the suite: Client, Service
+// and platform. The old comparison covered only Client and Service because the platform
+// arrived as a producer record that was pinned by the compatibility file; now the
+// platform is observed by this repository, so a template, input, Lambda, queue or
+// distribution change during the suite is a first-class mismatch.
+export function assertStableObservation(before, after) {
+  validateObservation(before, 'initial observation');
+  validateObservation(after, 'final observation');
+  assertEqual(before.client, after.client, 'Deployed Client identity');
+  assertEqual(before.service, after.service, 'Deployed Service identity');
+  assertEqual(before.platform, after.platform, 'Deployed platform identity');
+  return true;
+}
+
+function validateServiceArtifacts(serviceArtifacts, serviceSha) {
+  exactKeys(serviceArtifacts, [...SERVICE_ARTIFACTS_KEYS], 'Service artifacts');
+  if (serviceArtifacts.repository !== repositories.service) throw new Error('Service artifacts repository is unexpected');
+  requireId(serviceArtifacts.release_id, 'Service release ID');
+  requireId(serviceArtifacts.manifest_asset_id, 'Service manifest asset ID');
+  requireHash(serviceArtifacts.manifest_sha256, 'Service manifest checksum');
+  if (serviceArtifacts.tag !== serviceArtifactsTag(serviceSha)) {
+    throw new Error(`Service artifacts tag ${JSON.stringify(serviceArtifacts.tag)} does not name the qualified Service commit; observed ${JSON.stringify(serviceArtifacts.tag)}, expected ${serviceArtifactsTag(serviceSha)}`);
+  }
+  return serviceArtifacts;
+}
+
+// The live identity file is written by the same read that compared the dispatch
+// expectation, so the versions it holds belong to the run-start Service. It is
+// cross-checked against the final observation: the identity the record states and the
+// identity the observation states cannot disagree.
+function validateLiveIdentity(live, observation) {
+  const label = 'live identity';
+  exactKeys(live, ['client', 'service'], label);
+  exactKeys(live.client, ['url', 'source_commit', 'client_version', 'built_at'], `${label} client`);
+  exactKeys(live.service, ['url', 'service_commit', 'image_digest', 'minimum_client_version'], `${label} service`);
+  assertEqual(live.client, { ...observation.client, client_version: live.client.client_version }, `${label} Client`);
+  assertEqual(live.service, { ...observation.service, minimum_client_version: live.service.minimum_client_version }, `${label} Service`);
+  requireNonNegativeSafeInteger(live.client.client_version, `${label} client_version`);
+  requireNonNegativeSafeInteger(live.service.minimum_client_version, `${label} minimum_client_version`);
+  return live;
+}
+
+// The dispatch expectation, resolved. `trigger` means the dispatcher supplied a Service
+// commit and it must be exactly what is deployed; `live` means a manual `full` supplied
+// none, so the live Service commit observed at run start became the expectation. A
+// supplied Client commit is compared the same way in either mode.
+function resolveExpected(expected, observation) {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
+    throw new Error('Qualification requires the expected tuple {service_commit, client_commit, source}');
+  }
+  exactKeys(expected, [...EXPECTED_KEYS], 'expected tuple');
+  requireOneOf(expected.source, [...EXPECTED_SOURCES], 'Qualification expected.source');
+  const liveService = requireCommit(observation.service.service_commit, 'Observed Service service_commit');
+  const liveClient = requireCommit(observation.client.source_commit, 'Observed Client source_commit');
+  const suppliedService = expected.service_commit ?? null;
+  const suppliedClient = expected.client_commit ?? null;
+  let serviceCommit;
+  if (suppliedService !== null) {
+    serviceCommit = requireCommit(suppliedService, 'expected.service_commit');
+    if (expected.source !== 'trigger') {
+      throw new Error('A supplied expected service commit requires expected.source to be trigger, not live');
+    }
+    if (serviceCommit !== liveService) {
+      throw new Error(`Expected Service commit mismatch: expected ${serviceCommit} (dispatch input), observed ${liveService} (live)`);
+    }
+  } else {
+    if (expected.source !== 'live') {
+      throw new Error('expected.source trigger requires a supplied expected service commit; a manual full without one records the live Service commit as its expectation with source live');
+    }
+    serviceCommit = liveService;
+  }
+  let clientCommit = null;
+  if (suppliedClient !== null) {
+    clientCommit = requireCommit(suppliedClient, 'expected.client_commit');
+    if (clientCommit !== liveClient) {
+      throw new Error(`Expected Client commit mismatch: expected ${clientCommit} (dispatch input), observed ${liveClient} (live)`);
+    }
+  }
+  return { service_commit: serviceCommit, client_commit: clientCommit, source: expected.source };
 }
 
 // The environment verdict is a required argument, not an option: this is the only path
-// that writes `qualification-record.json`, and a passing suite measured across two worker
-// task definitions measured neither of them, so it cannot issue a qualification record.
-// The assertion denies by default, so no caller can build a record without stating the
+// that writes `qualification-record.json`, and a passing suite measured across two
+// worker task definitions measured neither of them, so it cannot issue a record. The
+// assertion denies by default, so no caller can build a record without stating the
 // environment gate it consulted.
 //
-// The run's Playwright JSON report bytes are the sixth required argument for the same
-// reason: the record states which scenarios ran and how many of each spec's tests were
-// collected and skipped, and none of that can be inferred from a suite that merely ended
-// green. The report is where the record's `test` member comes from, so a caller that does
-// not hold it cannot state what it measured.
-// #163: the record is produced only by the `full` operation of the single `qualify` entry.
-// The operation is read from the dispatch event (`E2E_OPERATION`) rather than inferred from
-// the workflow file, and it is written into the payload so the validator and the Infra-side
-// executor allow-list can re-check the binding. `smoke`, `measure` and `recover` share the
-// dispatch surface but cannot reach this function with a recordable operation.
+// The run's Playwright JSON report bytes are required for the same reason: the record
+// states which scenarios ran and how many of each spec's tests were collected and
+// skipped, and none of that can be inferred from a suite that merely ended green.
 //
-// The `operation` member is additive to the v2 record, not a v3 bump. Infra's
-// `scripts/production-preflight.mjs` requires a flat `anywear_beta_qualification` v2 record
-// (`payload === undefined`) and validates its named fields rather than an exact top-level
-// key set, so an added member stays compatible with the current consumer. A v3 bump would
-// make every existing v2 consumer reject the record and would need a matching Infra change;
-// #163 therefore records the decision as additive v2.
-export function buildQualificationRecord(input, compatibility, evidence, now = new Date(), environment, reportBytes) {
+// The record is produced only by the `full` operation of the single `qualify` entry.
+// The operation is read from the dispatch event (`E2E_OPERATION`), never inferred from
+// the workflow file, and it is written into the payload so the validator and the
+// release consumers can re-check the binding. `smoke`, `measure` and `recover` share
+// the dispatch surface but cannot reach this function with a recordable operation.
+export function buildQualificationRecord(input, expected, evidence, now = new Date(), environment, reportBytes) {
   if (input.result !== 'passed') {
     throw new Error('Only a completed passing test run can issue a qualification record');
   }
@@ -228,34 +353,54 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
     throw new Error(`The qualification record requires the run's Playwright JSON report bytes at ${QUALIFICATION_REPORT_PATH}; ${QUALIFICATION_REPORT_ENV} names that path and the release-gating suite step writes it`);
   }
 
-  validateCompatibility(compatibility);
-  // Qualification is the one path that writes the release record, and it now also covers
-  // the oldest supported Client. A pin without the floor cannot name the oldest Client the
-  // record is meant to qualify, so `full` refuses to produce a record until the reviewed
-  // pin has moved after the deployment that first enforces the floor. `smoke` and `measure`
-  // never reach this function and keep working against the current pin.
-  if (compatibility.minimum_supported_client === undefined) {
-    throw new Error('Qualification requires compatibility.minimum_supported_client { version, sha } naming the oldest supported Client');
-  }
-  requireNonNegativeSafeInteger(compatibility.minimum_supported_client.version, 'compatibility.minimum_supported_client.version');
-  requireCommit(compatibility.minimum_supported_client.sha, 'compatibility.minimum_supported_client.sha');
-  exactKeys(evidence, ['before', 'after'], 'qualification observations');
+  exactKeys(evidence, ['before', 'after', 'service_artifacts', 'live'], 'qualification evidence');
+  validateObservation(evidence.before, 'initial observation');
+  validateObservation(evidence.after, 'final observation');
+  assertStableObservation(evidence.before, evidence.after);
+  assertObservationSequence({ before: evidence.before, after: evidence.after }, now.toISOString());
+  const after = evidence.after;
+
+  const live = validateLiveIdentity(evidence.live, after);
+  const floor = input.minimumSupportedClient ?? readMinimumSupportedClient();
+  assertLiveClientFloor({
+    clientVersion: live.client.client_version,
+    minimumClientVersion: live.service.minimum_client_version,
+  }, floor);
+
+  const resolvedExpected = resolveExpected(expected, after);
+  const serviceArtifacts = validateServiceArtifacts(evidence.service_artifacts, after.service.service_commit);
+
   if (input.repository !== repositories.e2e || input.workflowPath !== '.github/workflows/beta-qualification.yml'
-    || input.workflowRef !== `${repositories.e2e}/.github/workflows/beta-qualification.yml@refs/heads/main`) throw new Error('Only protected Beta Qualification can issue v2 records');
+    || input.workflowRef !== `${repositories.e2e}/.github/workflows/beta-qualification.yml@refs/heads/main`) {
+    throw new Error('Only protected Beta Qualification can issue v3 records');
+  }
+  if (input.awsAccountId !== '650880818323' || input.awsRegion !== 'ap-east-1') {
+    throw new Error('Qualification must observe the reviewed Beta account/region');
+  }
+  if (input.serverUrl !== 'https://github.com') throw new Error('Qualification must bind GitHub.com');
+
+  const trigger = requireOneOf(input.trigger, [...QUALIFICATION_TRIGGERS], 'Qualification trigger');
+  if (trigger === 'deploy-smoke') {
+    throw new Error('A deploy-smoke trigger only dispatches the smoke operation, so it cannot issue a qualification record');
+  }
+  const dispatchedBy = input.dispatchedBy ?? null;
+  if (trigger === 'manual') {
+    if (dispatchedBy !== null) throw new Error('A manual qualification must not state a dispatched_by URL');
+  } else {
+    if (dispatchedBy === null) throw new Error(`A ${trigger} qualification requires the dispatched_by URL of the run that dispatched it`);
+    requireHttpsUrl(dispatchedBy, 'Qualification dispatched_by');
+  }
+  if (trigger === 'release-qualify' && resolvedExpected.source !== 'trigger') {
+    throw new Error('A release-qualify trigger requires a supplied expected service commit (expected.source trigger)');
+  }
+
   const executor = {
     repository: repositories.e2e, sha: requireCommit(input.e2eSha, 'E2E SHA'),
     workflow_path: input.workflowPath,
     run_id: requireId(Number(input.runId), 'E2E run'), run_attempt: requireId(Number(input.runAttempt), 'E2E attempt'),
   };
-  validateInfraEvidence(evidence.before, compatibility);
-  validateInfraEvidence(evidence.after, compatibility);
-  assertStableDeploymentEvidence(evidence.before, evidence.after);
-  assertObservationSequence(evidence, now.toISOString());
-  const after = evidence.after;
-  if (input.awsAccountId !== '650880818323' || input.awsRegion !== 'ap-east-1') throw new Error('Qualification must observe the reviewed Beta account/region');
-  if (input.serverUrl !== 'https://github.com') throw new Error('Qualification must bind GitHub.com');
   const payload = {
-    schema_version: 2,
+    schema_version: 3,
     record_type: 'anywear_beta_qualification',
     qualification_id: `beta-${requireValue(input.runId, 'GITHUB_RUN_ID')}-${requireValue(input.runAttempt, 'GITHUB_RUN_ATTEMPT')}`,
     result: 'passed',
@@ -268,26 +413,26 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
       client_url: requireHttpsUrl(after.client.url, 'Client URL'),
       service_url: requireHttpsUrl(after.service.url, 'Service URL'),
     },
+    expected: resolvedExpected,
     revisions: {
       e2e: {
         repository: requireValue(input.repository, 'GITHUB_REPOSITORY'),
         sha: requireCommit(input.e2eSha, 'E2E SHA'),
       },
       client: {
-        repository: compatibility.client.repository,
+        repository: repositories.client,
         sha: requireCommit(after.client.source_commit, 'Client SHA'),
+        client_version: live.client.client_version,
       },
       service: {
-        repository: compatibility.service.repository,
-        sha: requireCommit(after.service.source_commit, 'Service SHA'),
+        repository: repositories.service,
+        sha: requireCommit(after.service.service_commit, 'Service SHA'),
         image_digest: requireImageDigest(after.service.image_digest),
+        minimum_client_version: live.service.minimum_client_version,
       },
-      infra: compatibility.infra,
     },
-    compatibility,
-    service_artifacts: compatibility.service_artifacts,
-    deployment: { platform: after.platform, workload: after.workload },
-    observations: evidence,
+    service_artifacts: serviceArtifacts,
+    observations: { before: evidence.before, after: evidence.after },
     // Which tests this record covers is derived from the run and this checkout, never
     // written as a literal: the invocation the qualification workflow's suite step ran,
     // the tag that invocation selects, the run's own report digest, and one entry per
@@ -300,16 +445,14 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
       run_id: executor.run_id,
       run_attempt: executor.run_attempt,
       run_url: `${requireValue(input.serverUrl, 'GITHUB_SERVER_URL')}/${input.repository}/actions/runs/${input.runId}`,
+      trigger,
+      dispatched_by: dispatchedBy,
     },
   };
 
-  if (payload.revisions.client.sha !== compatibility.client.sha) {
-    throw new Error('Qualification Client SHA does not match compatibility.json');
+  if (payload.expected.service_commit !== payload.revisions.service.sha) {
+    throw new Error('Qualification expectation does not name the observed Service commit');
   }
-  if (payload.revisions.service.sha !== compatibility.service.sha) {
-    throw new Error('Qualification Service SHA does not match compatibility.json');
-  }
-
   return {
     ...payload,
     integrity: {
@@ -320,10 +463,10 @@ export function buildQualificationRecord(input, compatibility, evidence, now = n
 }
 
 export function verifyQualificationRecord(record, { trustedRun } = {}) {
-  if (record.schema_version !== 2 || record.record_type !== 'anywear_beta_qualification') {
+  if (record?.schema_version !== 3 || record?.record_type !== 'anywear_beta_qualification') {
     throw new Error('Unsupported qualification record schema');
   }
-  exactKeys(record, ['schema_version', 'record_type', 'qualification_id', 'result', 'operation', 'qualified_at', 'environment', 'revisions', 'compatibility', 'service_artifacts', 'deployment', 'observations', 'test', 'workflow', 'integrity'], 'qualification');
+  exactKeys(record, [...QUALIFICATION_RECORD_KEYS], 'qualification');
   exactKeys(record.test, TEST_KEYS, 'test result');
   exactKeys(record.test.selection, SELECTION_KEYS, 'test selection');
   if (!Array.isArray(record.test.scenarios) || record.test.scenarios.length === 0) {
@@ -351,40 +494,72 @@ export function verifyQualificationRecord(record, { trustedRun } = {}) {
   }
   // Re-derived only after the payload checksum, so a record tampered with anywhere still
   // reports the checksum mismatch first. This is the half that refuses a record whose
-  // stated selection or scenario list does not match the workflow, `package.json`, the spec
-  // titles and the scenario inventory of the checkout that judges it.
+  // stated selection or scenario list does not match the workflow, `package.json`, the
+  // spec titles and the scenario inventory of the checkout that judges it.
   assertTestSelection(payload.test);
-  validateCompatibility(payload.compatibility);
-  exactKeys(payload.workflow, ['repository', 'path', 'ref', 'run_id', 'run_attempt', 'run_url'], 'qualification workflow');
+
+  exactKeys(payload.expected, [...EXPECTED_KEYS], 'expected tuple');
+  requireCommit(payload.expected.service_commit, 'Expected Service commit');
+  if (payload.expected.client_commit !== null) requireCommit(payload.expected.client_commit, 'Expected Client commit');
+  requireOneOf(payload.expected.source, [...EXPECTED_SOURCES], 'Qualification expected.source');
+
+  exactKeys(payload.workflow, ['repository', 'path', 'ref', 'run_id', 'run_attempt', 'run_url', 'trigger', 'dispatched_by'], 'qualification workflow');
   const workflow = payload.workflow;
   requireId(workflow.run_id, 'Qualification run'); requireId(workflow.run_attempt, 'Qualification attempt');
+  requireOneOf(workflow.trigger, [...QUALIFICATION_TRIGGERS], 'Qualification trigger');
+  if (workflow.trigger === 'deploy-smoke') {
+    throw new Error('A deploy-smoke trigger only dispatches the smoke operation, so it cannot issue a qualification record');
+  }
+  if (workflow.trigger === 'manual') {
+    if (workflow.dispatched_by !== null) throw new Error('A manual qualification must not state a dispatched_by URL');
+  } else if (workflow.dispatched_by === null) {
+    throw new Error(`A ${workflow.trigger} qualification requires the dispatched_by URL of the run that dispatched it`);
+  } else {
+    requireHttpsUrl(workflow.dispatched_by, 'Qualification dispatched_by');
+  }
+  if (workflow.trigger === 'release-qualify' && payload.expected.source !== 'trigger') {
+    throw new Error('A release-qualify trigger requires a supplied expected service commit (expected.source trigger)');
+  }
   if (workflow.repository !== repositories.e2e || workflow.path !== '.github/workflows/beta-qualification.yml'
     || workflow.ref !== `${repositories.e2e}/${workflow.path}@refs/heads/main`
     || workflow.run_url !== `https://github.com/${repositories.e2e}/actions/runs/${workflow.run_id}`
     || payload.qualification_id !== `beta-${workflow.run_id}-${workflow.run_attempt}`) throw new Error('Qualification workflow binding mismatch');
-  exactKeys(payload.revisions, ['e2e', 'client', 'service', 'infra'], 'revisions');
-  for (const component of ['e2e', 'client', 'service', 'infra']) {
-    exactKeys(payload.revisions[component], component === 'service' ? ['repository', 'sha', 'image_digest'] : ['repository', 'sha'], `${component} revision`);
+
+  exactKeys(payload.revisions, ['e2e', 'client', 'service'], 'revisions');
+  exactKeys(payload.revisions.e2e, ['repository', 'sha'], 'e2e revision');
+  exactKeys(payload.revisions.client, ['repository', 'sha', 'client_version'], 'client revision');
+  exactKeys(payload.revisions.service, ['repository', 'sha', 'image_digest', 'minimum_client_version'], 'service revision');
+  for (const component of ['e2e', 'client', 'service']) {
     if (payload.revisions[component].repository !== repositories[component]) throw new Error('Qualification repository mismatch');
     requireCommit(payload.revisions[component].sha, `${component} SHA`);
   }
+  requireImageDigest(payload.revisions.service.image_digest);
+  requireNonNegativeSafeInteger(payload.revisions.client.client_version, 'Qualified Client version');
+  requireNonNegativeSafeInteger(payload.revisions.service.minimum_client_version, 'Qualified minimum Client version');
+  if (payload.revisions.client.client_version < payload.revisions.service.minimum_client_version) {
+    throw new Error(`Qualified Client version ${payload.revisions.client.client_version} is below the qualified minimum Client version ${payload.revisions.service.minimum_client_version}`);
+  }
+  const floor = readMinimumSupportedClient();
+  if (payload.revisions.service.minimum_client_version !== floor.version) {
+    throw new Error(`Qualified minimum Client version ${payload.revisions.service.minimum_client_version} differs from the committed minimum-supported-client.json version ${floor.version}`);
+  }
+
+  if (payload.expected.service_commit !== payload.revisions.service.sha) {
+    throw new Error('Qualification expectation does not name the qualified Service commit');
+  }
+  if (payload.expected.client_commit !== null && payload.expected.client_commit !== payload.revisions.client.sha) {
+    throw new Error('Qualification expectation does not name the qualified Client commit');
+  }
+
   exactKeys(payload.environment, ['stage', 'aws_account_id', 'aws_region', 'client_url', 'service_url'], 'qualification environment');
   if (payload.environment.stage !== 'beta' || payload.environment.aws_account_id !== '650880818323' || payload.environment.aws_region !== 'ap-east-1') throw new Error('Qualification account/region mismatch');
   if (!Number.isFinite(Date.parse(payload.qualified_at))) throw new Error('Invalid qualification timestamp');
   exactKeys(payload.observations, ['before', 'after'], 'observations');
-  validateInfraEvidence(payload.observations.before, payload.compatibility);
-  validateInfraEvidence(payload.observations.after, payload.compatibility);
-  assertStableDeploymentEvidence(payload.observations.before, payload.observations.after);
+  validateObservation(payload.observations.before, 'initial observation');
+  validateObservation(payload.observations.after, 'final observation');
+  assertStableObservation(payload.observations.before, payload.observations.after);
   assertObservationSequence(payload.observations, payload.qualified_at);
-  exactKeys(payload.deployment, ['platform', 'workload'], 'qualification deployment');
-  assertEqual(payload.deployment.platform, payload.observations.after.platform, 'Qualified platform deployment evidence');
-  assertEqual(payload.deployment.workload, payload.observations.after.workload, 'Qualified workload deployment evidence');
-  assertEqual(payload.deployment.platform.identity, payload.compatibility.platform.record, 'Qualified platform deployment identity');
-  assertEqual(payload.deployment.workload.identity, payload.compatibility.deployment, 'Qualified workload deployment identity');
-  assertEqual(payload.service_artifacts, payload.compatibility.service_artifacts, 'Qualified Service artifacts');
-  for (const component of ['client', 'service', 'infra']) {
-    if (payload.revisions[component].sha !== payload.compatibility[component].sha) throw new Error('Qualified revision compatibility mismatch');
-  }
+  validateServiceArtifacts(payload.service_artifacts, payload.revisions.service.sha);
   if (payload.revisions.service.image_digest !== payload.observations.after.service.image_digest
     || payload.environment.client_url !== payload.observations.after.client.url
     || payload.environment.service_url !== payload.observations.after.service.url) throw new Error('Qualification runtime binding mismatch');
@@ -411,19 +586,19 @@ export function verifyQualificationAgainstReport(record, reportBytes) {
 }
 
 export function assertObservationSequence({ before, after }, qualifiedAt) {
-  const times = [before.collected_at, after.collected_at, qualifiedAt].map(Date.parse);
-  if (times.some((value) => !Number.isFinite(value)) || times[0] >= times[1] || times[1] > times[2]) throw new Error('Qualification observations must occur before and after the suite in order');
-  // The v3 authenticated body is the stage-base observation; the two pinned
-  // deployment records carry the run identity, so there is no run-scoped
-  // verification task ARN to compare between the observations.
-  if (!before.authenticated?.stacks || !after.authenticated?.stacks) throw new Error('Both observations require an authenticated deployment body');
+  const times = [before?.collected_at, after?.collected_at, qualifiedAt].map(Date.parse);
+  if (times.some((value) => !Number.isFinite(value)) || times[0] >= times[1] || times[1] > times[2]) {
+    throw new Error('Qualification observations must occur before and after the suite in order');
+  }
+  if (!before?.platform || !after?.platform) throw new Error('Both observations require an authenticated platform body');
+  return true;
 }
 
 // Producer self-checks run while their workflow is still in progress. A release
-// consumer must use this stricter entry point after downloading the exact pinned
+// consumer must use this stricter entry point after downloading the exact attached
 // artifact, not infer authenticity from the payload's checksum alone.
 export function verifyQualificationForPromotion(record, { trustedRun, trustedArtifact, expected, recordBytes, now = Date.now() } = {}) {
-  if (!trustedRun || !trustedArtifact || !expected || !recordBytes) throw new Error('Promotion requires authenticated run/artifact metadata and pinned record bytes');
+  if (!trustedRun || !trustedArtifact || !expected || !recordBytes) throw new Error('Promotion requires authenticated run/artifact metadata and the attached record bytes');
   verifyQualificationRecord(record, { trustedRun });
   if (trustedArtifact.id !== expected.artifact_id || trustedArtifact.expired !== false
     || Date.parse(trustedArtifact.expires_at) <= now || !Number.isFinite(Date.parse(trustedArtifact.expires_at))
@@ -432,8 +607,8 @@ export function verifyQualificationForPromotion(record, { trustedRun, trustedArt
     || expected.run_id !== trustedRun.id || expected.run_attempt !== trustedRun.run_attempt
     || expected.e2e_sha !== trustedRun.head_sha) throw new Error('Trusted qualification artifact binding or lifetime mismatch');
   const bytesHash = byteHash(recordBytes);
-  requireHash(expected.record_sha256, 'Pinned qualification record checksum');
-  if (bytesHash !== expected.record_sha256) throw new Error('Pinned qualification exact-byte checksum mismatch');
+  requireHash(expected.record_sha256, 'Qualification record checksum');
+  if (bytesHash !== expected.record_sha256) throw new Error('Qualification exact-byte checksum mismatch');
   assertEqual(parseStrictJson(recordBytes), record, 'Downloaded qualification bytes');
   const start = Date.parse(trustedRun.run_started_at);
   const end = Date.parse(trustedRun.updated_at);
