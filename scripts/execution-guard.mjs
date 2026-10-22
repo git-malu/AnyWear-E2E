@@ -4,17 +4,16 @@ import { repositories, requireCommit, requireString } from './evidence-contract.
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 
-// #163: the four protected operations all run from the single `qualify` entry. The old
+// #163: the three protected operations all run from the single `qualify` entry. The old
 // workflow-file allow-list is replaced by an operation → entry map: an operation must be
 // stated explicitly instead of being inferred from whichever file happened to dispatch,
 // and every operation names the one entry that may serve it. Adding an operation to a
 // different file therefore means changing this map, which is the reviewable point the
 // allow-list used to be.
-export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'measure', 'recover']);
+export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'recover']);
 const operationEntries = Object.freeze({
   full: 'beta-qualification',
   smoke: 'beta-qualification',
-  measure: 'beta-qualification',
   recover: 'beta-qualification',
 });
 

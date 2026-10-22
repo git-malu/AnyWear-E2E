@@ -2,11 +2,18 @@
 
 These files are the public v4 deployment contract from
 [`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`c9983520edbff92c425d7db4261fd55e8f2ecbfb` (`@git-malu/stage-contracts` 0.3.0,
-Issue #166). The contract keeps the seven-member v3 record core, and the Service
-`anywear_service_deployment` record is schema version 4 with a required `gate`
-block. The Infra `anywear_infra_deployment` record stays schema version 3 and
-never carries a gate.
+`9382e40810fa451b626f13a3303fe205614305f7` (`@git-malu/stage-contracts` 0.3.0,
+Issues #166 and #180). The contract keeps the seven-member v3 record core, and the
+Service `anywear_service_deployment` record is schema version 4 with a required
+`gate` block. The Infra `anywear_infra_deployment` record stays schema version 3
+and never carries a gate.
+
+The source commit moved from `c9983520edbff92c425d7db4261fd55e8f2ecbfb` to
+`9382e40810fa451b626f13a3303fe205614305f7` for #180: the four contract files are
+byte-identical at both commits (their producer blobs were compared), and only
+`stage-contract-parameters.mjs` moved. AnyWear-E2E now takes the authenticated
+platform observation itself instead of checking out the Infra observer, so it
+needs the stage-input reader here rather than in a separate checkout.
 
 The Service release slice is the **Runtime** stack. `SERVICE_RUNTIME_STACK` is
 `AnyWearRuntimeStack-beta` (`ap-east-1`, workflow
@@ -20,31 +27,34 @@ stacks plus one Service stack. Egress appears only in the operation change table
 (`deploy-egress` / `delete-egress`) and in `operationOwnedStacks`, never in the
 record or observation manifest.
 
-Three files are exact byte copies. `deployment-contract.mjs` is the raw producer
-file with exactly one declared import rewrite because this repository consumes
-the dependency-free package source instead of installing a tarball:
+Three contract files are exact byte copies. `deployment-contract.mjs` and
+`stage-contract-parameters.mjs` are raw producer files with exactly one declared
+import rewrite each because this repository consumes the dependency-free package
+source instead of installing a tarball:
 
 | E2E file | Producer path in Infra | Producer SHA-256 | Committed SHA-256 |
 | --- | --- | --- | --- |
 | `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `c17ee5136d01f69309b55bfd18eb8b62b05c20d1306aea64e33a429e83754d5a` | `54a6986f9b399b6935f45829404a3e36b1bd7874da623ad8d56e3d7790728a21` |
 | `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
 | `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab` | `7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab` |
+| `stage-contract-parameters.mjs` | `scripts/stage-contract-parameters.mjs` | `f5a5f82b289de57840821fcee4fb3f4a25b399a1b5f86fb0d5d4b3db52ef6b68` | `b6e506ebc74cf120d696779d5f0bc4376735e5a0cb76e5aa9c1411c9090e57f8` |
 | `stage-contracts.mjs` | `packages/stage-contracts/index.mjs` | `4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784` | `4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784` |
 
-## The one declared rewrite
+## The two declared rewrites
 
-`deployment-contract.mjs` imports the versioned package entry:
+`deployment-contract.mjs` and `stage-contract-parameters.mjs` import the
+versioned package entry:
 
 ```diff
 -} from '@git-malu/stage-contracts';
 +} from './stage-contracts.mjs';
 ```
 
-`provenance.json` records that substitution as `import_rewrites` and the raw
-producer file hash as `producer_files`. `scripts/vendored-contract.mjs` asserts
+`provenance.json` records each substitution as `import_rewrites` and the raw
+producer file hashes as `producer_files`. `scripts/vendored-contract.mjs` asserts
 the repository, the source SHA and every committed file hash; it also reverses
-the declared rewrite, asserts the raw producer bytes hash, and re-applies the
-declaration forward. A missing or malformed declaration, an undeclared byte
+the declared rewrites, asserts the raw producer bytes hashes, and re-applies the
+declarations forward. A missing or malformed declaration, an undeclared byte
 change or a doctored file is refused before the consumer imports the contract.
 
 ## Package pin
@@ -117,7 +127,11 @@ Service parser copies are deleted. The v2 `selection` contract, its committed
 files and the cross-repository native release verification path no longer exist
 in this consumer; the Service release chain verifies its own sealed release
 before it deploys, and E2E keeps only the four-field `service_artifacts` identity
-as evidence. Historical v2 records remain readable for the audit/migration path
-through the frozen envelope check in `scripts/trusted-deployment-inputs.mjs`,
-never as a live v3 input. Pre-gate Service v3 records were never produced; the
-Service record is only ever the v4 gated shape.
+as evidence. #180 also deletes the E2E deployment-record consumer
+(`scripts/trusted-deployment-inputs.mjs`, including its frozen historical-v2
+envelope check) and the cross-repository Infra observer checkout
+(`scripts/infra-source.mjs`): qualification takes its own authenticated platform
+observation from this contract instead of consuming a producer record. Historical
+v2 records were readable only in the pin tooling, which #192 deletes; no live
+input reads them. Pre-gate Service v3 records were never
+produced; the Service record is only ever the v4 gated shape.

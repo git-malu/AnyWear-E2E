@@ -8,7 +8,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { markAccountDeleted } from '../tests/support/account-budget.ts';
 import { runCleanupOperation } from '../tests/support/service-cleanup-operation.ts';
-import { cleanupWorkerAccounts } from '../tests/support/worker-cleanup.ts';
+import { cleanupWorkerAccounts, isAdmittedCleanupWorker } from '../tests/support/worker-cleanup.ts';
 import { assertE2EExecution } from './execution-guard.mjs';
 import { byteHash, parseStrictJson } from './evidence-contract.mjs';
 import { validateDiagnosticRecord } from './beta-cleanup-diagnostic.mjs';
@@ -109,6 +109,25 @@ export async function runCapturedWorkerCleanup(manifest, environment, io,
   } });
 }
 
+/**
+ * The ledger half of the repair: every worker the request admitted reached a
+ * verified delete and absence readback, so its record becomes `deleted`. The
+ * predicate is the same one the request used, so an unproven quarantined record
+ * is never marked and stays terminal. `markAccountDeleted` rewrites only status
+ * and `updatedAt`, which keeps the original quarantine reason.
+ */
+export async function markRepairedWorkerAccounts(manifest) {
+  const admitted = manifest.accounts.filter(account => isAdmittedCleanupWorker(account, manifest));
+  for (const account of admitted) await markAccountDeleted(account.email);
+  return admitted;
+}
+
+/** A worker record the step left non-deleted: neither repaired nor already deleted. */
+export function skippedWorkerAccounts(manifest, admitted) {
+  return manifest.accounts.filter(account => account.mode === 'worker'
+    && account.status !== 'deleted' && !admitted.includes(account));
+}
+
 async function main() {
 try {
   assertE2EExecution();
@@ -127,10 +146,16 @@ try {
       process.stdout.write('Deferred exact E2E worker cleanup; the account manifest remains cleanup_pending for protected recovery.\n');
       process.exitCode = 1;
     } else {
-      for (const account of manifest.accounts) {
-        if (account.mode === 'worker' && account.status === 'cleanup_pending') await markAccountDeleted(account.email);
-      }
+      const admitted = await markRepairedWorkerAccounts(manifest);
+      // A record that is neither repaired nor already `deleted` was skipped. It
+      // used to read as success ("Cleaned 0 ..."). Report it and fail the step:
+      // the identity and its reason stay in the manifest.
+      const skipped = skippedWorkerAccounts(manifest, admitted);
       process.stdout.write(`Cleaned ${count} exact E2E worker identity record(s).\n`);
+      if (skipped.length > 0) {
+        process.stderr.write(`Cleanup left ${skipped.length} worker record(s) non-deleted: ${skipped.map(account => `${account.email} (${account.status})`).join(', ')}\n`);
+        process.exitCode = 1;
+      }
     }
   } finally {
     io.destroy();

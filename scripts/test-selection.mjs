@@ -42,7 +42,7 @@ export const RECORDABLE_RESULTS = Object.freeze(['passed', 'flaky']);
 // Invocation tags, and the scripts that select them. A scenario may carry several. This
 // vocabulary is shared with the offline declaration check so both ends read a title the
 // same way.
-export const deployedInvocationTag = /@(smoke|regression|instrumentation|drill|full-stack|beta-sizing)\b/;
+export const deployedInvocationTag = /@(smoke|regression|drill|full-stack)\b/;
 
 function rootOf(options = {}) {
   return resolve(options.root ?? repositoryRoot);

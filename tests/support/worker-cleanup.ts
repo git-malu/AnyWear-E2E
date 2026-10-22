@@ -1,4 +1,5 @@
 import {
+  assertCapturedCognitoAbsence,
   deleteCapturedCognitoIdentity,
   type CapturedIdentity,
   type CognitoCleanupIo,
@@ -6,7 +7,7 @@ import {
 import { isBetaWorkerEmailForScope } from './beta-address.ts';
 import type { AttemptBusinessCleanupOutcome } from './attempt-cleanup-registry.ts';
 
-interface WorkerAccountRecord {
+export interface WorkerAccountRecord {
   email: string;
   subject?: string;
   mode: 'worker' | 'ephemeral';
@@ -250,12 +251,30 @@ export function workerLeaseGateError(disposition: WorkerLeaseDisposition): Error
 const RUN_SCOPE_PATTERN = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 const SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
+/**
+ * One eligibility rule for the cleanup request and the ledger transition.
+ *
+ * A `cleanup_pending` record is the ordinary case. A `quarantined` record is
+ * admitted only when the ownership the quarantine withheld can still be proven:
+ * a captured UUID-shaped subject and an address in this manifest's own run
+ * scope. An unproven quarantined record stays out of the list — the validation
+ * below is all-or-nothing, so admitting it would throw and block a proven
+ * record's repair in the same manifest.
+ */
+export function isAdmittedCleanupWorker(account: WorkerAccountRecord, manifest: WorkerAccountManifest): boolean {
+  if (account.mode !== 'worker') return false;
+  if (account.status === 'cleanup_pending') return true;
+  return account.status === 'quarantined'
+    && typeof account.subject === 'string' && SUBJECT_PATTERN.test(account.subject)
+    && isBetaWorkerEmailForScope(account.email, manifest.runScope);
+}
+
 export function createServiceCleanupInputs(manifest: WorkerAccountManifest): ServiceCleanupInputs | undefined {
   if (manifest.version !== 1 || !RUN_SCOPE_PATTERN.test(manifest.runScope) || !Array.isArray(manifest.accounts)) {
     throw new Error('E2E worker cleanup requires a valid bounded account manifest');
   }
 
-  const activeWorkers = manifest.accounts.filter((account) => account.mode === 'worker' && account.status === 'cleanup_pending');
+  const activeWorkers = manifest.accounts.filter((account) => isAdmittedCleanupWorker(account, manifest));
   // This run's scoped addresses, or the stable rows a pre-#129 manifest still
   // names. Either way the address must belong to this manifest's own run scope,
   // so a captured identity can never be cleaned up under another run's request.
@@ -292,6 +311,12 @@ export async function cleanupWorkerAccounts(
   const dispatched = await io.runServiceCleanup(inputs);
   if (dispatched === false) return undefined;
   const identities: CapturedIdentity[] = JSON.parse(inputs.cleanup_json).users;
-  for (const identity of identities) await deleteCapturedCognitoIdentity(identity, io);
+  // Deletion is not terminal by itself: the identity is only cleared when a fresh
+  // read of the captured address proves its absence. A returned identity or an
+  // unreadable readback rejects, so the caller never marks the record `deleted`.
+  for (const identity of identities) {
+    await deleteCapturedCognitoIdentity(identity, io);
+    await assertCapturedCognitoAbsence(identity, io);
+  }
   return identities.length;
 }

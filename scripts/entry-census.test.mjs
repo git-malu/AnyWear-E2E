@@ -52,13 +52,35 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   const operation = inputBlock('operation');
   assert.match(operation, /required: true/);
   assert.match(operation, /type: choice/);
-  assert.match(operation, /options: \[full, smoke, measure, recover\]/);
-  const sizing = inputBlock('sizing_stage');
-  assert.match(sizing, /type: choice/);
-  // `none` is the unselected sentinel a no-default choice needs (GitHub preselects the first
-  // option); measure refuses it, so a measurement stage is never implicit.
-  assert.match(sizing, /options: \[none, S1, S2, S3\]/);
-  assert.doesNotMatch(sizing, /default:/, 'a measurement stage is never implicit');
+  assert.match(operation, /options: \[full, smoke, recover\]/);
+  // The retired measurement operation carried the only sizing stage input; nothing in the
+  // entry may declare it again.
+  assert.doesNotMatch(qualify, /sizing_stage/, 'the retired measurement operation carries no dispatch input');
+
+  // #180: the live-tuple dispatch surface. The expectation is optional and only `full`
+  // compares it; the trigger is a closed choice; the dispatching run URL is optional and
+  // only accepted for a non-manual trigger.
+  for (const name of ['expected_service_commit', 'expected_client_commit']) {
+    const input = inputBlock(name);
+    assert.match(input, /required: false/);
+    assert.match(input, /type: string/);
+  }
+  const trigger = inputBlock('trigger');
+  assert.match(trigger, /type: choice/);
+  assert.match(trigger, /default: manual/);
+  assert.match(trigger, /options: \[manual, deploy-smoke, release-qualify\]/);
+  const dispatchedBy = inputBlock('dispatched_by');
+  assert.match(dispatchedBy, /required: false/);
+  assert.match(dispatchedBy, /type: string/);
+  // The qualification entry reads no committed compatibility file and checks out no
+  // producer source: the live tuple comes from the deployed endpoints and the platform
+  // observation comes from this repository's own vendored contract.
+  assert.doesNotMatch(qualify, /compatibility\.json/);
+  assert.doesNotMatch(qualify, /check-compatibility\.mjs/);
+  assert.doesNotMatch(qualify, /trusted-deployment-inputs\.mjs/);
+  assert.doesNotMatch(qualify, /\.infra-source/);
+  assert.match(qualify, /node scripts\/service-release\.mjs/);
+  assert.match(qualify, /minimum-supported-client\.json/);
 });
 
 test('the qualify chain keeps one credential job per operation and a credential-free record', () => {
@@ -67,8 +89,13 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.match(preflight, /permissions:\n {6}contents: read\n/);
   assert.doesNotMatch(preflight, /environment:|id-token|configure-aws-credentials/);
   assert.match(preflight, /node scripts\/execution-guard\.mjs --source-only/);
+  // #180: the live tuple is verified in the credential-free preflight through the Service
+  // App token, and the retired producer sources are gone.
+  assert.match(preflight, /node scripts\/service-release\.mjs/);
+  assert.match(preflight, /repositories: AnyWear-Service/);
+  assert.doesNotMatch(preflight, /check-compatibility|trusted-deployment-inputs|\.infra-source|GH_TOKEN: \$\{\{ steps\.evidence-token/);
 
-  for (const operation of ['full', 'smoke', 'measure', 'recover']) {
+  for (const operation of ['full', 'smoke', 'recover']) {
     const section = job(operation);
     assert.ok(section.length > 0, `the qualify entry must declare ${operation}`);
     assert.match(section, /needs: preflight/);
@@ -79,7 +106,9 @@ test('the qualify chain keeps one credential job per operation and a credential-
   }
 
   // The record job holds no credential and runs only for full. Only full may produce the
-  // record; the record job validates and attaches it.
+  // record; the record job validates and attaches it and is the last qualification job. The
+  // attached tuple is the live identity and the verified release, not a producer deployment
+  // record.
   const record = job('record');
   assert.ok(record.length > 0);
   assert.match(record, /needs: \[preflight, full\]/);
@@ -87,8 +116,33 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.match(record, /permissions:\n {6}contents: read\n/);
   assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
   assert.match(job('full'), /qualification:generate/);
-  for (const name of ['preflight', 'smoke', 'measure', 'recover', 'record']) {
+
+  // The release decision is the green `full` run plus the sealed record: there is no human
+  // approval job and no approval Environment. The dispatch event (actor and time), the run
+  // and the record tuple are the audit trail.
+  assert.equal(job('approve'), '', 'the qualify entry must not declare an approval job');
+  assert.match(qualify, /dispatched_by/);
+  assert.doesNotMatch(qualify, /beta-release-approval/);
+  assert.doesNotMatch(qualify, /AwaitingApproval|Approved|Rejected/);
+  for (const name of ['preflight', 'smoke', 'recover', 'record']) {
     assert.doesNotMatch(job(name), /qualification:generate/, `${name} must not produce the qualification record`);
+  }
+  // `record` is the last job in the workflow.
+  assert.ok(qualify.trimEnd().endsWith('if-no-files-found: error'), 'record must be the last qualification job');
+});
+
+test('no qualification job downloads a producer deployment record or checks out producer source', () => {
+  for (const name of ['preflight', 'full', 'smoke', 'record']) {
+    const section = job(name);
+    assert.doesNotMatch(section, /platform-deployment-record\.json/, `${name} must not retain the retired platform record`);
+    assert.doesNotMatch(section, /\.qualification-inputs\/deployment-record\.json/, `${name} must not retain the retired workload record`);
+    assert.doesNotMatch(section, /repository: git-malu\/AnyWear-Infra/, `${name} must not check out the Infra observer`);
+  }
+  // The full job records and retains the two files the v3 record is built from.
+  for (const name of ['full', 'record']) {
+    const section = job(name);
+    assert.match(section, /\.qualification-inputs\/live-identity\.json/);
+    assert.match(section, /\.qualification-inputs\/service-artifacts\.json/);
   }
 });
 

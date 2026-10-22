@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { byteHash, canonicalJson, owner, parseStrictJson, repositories, repositoryIds, requireOwnedRepository } from './evidence-contract.mjs';
-import { assertDeploymentBinding } from './trusted-deployment-inputs.mjs';
 import { validateDeploymentRecord } from './vendor/deployment-contract.mjs';
 import {
   DIAGNOSTIC_EXPECTED,
@@ -147,16 +146,9 @@ function diagnosticFixture(expected = expectedFixture()) {
 test('validates the diagnostic envelope and keeps formal deployment contracts closed', () => {
   const fixture = diagnosticFixture();
   assert.strictEqual(validateDiagnosticRecord(fixture.record, fixture.expected), fixture.record);
-  const compatibility = { version: 3,
-    client: { repository: 'git-malu/AnyWear-Client', sha: fixture.expected.runtime.client_sha },
-    service: { repository: 'git-malu/AnyWear-Service', sha: sha('b') },
-    infra: { repository: 'git-malu/AnyWear-Infra', sha: sha('c') },
-    platform: { producer: 'git-malu/AnyWear-Infra', producer_sha: sha('c'), record: { producer: 'git-malu/AnyWear-Infra', workflow_path: '.github/workflows/runtime.yml', status: 'recorded', run_id: 1, run_attempt: 1, artifact_id: 2, record_sha256: hash('b') } },
-    workload: { producer: 'git-malu/AnyWear-Service', producer_sha: sha('b') },
-    deployment: { producer: 'git-malu/AnyWear-Service', workflow_path: '.github/workflows/service-artifacts.yml', status: 'recorded', run_id: 1, run_attempt: 1, artifact_id: 2, record_sha256: hash('b') },
-    service_artifacts: { repository: 'git-malu/AnyWear-Service', release_id: 1, manifest_asset_id: 2, manifest_sha256: hash('a') } };
-  // The historical cleanup diagnostic is never a formal deployment record.
-  assert.throws(() => assertDeploymentBinding(fixture.record, compatibility), /Unknown deployment schema|Invalid deployment record fields|Unsupported|record_type/);
+  // The historical cleanup diagnostic is never a formal deployment record. #180 retired
+  // the compatibility-pin binding this test used to assert, so the closed-contract check
+  // is now the live contract itself: the diagnostic body is refused as one of its records.
   assert.throws(() => validateDeploymentRecord(fixture.record), /Unknown deployment schema|Invalid deployment record fields|Unsupported/);
 });
 

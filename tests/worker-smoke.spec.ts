@@ -8,8 +8,8 @@ import { isServiceJsonResponse, sanitizedServiceErrorCode } from './support/serv
 // is the second attempt. The profile binding is what this test exists to
 // observe, so this file records a trace for every attempt and keeps the failed
 // one. `test.use` is file-scoped and top-level because it forces its own worker,
-// and the scope is deliberately this file only so the sizing workload's route
-// measurements stay untraced.
+// and the scope is deliberately this file only so no other scenario inherits the
+// trace setting or pays for that worker.
 test.use({ trace: 'retain-on-failure' });
 
 test.describe('Worker account smoke @smoke @regression @full-stack', () => {

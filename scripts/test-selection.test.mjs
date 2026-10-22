@@ -236,12 +236,11 @@ test('derives each invocation tag from package.json and refuses any that selects
     ['test', '@regression'],
     ['test:smoke', '@smoke'],
     ['test:regression', '@regression'],
-    ['test:instrumentation', '@instrumentation'],
     ['test:full-stack', '@full-stack'],
   ]) {
     assert.equal(selectionTag(pkg, invocation), tag, invocation);
   }
-  // Discovery, offline contracts and the measurement set carry no single positive tag.
+  // Discovery, offline contracts and the deferred prototypes carry no single positive tag.
   for (const invocation of ['test:core', 'test:tool-regressions', 'test:deferred-sqs', 'test:list']) {
     assert.throws(() => selectionTag(pkg, invocation), /not a single positive --grep tag selection/, invocation);
   }
@@ -253,23 +252,21 @@ test('derives each invocation tag from package.json and refuses any that selects
   }
 });
 
-test('the spec titles, the scenario inventory and the release-gating selection agree on the four members', () => {
+test('the spec titles, the scenario inventory and the release-gating selection agree on the five members', () => {
   const declarations = assertScenarioDeclarations();
   assert.deepEqual(declarations.map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts',
     'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(qualificationSelection(), { invocation: 'test', tag: '@regression' });
+  // Every tracked deployed scenario is in the release-gating selection.
   assert.deepEqual(selectedScenarios('@regression').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
-  // Discovery is wider than the gate: the measurement scenario is selected by @full-stack
-  // and by nothing the release gate runs.
   assert.deepEqual(selectedScenarios('@full-stack').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/beta-sizing.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts',
     'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
-  assert.deepEqual(selectedScenarios('@instrumentation').map(({ file }) => file), ['tests/beta-sizing.spec.ts']);
 });
 
 test('derives one entry per selected spec from the run report with the documented outcome priority', () => {
@@ -314,26 +311,27 @@ test('refuses a report with no scenario, an unknown status, or a file that disag
 });
 
 test('refuses a selection that omits a declared member or adds one the tag does not select', () => {
-  const regression = ['tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
+  const regression = ['tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
   // A record that drops a declared member silently narrows what it claims to have qualified.
   assert.throws(() => assertTestSelection(testMember('@regression', [
-    scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }), scenario('tests/worker-smoke.spec.ts'),
+    scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
   ])), /omits tests\/wardrobe\.spec\.ts/);
-  // `tests/beta-sizing.spec.ts` is selected by `@full-stack` and by nothing the release gate
-  // runs, so listing it claims a scenario the gate did not run — the discovery-versus-gated
-  // distinction this change exists to make legible.
+  // A scenario file neither the tag nor this repository selects is refused rather than added
+  // to the record's claim.
   assert.throws(() => assertTestSelection(testMember('@regression', [
-    ...regression.map((file) => scenario(file)), scenario('tests/beta-sizing.spec.ts'),
-  ])), /adds tests\/beta-sizing\.spec\.ts/);
+    ...regression.map((file) => scenario(file)), scenario('tests/retired.spec.ts'),
+  ])), /adds tests\/retired\.spec\.ts/);
   // Stating the discovery selection is refused before the scenario list is even compared:
   // the qualification workflow's suite step does not run `@full-stack`.
   assert.throws(() => assertTestSelection(testMember('@full-stack', [
-    ...regression.map((file) => scenario(file)), scenario('tests/beta-sizing.spec.ts'),
+    ...regression.map((file) => scenario(file)),
   ])), /Qualification selection mismatch/);
   // The declared selection itself, with the one declared skip, is accepted.
   assert.doesNotThrow(() => assertTestSelection(testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts'),
     scenario('tests/worker-smoke.spec.ts'),
   ])));
@@ -343,6 +341,7 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   const member = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     // wardrobe.spec.ts has no `test.skip(condition)` at all: a collected-and-skipped entry
     // here would excuse an acceptance path that never ran.
     scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
@@ -354,6 +353,7 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   assert.throws(() => assertTestSelection(testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { collected: 2, skipped: 1 }),
     scenario('tests/worker-smoke.spec.ts'),
   ])), /tests\/wardrobe\.spec\.ts records 1 skipped test/);
@@ -363,6 +363,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   const failed = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { outcome: 'failed' }),
     scenario('tests/worker-smoke.spec.ts'),
   ]);
@@ -373,6 +374,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   assert.throws(() => buildTestMember(reportBytes([
     fileSuite('tests/auth-startup.spec.ts', ['expected']),
     fileSuite('tests/auth.spec.ts', ['skipped']),
+    fileSuite('tests/vto.spec.ts', ['expected']),
     fileSuite('tests/wardrobe.spec.ts', ['unexpected']),
     fileSuite('tests/worker-smoke.spec.ts', ['expected']),
   ])), /tests\/wardrobe\.spec\.ts failed/);
@@ -382,6 +384,7 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   const nothing = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
+    scenario('tests/vto.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/worker-smoke.spec.ts', { outcome: 'skipped', skipped: 1 }),
   ]);
@@ -412,4 +415,28 @@ test('the qualification workflow writes the report the record reads, in every ar
   const suite = qualificationSuiteStep();
   assert.deepEqual(suite.run.map((line) => line.trim()).filter(Boolean), ['node scripts/execution-guard.mjs', 'pnpm test']);
   assert.doesNotMatch(suite.run.join('\n'), /--reporter|--output/);
+});
+
+// #180: the entries that carry a qualification are the live-tuple dispatch and the recorded
+// release approval. This is a source assertion so the next workflow change cannot quietly
+// reintroduce a committed compatibility read into the active qualification path.
+test('the qualification entry dispatches the live tuple and approves through the recorded gate', () => {
+  assert.doesNotMatch(workflow, /compatibility\.json/);
+  assert.doesNotMatch(workflow, /check-compatibility\.mjs/);
+  assert.doesNotMatch(workflow, /trusted-deployment-inputs\.mjs/);
+  assert.doesNotMatch(workflow, /\.infra-source/);
+  assert.match(workflow, /node scripts\/service-release\.mjs/);
+  assert.match(workflow, /minimum-supported-client\.json/);
+  for (const input of ['expected_service_commit', 'expected_client_commit', 'trigger', 'dispatched_by']) {
+    assert.ok(workflow.includes(`\n      ${input}:\n`), `${input} must be a declared dispatch input`);
+  }
+  assert.match(workflow, /options: \[manual, deploy-smoke, release-qualify\]/);
+  // The release decision is the green full run plus the sealed record: no approval
+  // Environment and no approval job exist.
+  assert.doesNotMatch(workflow, /beta-release-approval|\n {2}approve:\n|AwaitingApproval/);
+  assert.match(workflow, /node scripts\/verify-qualification-record\.mjs/);
+  // The live endpoints the preflight compares are workflow constants, so they are readable
+  // without the protected environment.
+  assert.match(workflow, /E2E_CLIENT_URL: 'https:\/\/[a-z0-9-]+\.cloudfront\.net'/);
+  assert.match(workflow, /E2E_SERVICE_URL: 'https:\/\/[a-z0-9-]+\.cloudfront\.net'/);
 });

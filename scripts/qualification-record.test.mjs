@@ -1,205 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  assertStableDeploymentEvidence,
+  assertObservationSequence,
+  assertStableObservation,
   buildQualificationRecord,
   collectDeploymentEvidence,
+  validateObservation,
   verifyQualificationAgainstReport,
   verifyQualificationRecord,
 } from './qualification-record.mjs';
-import { ENVIRONMENT_VERDICT_PATH, environmentVerdict, qualificationRefusalMessage } from './beta-sizing-environment.mjs';
+import { ENVIRONMENT_VERDICT_PATH, environmentVerdict, qualificationRefusalMessage } from './qualification-environment.mjs';
 import { byteHash, payloadDigest } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 
-const compatibility = {
-  client: { repository: 'git-malu/AnyWear-Client', sha: 'a'.repeat(40) },
-  service: { repository: 'git-malu/AnyWear-Service', sha: 'b'.repeat(40) },
-};
-const evidence = {
-  client: {
-    url: 'https://beta.anywear.example',
-    source_commit: compatibility.client.sha,
-    built_at: '2026-08-03T00:00:00.000Z',
-  },
-  service: {
-    url: 'https://api.beta.anywear.example',
-    source_commit: compatibility.service.sha,
-    image_digest: `sha256:${'c'.repeat(64)}`,
-  },
-};
-const input = {
-  result: 'passed',
-  operation: 'full',
-  e2eSha: 'd'.repeat(40),
-  repository: 'git-malu/AnyWear-E2E',
-  runId: '123',
-  runAttempt: '1',
-  serverUrl: 'https://github.com',
-  awsAccountId: '123456789012',
-  awsRegion: 'us-east-1',
-};
+const now = new Date('2026-10-08T00:20:00.000Z');
+const qualify = (fixture, overrides = {}) => buildQualificationRecord(
+  { ...fixture.input, ...overrides.input },
+  'expected' in overrides ? overrides.expected : fixture.expected,
+  overrides.evidence ?? fixture.evidence,
+  now,
+  'environment' in overrides ? overrides.environment : fixture.environment,
+  overrides.report ?? fixture.report,
+);
 
-// The worker identity comparison behind each verdict. The comparison inputs are
-// assembled here because this suite drives the verdict fields directly; the verdict
-// record itself still comes from `environmentVerdict`, which owns its key set.
-const workerComparison = (overrides = {}) => ({
-  verdict: 'unchanged',
-  reason: 'The worker task set and the worker task definition are unchanged across the suite window',
-  before_observed_at: '2026-10-08T00:00:00.000Z',
-  after_observed_at: '2026-10-08T00:10:00.000Z',
-  before_identity_sha256: 'a'.repeat(64),
-  after_identity_sha256: 'a'.repeat(64),
-  before_task_arns: [],
-  after_task_arns: [],
-  added_task_arns: [],
-  removed_task_arns: [],
-  task_definition_changed: false,
-  ...overrides,
-});
-const environmentFor = (comparison, suiteOutcome = 'success') =>
-  ({ record: environmentVerdict({ comparison, suiteOutcome }), problem: null });
-
-test('collects only deployed revisions matching compatibility.json', async () => {
-  const fetcher = async (url) => {
-    const body = url.pathname === '/build-metadata.json'
-      ? { component: 'AnyWear-Client', source_commit: compatibility.client.sha, built_at: evidence.client.built_at }
-      : { status: 'ok', service_commit: compatibility.service.sha, image_digest: evidence.service.image_digest };
-    return new Response(JSON.stringify(body), { status: 200 });
-  };
-
-  const result = await collectDeploymentEvidence({
-    clientUrl: evidence.client.url,
-    serviceUrl: evidence.service.url,
-    runId: '123',
-  }, compatibility, fetcher);
-
-  assert.equal(result.client.source_commit, compatibility.client.sha);
-  assert.equal(result.service.image_digest, evidence.service.image_digest);
-});
-
-test('creates and verifies a checksummed passing record', () => {
-  const fixture = qualificationFixture();
-  const record = buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
-  assert.equal(record.qualification_id, 'beta-123-1');
-  assert.equal(record.operation, 'full');
-  assert.deepEqual(record.test.scenarios, [
-    { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
-    { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 },
-    { file: 'tests/wardrobe.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
-    { file: 'tests/worker-smoke.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
-  ]);
-  assert.equal(verifyQualificationRecord(record), true);
-
-  const tampered = structuredClone(record);
-  tampered.revisions.service.sha = 'e'.repeat(40);
-  assert.throws(() => verifyQualificationRecord(tampered), /checksum mismatch/);
-});
-
-// #163: one dispatch surface now carries full, smoke, measure and recover. The record binds
-// the operation it was dispatched for and only `full` can reach the record path, so the
-// other three operations can neither produce nor withhold a qualification.
-test('binds the dispatched full operation and refuses every other operation', () => {
-  const fixture = qualificationFixture();
-  const build = (operation) => buildQualificationRecord({ ...fixture.input, operation }, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
-  const record = build('full');
-  assert.equal(record.operation, 'full');
-  assert.equal(verifyQualificationRecord(record), true);
-  for (const operation of ['smoke', 'measure', 'recover', undefined]) {
-    let refusal;
-    try { build(operation); } catch (error) { refusal = error; }
-    assert.ok(refusal, `${operation} must not issue a record`);
-    assert.match(refusal.message, /full qualification operation/);
-  }
-  // A hand-edited record that names another operation and recomputes its checksum is still
-  // refused: the verifier re-checks the signed operation, not the checksum alone.
-  const tampered = structuredClone(record);
-  tampered.operation = 'measure';
-  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /operation must be full/);
-});
-
-test('accepts stable deployment identities before and after qualification', () => {  assert.doesNotThrow(() => assertStableDeploymentEvidence(evidence, structuredClone(evidence)));
-});
-
-test('rejects an image or client rebuild that changes during qualification', () => {
-  const changedImage = structuredClone(evidence);
-  changedImage.service.image_digest = `sha256:${'e'.repeat(64)}`;
-  assert.throws(
-    () => assertStableDeploymentEvidence(evidence, changedImage),
-    /service image_digest changed during qualification/,
-  );
-
-  const changedClient = structuredClone(evidence);
-  changedClient.client.built_at = '2026-08-03T01:00:00.000Z';
-  assert.throws(
-    () => assertStableDeploymentEvidence(evidence, changedClient),
-    /client built_at changed during qualification/,
-  );
-});
-
-test('refuses to issue a record for a failed run', () => {
-  assert.throws(
-    () => buildQualificationRecord({ ...input, result: 'failed' }, compatibility, evidence),
-    /completed passing test run/,
-  );
-});
-
-test('refuses a passing suite measured across two worker task definitions', () => {
-  const fixture = qualificationFixture();
-  const environment = environmentFor(workerComparison({
-    verdict: 'changed',
-    reason: 'The worker task definition serving Beta changed during the suite',
-    after_identity_sha256: 'b'.repeat(64),
-    task_definition_changed: true,
-  }));
-  let refusal;
-  try {
-    buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-      new Date('2026-10-08T00:20:00.000Z'), environment, fixture.report);
-  } catch (error) { refusal = error; }
-  assert.ok(refusal, 'a passing suite across two worker task definitions must not yield a record');
-  assert.equal(refusal.message, qualificationRefusalMessage(environment.record));
-  assert.equal(refusal.message, 'A passing suite measured across two worker task definitions cannot issue a '
-    + `qualification record: ${environment.record.reason}. Worker tasks added: 0; removed: 0. `
-    + 'Re-run the qualification on one stable worker task definition.');
-  assert.doesNotMatch(refusal.message, /replaced/);
-});
-
-test('still qualifies a passing suite that only rotated worker task ARNs', () => {
-  const fixture = qualificationFixture();
-  const environment = environmentFor(workerComparison({
-    verdict: 'changed',
-    reason: 'The workers serving Beta were replaced during the suite: 1 worker task(s) disappeared and 1 worker task(s) appeared',
-    after_identity_sha256: 'b'.repeat(64),
-    added_task_arns: [`arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'b'.repeat(32)}`],
-    removed_task_arns: [`arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`],
-  }));
-  assert.equal(environment.record.verdict, 'environment-changed');
-  assert.equal(environment.record.comparison.task_definition_changed, false);
-  const record = buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), environment, fixture.report);
-  assert.equal(record.qualification_id, 'beta-123-1');
-  assert.equal(verifyQualificationRecord(record), true);
-});
-
-test('requires the environment verdict before it issues a record', () => {
-  const fixture = qualificationFixture();
-  const build = (environment) => buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-    new Date('2026-10-08T00:20:00.000Z'), environment, fixture.report);
-  for (const [name, environment] of [
-    ['omitted', undefined],
-    ['missing', { record: null, problem: `${ENVIRONMENT_VERDICT_PATH} is missing` }],
-    ['malformed', { record: [], problem: null }],
-  ]) {
-    let refusal;
-    try { build(environment); } catch (error) { refusal = error; }
-    assert.ok(refusal, `${name} environment must refuse`);
-    assert.match(refusal.message, /no qualification record is issued/);
-    assert.ok(refusal.message.includes(ENVIRONMENT_VERDICT_PATH), `${name} must name the verdict path`);
-  }
-  assert.doesNotThrow(() => build(fixture.environment));
-});
+const fixture = () => qualificationFixture();
+const floor = fixture().floor;
 
 // Re-digesting a hand-edited record proves only that whoever wrote it knew the algorithm.
 // Every case below edits a field and recomputes `integrity.payload_sha256`, so the record
@@ -210,36 +35,374 @@ function redigest(record) {
   return { ...payload, integrity: { algorithm: 'sha256', payload_sha256: payloadDigest(payload) } };
 }
 
-const issuedRecord = () => {
-  const fixture = qualificationFixture();
-  return {
-    fixture,
-    record: buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-      new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report),
-  };
+const issuedRecord = (options) => {
+  const f = qualificationFixture(options);
+  return { fixture: f, record: qualify(f) };
 };
+
+function liveFetcher({ client, service }) {
+  return async (url) => new Response(JSON.stringify(url.pathname === '/build-metadata.json' ? client : service), { status: 200 });
+}
+
+const liveClient = (overrides = {}) => ({
+  component: 'AnyWear-Client',
+  schema_version: 3,
+  source_commit: 'a'.repeat(40),
+  client_version: floor.version,
+  built_at: '2026-10-07T00:00:00.000Z',
+  ...overrides,
+});
+const liveService = (overrides = {}) => ({
+  status: 'ok',
+  service_commit: 'b'.repeat(40),
+  image_digest: `sha256:${'c'.repeat(64)}`,
+  minimum_client_version: floor.version,
+  ...overrides,
+});
+const collect = (client = liveClient(), service = liveService(), expected = {}, minimumSupportedClient = floor) =>
+  collectDeploymentEvidence({
+    clientUrl: 'https://client123.cloudfront.net',
+    serviceUrl: 'https://api123.cloudfront.net',
+    runId: '123',
+    minimumSupportedClient,
+  }, expected, liveFetcher({ client, service }));
+
+test('collects only the live identities and the committed floor', async () => {
+  const collected = await collect(liveClient({ client_version: floor.version + 4 }));
+  assert.deepEqual(collected.client, {
+    url: 'https://client123.cloudfront.net',
+    source_commit: 'a'.repeat(40),
+    built_at: '2026-10-07T00:00:00.000Z',
+  });
+  assert.deepEqual(collected.service, {
+    url: 'https://api123.cloudfront.net',
+    service_commit: 'b'.repeat(40),
+    image_digest: `sha256:${'c'.repeat(64)}`,
+  });
+  assert.equal(collected.client_version, floor.version + 4);
+  assert.equal(collected.minimum_client_version, floor.version);
+  await assert.doesNotReject(collect(liveClient(), liveService(), {
+    service_commit: 'b'.repeat(40),
+    client_commit: 'a'.repeat(40),
+  }));
+});
+
+test('refuses a live identity that differs from the dispatch expectation and names both values', async () => {
+  const expectedService = 'f'.repeat(40);
+  await assert.rejects(collect(liveClient(), liveService(), { service_commit: expectedService }),
+    new RegExp(`Deployed Service service_commit mismatch[^\\n]*expected ${expectedService} \\(dispatch input\\), observed ${'b'.repeat(40)} \\(live\\)`));
+  const expectedClient = 'f'.repeat(40);
+  await assert.rejects(collect(liveClient(), liveService(), { client_commit: expectedClient }),
+    new RegExp(`Deployed Client source_commit mismatch[^\\n]*expected ${expectedClient} \\(dispatch input\\), observed ${'a'.repeat(40)} \\(live\\)`));
+});
+
+test('refuses a live floor that disagrees with the committed file and tells the operator to sync it', async () => {
+  const observed = floor.version + 1;
+  await assert.rejects(collect(liveClient(), liveService({ minimum_client_version: observed })),
+    new RegExp(`Deployed Service minimum_client_version ${observed} differs from minimum-supported-client\\.json version ${floor.version}[^\\n]*sync minimum-supported-client\\.json`));
+  await assert.rejects(collect(liveClient({ client_version: 0 }), liveService({ minimum_client_version: 1 }), {}, { version: 1, sha: 'a'.repeat(40) }),
+    /Deployed Client client_version 0 is below minimum-supported-client\.json version 1/);
+  await assert.rejects(collect(liveClient({ schema_version: 2 })),
+    /schema_version is 2, expected 3/);
+  await assert.rejects(collect(liveClient({ component: 'Other' })),
+    /Client build metadata component is "Other", expected "AnyWear-Client"/);
+  await assert.rejects(collect(liveClient(), liveService({ status: 'down' })),
+    /Deployed Service \/health status is "down", expected "ok"/);
+  await assert.rejects(collect(liveClient(), liveService({ minimum_client_version: '0' })),
+    /minimum_client_version must be a non-negative safe integer/);
+  const { minimum_client_version: ignored, ...withoutFloor } = liveService();
+  void ignored;
+  await assert.rejects(collect(liveClient(), withoutFloor), /minimum_client_version must be a non-negative safe integer/);
+});
+
+test('creates and verifies a checksummed passing v3 record from the live tuple', () => {
+  const f = fixture();
+  const record = qualify(f);
+  assert.equal(record.schema_version, 3);
+  assert.equal(record.qualification_id, 'beta-123-1');
+  assert.equal(record.operation, 'full');
+  assert.deepEqual(record.expected, { service_commit: f.serviceSha, client_commit: f.clientSha, source: 'trigger' });
+  assert.deepEqual(record.revisions.e2e, { repository: 'git-malu/AnyWear-E2E', sha: f.input.e2eSha });
+  assert.deepEqual(record.revisions.client, { repository: 'git-malu/AnyWear-Client', sha: f.clientSha, client_version: f.clientVersion });
+  assert.deepEqual(record.revisions.service, {
+    repository: 'git-malu/AnyWear-Service', sha: f.serviceSha, image_digest: f.image, minimum_client_version: f.minimumClientVersion,
+  });
+  assert.equal(record.revisions.infra, undefined);
+  assert.equal(record.compatibility, undefined);
+  assert.equal(record.deployment, undefined);
+  assert.deepEqual(record.service_artifacts, {
+    repository: 'git-malu/AnyWear-Service',
+    release_id: 10,
+    tag: `service-artifacts-${f.serviceSha}`,
+    manifest_asset_id: 11,
+    manifest_sha256: 'd'.repeat(64),
+  });
+  assert.equal(record.observations.before.authenticated, true);
+  assert.deepEqual(record.observations.after.platform.client_domain, f.clientDomain);
+  assert.deepEqual(record.workflow.trigger, 'manual');
+  assert.equal(record.workflow.dispatched_by, null);
+  assert.deepEqual(record.test.scenarios, [
+    { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+    { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 },
+    { file: 'tests/vto.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+    { file: 'tests/wardrobe.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+    { file: 'tests/worker-smoke.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+  ]);
+  assert.equal(verifyQualificationRecord(record), true);
+
+  const tampered = structuredClone(record);
+  tampered.revisions.service.sha = 'e'.repeat(40);
+  assert.throws(() => verifyQualificationRecord(tampered), /checksum mismatch/);
+});
+
+// #180: the record cannot carry the pin members. A record that still states
+// `compatibility`, `deployment` or `revisions.infra` is refused by the exact key sets,
+// even after its checksum is recomputed.
+test('refuses a record that still carries a pin, a deployment record or an infra revision', () => {
+  const { record } = issuedRecord();
+  for (const [label, mutate] of [
+    ['compatibility', (copy) => { copy.compatibility = { version: 3 }; }],
+    ['deployment', (copy) => { copy.deployment = { platform: {}, workload: {} }; }],
+    ['revisions.infra', (copy) => { copy.revisions.infra = { repository: 'git-malu/AnyWear-Infra', sha: 'e'.repeat(40) }; }],
+  ]) {
+    const tampered = structuredClone(record);
+    mutate(tampered);
+    assert.throws(() => verifyQualificationRecord(redigest(tampered)), new RegExp(`${label.replace('.', '\\.')} is unknown`), label);
+  }
+  assert.throws(() => verifyQualificationRecord({ schema_version: 2, record_type: 'anywear_beta_qualification' }), /Unsupported qualification record schema/);
+});
+
+test('binds the dispatched full operation and refuses every other operation', () => {
+  const f = fixture();
+  const build = (operation) => buildQualificationRecord({ ...f.input, operation }, f.expected, f.evidence, now, f.environment, f.report);
+  assert.equal(build('full').operation, 'full');
+  for (const operation of ['smoke', 'recover', undefined]) {
+    let refusal;
+    try { build(operation); } catch (error) { refusal = error; }
+    assert.ok(refusal, `${operation} must not issue a record`);
+    assert.match(refusal.message, /full qualification operation/);
+  }
+  const tampered = structuredClone(build('full'));
+  tampered.operation = 'smoke';
+  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /operation must be full/);
+});
+
+// #180 acceptance: a manual `full` without an expected service commit takes the live
+// value at run start and records `expected.source: live`; a supplied commit records
+// `source: trigger` and is compared with the live identity.
+test('states the expectation source and binds it to the live tuple', () => {
+  const live = issuedRecord({ expectedSource: 'live' });
+  assert.deepEqual(live.record.expected, { service_commit: live.fixture.serviceSha, client_commit: null, source: 'live' });
+  assert.equal(verifyQualificationRecord(live.record), true);
+  assert.equal(live.record.expected.service_commit, live.record.revisions.service.sha);
+
+  const triggered = issuedRecord();
+  assert.equal(triggered.record.expected.source, 'trigger');
+  const liveWithClient = qualify(fixture(), {
+    expected: { service_commit: null, client_commit: triggered.fixture.clientSha, source: 'live' },
+  });
+  assert.equal(liveWithClient.expected.client_commit, triggered.fixture.clientSha);
+  assert.equal(liveWithClient.expected.source, 'live');
+
+  for (const [expected, pattern] of [
+    [{ service_commit: 'f'.repeat(40), client_commit: null, source: 'trigger' }, /Expected Service commit mismatch: expected f{40} \(dispatch input\), observed b{40} \(live\)/],
+    [{ service_commit: null, client_commit: 'f'.repeat(40), source: 'live' }, /Expected Client commit mismatch: expected f{40} \(dispatch input\), observed a{40} \(live\)/],
+    [{ service_commit: null, client_commit: null, source: 'trigger' }, /expected\.source trigger requires a supplied expected service commit/],
+    [{ service_commit: 'b'.repeat(40), client_commit: null, source: 'live' }, /requires expected\.source to be trigger/],
+    [{ service_commit: 'b'.repeat(40), client_commit: null, source: 'somewhere' }, /expected\.source must be trigger, live/],
+    [{ service_commit: 'main', client_commit: null, source: 'trigger' }, /expected\.service_commit must be a full lowercase 40-character commit SHA/],
+  ]) {
+    assert.throws(() => qualify(fixture(), { expected }), pattern);
+  }
+});
+
+test('records the dispatch trigger and refuses an impossible trigger binding', () => {
+  const manual = issuedRecord();
+  assert.equal(manual.record.workflow.trigger, 'manual');
+  const release = issuedRecord({ trigger: 'release-qualify', dispatchedBy: 'https://github.com/git-malu/AnyWear-Service/actions/runs/123' });
+  assert.equal(release.record.workflow.trigger, 'release-qualify');
+  assert.equal(release.record.workflow.dispatched_by, 'https://github.com/git-malu/AnyWear-Service/actions/runs/123');
+  assert.equal(verifyQualificationRecord(release.record), true);
+
+  const build = (input, expected = manual.fixture.expected) => buildQualificationRecord(
+    { ...manual.fixture.input, ...input }, expected, manual.fixture.evidence, now, manual.fixture.environment, manual.fixture.report);
+  assert.throws(() => build({ trigger: 'deploy-smoke' }), /deploy-smoke trigger only dispatches the smoke operation/);
+  assert.throws(() => build({ trigger: 'release-qualify', dispatchedBy: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/1' },
+    { service_commit: null, client_commit: null, source: 'live' }), /release-qualify trigger requires a supplied expected service commit/);
+  assert.throws(() => build({ trigger: 'release-qualify' }), /release-qualify qualification requires the dispatched_by URL/);
+  assert.throws(() => build({ trigger: 'manual', dispatchedBy: 'https://github.com/git-malu/AnyWear-E2E/actions/runs/1' }),
+    /manual qualification must not state a dispatched_by URL/);
+  assert.throws(() => build({ trigger: 'scheduled' }), /Qualification trigger must be manual, deploy-smoke, release-qualify/);
+
+  const tampered = structuredClone(release.record);
+  tampered.workflow.dispatched_by = 'http://insecure.example';
+  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /must use HTTPS/);
+});
+
+test('requires a stable full observation and refuses each changed member by name', () => {
+  const f = fixture();
+  assert.doesNotThrow(() => assertStableObservation(f.evidence.before, structuredClone(f.evidence.after)));
+  for (const [label, mutate, pattern] of [
+    ['client source', (o) => { o.client.source_commit = 'f'.repeat(40); }, /Deployed Client identity mismatch/],
+    ['service image', (o) => { o.service.image_digest = `sha256:${'f'.repeat(64)}`; }, /Deployed Service identity mismatch/],
+    ['stack template', (o) => { o.platform.stacks[0].template_sha256 = 'f'.repeat(64); }, /Deployed platform identity mismatch/],
+    ['lambda config', (o) => { o.platform.lambdas['pre-sign-up'].configuration_sha256 = '9'.repeat(64); }, /Deployed platform identity mismatch/],
+    ['queue config', (o) => { o.platform.queue_config_sha256 = 'f'.repeat(64); }, /Deployed platform identity mismatch/],
+    ['stage input', (o) => { o.platform.inputs[0].value_sha256 = 'f'.repeat(64); }, /Deployed platform identity mismatch/],
+    ['client domain', (o) => { o.platform.client_domain = 'other.cloudfront.net'; }, /client_domain other\.cloudfront\.net differs/],
+  ]) {
+    const after = structuredClone(f.evidence.after);
+    mutate(after);
+    assert.throws(() => assertStableObservation(f.evidence.before, after), pattern, label);
+    // The same change cannot be recorded either: the record builder refuses it.
+    assert.throws(() => qualify(f, { evidence: { ...f.evidence, after } }), pattern, label);
+  }
+});
+
+test('refuses an observation that is unauthenticated, out of order or wrongly shaped', () => {
+  const f = fixture();
+  for (const [label, mutate, pattern] of [
+    ['authenticated false', (o) => { o.authenticated = false; }, /must state authenticated: true/],
+    ['authenticated string', (o) => { o.authenticated = 'true'; }, /must state authenticated: true/],
+    ['unknown member', (o) => { o.schema_version = 1; }, /observation\.schema_version is unknown/],
+    ['unknown platform member', (o) => { o.platform.extra = true; }, /platform\.extra is unknown/],
+    ['unsorted inputs', (o) => { o.platform.inputs.reverse(); }, /platform input order/],
+    ['wrong stack count', (o) => { o.platform.stacks.pop(); }, /must list exactly the 3 configured stacks/],
+    ['wrong schema hash', (o) => { o.platform.schema_sha256 = 'f'.repeat(64); }, /schema_sha256 is not the content hash/],
+    ['bad lambda code', (o) => { o.platform.lambdas['pre-sign-up'].code_sha256 = 'nope'; }, /code_sha256 is not a Lambda CodeSha256/],
+    ['bad collected_at', (o) => { o.collected_at = 'yesterday'; }, /collected_at must be an ISO timestamp/],
+  ]) {
+    const observation = structuredClone(f.evidence.before);
+    mutate(observation);
+    assert.throws(() => validateObservation(observation, 'observation'), pattern, label);
+  }
+  // A copied or reversed observation cannot issue a record: the two observations must
+  // bracket the suite and name different collection instants.
+  for (const [label, collectedAt] of [
+    ['copied', f.evidence.before.collected_at],
+    ['out of order', '2026-10-07T23:00:00.000Z'],
+  ]) {
+    assert.throws(() => qualify(f, {
+      evidence: { ...f.evidence, after: { ...structuredClone(f.evidence.after), collected_at: collectedAt } },
+    }), /before and after the suite in order/, label);
+  }
+  assert.throws(() => assertObservationSequence({
+    before: { ...f.evidence.before, collected_at: f.evidence.after.collected_at },
+    after: f.evidence.after,
+  }, now.toISOString()), /before and after the suite in order/);
+});
+
+test('refuses a Service release identity that does not name the qualified Service commit', () => {
+  const f = fixture();
+  for (const [label, serviceArtifacts, pattern] of [
+    ['tag', { ...f.evidence.service_artifacts, tag: `service-artifacts-${'f'.repeat(40)}` }, /does not name the qualified Service commit/],
+    ['repository', { ...f.evidence.service_artifacts, repository: 'other/Service' }, /Service artifacts repository is unexpected/],
+    ['release id', { ...f.evidence.service_artifacts, release_id: 0 }, /Service release ID must be a positive integer/],
+    ['manifest hash', { ...f.evidence.service_artifacts, manifest_sha256: 'a'.repeat(63) }, /Service manifest checksum is malformed/],
+  ]) {
+    assert.throws(() => qualify(f, { evidence: { ...f.evidence, service_artifacts: serviceArtifacts } }), pattern, label);
+  }
+});
+
+test('refuses a live identity the final observation contradicts', () => {
+  const f = fixture();
+  for (const [label, live, pattern] of [
+    ['client commit', { ...f.evidence.live, client: { ...f.evidence.live.client, source_commit: 'f'.repeat(40) } }, /live identity Client mismatch/],
+    ['service image', { ...f.evidence.live, service: { ...f.evidence.live.service, image_digest: `sha256:${'f'.repeat(64)}` } }, /live identity Service mismatch/],
+    ['client version', { ...f.evidence.live, client: { ...f.evidence.live.client, client_version: -1 } }, /client_version must be a non-negative safe integer/],
+  ]) {
+    assert.throws(() => qualify(f, { evidence: { ...f.evidence, live } }), pattern, label);
+  }
+});
+
+test('refuses to issue a record for a failed run', () => {
+  const f = fixture();
+  assert.throws(() => qualify(f, { input: { result: 'failed' } }), /completed passing test run/);
+});
+
+test('refuses a passing suite measured across two worker task definitions', () => {
+  const f = fixture();
+  const environment = {
+    record: environmentVerdict({
+      comparison: {
+        verdict: 'changed',
+        reason: 'The worker task definition serving Beta changed during the suite',
+        before_observed_at: f.evidence.before.collected_at,
+        after_observed_at: f.evidence.after.collected_at,
+        before_identity_sha256: 'a'.repeat(64),
+        after_identity_sha256: 'b'.repeat(64),
+        before_task_arns: [],
+        after_task_arns: [],
+        added_task_arns: [],
+        removed_task_arns: [],
+        task_definition_changed: true,
+      },
+      suiteOutcome: 'success',
+    }),
+    problem: null,
+  };
+  let refusal;
+  try { qualify(f, { environment }); } catch (error) { refusal = error; }
+  assert.ok(refusal, 'a passing suite across two worker task definitions must not yield a record');
+  assert.equal(refusal.message, qualificationRefusalMessage(environment.record));
+  assert.doesNotMatch(refusal.message, /replaced/);
+});
+
+test('still qualifies a passing suite that only rotated worker task ARNs', () => {
+  const f = fixture();
+  const environment = {
+    record: environmentVerdict({
+      comparison: {
+        verdict: 'changed',
+        reason: 'The workers serving Beta were replaced during the suite: 1 worker task(s) disappeared and 1 worker task(s) appeared',
+        before_observed_at: f.evidence.before.collected_at,
+        after_observed_at: f.evidence.after.collected_at,
+        before_identity_sha256: 'a'.repeat(64),
+        after_identity_sha256: 'b'.repeat(64),
+        added_task_arns: [`arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'b'.repeat(32)}`],
+        removed_task_arns: [`arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`],
+        task_definition_changed: false,
+      },
+      suiteOutcome: 'success',
+    }),
+    problem: null,
+  };
+  const record = qualify(f, { environment });
+  assert.equal(environment.record.comparison.task_definition_changed, false);
+  assert.equal(record.qualification_id, 'beta-123-1');
+  assert.equal(verifyQualificationRecord(record), true);
+});
+
+test('requires the environment verdict before it issues a record', () => {
+  const f = fixture();
+  for (const [name, environment] of [
+    ['omitted', undefined],
+    ['missing', { record: null, problem: `${ENVIRONMENT_VERDICT_PATH} is missing` }],
+    ['malformed', { record: [], problem: null }],
+  ]) {
+    let refusal;
+    try { qualify(f, { environment }); } catch (error) { refusal = error; }
+    assert.ok(refusal, `${name} environment must refuse`);
+    assert.match(refusal.message, /no qualification record is issued/);
+    assert.ok(refusal.message.includes(ENVIRONMENT_VERDICT_PATH), `${name} must name the verdict path`);
+  }
+  assert.doesNotThrow(() => qualify(f, { environment: f.environment }));
+});
 
 test('refuses a record whose stated selection differs from the one the repository declares', () => {
   const { record } = issuedRecord();
   for (const [label, mutate] of [
-    ['tag', (test) => { test.selection.tag = '@full-stack'; }],
-    ['invocation', (test) => { test.selection.invocation = 'test:smoke'; }],
+    ['tag', (testMember) => { testMember.selection.tag = '@full-stack'; }],
+    ['invocation', (testMember) => { testMember.selection.invocation = 'test:smoke'; }],
   ]) {
     const tampered = structuredClone(record);
     mutate(tampered.test);
     assert.throws(() => verifyQualificationRecord(redigest(tampered)), /Qualification selection mismatch/, label);
   }
-  // The stated tag is also what the scenario list is judged against, so a tag moved to one
-  // that selects more scenarios cannot be hidden behind matching invocation and counts.
-  const widened = structuredClone(record);
-  widened.test.selection = { invocation: 'test:full-stack', tag: '@full-stack' };
-  assert.throws(() => verifyQualificationRecord(redigest(widened)), /Qualification selection mismatch/);
 });
 
 test('refuses a record that omits a collected but skipped scenario', () => {
   const { record } = issuedRecord();
-  const skipped = record.test.scenarios.find(({ file }) => file === 'tests/auth.spec.ts');
-  assert.deepEqual(skipped, { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 });
   const tampered = structuredClone(record);
   tampered.test.scenarios = tampered.test.scenarios.filter(({ file }) => file !== 'tests/auth.spec.ts');
   assert.throws(() => verifyQualificationRecord(redigest(tampered)), /omits tests\/auth\.spec\.ts/);
@@ -253,12 +416,11 @@ test('refuses the retired constant suite shape instead of accepting two vocabula
 });
 
 test('requires the run report before it can state what it measured', () => {
-  const fixture = qualificationFixture();
+  const f = fixture();
   for (const [name, report] of [['omitted', undefined], ['null', null]]) {
     let refusal;
     try {
-      buildQualificationRecord(fixture.input, fixture.compatibility, fixture.evidence,
-        new Date('2026-10-08T00:20:00.000Z'), fixture.environment, report);
+      buildQualificationRecord(f.input, f.expected, f.evidence, now, f.environment, report);
     } catch (error) { refusal = error; }
     assert.ok(refusal, `${name} report must refuse`);
     assert.match(refusal.message, /qualification-report\.json/);
@@ -267,98 +429,40 @@ test('requires the run report before it can state what it measured', () => {
 });
 
 test('verifies the record against the report the suite wrote and refuses another run report', () => {
-  const { fixture, record } = issuedRecord();
-  assert.equal(verifyQualificationAgainstReport(record, fixture.report), true);
+  const { fixture: f, record } = issuedRecord();
+  assert.equal(verifyQualificationAgainstReport(record, f.report), true);
 
-  // A report from a narrower selection: one declared member never ran, and its digest is
-  // not the one the record states.
-  const report = JSON.parse(fixture.report.toString('utf8'));
+  const report = JSON.parse(f.report.toString('utf8'));
   report.suites = report.suites.slice(1);
   const narrower = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
   assert.throws(() => verifyQualificationAgainstReport(record, narrower), /checksums differ/);
-
-  // Even a record that adopts the other report's digest has to state that report's
-  // scenarios, so the digest cannot be moved without the scenario list moving with it.
   const retargeted = { ...record, test: { ...record.test, report_sha256: byteHash(narrower) } };
   assert.throws(() => verifyQualificationAgainstReport(retargeted, narrower),
     /Qualification scenarios and the Playwright report mismatch/);
-
   assert.throws(() => verifyQualificationAgainstReport(record), /qualification-report\.json/);
 });
 
-test('rejects a deployed revision that differs from the reviewed compatibility set', async () => {
-  const fetcher = async (url) => {
-    const body = url.pathname === '/build-metadata.json'
-      ? { component: 'AnyWear-Client', source_commit: 'f'.repeat(40), built_at: evidence.client.built_at }
-      : { status: 'ok', service_commit: compatibility.service.sha, image_digest: evidence.service.image_digest };
-    return new Response(JSON.stringify(body), { status: 200 });
-  };
+// #180: the deployed Client is the latest one, and the floor is the oldest supported.
+// A Client at the floor is qualified; one below it is refused by the record builder too.
+test('qualifies the latest Client and refuses one below the recorded floor', () => {
+  const f = fixture();
+  assert.ok(f.clientVersion > f.minimumClientVersion);
+  const atFloor = structuredClone(f);
+  atFloor.evidence.live.client.client_version = f.minimumClientVersion;
+  assert.equal(qualify(atFloor).revisions.client.client_version, f.minimumClientVersion);
 
-  await assert.rejects(
-    collectDeploymentEvidence({
-      clientUrl: evidence.client.url,
-      serviceUrl: evidence.service.url,
-    }, compatibility, fetcher),
-    /Client does not match compatibility.json/,
-  );
-});
+  const below = structuredClone(f);
+  below.evidence.live.client.client_version = -1;
+  assert.throws(() => qualify(below), /client_version must be a non-negative safe integer/);
 
-// #160: when the reviewed pin names the supported-Client floor, collection reads that
-// floor back from the live Service and the built version from the live Client. The
-// comparison is enforced at collection so smoke, measure and full all see the same live
-// truth; the evidence member set stays unchanged.
-test('enforces the pinned minimum Client floor on the live Client and Service', async () => {
-  const fixture = qualificationFixture();
-  const live = {
-    client: {
-      schema_version: 3, component: 'AnyWear-Client', source_commit: fixture.compatibility.client.sha,
-      built_at: '2026-10-07T00:00:00.000Z', client_version: 0,
-      interface: { api_base_url: 'https://api.example.invalid', cognito_user_pool_id: 'pool', cognito_client_id: 'client' },
-    },
-    service: {
-      status: 'ok', service_commit: fixture.compatibility.service.sha,
-      image_digest: fixture.workloadRecord.observed.image_digest, minimum_schema_version: 17, minimum_client_version: 0,
-    },
-  };
-  const fetcherFor = (client, service) => async (url) => new Response(JSON.stringify(
-    url.pathname === '/build-metadata.json' ? client : service), { status: 200 });
-  const collect = (client = live.client, service = live.service, pin = fixture.compatibility) => collectDeploymentEvidence({
-    clientUrl: 'https://client123.cloudfront.net',
-    serviceUrl: 'https://api123.cloudfront.net',
-    runId: '123',
-  }, pin, fetcherFor(client, service));
+  const { record } = issuedRecord();
+  const inconsistent = structuredClone(record);
+  inconsistent.revisions.client.client_version = 0;
+  inconsistent.revisions.service.minimum_client_version = 1;
+  assert.throws(() => verifyQualificationRecord(redigest(inconsistent)), /is below the qualified minimum Client version/);
 
-  const collected = await collect();
-  assert.equal(collected.client.source_commit, fixture.compatibility.client.sha);
-  assert.equal(collected.service.image_digest, live.service.image_digest);
-  await assert.doesNotReject(collect({ ...live.client, client_version: 1 }));
-  await assert.rejects(collect(live.client, { ...live.service, minimum_client_version: 1 }),
-    /Deployed Service minimum_client_version 1 differs from compatibility\.minimum_supported_client\.version 0/);
-  await assert.rejects(collect({ ...live.client, schema_version: 2, client_version: undefined }),
-    /must use schema_version 3 when compatibility\.minimum_supported_client is pinned/);
-  await assert.rejects(collect({ ...live.client, client_version: -1 }),
-    /client_version must be a non-negative safe integer/);
-  await assert.rejects(collect({ ...live.client, client_version: '0' }),
-    /client_version must be a non-negative safe integer/);
-  const { minimum_client_version: ignored, ...withoutFloor } = live.service;
-  void ignored;
-  await assert.rejects(collect(live.client, withoutFloor),
-    /minimum_client_version must be a non-negative safe integer/);
-  const floorOne = structuredClone(fixture.compatibility);
-  floorOne.minimum_supported_client.version = 1;
-  await assert.rejects(collect(live.client, live.service, floorOne),
-    /Deployed Client client_version 0 is below compatibility\.minimum_supported_client\.version 1/);
-});
-
-test('refuses to write a qualification record without the minimum Client pin', () => {
-  const fixture = qualificationFixture();
-  const withoutFloor = structuredClone(fixture.compatibility);
-  delete withoutFloor.minimum_supported_client;
-  let refusal;
-  try {
-    buildQualificationRecord(fixture.input, withoutFloor, fixture.evidence,
-      new Date('2026-10-08T00:20:00.000Z'), fixture.environment, fixture.report);
-  } catch (error) { refusal = error; }
-  assert.ok(refusal, 'a full qualification without the minimum_supported_client member must not issue a record');
-  assert.match(refusal.message, /Qualification requires compatibility\.minimum_supported_client/);
+  const wrongFloor = structuredClone(record);
+  wrongFloor.revisions.service.minimum_client_version = f.minimumClientVersion + 1;
+  assert.throws(() => verifyQualificationRecord(redigest(wrongFloor)),
+    /differs from the committed minimum-supported-client\.json version/);
 });

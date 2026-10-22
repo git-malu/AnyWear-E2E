@@ -90,18 +90,17 @@ test('missing or foreign dedicated identity and untrusted dispatch fail before a
   assert.deepEqual(io.calls, []);
 });
 
-test('the qualification requires the operation\'s explicit worker count before any SSM read', () => {
-  for (const E2E_WORKERS of [undefined, '', '3', '02', '2.0']) {
+test('the qualification requires exactly two workers before any SSM read', () => {
+  for (const E2E_WORKERS of [undefined, '', '1', '3', '02', '2.0']) {
     const io = reader();
     assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly 2 workers/);
     assert.deepEqual(io.calls, []);
   }
-  // Measure runs the single-worker-slot workload; its count is one, not two.
-  const single = reader();
-  assert.doesNotThrow(() => verifyBetaAdmissionEligibility(environment({ E2E_OPERATION: 'measure', E2E_WORKERS: '1' }), { execute: single.execute, sourceSha }));
-  for (const E2E_WORKERS of [undefined, '', '2', '3']) {
+  // The retired single-slot `measure` operation is no longer an accepted operation, so it
+  // is refused by the execution guard before any admission read.
+  for (const E2E_OPERATION of ['measure', 'instrumentation', 'observe']) {
     const io = reader();
-    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_OPERATION: 'measure', E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly 1 worker/);
+    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_OPERATION, E2E_WORKERS: '1' }), { execute: io.execute, sourceSha }));
     assert.deepEqual(io.calls, []);
   }
 });
@@ -289,18 +288,16 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   assert.ok(eligibility > steps.findIndex(step => step.startsWith('Verify dedicated E2E principal')));
   assert.match(steps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
   assert.doesNotMatch(steps[eligibility], /\bif:|continue-on-error:/);
-  // #163: one qualify entry carries four operations. full keeps the release-gating suite and
-  // the only record production; smoke is the diagnostic; measure is the single-slot workload
-  // and the only operation with a sizing stage. Separation lives in the signed operation, so
-  // none of them can decide another operation's conclusion.
+  // #163: one qualify entry carries three operations. full keeps the release-gating suite
+  // and the only record production; smoke is the diagnostic. Separation lives in the signed
+  // operation, so neither can decide another operation's conclusion.
   const full = workflow.slice(workflow.indexOf('\n  full:\n'), workflow.indexOf('\n  smoke:\n'));
-  const smoke = workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  measure:\n'));
-  const measure = workflow.slice(workflow.indexOf('\n  measure:\n'), workflow.indexOf('\n  recover:\n'));
+  const smoke = workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  recover:\n'));
+  const recover = workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'));
   const record = workflow.slice(workflow.indexOf('\n  record:\n'));
   for (const [name, job, stepName, command] of [
     ['full', full, 'Run the release-gating business regression suite', 'pnpm test'],
     ['smoke', smoke, 'Run deployed Beta smoke tests', 'pnpm test:smoke'],
-    ['measure', measure, 'Run the instrumentation workload', 'pnpm test:instrumentation'],
   ]) {
     const suite = job.split(/\r?\n {6}- name: /).slice(1).find(step => step.startsWith(stepName));
     assert.ok(suite, `${name} must carry its own suite step`);
@@ -309,19 +306,25 @@ test('workflow runs mandatory eligibility after dedicated principal verification
   }
   assert.doesNotMatch(workflow, /continue-on-error:/);
   assert.match(full, /E2E_WORKERS: 2\r?\n/);
-  assert.match(measure, /E2E_WORKERS: 1\r?\n/);
+  // The retired measurement operation leaves no job, input, script or suite behind. The
+  // operation name is matched as a word, so the retained "measured across two worker task
+  // definitions" gate sentence is not mistaken for it.
+  for (const retired of [/\bmeasure\b/, /sizing_stage/, /test:instrumentation/, /BETA_SIZING_STAGE/]) {
+    assert.ok(!retired.test(workflow), `the workflow must not reference ${retired}`);
+  }
   // The record is produced only by full, bound to its dispatched operation, and the record
-  // job only validates and attaches it. Neither smoke, measure nor recover can write one.
+  // job only validates and attaches it. Neither smoke nor recover can write one.
   assert.ok(record.length > 0, 'the qualify entry must declare a record job');
   assert.match(record, /needs: \[preflight, full\]/);
   assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
+  // The release decision is the green full run plus the sealed record: no approval job and
+  // no approval Environment.
+  assert.doesNotMatch(workflow, /\n {2}approve:\n/);
+  assert.doesNotMatch(workflow, /beta-release-approval/);
   assert.match(full, /qualification:generate/);
-  for (const [name, job] of [['smoke', smoke], ['measure', measure], ['recover', workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'))], ['record', record]]) {
+  for (const [name, job] of [['smoke', smoke], ['recover', recover], ['record', record]]) {
     assert.doesNotMatch(job, /qualification:(generate|verify)/, `${name} must not produce a qualification record`);
   }
-  assert.doesNotMatch(smoke, /BETA_SIZING_STAGE/);
-  assert.match(measure, /BETA_SIZING_STAGE: \$\{\{ inputs\.sizing_stage \}\}/);
-  assert.doesNotMatch(full, /BETA_SIZING_STAGE/);
   // The worker fixture reserves/provisions only after Playwright starts in that later step.
   const fixture = await readFile(new URL('../tests/support/fixtures.ts', import.meta.url), 'utf8');
   assert.ok(fixture.indexOf('await reserveTestAccount(') < fixture.indexOf('await provisionConfirmedTestAccount('));

@@ -15,29 +15,38 @@ wrong.
 ## Deployed invocations
 
 Each invocation below carries its own trigger and its own verdict. The verdicts are
-separated deliberately: a measurement or drill result is data about an operation, and it
+separated deliberately: a diagnostic result is data about one operation, and it
 can neither satisfy nor fail release qualification.
 
 | invocation | Selects | Trigger | Verdict |
 | --- | --- | --- | --- |
 | `test:smoke` | `@smoke` | The `smoke` operation of the protected `qualify` entry | Diagnostic observation of a narrow deployed path; it does not qualify a release |
 | `test:regression` | `@regression` | The `full` operation of the protected `qualify` entry, as the only release-gating selection | Release qualification: a red result fails the gate, and a green result is a required input to the qualification record |
-| `test:instrumentation` | `@instrumentation` | Explicit operator opt-in through the `measure` operation of the protected `qualify` entry | Measurement or drill result; it can neither satisfy nor fail release qualification |
-| `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation, including instrumentation; not a release-gating selection on its own |
-| `test` | `@regression` | Local investigation, and the `full` operation's qualification suite step | Identical to `test:regression`: the release gate. An instrumentation scenario is not in this selection |
+| `test:full-stack` | `@full-stack`, which every cross-repository scenario carries | Explicit operator selection | Broad deployed cross-boundary observation; not a release-gating selection on its own |
+| `test` | `@regression` | Local investigation, and the `full` operation's qualification suite step | Identical to `test:regression`: the release gate |
 | `test:core` | The explicitly listed offline `scripts/*.test.mjs` contract files and `tests/scenario-declarations.test.mjs` | The automatic Check entry (PR/main) and qualify preflight source preparation | Source contract result; no deployed claim |
 | `test:tool-regressions` | The explicitly listed offline retained-tool files | The automatic Check entry's `tool-regressions` job on every PR/main | Tool source result; no deployed claim |
 | `test:deferred-sqs` | The explicitly listed prospective SQS protocol files | Manual deferred-owner review | Prototype contract only |
 
 The separation is carried by the signed `operation` field, not by a workflow boundary, a step
 or a job. One protected dispatch surface, the `qualify` entry in `beta-qualification.yml`,
-carries `full`, `smoke`, `measure` and `recover`. A release consumer accepts a qualification
+carries `full`, `smoke` and `recover`. A release consumer accepts a qualification
 record only from the `full` operation of a completed-success qualification run: the record
-states `operation: full` and is produced only by that operation, so a `smoke`, `measure` or
+states `operation: full` and is produced only by that operation, so a `smoke` or
 `recover` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record binds
 the operation dispatched, so its producer is uniquely identifiable; and both this repository's
 producer/verifier and the Infra-side executor allow-list check `operation == full`.
+
+Since [#180](https://github.com/git-malu/AnyWear/issues/180) the dispatch surface also names
+the trigger and the expectation it was dispatched for: `trigger=deploy-smoke` only runs
+`smoke`, `trigger=release-qualify` only runs `full` and requires `expected_service_commit`, and
+`trigger=manual` covers re-runs and diagnostics. `full` compares the expected Service commit
+with the live `/health` value, writes qualification record v3 from the live observed tuple, and
+the `record` job is the last qualification job: the green `full` run plus its sealed record is
+the release decision, with the dispatch event, the run/attempt and the record tuple as the
+audit trail. No release-qualification path reads a committed compatibility file; the
+qualification path reads `minimum-supported-client.json` only for the oldest-Client leg.
 
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.
@@ -53,6 +62,29 @@ a spec stops declaring its invocation, or if this document and `package.json` st
 agreeing about the invocations that exist.
 
 ## Scenarios
+
+### `tests/vto.spec.ts`
+
+| Field | Value |
+| --- | --- |
+| Declared title | `Virtual try-on @regression @full-stack` |
+| Policy class | Full deployed system E2E |
+| Tags | `@regression @full-stack` |
+| Intent | One single-garment virtual try-on completes end to end against the deployed Client and Service: the garment reaches terminal `ready`, the base photo is accepted, the generation is accepted with exactly one credit debit, reaches terminal `Complete` with a monotonic state version, returns retrievable image bytes, renders in the Client, and takes no second debit |
+| Current caller | The `full` operation of the protected `qualify` entry, through the release-gating selection. `test:smoke` does not select it |
+| Assertion boundary | Deployed Client UI and Service HTTP API together, with the Service's real auto-tagging and VTO provider calls in the path |
+| Actual operation | Leases a synthetic Cognito identity, creates a wardrobe item through the real Client upload flow, uploads one base photo through the Mirror UI, submits one VTO generation with that garment, polls it to terminal `Complete`, retrieves the generated image, and asserts the Client's rendered result |
+| Owner | AnyWear-E2E maintainers |
+| Lifecycle | Current. It is the only end-to-end coverage of the VTO path; the sizing workload that also exercised it is retired by this issue's separate deletion PR |
+| Command | `pnpm test:regression`, and `pnpm test` because the suite step runs the same selection |
+| Default trigger | The `full` operation of the `qualify` entry, whose selection this scenario is part of |
+| Cost | External write and paid provider cost: one leased identity, one uploaded garment object, one uploaded base photo, one auto-tagging task and one VTO generation per attempt. Not separately metered |
+| Side effects | Application rows, two uploaded S3 objects, provider spend, and a Cognito identity |
+| Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |
+| Disposition | Retain |
+| Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation` as they are created, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) for the routed resources and the captured base-photo id's absence from the authenticated `GET /vto/base-photos` list, independently of the product assertion, and a teardown that is not `passed` quarantines the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
+| Verification rationale | The product assertion stands alone; teardown is reported beside it and never rewrites it. The terminal wait is a bound on the platform's 900 s VTO recovery floor, not a measurement of observed provider latency, so the scenario does not report the platform's own recovery as a product failure. `retries: 0` is configured, because each attempt spends real provider budget and a failed attempt must not be repeated automatically. The terminal `Complete`, the image bytes, the single debit and the Client render can only be proven by a deployed run |
+| Red result means | A release-gating product failure in the try-on path, or an environment/provider condition. A `Failed` generation fails immediately instead of waiting out the recovery floor |
 
 ### `tests/wardrobe.spec.ts`
 
@@ -146,29 +178,6 @@ agreeing about the invocations that exist.
 | Verification rationale | The binding assertion is the reason the scenario exists and it cannot be established at a lower boundary: the defect it guards against appeared only against the deployed identity boundary. The profile status is attached as evidence for a red run |
 | Red result means | A product failure in the identity/profile binding contract, or an environment condition. As smoke it withholds diagnostic confidence; inside the release selection it fails the gate |
 
-### `tests/beta-sizing.spec.ts`
-
-| Field | Value |
-| --- | --- |
-| Declared title | `Representative Beta sizing @full-stack @beta-sizing @instrumentation` |
-| Policy class | `Destructive/expensive drill`, admitted as measurement rather than as a gate: it spends paid provider work, so the policy classes it as a drill even though it observes the ordinary deployed environment |
-| Tags | `@instrumentation` to select it, plus `@full-stack` for cross-repository discovery and `@beta-sizing` as the sizing workload identifier |
-| Intent | A frozen representative workload — twelve upload/tagging cases and eight virtual try-on cases — runs once against the deployed environment so cost, capacity and provider behaviour can be measured from its own artifact |
-| Current caller | The `measure` operation of the protected `qualify` entry, which requires a sizing stage as an input. It also skips itself unless `BETA_SIZING_STAGE` is `S1`, `S2` or `S3` |
-| Assertion boundary | The deployed Service's task pipeline, provider calls, streaming responses and credit accounting, with the deployed Client used for navigation and reloads |
-| Actual operation | Leases a synthetic identity, uploads frozen fixtures through presigned URLs, submits tagging and VTO work, reads back terminal states, samples ordinary routes, and writes `test-results/beta-sizing-workload.json` |
-| Owner | AnyWear-E2E maintainers, under the sizing work item |
-| Lifecycle | Current while the sizing envelope and cost baseline are being established; it is retired or replaced only with a recorded caller and evidence decision |
-| Command | `pnpm test:instrumentation` |
-| Default trigger | Explicit operator dispatch of the `measure` operation, never as part of the `full` operation. It is never part of the release-gating selection |
-| Cost | The most expensive scenario here: paid provider spend on twelve uploads and eight VTO generations, plus one leased identity per attempt |
-| Side effects | Application rows, generated images, provider spend, and a Cognito identity |
-| Evidence level | Diagnostic and measurement; the policy's Qualification level is not reachable from an instrumentation result |
-| Disposition | Retain as instrumentation; its own record, not a release verdict |
-| Cleanup contract | `DirectTeardown` against the attempt's own scope, capturing every created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation`. It refuses to report a captured child without its owning resource, proves absence by exact readback for routed resources and by the authenticated list route for base photos, and performs no ad hoc deletion. A teardown that is not `passed` quarantines the scope and fails the separate teardown gate |
-| Verification rationale | The scenario's own terminal record decides its outcome: `passed` only from a completed workload, otherwise `failed-or-incomplete`. The workload is bounded by the measured S1 input envelope, and each observation records the aggregate bytes it actually submitted. `retries: 0`, because each attempt spends real provider budget |
-| Red result means | An unqualified or rejected measurement, not a product verdict. It cannot fail release qualification, and a passing measurement is not qualification evidence. A run that is not the `measure` operation of the `qualify` entry is refused before any provider call |
-
 ## Admission rule
 
 The [testing policy
@@ -185,8 +194,8 @@ it, because a scenario's verdict follows from the invocation that selects it:
    `tests/scenario-declarations.test.mjs` fails the offline check if a spec and this
    document disagree.
 2. Tag a release-gating scenario `@regression` and every cross-repository scenario
-   `@full-stack`. Reserve `@instrumentation` for measurement workloads and drills, which
-   the policy admits as measurement and never as a gate.
+   `@full-stack`. A deployed scenario is in the release gate only through the
+   `@regression` tag the gate's positive `--grep` selection matches.
 3. Record the cleanup contract. A scenario that creates no business resource declares that
    in its own attempt record; an absent declaration is not a declaration.
 4. Satisfy the offline `pnpm check` gate before the scenario enters any deployed

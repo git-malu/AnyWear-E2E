@@ -2,7 +2,7 @@ import { writeFile, appendFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ghApi } from './trusted-deployment-inputs.mjs';
+import { ghApi } from './github-read.mjs';
 import { byteHash, exactKeys, parseStrictJson, requireCommit, requireId, requireImageDigest, requireMatch, repositories } from './evidence-contract.mjs';
 import { createServiceCleanupInputs } from '../tests/support/worker-cleanup.ts';
 import { assertCleanupOwnerEvidence } from '../tests/support/service-cleanup-operation.ts';
@@ -10,7 +10,11 @@ import { isBetaWorkerEmailForScope } from '../tests/support/beta-address.ts';
 import { loadDiagnosticEvidence } from './beta-cleanup-diagnostic.mjs';
 
 const CAPTURED_SUBJECT = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const RECOVERABLE_STATUSES = new Set(['reserved', 'provisioning', 'in_use', 'cleanup_pending']);
+// `quarantined` is recoverable only when the ownership the status withheld can
+// still be proven: the loop below normalizes it to `cleanup_pending` only for a
+// worker with a captured subject and an address in this manifest's own scope.
+// An unproven quarantined record stays terminal and is never offered to cleanup.
+const RECOVERABLE_STATUSES = new Set(['reserved', 'provisioning', 'in_use', 'cleanup_pending', 'quarantined']);
 
 // #163 transition allow-list. Recover now runs as an operation of the single `qualify` entry,
 // so a new recovery run (and a new original smoke/full run) names `beta-qualification.yml`.
@@ -121,9 +125,15 @@ export async function prepareRecoveryFiles(environment = process.env, {
   prepareAccountRecovery(manifest, run, id, attempt);
   const inputs = createServiceCleanupInputs(manifest);
   if (!inputs) throw new Error('Original owner has no captured pending worker request');
-  if (!files['service-cleanup-operation.json']) throw new Error('Original cleanup operation evidence is required');
-  const originalOperation = parseStrictJson(Buffer.from(files['service-cleanup-operation.json'], 'base64'));
-  assertCleanupOwnerEvidence(originalOperation, inputs.cleanup_json);
+  // A retained artifact may predate the account-level cleanup operation: the
+  // teardown never attempted it, so there is nothing to replay. The canonical
+  // request above already originated from the captured identities; only when the
+  // artifact carries evidence does the replay have to match it.
+  const originalOperationBytes = files['service-cleanup-operation.json'];
+  if (originalOperationBytes) {
+    const originalOperation = parseStrictJson(Buffer.from(originalOperationBytes, 'base64'));
+    assertCleanupOwnerEvidence(originalOperation, inputs.cleanup_json);
+  }
   const diagnosticPath = environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH
     ? resolve(environment.E2E_BETA_CLEANUP_DIAGNOSTIC_PATH)
     : resolve(dirname(path), 'beta-cleanup-diagnostic.json');
