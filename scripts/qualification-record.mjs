@@ -12,16 +12,19 @@ import {
   assertTestSelection, buildTestMember, reportScenarios,
 } from './test-selection.mjs';
 
-// AnyWear #180: the qualification record is schema v3 and it is written from the live
+// AnyWear #180/#193: the qualification record is schema v4 and it is written from the live
 // deployed tuple, not from a pre-submitted compatibility file. The record keeps the
 // members that describe *what was tested* (`revisions`, `observations`, `test`,
 // `workflow`, `integrity`) and the immutable Service release identity
-// (`service_artifacts`), adds the expectation the run was dispatched for (`expected`),
-// and drops the two members that only existed to carry a committed pin:
-// `compatibility` (the whole pin) and `deployment` (the two producer deployment-record
-// bodies). Removing them is what makes the record self-contained: qualification proves
-// the deployed content, and the deployment-record lineage belongs to the deployment
-// record (#181), not to the test evidence.
+// (`service_artifacts`: repository, release id, tag, tag target commit and the four
+// released assets with their published size and digest), adds the expectation the run was
+// dispatched for (`expected`), and has no member that only existed to carry a committed
+// pin: `compatibility` (the whole pin) and `deployment` (the two producer deployment-record
+// bodies) are gone. Removing them is what makes the record self-contained: qualification
+// proves the deployed content, and the deployment-record lineage belongs to the deployment
+// record (#181), not to the test evidence. v4 replaces v3's manifest asset id/hash with
+// the release's own identity and refuses a v2/v3 record, so one version never means two
+// shapes.
 //
 // The record cannot be issued from anything but the protected `full` operation: the
 // suite result, the environment verdict, the run report bytes and the dispatched
@@ -45,7 +48,18 @@ export const PLATFORM_STACK_KEYS = Object.freeze(['name', 'region', 'template_sh
 export const PLATFORM_INPUT_KEYS = Object.freeze(['parameter', 'version', 'value_sha256']);
 export const LAMBDA_KEYS = Object.freeze(['pre-sign-up', 'post-confirmation']);
 export const LAMBDA_IDENTITY_KEYS = Object.freeze(['code_sha256', 'configuration_sha256']);
-export const SERVICE_ARTIFACTS_KEYS = Object.freeze(['repository', 'release_id', 'tag', 'manifest_asset_id', 'manifest_sha256']);
+// #193: the Service release publishes exactly these four assets. The set is frozen here
+// (and in the Service and Infra slices) so the gate cannot accept a release that renamed,
+// dropped or added a consumed name; an extra legacy asset is ignored, which is what keeps
+// a pre-change five-asset release qualifiable during the transition.
+export const SERVICE_RELEASE_ASSET_NAMES = Object.freeze([
+  'pre-sign-up.zip',
+  'post-confirmation.zip',
+  'runtime-policy.json',
+  'service-schema.json',
+]);
+export const SERVICE_ARTIFACTS_KEYS = Object.freeze(['repository', 'release_id', 'tag', 'target_commit', 'assets']);
+export const SERVICE_ASSET_KEYS = Object.freeze(['size', 'digest']);
 export const EXPECTED_KEYS = Object.freeze(['service_commit', 'client_commit', 'source']);
 export const QUALIFICATION_RECORD_KEYS = Object.freeze([
   'schema_version', 'record_type', 'qualification_id', 'result', 'operation', 'qualified_at', 'environment',
@@ -313,14 +327,36 @@ export function assertStableObservation(before, after) {
   return true;
 }
 
+const SERVICE_ASSET_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+// The record states the release identity the gate verified, not a copy of a release file:
+// the repository, the release id, the tag, the commit the tag resolved to and exactly the
+// four released assets with the size and digest the release API published for them. The
+// tag must name the qualified Service commit and the tag's target commit must be that same
+// commit, so the record re-proves the tag→commit binding offline. No manifest is accepted
+// or required: a v4 record cannot carry `manifest_asset_id`/`manifest_sha256`.
 function validateServiceArtifacts(serviceArtifacts, serviceSha) {
   exactKeys(serviceArtifacts, [...SERVICE_ARTIFACTS_KEYS], 'Service artifacts');
   if (serviceArtifacts.repository !== repositories.service) throw new Error('Service artifacts repository is unexpected');
   requireId(serviceArtifacts.release_id, 'Service release ID');
-  requireId(serviceArtifacts.manifest_asset_id, 'Service manifest asset ID');
-  requireHash(serviceArtifacts.manifest_sha256, 'Service manifest checksum');
+  requireCommit(serviceArtifacts.target_commit, 'Service release target commit');
   if (serviceArtifacts.tag !== serviceArtifactsTag(serviceSha)) {
     throw new Error(`Service artifacts tag ${JSON.stringify(serviceArtifacts.tag)} does not name the qualified Service commit; observed ${JSON.stringify(serviceArtifacts.tag)}, expected ${serviceArtifactsTag(serviceSha)}`);
+  }
+  if (serviceArtifacts.target_commit !== serviceSha) {
+    throw new Error(`Service artifacts target_commit ${JSON.stringify(serviceArtifacts.target_commit)} is not the qualified Service commit; observed ${JSON.stringify(serviceArtifacts.target_commit)}, expected ${JSON.stringify(serviceSha)}`);
+  }
+  // Exactly the four released names: a missing name, an extra name or a duplicated entry
+  // cannot state the identity the gate verified.
+  exactKeys(serviceArtifacts.assets, [...SERVICE_RELEASE_ASSET_NAMES], 'Service release assets');
+  for (const name of SERVICE_RELEASE_ASSET_NAMES) {
+    const asset = exactKeys(serviceArtifacts.assets[name], [...SERVICE_ASSET_KEYS], `Service release asset ${name}`);
+    if (!Number.isSafeInteger(asset.size) || asset.size < 1) {
+      throw new Error(`Service release asset ${name} size ${JSON.stringify(asset.size)} is not a positive integer`);
+    }
+    if (typeof asset.digest !== 'string' || !SERVICE_ASSET_DIGEST.test(asset.digest)) {
+      throw new Error(`Service release asset ${name} digest ${JSON.stringify(asset.digest)} is not a sha256:<hex> digest`);
+    }
   }
   return serviceArtifacts;
 }
@@ -426,7 +462,7 @@ export function buildQualificationRecord(input, expected, evidence, now = new Da
 
   if (input.repository !== repositories.e2e || input.workflowPath !== '.github/workflows/beta-qualification.yml'
     || input.workflowRef !== `${repositories.e2e}/.github/workflows/beta-qualification.yml@refs/heads/main`) {
-    throw new Error('Only protected Beta Qualification can issue v3 records');
+    throw new Error('Only protected Beta Qualification can issue v4 records');
   }
   if (input.awsAccountId !== '650880818323' || input.awsRegion !== 'ap-east-1') {
     throw new Error('Qualification must observe the reviewed Beta account/region');
@@ -454,7 +490,7 @@ export function buildQualificationRecord(input, expected, evidence, now = new Da
     run_id: requireId(Number(input.runId), 'E2E run'), run_attempt: requireId(Number(input.runAttempt), 'E2E attempt'),
   };
   const payload = {
-    schema_version: 3,
+    schema_version: 4,
     record_type: 'anywear_beta_qualification',
     qualification_id: `beta-${requireValue(input.runId, 'GITHUB_RUN_ID')}-${requireValue(input.runAttempt, 'GITHUB_RUN_ATTEMPT')}`,
     result: 'passed',
@@ -517,8 +553,11 @@ export function buildQualificationRecord(input, expected, evidence, now = new Da
 }
 
 export function verifyQualificationRecord(record, { trustedRun } = {}) {
-  if (record?.schema_version !== 3 || record?.record_type !== 'anywear_beta_qualification') {
-    throw new Error('Unsupported qualification record schema');
+  // v4 is the only live shape. v2/v3 records named a manifest asset that no longer exists,
+  // so accepting them would make one schema version mean two different `service_artifacts`
+  // shapes; they stay historical inputs only and are refused here with the observed value.
+  if (record?.schema_version !== 4 || record?.record_type !== 'anywear_beta_qualification') {
+    throw new Error(`Unsupported qualification record schema: observed schema_version ${JSON.stringify(record?.schema_version)} / record_type ${JSON.stringify(record?.record_type)}, expected 4 / anywear_beta_qualification`);
   }
   exactKeys(record, [...QUALIFICATION_RECORD_KEYS], 'qualification');
   exactKeys(record.test, TEST_KEYS, 'test result');

@@ -5,17 +5,19 @@ import { ENVIRONMENT_VERDICT_PATH, readOptionalEnvironmentJson } from './qualifi
 import { parseStrictJson } from './evidence-contract.mjs';
 import { QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, repositoryRoot } from './test-selection.mjs';
 
-// #180: the v3 record is assembled from what this run observed, never from a committed
+// #180/#193: the v4 record is assembled from what this run observed, never from a committed
 // compatibility file. The three inputs are the two live observations the collect step
 // wrote (before and after the suite), the immutable Service release identity the
-// credential-free check verified before the suite, and the live identity (Client
-// version and Service floor) read by the same check. The dispatch expectation is passed
-// in explicitly so the record can state whether the run was triggered with an expected
-// Service commit (`source: trigger`) or took the live value at run start (`source: live`).
+// credential-free check verified before the suite (`.qualification-inputs/service-release.json`:
+// repository, release id, tag, tag target commit and the four released assets with their
+// published size and digest), and the live identity (Client version and Service floor) read
+// by the same check. The dispatch expectation is passed in explicitly so the record can
+// state whether the run was triggered with an expected Service commit (`source: trigger`)
+// or took the live value at run start (`source: live`). No release asset is read here.
 const inputsDirectory = resolve(process.env.QUALIFICATION_INPUTS_DIR ?? '.qualification-inputs');
 const after = parseStrictJson(await readFile(resolve(process.env.QUALIFICATION_EVIDENCE_PATH ?? 'deployment-evidence.json')));
 const before = parseStrictJson(await readFile(resolve(process.env.QUALIFICATION_BASELINE_PATH ?? 'deployment-evidence-before.json')));
-const serviceArtifacts = parseStrictJson(await readFile(resolve(inputsDirectory, 'service-artifacts.json')));
+const serviceArtifacts = parseStrictJson(await readFile(resolve(inputsDirectory, 'service-release.json')));
 const live = parseStrictJson(await readFile(resolve(inputsDirectory, 'live-identity.json')));
 // The environment gate the record path requires: the workflow's qualification-gate step
 // refuses first, and this read is what makes the record path refuse even if that step

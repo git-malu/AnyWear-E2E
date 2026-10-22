@@ -93,17 +93,18 @@ verdict each invocation carries.
 
 The 21 registered core files retain account-budget, Cognito cleanup, qualification
 record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
-declaration contracts plus the v3 live-tuple contracts: `qualification-record.test.mjs`
-(the live identity, the supported-Client floor and the v3 record), `infra-qualification.test.mjs`
+declaration contracts plus the v4 live-tuple contracts: `qualification-record.test.mjs`
+(the live identity, the supported-Client floor and the v4 record), `infra-qualification.test.mjs`
 (this repository's own platform observation, the record's self-containment and its release
-consumer), `service-release.test.mjs` (the immutable Service release and its manifest), and
+consumer), `service-release.test.mjs` (the immutable Service release identity, the
+four-asset gate, the five-asset transition and the no-asset-read rule), and
 `entry-census.test.mjs`, which asserts the two-entry face, the one manual dispatch surface,
 the credential ordering, the absence of an approval job and the single
 `ENABLE_BETA_MUTATION` name. `test:core` also owns
 `scripts/beta-cleanup-diagnostic.test.mjs`, which asserts the cleanup diagnostic's
-`DIAGNOSTIC_EXPECTED` evidence record offline, without credentials, cloud calls or
-deployed reads; it belongs with its `service-cleanup-operation.test.mjs` and
-`worker-cleanup.test.mjs` neighbours, and its
+`DIAGNOSTIC_EXPECTED` evidence record offline and its manifest-free Service release
+resolution, without credentials, cloud calls or deployed reads; it belongs with its
+`service-cleanup-operation.test.mjs` and `worker-cleanup.test.mjs` neighbours, and its
 production module is consumed by `scripts/account-recovery-inputs.mjs` and
 `scripts/cleanup-worker-accounts.mjs`. The live-tuple contracts protect the observed
 deployed identity, the supported-Client floor and the immutable release binding; their
@@ -193,7 +194,7 @@ production-readiness gate for an already-deployed Beta environment. It reads the
 `build-metadata.json` and Service `/health`, compares them with the dispatch expectation,
 verifies that the live Service commit resolves to an immutable Service release, takes its own
 authenticated platform observation, runs the release-gating deployed selection and the oldest
-supported Client leg, re-observes and requires an identical tuple, and hands a checksummed v3
+supported Client leg, re-observes and requires an identical tuple, and hands a checksummed v4
 record to the credential-free `record` job, which re-verifies it offline and attaches the
 artifact. A green `full` run whose record `record` has verified and attached is the complete
 release decision; there is no separate approval action or approval Environment, and the audit
@@ -301,30 +302,39 @@ picking the oldest version — with a message that says to sync the file.
 
 `AnyWear-Service`'s release chain verifies its own sealed release before deploying it; E2E
 independently verifies that the live Service commit resolves to an immutable
-`service-artifacts-<service sha>` GitHub release whose `service-artifacts.json` manifest names
-the same source and image digest (`scripts/service-release.mjs`). No AWS credential is
-requested before that read succeeds.
+`service-artifacts-<service sha>` GitHub release whose tag resolves to that same commit and
+whose four expected assets — `pre-sign-up.zip`, `post-confirmation.zip`, `runtime-policy.json`
+and `service-schema.json` — are each uploaded with a non-empty size and a published
+`sha256` digest (`scripts/service-release.mjs`). The gate reads the release and the tag ref
+through the GitHub API and downloads no release asset, so the image digest stays in the live
+`/health` identity and is no longer compared with a release field. No AWS credential is
+requested before that read succeeds. A pre-change five-asset release, which also carries the
+retired `service-artifacts.json` manifest, stays qualifiable during the 5→4 transition: the
+gate requires the four names it consumes and ignores the extra asset, and it never reads or
+parses the manifest.
 
-## Release qualification record v3
+## Release qualification record v4
 
-`full` writes `qualification-record.json` schema v3. It is self-contained: reading it answers
+`full` writes `qualification-record.json` schema v4. It is self-contained: reading it answers
 what was deployed, what was expected, what was observed, which tests ran and which run wrote
 it.
 
 | Member | Content |
 | --- | --- |
-| `schema_version`, `record_type` | `3`, `anywear_beta_qualification` |
+| `schema_version`, `record_type` | `4`, `anywear_beta_qualification` |
 | `qualification_id`, `result`, `operation`, `qualified_at` | `beta-<run>-<attempt>`, `passed`, `full`, ISO time |
 | `environment` | `beta`, account `650880818323`, region `ap-east-1`, the two endpoints |
 | `expected` | `{service_commit, client_commit, source}`; `source` is `trigger` when the dispatcher supplied a Service commit, `live` when a manual `full` took the live value at run start |
 | `revisions` | `e2e {repository, sha}`, `client {repository, sha, client_version}`, `service {repository, sha, image_digest, minimum_client_version}`; **no `infra`** |
-| `service_artifacts` | `{repository, release_id, tag, manifest_asset_id, manifest_sha256}`; `tag` is `service-artifacts-<service sha>` |
+| `service_artifacts` | `{repository, release_id, tag, target_commit, assets}`; `tag` is `service-artifacts-<service sha>` and `target_commit` is the commit the tag resolved to (the qualified Service commit); `assets` is exactly the four released names, each `{size, digest}` with `digest` a `sha256:<hex>` |
 | `observations` | `{before, after}`; each is `{collected_at, client{url, source_commit, built_at}, service{url, service_commit, image_digest}, platform{stacks, inputs, schema_sha256, lambdas, queue_config_sha256, client_domain}, authenticated: true}` |
 | `test` | the derived selection, the report digest and one outcome per selected scenario |
 | `workflow` | `{repository, path, ref, run_id, run_attempt, run_url, trigger, dispatched_by}` |
 | `integrity` | `{algorithm: 'sha256', payload_sha256}` |
 
-There is no `compatibility` and no `deployment` member: the record consumes no producer
+v4 replaces v3's `manifest_asset_id`/`manifest_sha256` with the release's own identity, so no
+record member names a manifest asset and the release gate never reads one. There is no
+`compatibility` and no `deployment` member either: the record consumes no producer
 deployment record, and the observation is this repository's own authenticated platform read
 (`scripts/infra-observation.mjs`) through the vendored contract. The deployment-record
 lineage — which Infra or Service commit deployed the platform — stays with the deployment
@@ -333,9 +343,11 @@ proves the deployed *content*.
 
 Before and after the suite, `full` collects the same observation and refuses any difference in
 Client, Service or platform. The record's two observations must be identical, and the
-`environment` endpoints must match them. `verifyQualificationRecord` re-checks the exact v3
+`environment` endpoints must match them. `verifyQualificationRecord` re-checks the exact v4
 key set, the signed `operation: full`, the expectation and trigger bindings, the observation
-stability and order, the committed floor and the integrity digest. A release consumer must
+stability and order, the committed floor, the four released asset names and digests, and the
+integrity digest; it refuses a v2 or v3 record, so one schema version never means two
+`service_artifacts` shapes. A release consumer must
 call `verifyQualificationForPromotion` with an authenticated completed-success E2E
 run/attempt, unexpired exact artifact metadata and the attached record bytes/hash; a checksum
 alone does not establish trusted publication.
@@ -347,10 +359,12 @@ tuple are the audit trail. A failed run produces no record, so there is nothing 
 
 ## Private retrieval and observation
 
-Private retrieval uses separate GitHub App readers. The immutable Service release is read with
-a token scoped to `AnyWear-Service` (Contents/Actions read). `recover` reads its original E2E
+Private retrieval uses separate GitHub App readers. The immutable Service release identity is
+read with a token scoped to `AnyWear-Service` (Contents/Actions read): the gate reads the
+release and its tag ref only and downloads no release asset. `recover` reads its original E2E
 owner artifact with the workflow token and the historical cleanup diagnostic with an
-Infra-scoped reader (`GH_TOKEN`) plus the Service reader. `scripts/github-read.mjs` owns the
+Infra-scoped reader (`GH_TOKEN`) plus the Service reader, which resolves the recorded release
+by tag→commit and immutability without a manifest. `scripts/github-read.mjs` owns the
 `gh` seam and the per-repository token scoping that renames the one allowed reader to
 `GH_TOKEN` and removes every other reader token. The E2E deployment-record download chain
 (`trusted-deployment-inputs.mjs`) and the cross-repository Infra observer checkout
@@ -371,8 +385,9 @@ Service release chain with the release slice.
 The former offline cross-repository builder gate was retired with the `selection`
 contract. The Service release chain verifies its own sealed release before it
 deploys, and qualification independently verifies that the live Service commit resolves to
-an immutable `service-artifacts-<sha>` release whose manifest names the same source and image
-digest (`scripts/service-release.mjs`), without executing the retired Service parser.
+an immutable `service-artifacts-<sha>` release whose tag resolves to that commit and whose
+four expected assets carry published digests (`scripts/service-release.mjs`), without
+executing the retired Service parser, reading a manifest or downloading a release asset.
 
 Verify that Infra/Client/legacy writers have ceased before allocating an E2E
 qualification or recovery window. Repository-local concurrency

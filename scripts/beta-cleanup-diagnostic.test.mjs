@@ -9,6 +9,7 @@ import {
   DIAGNOSTIC_EXPECTED,
   assertDiagnosticRun,
   loadDiagnosticEvidence,
+  resolveDiagnosticServiceRelease,
   validateDiagnosticRecord,
 } from './beta-cleanup-diagnostic.mjs';
 
@@ -274,13 +275,88 @@ test('#163 accepts the historical beta-deploy path and the new mutate path, but 
   assert.throws(() => validateDiagnosticRecord(diagnosticFixture(foreign).record, foreign), /transition allow-list/);
 });
 
+// #193: the diagnostic resolves the recorded Service release identity from the release
+// itself. The release must be published and immutable, its tag must name the recorded
+// Service source, and that tag must resolve to the same commit (following an annotated
+// tag). No manifest and no release asset is read.
+const diagnosticTag = `service-artifacts-${DIAGNOSTIC_EXPECTED.service.source_sha}`;
+const diagnosticReleasePath = `repos/git-malu/AnyWear-Service/releases/${DIAGNOSTIC_EXPECTED.selection.release.id}`;
+const diagnosticRefPath = `repos/git-malu/AnyWear-Service/git/ref/tags/${diagnosticTag}`;
+const diagnosticRelease = {
+  id: DIAGNOSTIC_EXPECTED.selection.release.id, tag_name: diagnosticTag, draft: false, immutable: true, assets: [],
+};
+const diagnosticRef = { object: { type: 'commit', sha: DIAGNOSTIC_EXPECTED.service.source_sha } };
+
+function releaseApi({
+  releaseRecord = diagnosticRelease, refRecord = diagnosticRef, tagObjects = {}, fail = () => false, seen = [],
+} = {}) {
+  return async (path, binary) => {
+    seen.push({ path, binary });
+    if (fail(path)) throw new Error('gh: Not Found (HTTP 404)');
+    if (path === diagnosticReleasePath) return JSON.stringify(releaseRecord);
+    if (path === diagnosticRefPath) return JSON.stringify(refRecord);
+    const annotated = /^repos\/git-malu\/AnyWear-Service\/git\/tags\/([0-9a-f]{40})$/.exec(path);
+    if (annotated && Object.hasOwn(tagObjects, annotated[1])) return JSON.stringify(tagObjects[annotated[1]]);
+    if (path.includes('/releases/assets/')) throw new Error(`release asset must not be read (${path})`);
+    throw new Error(`Unexpected API path: ${path}`);
+  };
+}
+
+const resolveRelease = (overrides = {}) => resolveDiagnosticServiceRelease({
+  expected: expectedFixture(),
+  api: releaseApi(overrides),
+  environment: { SERVICE_ARTIFACT_READ_TOKEN: 'read-only', GH_TOKEN: 'infra-read' },
+});
+
+test('#193 resolves the recorded Service release by tag→commit and immutability, reading no asset', async () => {
+  const seen = [];
+  const expected = expectedFixture();
+  const resolved = await resolveDiagnosticServiceRelease({
+    expected, api: releaseApi({ seen }), environment: { SERVICE_ARTIFACT_READ_TOKEN: 'read-only', GH_TOKEN: 'infra-read' },
+  });
+  assert.equal(resolved.release.id, expected.selection.release.id);
+  assert.equal(resolved.targetCommit, expected.service.source_sha);
+  assert.deepEqual(seen.map(({ path }) => path), [diagnosticReleasePath, diagnosticRefPath]);
+  assert.ok(seen.every(({ binary }) => binary === false));
+  await assert.rejects(resolveDiagnosticServiceRelease({ expected, api: releaseApi(), environment: {} }),
+    /SERVICE_ARTIFACT_READ_TOKEN required for git-malu\/AnyWear-Service read access/);
+
+  // An annotated tag is followed to its commit with one extra read.
+  const annotatedSha = 'a'.repeat(40);
+  const annotatedSeen = [];
+  const annotated = await resolveDiagnosticServiceRelease({
+    expected,
+    api: releaseApi({
+      seen: annotatedSeen,
+      refRecord: { object: { type: 'tag', sha: annotatedSha } },
+      tagObjects: { [annotatedSha]: { object: { type: 'commit', sha: expected.service.source_sha } } },
+    }),
+    environment: { SERVICE_ARTIFACT_READ_TOKEN: 'read-only' },
+  });
+  assert.equal(annotated.targetCommit, expected.service.source_sha);
+  assert.equal(annotatedSeen.length, 3);
+});
+
+test('#193 refuses a draft, mutable, mis-tagged or wrong-source Service release', async () => {
+  await assert.rejects(resolveRelease({ fail: (path) => path === diagnosticReleasePath }), /Not Found/);
+  await assert.rejects(resolveRelease({ releaseRecord: { ...diagnosticRelease, id: 1 } }),
+    /Diagnostic Service release identity mismatch/);
+  await assert.rejects(resolveRelease({ releaseRecord: { ...diagnosticRelease, draft: true } }),
+    /must be published \(draft true\)/);
+  for (const immutable of [false, undefined, 'true']) {
+    await assert.rejects(resolveRelease({ releaseRecord: { ...diagnosticRelease, immutable } }),
+      /must be immutable/);
+  }
+  await assert.rejects(resolveRelease({ releaseRecord: { ...diagnosticRelease, tag_name: `service-artifacts-${sha('f')}` } }),
+    /release tag mismatch/);
+  await assert.rejects(resolveRelease({ refRecord: { object: { type: 'commit', sha: sha('f') } } }),
+    /resolves to f{40}, not the recorded Service source/);
+});
+
 test('loader reads only pinned bytes, release metadata and HTTP health', async () => {
   const fixture = diagnosticFixture();
-  let selectionBytes = Buffer.from(canonicalJson(fixture.selector)); fixture.expected.selection.raw_sha256 = byteHash(selectionBytes); fixture.expected.selection.blob_sha256 = sha('f'); fixture.record.selection.raw_sha256 = fixture.expected.selection.raw_sha256; fixture.observation.selection.sha256 = fixture.expected.selection.raw_sha256; fixture.operation.selection.sha256 = fixture.expected.selection.raw_sha256;
+  const selectionBytes = Buffer.from(canonicalJson(fixture.selector)); fixture.expected.selection.raw_sha256 = byteHash(selectionBytes); fixture.expected.selection.blob_sha256 = sha('f'); fixture.record.selection.raw_sha256 = fixture.expected.selection.raw_sha256; fixture.observation.selection.sha256 = fixture.expected.selection.raw_sha256; fixture.operation.selection.sha256 = fixture.expected.selection.raw_sha256;
   const stackMapBytes = Buffer.from('[]'); fixture.expected.selection.stack_map_sha256 = byteHash(stackMapBytes); fixture.record.selection.stack_map_sha256 = fixture.expected.selection.stack_map_sha256;
-  const withoutAssetId = value => { const component = { ...value }; delete component.asset_id; return component; };
-  const manifest = { schema_version: 1, record_type: 'anywear_service_artifacts', kind: 'source-build', producer: { repository: 'git-malu/AnyWear-Service', workflow_sha: fixture.expected.service.source_sha, workflow_ref: 'git-malu/AnyWear-Service/.github/workflows/service-artifacts.yml@refs/heads/main', run_id: 1, run_attempt: 1 }, components: { image: fixture.selector.image, lambdas: Object.fromEntries(Object.entries(fixture.selector.lambdas).map(([key, value]) => [key, withoutAssetId(value)])), runtime_policy: withoutAssetId(fixture.selector.runtime_policy), schema: withoutAssetId(fixture.selector.schema) } };
-  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`); fixture.expected.selection.release.manifest_sha256 = byteHash(manifestBytes); fixture.record.service.manifest_sha256 = fixture.expected.selection.release.manifest_sha256; selectionBytes = Buffer.from(canonicalJson(fixture.selector)); fixture.expected.selection.raw_sha256 = byteHash(selectionBytes); fixture.record.selection.raw_sha256 = fixture.expected.selection.raw_sha256; fixture.observation.selection.sha256 = fixture.expected.selection.raw_sha256; fixture.operation.selection.sha256 = fixture.expected.selection.raw_sha256;
   const deploymentBytes = Buffer.from(JSON.stringify(fixture.observation));
   const operationBytes = Buffer.from(JSON.stringify(fixture.operation));
   fixture.expected.artifacts.deployment.record_sha256 = byteHash(deploymentBytes);
@@ -298,8 +374,9 @@ test('loader reads only pinned bytes, release metadata and HTTP health', async (
       const isStack = path.includes(fixture.expected.selection.stack_map_file); const raw = isStack ? stackMapBytes : selectionBytes; const selected = isStack ? fixture.expected.selection.stack_map_sha256 : fixture.expected.selection.blob_sha256;
       return binary ? raw : JSON.stringify({ type: 'file', encoding: 'base64', size: raw.length, name: path.split('/').at(-1).split('?')[0], path: isStack ? fixture.expected.selection.stack_map_file : fixture.expected.selection.file, content: raw.toString('base64'), sha: selected, url: 'https://api.github.com', git_url: 'https://api.github.com', html_url: 'https://github.com', download_url: 'https://raw.githubusercontent.com' });
     }
-    if (path.includes(`/releases/${fixture.expected.selection.release.id}`) && !path.includes('/assets/')) return JSON.stringify({ id: fixture.expected.selection.release.id, immutable: true, draft: false, tag_name: `service-artifacts-${fixture.expected.service.source_sha}`, assets: [{ id: fixture.expected.selection.release.manifest_asset_id, name: 'service-artifacts.json', state: 'uploaded' }] });
-    if (path.includes(`/releases/assets/${fixture.expected.selection.release.manifest_asset_id}`)) return binary ? manifestBytes : JSON.stringify({ id: fixture.expected.selection.release.manifest_asset_id, name: 'service-artifacts.json', state: 'uploaded' });
+    if (path === diagnosticReleasePath) return JSON.stringify({ ...diagnosticRelease, tag_name: diagnosticTag });
+    if (path === diagnosticRefPath) return JSON.stringify({ object: { type: 'commit', sha: fixture.expected.service.source_sha } });
+    if (path.includes('/releases/assets/')) throw new Error(`release asset must not be read (${path})`);
     throw new Error(`Unexpected API path: ${path}`);
   };
   const directory = await mkdtemp(join(tmpdir(), 'anywear-diagnostic-'));
@@ -307,5 +384,6 @@ test('loader reads only pinned bytes, release metadata and HTTP health', async (
     const loaded = await loadDiagnosticEvidence({ directory, expected: fixture.expected, api, extract: async (path, member) => member === 'deployment-record.json' ? deploymentBytes : operationBytes, environment: { GH_TOKEN: 'read-only', SERVICE_ARTIFACT_READ_TOKEN: 'read-only' }, fetcher: async url => new Response(JSON.stringify(url.includes('build-metadata') ? fixture.health.client : fixture.health.service), { status: 200 }) });
     assert.equal(loaded.record.record_type, 'anywear_beta_cleanup_diagnostic');
     assert.equal(loaded.artifacts.deployment.id, fixture.expected.artifacts.deployment.id);
+    assert.equal(loaded.releaseTargetCommit, fixture.expected.service.source_sha);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

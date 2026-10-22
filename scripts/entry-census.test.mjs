@@ -138,12 +138,17 @@ test('no qualification job downloads a producer deployment record or checks out 
     assert.doesNotMatch(section, /\.qualification-inputs\/deployment-record\.json/, `${name} must not retain the retired workload record`);
     assert.doesNotMatch(section, /repository: git-malu\/AnyWear-Infra/, `${name} must not check out the Infra observer`);
   }
-  // The full job records and retains the two files the v3 record is built from.
+  // The full job records and retains the two files the v4 record is built from: the live
+  // tuple and the Service release identity (#193 renamed the identity input and removed
+  // the manifest bytes from the path).
   for (const name of ['full', 'record']) {
     const section = job(name);
     assert.match(section, /\.qualification-inputs\/live-identity\.json/);
-    assert.match(section, /\.qualification-inputs\/service-artifacts\.json/);
+    assert.match(section, /\.qualification-inputs\/service-release\.json/);
+    assert.doesNotMatch(section, /service-artifacts\.json/);
   }
+  assert.doesNotMatch(qualify, /service-artifacts\.json/);
+  assert.doesNotMatch(qualify, /manifest_asset_id|manifest_sha256/);
 });
 
 test('the only activation switch in this repository is ENABLE_BETA_MUTATION', () => {
