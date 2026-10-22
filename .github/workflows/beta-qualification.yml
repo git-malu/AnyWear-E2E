@@ -280,7 +280,7 @@ jobs:
               echo "- Service: \`$(jq -r '.service.service_commit' .qualification-inputs/live-identity.json)\`"
               echo "- Image: \`$(jq -r '.service.image_digest' .qualification-inputs/live-identity.json)\`"
               echo "- Minimum Client: $(jq -r '.service.minimum_client_version' .qualification-inputs/live-identity.json)"
-              echo "- Service release: \`$(jq -r '.tag' .qualification-inputs/service-artifacts.json)\` (manifest $(jq -r '.manifest_sha256' .qualification-inputs/service-artifacts.json))"
+              echo "- Service release: \`$(jq -r '.tag' .qualification-inputs/service-release.json)\` (target $(jq -r '.target_commit' .qualification-inputs/service-release.json), $(jq -r '.assets | length' .qualification-inputs/service-release.json) released assets)"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -691,7 +691,7 @@ jobs:
           name: beta-qualification-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .qualification-inputs/live-identity.json
-            .qualification-inputs/service-artifacts.json
+            .qualification-inputs/service-release.json
             .qualification-inputs/beta-environment-before.json
             .qualification-inputs/beta-environment-after.json
             deployment-evidence-before.json
@@ -712,7 +712,7 @@ jobs:
           name: beta-qualification-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .qualification-inputs/live-identity.json
-            .qualification-inputs/service-artifacts.json
+            .qualification-inputs/service-release.json
             .qualification-inputs/beta-environment-before.json
             .qualification-inputs/beta-environment-after.json
             deployment-evidence-before.json
@@ -1116,7 +1116,7 @@ jobs:
           name: beta-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .qualification-inputs/live-identity.json
-            .qualification-inputs/service-artifacts.json
+            .qualification-inputs/service-release.json
             .qualification-inputs/beta-environment-before.json
             .qualification-inputs/beta-environment-after.json
             deployment-evidence-before.json

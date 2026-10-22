@@ -42,7 +42,9 @@ Since [#180](https://github.com/git-malu/AnyWear/issues/180) the dispatch surfac
 the trigger and the expectation it was dispatched for: `trigger=deploy-smoke` only runs
 `smoke`, `trigger=release-qualify` only runs `full` and requires `expected_service_commit`, and
 `trigger=manual` covers re-runs and diagnostics. `full` compares the expected Service commit
-with the live `/health` value, writes qualification record v3 from the live observed tuple, and
+with the live `/health` value, writes qualification record v4 from the live observed tuple and
+the immutable Service release identity it verified (the release tag, the commit it resolves to
+and the four released assets with their published digests), and
 the `record` job is the last qualification job: the green `full` run plus its sealed record is
 the release decision, with the dispatch event, the run/attempt and the record tuple as the
 audit trail. No release-qualification path reads a committed compatibility file; the

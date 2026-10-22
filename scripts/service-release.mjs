@@ -1,28 +1,32 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { byteHash, parseStrictJson, requireCommit, requireId, requireImageDigest, repositories } from './evidence-contract.mjs';
-import { ghApi, repositoryReadEnvironment } from './github-read.mjs';
-import { collectDeploymentEvidence, serviceArtifactsTag } from './qualification-record.mjs';
+import { parseStrictJson, repositories, requireCommit, requireId } from './evidence-contract.mjs';
+import { ghApi, repositoryReadEnvironment, resolveTagCommit } from './github-read.mjs';
+import { collectDeploymentEvidence, SERVICE_RELEASE_ASSET_NAMES, serviceArtifactsTag } from './qualification-record.mjs';
 
-// #180: the live Service identity must resolve to one immutable release, and this is
-// the credential-free reader that proves it. It performs no AWS call and no mutation:
-// one GitHub API read of `service-artifacts-<sha>`, one asset metadata read, one asset
-// bytes read. The release must be published (not draft), immutable, tagged with the
-// exact live Service commit, and its `service-artifacts.json` manifest must name the
-// same Service commit and image digest the live `/health` states.
+// #180/#193: the live Service identity must resolve to one immutable release, and this is
+// the credential-free reader that proves it. It performs no AWS call, no mutation and no
+// release-asset download: two GitHub API reads (the `service-artifacts-<sha>` release and
+// the tag ref it names) plus one read per annotated-tag dereference. The release must be
+// published (not draft), immutable, tagged with the exact live Service commit, its tag
+// must resolve to that commit (following annotated tags), and the four expected assets
+// must each be uploaded with a non-empty size and a published `sha256:<hex>` digest. Extra
+// assets are ignored, so a pre-change five-asset release stays qualifiable during the 5→4
+// transition.
 //
-// This replaces the pinned release identity the compatibility file used to carry: the
-// expected values now come from the live deployment, and the reader discovers the
-// release by the tag the Service release chain publishes. A missing release, a
-// non-immutable release, a missing or mismatched manifest, an HTTP failure and a floor
-// mismatch all fail closed before any AWS credential is requested.
-export const SERVICE_MANIFEST_NAME = 'service-artifacts.json';
-export const SERVICE_MANIFEST_RECORD_TYPE = 'anywear_service_artifacts';
-export const SERVICE_MANIFEST_SCHEMA_VERSION = 1;
+// This replaces both the pinned release identity the compatibility file used to carry and
+// the hand-built artifact manifest the reader used to consume: the live deployment
+// supplies the expected commit, and the release itself carries the tag, immutability,
+// target commit and per-asset digests. A missing release, a non-immutable release, a
+// wrong tag→commit binding, a missing or malformed expected asset, an HTTP failure and a
+// floor mismatch all fail closed before any AWS credential is requested.
+export { SERVICE_RELEASE_ASSET_NAMES };
 // The operations whose gate depends on the live deployed tuple. `recover` deliberately
 // does not consult it: recovery must stay available when the live environment is unhealthy.
 export const LIVE_OPERATIONS = Object.freeze(['full', 'smoke']);
+
+const ASSET_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 const describe = (value) => {
   try {
@@ -32,24 +36,40 @@ const describe = (value) => {
   }
 };
 
-export function verifyServiceManifest(manifest, { serviceSha, imageDigest }) {
-  if (manifest?.schema_version !== SERVICE_MANIFEST_SCHEMA_VERSION
-    || manifest?.record_type !== SERVICE_MANIFEST_RECORD_TYPE) {
-    throw new Error(`Service manifest is not schema_version ${SERVICE_MANIFEST_SCHEMA_VERSION} / record_type ${SERVICE_MANIFEST_RECORD_TYPE} (observed schema_version ${describe(manifest?.schema_version)}, record_type ${describe(manifest?.record_type)})`);
+const assetsOf = (release) => (Array.isArray(release?.assets) ? release.assets : []);
+
+// The four expected names are a frozen constant; only their presence, upload state, size
+// and published digest are read. The asset body is never fetched: the digest is the
+// release API's own statement about bytes this run does not consume.
+function expectedAssets(release, tag) {
+  const assets = assetsOf(release);
+  const observed = assets.map((entry) => entry?.name);
+  const selected = {};
+  for (const name of SERVICE_RELEASE_ASSET_NAMES) {
+    const matches = assets.filter((entry) => entry?.name === name);
+    if (matches.length === 0) {
+      throw new Error(`Service release ${tag} has no ${name} asset (assets ${describe(observed)})`);
+    }
+    if (matches.length > 1) {
+      throw new Error(`Service release ${tag} has ${matches.length} ${name} assets; exactly one is required (assets ${describe(observed)})`);
+    }
+    const [asset] = matches;
+    if (asset.state !== 'uploaded') {
+      throw new Error(`Service release ${tag} asset ${name} is not uploaded (state ${describe(asset.state)})`);
+    }
+    if (!Number.isSafeInteger(asset.size) || asset.size < 1) {
+      throw new Error(`Service release ${tag} asset ${name} size ${describe(asset.size)} is not a positive integer`);
+    }
+    if (typeof asset.digest !== 'string' || !ASSET_DIGEST.test(asset.digest)) {
+      throw new Error(`Service release ${tag} asset ${name} digest ${describe(asset.digest)} is not a sha256:<hex> digest`);
+    }
+    selected[name] = { size: asset.size, digest: asset.digest };
   }
-  const image = manifest.components?.image;
-  if (image?.service_sha !== serviceSha) {
-    throw new Error(`Service manifest components.image.service_sha mismatch: expected ${serviceSha} (live /health), observed ${describe(image?.service_sha)} (manifest)`);
-  }
-  if (image?.digest !== imageDigest) {
-    throw new Error(`Service manifest components.image.digest mismatch: expected ${imageDigest} (live /health), observed ${describe(image?.digest)} (manifest)`);
-  }
-  return manifest;
+  return selected;
 }
 
-export async function readServiceRelease({ serviceSha, imageDigest, repository = repositories.service, api = ghApi, environment = process.env } = {}) {
+export async function readServiceRelease({ serviceSha, repository = repositories.service, api = ghApi, environment = process.env } = {}) {
   requireCommit(serviceSha, 'Live Service commit');
-  requireImageDigest(imageDigest);
   // The read is scoped to exactly one repository: the Service App token is renamed to
   // GH_TOKEN for the child command and every other reader token is removed. Resolving it
   // here (not only in the workflow's step env) keeps a local CLI run working and means the
@@ -77,40 +97,24 @@ export async function readServiceRelease({ serviceSha, imageDigest, repository =
     throw new Error(`Service release ${tag} must be immutable (immutable ${describe(release.immutable)}); qualification requires an immutable release`);
   }
   requireId(release.id, 'Service release ID');
-  const asset = Array.isArray(release.assets)
-    ? release.assets.find((entry) => entry?.name === SERVICE_MANIFEST_NAME)
-    : undefined;
-  if (!asset) {
-    throw new Error(`Service release ${tag} has no ${SERVICE_MANIFEST_NAME} manifest asset (assets ${describe((release.assets ?? []).map((entry) => entry?.name))})`);
+  const { commit: targetCommit, dereferences } = await resolveTagCommit({
+    repository, tag, api, environment: scopedEnvironment,
+  });
+  if (targetCommit !== serviceSha) {
+    throw new Error(`Service release ${tag} tag resolves to ${targetCommit}, not the live Service commit ${serviceSha}`);
   }
-  const metadata = parseStrictJson(await api(`repos/${repository}/releases/assets/${asset.id}`, false, scopedEnvironment));
-  requireId(metadata.id, 'Service manifest asset ID');
-  if (metadata.id !== asset.id || metadata.name !== SERVICE_MANIFEST_NAME || metadata.state !== 'uploaded') {
-    throw new Error(`Service manifest asset ${asset.id} metadata mismatch: expected ${SERVICE_MANIFEST_NAME} uploaded, observed ${describe({ id: metadata.id, name: metadata.name, state: metadata.state })}`);
-  }
-  const bytes = await api(`repos/${repository}/releases/assets/${asset.id}`, true, scopedEnvironment, { binaryAccept: 'application/octet-stream' });
-  if (!Buffer.isBuffer(bytes)) throw new Error('Service manifest bytes are unavailable');
-  if (Number.isSafeInteger(metadata.size) && bytes.length !== metadata.size) {
-    throw new Error(`Service manifest size mismatch: expected ${metadata.size} bytes (asset metadata), observed ${bytes.length} (downloaded bytes)`);
-  }
-  const manifestSha256 = byteHash(bytes);
-  if (typeof metadata.digest === 'string' && metadata.digest !== `sha256:${manifestSha256}`) {
-    throw new Error(`Service manifest digest mismatch: expected ${metadata.digest} (asset metadata), observed sha256:${manifestSha256} (downloaded bytes)`);
-  }
-  const manifest = parseStrictJson(bytes);
-  verifyServiceManifest(manifest, { serviceSha, imageDigest });
+  const assets = expectedAssets(release, tag);
   return {
     identity: {
       repository,
       release_id: release.id,
       tag,
-      manifest_asset_id: asset.id,
-      manifest_sha256: manifestSha256,
+      target_commit: targetCommit,
+      assets,
     },
-    manifest,
-    bytes,
     release,
-    asset: metadata,
+    targetCommit,
+    dereferences,
   };
 }
 
@@ -118,10 +122,11 @@ const USAGE = `Usage: node scripts/service-release.mjs --operation <full|smoke|r
 
 Reads the live Client build metadata and Service health, compares them with the
 dispatch expectation, enforces the committed supported-Client floor, and verifies
-that the live Service commit resolves to an immutable Service release whose
-manifest names the same source and image digest. Writes live-identity.json and
-service-artifacts.json under the inputs directory. It never reads a committed
-compatibility file and never requests an AWS credential.
+that the live Service commit resolves to an immutable Service release whose tag
+resolves to that commit and whose four expected assets each carry a published
+digest. Writes live-identity.json and service-release.json under the inputs
+directory. It never reads a committed compatibility file, never downloads a
+release asset and never requests an AWS credential.
 `;
 
 const ARGUMENTS = Object.freeze({
@@ -184,7 +189,6 @@ export async function runServiceRelease({
   }, expected, fetcher);
   const release = await readServiceRelease({
     serviceSha: identity.service.service_commit,
-    imageDigest: identity.service.image_digest,
     api,
     environment,
   });
@@ -195,9 +199,9 @@ export async function runServiceRelease({
     service: { ...identity.service, minimum_client_version: identity.minimum_client_version },
   };
   await writeFile(resolve(directory, 'live-identity.json'), `${JSON.stringify(live, null, 2)}\n`);
-  await writeFile(resolve(directory, 'service-artifacts.json'), `${JSON.stringify(release.identity, null, 2)}\n`);
+  await writeFile(resolve(directory, 'service-release.json'), `${JSON.stringify(release.identity, null, 2)}\n`);
   log(`Live tuple: Client ${identity.client.source_commit} version ${identity.client_version}; Service ${identity.service.service_commit} ${identity.service.image_digest}; minimum Client ${identity.minimum_client_version}`);
-  log(`Immutable Service release ${release.identity.tag}: release ${release.identity.release_id}, manifest asset ${release.identity.manifest_asset_id}, manifest ${release.identity.manifest_sha256}`);
+  log(`Immutable Service release ${release.identity.tag}: release ${release.identity.release_id}, target ${release.identity.target_commit}, ${SERVICE_RELEASE_ASSET_NAMES.length} expected assets with published digests`);
   return { identity, release: release.identity, live };
 }
 

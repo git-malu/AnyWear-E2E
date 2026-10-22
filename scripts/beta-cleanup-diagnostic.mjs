@@ -5,7 +5,8 @@ import {
   assertEqual, byteHash, exactKeys, parseStrictJson, repositories, requireCommit,
   requireHash, requireImageDigest, requireOwnedRepository, repositoryIds,
 } from './evidence-contract.mjs';
-import { ghApi, repositoryReadEnvironment } from './github-read.mjs';
+import { ghApi, repositoryReadEnvironment, resolveTagCommit } from './github-read.mjs';
+import { serviceArtifactsTag } from './qualification-record.mjs';
 
 // #163 transition allow-list. Infra is replacing its `beta-deploy.yml` dispatch entry with
 // `mutate.yml` while deliberately keeping the operation record's family name `beta-deploy`.
@@ -53,6 +54,11 @@ export const DIAGNOSTIC_EXPECTED = Object.freeze({
     stack_map_file: 'stack-sources/beta-cleanup-86-recovery.json',
     stack_map_sha256: '592d911b56c3f200ce1d3c99e004712ae6bd291c31bad4b2202d0a33f6d1518b',
     release: Object.freeze({
+      // Frozen historical fields: this is the release identity the 2026-01 deployment
+      // observation recorded, including the manifest asset id and hash the release carried
+      // at the time. They describe the preserved record and are never read as a live
+      // expectation: the loader resolves the release by tag→commit and immutability and
+      // downloads no asset (#193).
       repository: repositories.service,
       id: 414921320,
       manifest_asset_id: 647218560,
@@ -382,6 +388,32 @@ async function readHealth(fetcher, expected) {
   return { client, service };
 }
 
+// #193: the recorded release identity is resolved from the release itself — the release
+// is published and immutable, its tag names the recorded Service source, and that tag
+// resolves to the same commit, following annotated tags. The historical record's manifest
+// asset id/hash stay frozen evidence of what that release carried; they are not looked up,
+// and no release asset (and no manifest body) is downloaded.
+export async function resolveDiagnosticServiceRelease({ expected = DIAGNOSTIC_EXPECTED, api = ghApi, environment = process.env } = {}) {
+  const serviceEnvironment = repositoryReadEnvironment(repositories.service, environment);
+  const release = parseStrictJson(await api(`repos/${repositories.service}/releases/${expected.selection.release.id}`, false, serviceEnvironment));
+  if (release?.id !== expected.selection.release.id) {
+    throw new Error(`Diagnostic Service release identity mismatch: expected ${expected.selection.release.id}, observed ${JSON.stringify(release?.id)}`);
+  }
+  if (release.draft !== false) throw new Error(`Diagnostic Service release ${expected.selection.release.id} must be published (draft ${JSON.stringify(release.draft)})`);
+  if (release.immutable !== true) throw new Error(`Diagnostic Service release ${expected.selection.release.id} must be immutable (immutable ${JSON.stringify(release.immutable)})`);
+  const releaseTag = serviceArtifactsTag(expected.service.source_sha);
+  if (release.tag_name !== releaseTag) {
+    throw new Error(`Diagnostic Service release tag mismatch: expected ${releaseTag}, observed ${JSON.stringify(release.tag_name)}`);
+  }
+  const { commit: targetCommit } = await resolveTagCommit({
+    repository: repositories.service, tag: releaseTag, api, environment: serviceEnvironment, label: 'Diagnostic Service release tag',
+  });
+  if (targetCommit !== expected.service.source_sha) {
+    throw new Error(`Diagnostic Service release ${releaseTag} resolves to ${targetCommit}, not the recorded Service source ${expected.service.source_sha}`);
+  }
+  return { release, targetCommit };
+}
+
 export async function loadDiagnosticEvidence({ directory, api = ghApi, extract = extractArchiveMember, fetcher = fetch, environment = process.env, expected = DIAGNOSTIC_EXPECTED } = {}) {
   if (!directory) throw new Error('Diagnostic evidence directory is required');
   if (Object.keys(environment).some(key => /^(?:DELETE|PATCH|POST|PUT|MUTATION|WRITE)/i.test(key) && environment[key])) throw new Error('Diagnostic evidence loader accepts read-only inputs only');
@@ -392,7 +424,7 @@ export async function loadDiagnosticEvidence({ directory, api = ghApi, extract =
     const descriptor = expected.artifacts[kind];
     const artifact = parseStrictJson(await api(`repos/${repositories.infra}/actions/artifacts/${descriptor.id}`, false, infraEnvironment));
     assertArtifactMetadata(artifact, descriptor, run);
-    const archive = await api(`repos/${repositories.infra}/actions/artifacts/${descriptor.id}/zip`, true, infraEnvironment, { binaryAccept: 'application/json' });
+    const archive = await api(`repos/${repositories.infra}/actions/artifacts/${descriptor.id}/zip`, true, infraEnvironment);
     if (byteHash(archive) !== descriptor.zip_sha256) throw new Error(`${kind} diagnostic artifact ZIP checksum mismatch`);
     return { artifact, archive };
   };
@@ -425,20 +457,9 @@ export async function loadDiagnosticEvidence({ directory, api = ghApi, extract =
     observation, operation: operationRecord };
   validateDiagnosticRecord(record, expected);
   assertEqual(selected, { schema_version: 2, record_type: 'anywear_infra_selection', release: observation.selection.release, ...observation.selection.components }, 'Diagnostic selection observation');
-  const serviceEnvironment = repositoryReadEnvironment(repositories.service, environment);
-  const release = parseStrictJson(await api(`repos/${repositories.service}/releases/${expected.selection.release.id}`, false, serviceEnvironment));
-  const asset = parseStrictJson(await api(`repos/${repositories.service}/releases/assets/${expected.selection.release.manifest_asset_id}`, false, serviceEnvironment));
-  const manifestBytes = await api(`repos/${repositories.service}/releases/assets/${expected.selection.release.manifest_asset_id}`, true, serviceEnvironment, { binaryAccept: 'application/octet-stream' });
-  if (byteHash(manifestBytes) !== expected.selection.release.manifest_sha256) throw new Error('Diagnostic Service manifest checksum mismatch');
-  const manifest = parseStrictJson(manifestBytes);
-  if (manifest.schema_version !== 1 || manifest.record_type !== 'anywear_service_artifacts'
-    || !['source-build', 'deployed-baseline-import'].includes(manifest.kind)
-    || manifest.producer?.repository !== repositories.service) throw new Error('Unsupported historical Service manifest');
-  if (release.id !== expected.selection.release.id || release.immutable !== true || release.draft !== false || asset.id !== expected.selection.release.manifest_asset_id || asset.name !== 'service-artifacts.json') throw new Error('Diagnostic Service release/asset mismatch');
-  if (manifest.components?.image?.service_sha !== selected.image.service_sha
-    || manifest.components?.image?.digest !== selected.image.digest) throw new Error('Historical selection and manifest image disagree');
-  return { record, observation, operation: operationRecord, selection, stackMapBytes, release, manifest, health,
-    artifacts: { deployment: deployment.artifact, operation: operation.artifact }, bytes: { deployment: deploymentBytes, operation: operationBytes, selection: selectionBytes, manifest: manifestBytes } };
+  const { release, targetCommit: releaseTargetCommit } = await resolveDiagnosticServiceRelease({ expected, api, environment });
+  return { record, observation, operation: operationRecord, selection, stackMapBytes, release, releaseTargetCommit, health,
+    artifacts: { deployment: deployment.artifact, operation: operation.artifact }, bytes: { deployment: deploymentBytes, operation: operationBytes, selection: selectionBytes } };
 }
 
 export { extractArchiveMember };

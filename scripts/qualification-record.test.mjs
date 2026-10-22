@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  SERVICE_RELEASE_ASSET_NAMES,
   assertObservationSequence,
   assertStableObservation,
   buildQualificationRecord,
@@ -115,10 +116,10 @@ test('refuses a live floor that disagrees with the committed file and tells the 
   await assert.rejects(collect(liveClient(), withoutFloor), /minimum_client_version must be a non-negative safe integer/);
 });
 
-test('creates and verifies a checksummed passing v3 record from the live tuple', () => {
+test('creates and verifies a checksummed passing v4 record from the live tuple', () => {
   const f = fixture();
   const record = qualify(f);
-  assert.equal(record.schema_version, 3);
+  assert.equal(record.schema_version, 4);
   assert.equal(record.qualification_id, 'beta-123-1');
   assert.equal(record.operation, 'full');
   assert.deepEqual(record.expected, { service_commit: f.serviceSha, client_commit: f.clientSha, source: 'trigger' });
@@ -130,13 +131,18 @@ test('creates and verifies a checksummed passing v3 record from the live tuple',
   assert.equal(record.revisions.infra, undefined);
   assert.equal(record.compatibility, undefined);
   assert.equal(record.deployment, undefined);
+  // v4: the release's own identity, not a manifest asset. The tag names the qualified
+  // Service commit, and the tag's target commit is that same commit.
   assert.deepEqual(record.service_artifacts, {
     repository: 'git-malu/AnyWear-Service',
     release_id: 10,
     tag: `service-artifacts-${f.serviceSha}`,
-    manifest_asset_id: 11,
-    manifest_sha256: 'd'.repeat(64),
+    target_commit: f.serviceSha,
+    assets: f.evidence.service_artifacts.assets,
   });
+  assert.deepEqual(Object.keys(record.service_artifacts.assets), [...SERVICE_RELEASE_ASSET_NAMES]);
+  assert.equal('manifest_asset_id' in record.service_artifacts, false);
+  assert.equal('manifest_sha256' in record.service_artifacts, false);
   assert.equal(record.observations.before.authenticated, true);
   assert.deepEqual(record.observations.after.platform.client_domain, f.clientDomain);
   assert.deepEqual(record.workflow.trigger, 'manual');
@@ -157,7 +163,8 @@ test('creates and verifies a checksummed passing v3 record from the live tuple',
 
 // #180: the record cannot carry the pin members. A record that still states
 // `compatibility`, `deployment` or `revisions.infra` is refused by the exact key sets,
-// even after its checksum is recomputed.
+// even after its checksum is recomputed. #193: only schema v4 is live; a v2 or v3 record
+// names a manifest asset that no longer exists and is refused with the observed version.
 test('refuses a record that still carries a pin, a deployment record or an infra revision', () => {
   const { record } = issuedRecord();
   for (const [label, mutate] of [
@@ -169,7 +176,10 @@ test('refuses a record that still carries a pin, a deployment record or an infra
     mutate(tampered);
     assert.throws(() => verifyQualificationRecord(redigest(tampered)), new RegExp(`${label.replace('.', '\\.')} is unknown`), label);
   }
-  assert.throws(() => verifyQualificationRecord({ schema_version: 2, record_type: 'anywear_beta_qualification' }), /Unsupported qualification record schema/);
+  for (const version of [1, 2, 3, 5, undefined, '4']) {
+    assert.throws(() => verifyQualificationRecord({ schema_version: version, record_type: 'anywear_beta_qualification' }),
+      /Unsupported qualification record schema: observed schema_version/, `${version} must not verify`);
+  }
 });
 
 test('binds the dispatched full operation and refuses every other operation', () => {
@@ -292,13 +302,30 @@ test('refuses an observation that is unauthenticated, out of order or wrongly sh
   }, now.toISOString()), /before and after the suite in order/);
 });
 
-test('refuses a Service release identity that does not name the qualified Service commit', () => {
+test('refuses a Service release identity that does not state the qualified release', () => {
   const f = fixture();
+  const base = f.evidence.service_artifacts;
+  const asset = (name, overrides = {}) => ({ ...base.assets[name], ...overrides });
+  const withAsset = (name, overrides) => ({ ...base.assets, [name]: asset(name, overrides) });
+  const { 'runtime-policy.json': omitted, ...withoutRuntimePolicy } = base.assets;
+  void omitted;
   for (const [label, serviceArtifacts, pattern] of [
-    ['tag', { ...f.evidence.service_artifacts, tag: `service-artifacts-${'f'.repeat(40)}` }, /does not name the qualified Service commit/],
-    ['repository', { ...f.evidence.service_artifacts, repository: 'other/Service' }, /Service artifacts repository is unexpected/],
-    ['release id', { ...f.evidence.service_artifacts, release_id: 0 }, /Service release ID must be a positive integer/],
-    ['manifest hash', { ...f.evidence.service_artifacts, manifest_sha256: 'a'.repeat(63) }, /Service manifest checksum is malformed/],
+    ['tag', { ...base, tag: `service-artifacts-${'f'.repeat(40)}` }, /does not name the qualified Service commit/],
+    ['target commit', { ...base, target_commit: 'f'.repeat(40) }, /Service artifacts target_commit .+ is not the qualified Service commit/],
+    ['malformed target commit', { ...base, target_commit: 'main' }, /Service release target commit must be a full lowercase 40-character commit SHA/],
+    ['repository', { ...base, repository: 'other/Service' }, /Service artifacts repository is unexpected/],
+    ['release id', { ...base, release_id: 0 }, /Service release ID must be a positive integer/],
+    // A v3-shaped identity carries the manifest fields v4 removed; the exact key set
+    // refuses it instead of silently ignoring the retired members.
+    ['manifest asset id', { ...base, manifest_asset_id: 11 }, /Service artifacts\.manifest_asset_id is unknown/],
+    ['manifest hash', { ...base, manifest_sha256: 'd'.repeat(64) }, /Service artifacts\.manifest_sha256 is unknown/],
+    ['missing asset', { ...base, assets: withoutRuntimePolicy }, /Service release assets\.runtime-policy\.json is required/],
+    ['extra asset', { ...base, assets: { ...base.assets, 'service-artifacts.json': { size: 242, digest: `sha256:${'a'.repeat(64)}` } } }, /Service release assets\.service-artifacts\.json is unknown/],
+    ['empty asset', { ...base, assets: withAsset('pre-sign-up.zip', { size: 0 }) }, /Service release asset pre-sign-up\.zip size 0 is not a positive integer/],
+    ['missing size', { ...base, assets: withAsset('pre-sign-up.zip', { size: undefined }) }, /Service release asset pre-sign-up\.zip size undefined is not a positive integer/],
+    ['malformed digest', { ...base, assets: withAsset('service-schema.json', { digest: 'sha256:abc' }) }, /Service release asset service-schema\.json digest "sha256:abc" is not a sha256:<hex> digest/],
+    ['missing digest', { ...base, assets: withAsset('service-schema.json', { digest: undefined }) }, /Service release asset service-schema\.json digest undefined is not a sha256:<hex> digest/],
+    ['unknown asset member', { ...base, assets: withAsset('runtime-policy.json', { name: 'runtime-policy.json' }) }, /Service release asset runtime-policy\.json\.name is unknown/],
   ]) {
     assert.throws(() => qualify(f, { evidence: { ...f.evidence, service_artifacts: serviceArtifacts } }), pattern, label);
   }

@@ -67,11 +67,24 @@ Run install and build commands from this repository.
   revisions, image digest, environment endpoints, and qualification run/artifact
   links together with the intended SHAs in the release evidence. Checking out
   pinned source alone does not prove the deployed system ran it.
-- Qualification record schema v3 is self-contained: `expected`, `revisions`
-  (`e2e`/`client`/`service`, never `infra`), `service_artifacts` (including
-  `service-artifacts-<service sha>`), the two `observations`, `test`, `workflow`
-  (including `trigger` and `dispatched_by`) and `integrity`. It has no `compatibility` and
-  no `deployment` member. The independent platform observation is this repository's own
+- Qualification reads the live Service release identity, never a manifest. The live Service
+  commit must resolve to an immutable `service-artifacts-<service sha>` GitHub release whose
+  tag resolves to that commit and whose four expected assets (`pre-sign-up.zip`,
+  `post-confirmation.zip`, `runtime-policy.json`, `service-schema.json`) are each uploaded
+  with a non-empty size and a published `sha256:<hex>` digest. The gate reads only the
+  release and the tag ref through the GitHub API and downloads zero release asset bytes. An
+  extra asset is ignored, so a pre-change five-asset release (the four plus the retired
+  `service-artifacts.json`) stays qualifiable for rollback; its manifest is never read or
+  parsed. The image digest stays in the live `/health` identity and is not compared with a
+  release field.
+- Qualification record schema v4 is self-contained: `expected`, `revisions`
+  (`e2e`/`client`/`service`, never `infra`), `service_artifacts`
+  (`{repository, release_id, tag, target_commit, assets}` where `tag` is
+  `service-artifacts-<service sha>`, `target_commit` is the commit the tag resolved to, and
+  `assets` is exactly the four released names each with `{size, digest}`), the two
+  `observations`, `test`, `workflow` (including `trigger` and `dispatched_by`) and
+  `integrity`. It has no `compatibility` and no `deployment` member, and the v4 verifier
+  refuses a v2/v3 record. The independent platform observation is this repository's own
   authenticated read (`scripts/infra-observation.mjs`) through the vendored contract, not a
   cross-repository Infra checkout.
 - The compatibility pin is **deleted** (#192): the committed pin file, `docs/compatibility-pin.md`,

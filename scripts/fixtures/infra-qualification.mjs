@@ -1,11 +1,12 @@
 import { environmentVerdict } from '../qualification-environment.mjs';
+import { SERVICE_RELEASE_ASSET_NAMES } from '../qualification-record.mjs';
 import { readMinimumSupportedClient } from '../minimum-supported-client.mjs';
 import { SCENARIO_DIRECTORY, qualificationSelection, selectedScenarios } from '../test-selection.mjs';
 import { stageContractSchemaHash } from '../vendor/deployment-contract.mjs';
 import { configuredStacks } from '../vendor/operation-stacks.mjs';
 import { STAGE_CONTRACT_READ_PARAMETERS } from '../vendor/stage-contract-parameters.mjs';
 
-// A v3 qualification fixture. Every member of the record is built from the same
+// A v4 qualification fixture. Every member of the record is built from the same
 // derivation the live path uses, so the fixture cannot state a shape the producer would
 // not write:
 //
@@ -16,6 +17,8 @@ import { STAGE_CONTRACT_READ_PARAMETERS } from '../vendor/stage-contract-paramet
 // - the Client version and the Service floor come from the committed
 //   `minimum-supported-client.json`, with the deployed Client one version above the
 //   floor;
+// - the Service release identity is the tag's target commit plus the four released
+//   assets with their published size and digest;
 // - the observations bracket the environment verdict the suite would have produced.
 //
 // Nothing here reads AWS, the filesystem (beyond the committed floor), or a clock.
@@ -111,12 +114,18 @@ export function qualificationFixture({
     client: { ...before.client, client_version: clientVersion },
     service: { ...before.service, minimum_client_version: minimumClientVersion },
   };
+  // #193: the v4 record states the release's own identity — the tag's target commit and
+  // exactly the four released assets with their published size and digest. The fixture
+  // derives the asset names from the frozen constant so it cannot drift from the gate.
   const serviceArtifacts = {
     repository: 'git-malu/AnyWear-Service',
     release_id: 10,
     tag: `service-artifacts-${serviceSha}`,
-    manifest_asset_id: 11,
-    manifest_sha256: hash('d'),
+    target_commit: serviceSha,
+    assets: Object.fromEntries(SERVICE_RELEASE_ASSET_NAMES.map((name, index) => [name, {
+      size: 2048 + index,
+      digest: `sha256:${hash(String(index + 1))}`,
+    }])),
   };
   const input = {
     result: 'passed',

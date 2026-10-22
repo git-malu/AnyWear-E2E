@@ -126,8 +126,19 @@ stack or mixes producer identities is refused.
 Service parser copies are deleted. The v2 `selection` contract, its committed
 files and the cross-repository native release verification path no longer exist
 in this consumer; the Service release chain verifies its own sealed release
-before it deploys, and E2E keeps only the four-field `service_artifacts` identity
-as evidence. #180 also deletes the E2E deployment-record consumer
+before it deploys, and E2E keeps only the release identity as evidence. That
+identity is the v4 `service_artifacts` member — `repository`, `release_id`, `tag`,
+`target_commit` and `assets` — where the tag names the qualified Service commit,
+`target_commit` is the commit the tag resolved to, and `assets` is exactly the
+four released names (`pre-sign-up.zip`, `post-confirmation.zip`,
+`runtime-policy.json`, `service-schema.json`) with their published size and
+`sha256` digest. Qualification reads the release and the tag ref through the
+GitHub API and downloads no release asset, so there is no `service-artifacts.json`
+manifest on the E2E path (#193) and the image digest stays in the live `/health`
+revision instead of a release field. A pre-change five-asset release remains
+qualifiable during the 5→4 transition: the gate requires the four names it
+consumes and ignores the extra legacy asset. #180 also deletes the E2E
+deployment-record consumer
 (`scripts/trusted-deployment-inputs.mjs`, including its frozen historical-v2
 envelope check) and the cross-repository Infra observer checkout
 (`scripts/infra-source.mjs`): qualification takes its own authenticated platform

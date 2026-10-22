@@ -7,6 +7,7 @@ import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 import { assertE2EExecution } from './execution-guard.mjs';
 import { liveObservationIo, observePlatform } from './infra-observation.mjs';
 import {
+  SERVICE_RELEASE_ASSET_NAMES,
   buildQualificationRecord, validateObservation, verifyQualificationForPromotion,
 } from './qualification-record.mjs';
 import { assertRecoveryArtifact, prepareAccountRecovery } from './account-recovery-inputs.mjs';
@@ -204,12 +205,18 @@ test('the live AWS seam names the denied read instead of failing silently', asyn
     /AWS read failed for cloudformation describe-stacks --stack-name AnyWearFoundationStack: An error occurred \(AccessDenied\)/);
 });
 
-test('the record is self-contained: only the v3 members, and the live tuple inside them', () => {
+test('the record is self-contained: only the v4 members, and the live tuple inside them', () => {
   const record = qualify(qualificationFixture());
+  assert.equal(record.schema_version, 4);
   assert.deepEqual(Object.keys(record).sort(), [
     'environment', 'expected', 'integrity', 'observations', 'operation', 'qualification_id', 'qualified_at',
     'record_type', 'result', 'revisions', 'schema_version', 'service_artifacts', 'test', 'workflow',
   ]);
+  // #193: the release identity is the tag's target commit plus exactly the four released
+  // assets; the manifest members v3 carried are gone.
+  assert.deepEqual(Object.keys(record.service_artifacts).sort(), ['assets', 'release_id', 'repository', 'tag', 'target_commit']);
+  assert.deepEqual(Object.keys(record.service_artifacts.assets), [...SERVICE_RELEASE_ASSET_NAMES]);
+  assert.equal(record.service_artifacts.target_commit, record.revisions.service.sha);
   assert.deepEqual(Object.keys(record.revisions).sort(), ['client', 'e2e', 'service']);
   assert.deepEqual(Object.keys(record.observations).sort(), ['after', 'before']);
   for (const phase of ['before', 'after']) {
@@ -253,6 +260,13 @@ test('promotion requires the exact unexpired artifact and completed-success E2E 
   const expected = { artifact_id: 90, record_sha256: byteHash(recordBytes), e2e_sha: trustedRun.head_sha, run_id: 123, run_attempt: 1 };
   const context = { trustedRun, trustedArtifact, expected, recordBytes, now: now.getTime() };
   assert.equal(verifyQualificationForPromotion(record, context), true);
+  // #193: a historical v3 record is refused by the v4 consumer even with otherwise valid
+  // run/artifact metadata; the checksum it carries cannot make it current.
+  const legacy = { ...structuredClone(record), schema_version: 3 };
+  const legacyBytes = Buffer.from(`${JSON.stringify(legacy, null, 2)}\n`);
+  assert.throws(() => verifyQualificationForPromotion(legacy, {
+    ...context, recordBytes: legacyBytes, expected: { ...expected, record_sha256: byteHash(legacyBytes) },
+  }), /Unsupported qualification record schema: observed schema_version 3/);
   assert.throws(() => verifyQualificationForPromotion(record), /authenticated run\/artifact metadata/);
   assert.throws(() => verifyQualificationForPromotion(record, { ...context, trustedArtifact: { ...trustedArtifact, expired: true } }));
   assert.throws(() => verifyQualificationForPromotion(record, { ...context, trustedRun: { ...trustedRun, conclusion: 'failure' } }));
