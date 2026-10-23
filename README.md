@@ -496,6 +496,19 @@ desired status is therefore outside this single-inventory check. Otherwise the d
 starts `beta-cleanup-<runScope>-<requestHash16>-retry1` once, or resumes or verifies that
 name when it already exists.
 
+The one 90-day migration reconcile carries an explicit migration allowance that no other
+dispatch has (#217). Only when both ordinary generations already exist and are terminal
+non-success, and one bounded predecessor check shows the cleanup families stopped, it starts
+`beta-cleanup-<runScope>-<requestHash16>-migration1` once. The migration name is derived from
+the same envelope, so the captured `runScope`, the request hash and the cleanup operation
+identity are preserved rather than re-scoped. That name is resumed when it is `RUNNING` and
+verified when it is `SUCCEEDED`; when it is itself terminal non-success the dispatch refuses
+and starts nothing else, so a scope never reaches a fourth execution. The allowance never
+manufactures its own precondition: a migration dispatch that finds the retry absent refuses
+instead of starting it, while generation 0 keeps its ordinary behavior so a scope with no
+execution is still cleaned. The ordinary reconcile, `full`, `smoke`, the qualification
+teardown and `recover` leave the allowance unset and keep the two-name rule above.
+
 A protected `recover` dispatch supplies the original owner evidence. That evidence is
 validated in its own terms, so an execution captured under an older state-machine
 version, an older Service image/source or a legacy mode-less owner input is observed and
@@ -505,8 +518,9 @@ original evidence is observed and, when `SUCCEEDED`, verified under that evidenc
 version and envelope. The original evidence's captured request and run scope must equal
 the current canonical request and scope.
 
-A captured run scope therefore carries at most two executions: the base deterministic
-name and one `-retry1`. A retry newly started by this dispatch uses the current version
+A captured run scope therefore carries at most two ordinary executions: the base deterministic
+name and one `-retry1` (plus the migration-only `-migration1` name described above, which only
+the 90-day migration reconcile may start). A retry newly started by this dispatch uses the current version
 and normal envelope. An existing retry that binds the original owner evidence or the
 current pair is resumed when it is `RUNNING` and verified when it is `SUCCEEDED`, under
 that envelope and version. A recorded retry that is already terminal non-success refuses

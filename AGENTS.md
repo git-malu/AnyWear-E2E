@@ -145,7 +145,12 @@ Run install and build commands from this repository.
   leftover past that bound. A source failure writes no record and mutates nothing;
   `unattributable_caller`, `unprovable_ownership` and `outside_worker_family` are reported as
   warnings and never fail a run. One `reconcile_lookback_days=90` migration dispatch over the
-  artifact retention is permitted before the removals. Runbook:
+  artifact retention is permitted before the removals. That dispatch alone carries the
+  migration cleanup allowance (#217): when a captured scope's generation 0 and `-retry1` are
+  both terminal non-success and one bounded check shows the cleanup families stopped, it may
+  start the single `beta-cleanup-<runScope>-<request_sha16>-migration1` generation from the
+  unchanged captured envelope; the ordinary reconcile, `full`, `smoke`, the teardown and
+  `recover` cannot request it and keep the two-name rule. Runbook:
   [docs/account-reconcile.md](docs/account-reconcile.md).
 - Never delete, or list for deletion, by scope label, prefix or address alone. The only
   deletion selectors are a manifest's captured `{sub, email}` and the Service cleanup's own

@@ -96,6 +96,11 @@ older record was written.
 4. Delete the Cognito identity by its immutable username — never by address — then read absence
    back. Only `UserNotFoundException` on a fresh read makes it `reconciled`.
 
+The Service cleanup resolves the captured scope's deterministic execution names. Every dispatch
+follows the ordinary rule: generation 0, then one bounded retry after generation 0 is terminal
+non-success and one predecessor check shows the cleanup families stopped. The one 90-day
+migration dispatch additionally carries the migration allowance below.
+
 The identity set and its unresolved entries are proven against the record's closed contract
 **before the first mutation**, so no input can throw after a deletion and lose the record.
 
@@ -196,6 +201,23 @@ session does not name a run; the record then names the creation event and no run
 bounded to 30 minutes, it states the window it read, and its record names every leftover it
 could not resolve. A leftover older than both the artifact retention and CloudTrail's event
 history is the one recorded residual, bounded by the eight pool rows.
+
+The migration dispatch also carries the one **migration allowance** (#217). A captured scope
+whose cleanup operation never committed may already have spent both ordinary generations, and
+the cleanup capability's names are deterministic, so a further ordinary dispatch refuses with
+`retry_not_authorized` and the leftover can never be resolved automatically. The allowance adds
+exactly one name, `beta-cleanup-<runScope>-<request_sha16>-migration1`, derived from the same
+envelope and bounded to the Step Functions execution-name limit (the base is truncated so the
+longer suffix fits). It may start only when generation 0 and the `-retry1` generation both
+exist and are terminal non-success, and one bounded predecessor check shows the cleanup families
+stopped; the captured `runScope` and the cleanup operation identity are preserved, never
+re-scoped. It is started at most once: an existing migration execution is resumed while it is
+`RUNNING` and verified when it `SUCCEEDED`, and when it is itself terminal non-success the
+dispatch refuses and starts nothing else, so there is no fourth attempt. The allowance never
+manufactures its own precondition — a migration dispatch that finds the retry absent refuses
+rather than starting it — while generation 0 keeps its ordinary behavior so a scope with no
+execution is still cleaned. The ordinary seven-day reconcile, `full`, `smoke`, the qualification
+teardown and `recover` leave the allowance unset and keep the unchanged two-name rule.
 
 Dispatch it from `main` with:
 

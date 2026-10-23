@@ -920,7 +920,8 @@ function requireDeadline(value, label) {
  *   lookupCreateUserEvents(window) -> CloudTrail lookup-events rows
  *   getUser(email)                 -> { Username, UserAttributes } or UserNotFoundException
  *   deleteUser(username)           -> deletes by immutable username
- *   runServiceCleanup(inputs, env, { deadline }) -> { proof_status, committed_result } or undefined
+ *   runServiceCleanup(inputs, env, { deadline, migrationGeneration? })
+ *                                  -> { proof_status, committed_result } or undefined
  */
 export async function reconcileAccounts({
   io,
@@ -936,6 +937,11 @@ export async function reconcileAccounts({
   requirePositiveInteger(runIdentity?.attempt, 'Reconcile run attempt');
   const reconcileId = `${runIdentity.runId}-${runIdentity.attempt}`;
   const deadline = Date.now() + requireDeadline(deadlineMs, 'Reconcile deadline');
+  // The one extra cleanup generation is allowed to the migration dispatch and to nothing
+  // else (#217): the allowance follows the recorded window, which is itself a closed set of
+  // seven days or the 90-day artifact retention. An ordinary reconcile, `full`, `smoke` and
+  // the teardown never pass it, so their two-name rule is unchanged.
+  const migrationGeneration = lookbackDaysOfWindow(window) === RECONCILE_MIGRATION_WINDOW_DAYS;
 
   const listed = await io.listArtifacts(window);
   // An empty window is a valid scan, not a failure (#217): the design's own orphan case is a
@@ -1031,7 +1037,7 @@ export async function reconcileAccounts({
       }
       continue;
     }
-    await reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline });
+    await reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline, migrationGeneration });
   }
 
   const result = judgeResult(unresolved, now, bounds);
@@ -1048,7 +1054,7 @@ export async function reconcileAccounts({
   return { record, result, identitySet };
 }
 
-async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline }) {
+async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline, migrationGeneration }) {
   const members = [];
   for (const identity of group.identities) {
     let live;
@@ -1115,7 +1121,7 @@ async function reconcileGroup({ group, index, io, environment, recordIdentities,
     evidence = await io.runServiceCleanup(inputs, {
       ...environment,
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: cleanupEvidencePath(environment.E2E_ACCOUNT_RECONCILE_DIRECTORY ?? 'reconcile', index, group.runScope),
-    }, { deadline });
+    }, { deadline, ...(migrationGeneration ? { migrationGeneration: true } : {}) });
   } catch (error) {
     // The cleanup wait is bounded by the absolute in-job deadline, so a Service wait cannot
     // outlive the job and lose the record. A deadline stop is the design's own condition.
@@ -1321,13 +1327,16 @@ export function createReconcileIo(environment = process.env, { cleanupIo } = {})
       assertE2EExecution(environment);
       await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
     },
-    async runServiceCleanup(inputs, cleanupEnvironment, { deadline } = {}) {
+    async runServiceCleanup(inputs, cleanupEnvironment, { deadline, migrationGeneration } = {}) {
       // The absolute in-job deadline bounds the Service wait, so a 30-minute capability wait
       // cannot outlive the 15-minute job and lose the record it was about to write.
       if (typeof deadline !== 'number' || !Number.isFinite(deadline) || deadline <= 0) {
         throw new Error('Service cleanup requires the caller\'s absolute deadline');
       }
-      const evidence = await runCleanupOperation(inputs, cleanupEnvironment, cleanupIo, { deadline });
+      // The migration allowance reaches the cleanup only when the recorded window is the
+      // 90-day retention; every other dispatch leaves the key absent (#217).
+      const evidence = await runCleanupOperation(inputs, cleanupEnvironment, cleanupIo,
+        { deadline, ...(migrationGeneration === true ? { migrationGeneration: true } : {}) });
       if (!evidence) return undefined;
       const operation = evidence.operation ?? {};
       return { proof_status: operation.proof_status, committed_result: operation.committed_result };

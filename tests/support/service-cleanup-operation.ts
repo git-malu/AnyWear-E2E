@@ -19,7 +19,20 @@ const LOG_GROUP = '/anywear/beta/one-shot';
 const MARKER = 'ANYWEAR_BETA_CLEANUP_RESULT=';
 const TERMINAL_FAILURE = ['FAILED', 'TIMED_OUT', 'ABORTED'];
 const CLEANUP_FAMILIES = ['beta-anywear-cleanup', 'beta-anywear-cleanup-verify', 'beta-anywear-cleanup-acceptance'] as const;
+/** The ordinary generation bound: the base name plus exactly one retry. */
 const MAX_GENERATIONS = 1;
+/**
+ * The execution-name limit of a Step Functions execution (#217).
+ */
+const MAX_EXECUTION_NAME = 80;
+/**
+ * The one extra generation the 90-day migration reconcile may start (#217). It is a distinct
+ * name, never a second retry, and it exists because the ordinary pair of a historical captured
+ * scope may already be spent: the request is unchanged, so the scope keeps its cleanup
+ * operation identity and evidence while one more exact cleanup can run.
+ */
+const MIGRATION_GENERATION = 'migration1';
+const MIGRATION_SUFFIX = '-migration1';
 const execute = promisify(execFile);
 
 type CleanupRefusalPhase = 'operation_start' | 'execution_observation' | 'retry_eligibility' | 'retry_proof'
@@ -101,6 +114,14 @@ export interface CleanupOperationOptions {
    * losing the record when the job is cancelled.
    */
   deadline?: number;
+  /**
+   * The explicit migration allowance (#217). Only the 90-day migration reconcile sets it, and
+   * it permits the one `-migration1` generation once the captured scope's ordinary pair is
+   * already exhausted. Every other caller — the ordinary reconcile, `full`, `smoke`, the
+   * teardown and `recover` — leaves it unset and keeps the unchanged two-name rule: a
+   * generation 1 that is already terminal non-success refuses, and no third name is derived.
+   */
+  migrationGeneration?: boolean;
 }
 
 interface CanonicalTask {
@@ -267,18 +288,33 @@ export function createCleanupOperationEnvelope(inputs: ServiceCleanupInputs, env
   return envelope;
 }
 
+/** A generation of one captured scope: its base name, its one retry, or the migration name. */
+export type CleanupExecutionGeneration = 0 | 1 | typeof MIGRATION_GENERATION;
+
 /**
- * The two deterministic names of one captured scope: the base name and exactly
- * one retry. Nothing else is ever derived from the captured identities, so a
- * replay of the same scope can only land on generation 0 or generation 1.
+ * The deterministic names of one captured scope: the base name and exactly one retry, plus the
+ * separate migration name that only the 90-day migration reconcile may start (#217). Nothing is
+ * ever derived from the captured identities beyond the request hash, so a replay of the same
+ * scope can only land on generation 0, generation 1, or — with the explicit migration allowance
+ * — the one `-migration1` generation. The request itself is never re-scoped: all three names
+ * bind the same envelope bytes and therefore the same `runScope`, request hash and evidence.
  */
-export function deterministicCleanupExecutionName(envelope: CleanupOperationEnvelope, generation = 0): string {
-  if (!Number.isSafeInteger(generation) || generation < 0 || generation > MAX_GENERATIONS) throw new Error('Cleanup execution generation is invalid');
+export function deterministicCleanupExecutionName(envelope: CleanupOperationEnvelope,
+  generation: CleanupExecutionGeneration = 0): string {
   const base = `beta-cleanup-${envelope.run_scope}-${envelope.request_sha256.slice(0, 16)}`;
+  if (generation === MIGRATION_GENERATION) {
+    // The migration name mirrors the retry's bounded base: the suffix is longer than
+    // `-retry1`, so the base is truncated further to stay inside the execution-name limit.
+    return boundedName(`${base.slice(0, MAX_EXECUTION_NAME - MIGRATION_SUFFIX.length)}${MIGRATION_SUFFIX}`);
+  }
+  if (!Number.isSafeInteger(generation) || generation < 0 || generation > MAX_GENERATIONS) throw new Error('Cleanup execution generation is invalid');
   // The retry keeps the established 72-character base bound, so a maximum-length
   // run scope can still start it and an in-flight legacy `-retry1` name is found.
-  const name = generation === 0 ? base : `${base.slice(0, 72)}-retry1`;
-  if (name.length > 80) throw new Error('Cleanup execution name exceeds the Step Functions limit');
+  return boundedName(generation === 0 ? base : `${base.slice(0, 72)}-retry1`);
+}
+
+function boundedName(name: string): string {
+  if (name.length > MAX_EXECUTION_NAME) throw new Error('Cleanup execution name exceeds the Step Functions limit');
   return name;
 }
 
@@ -488,7 +524,8 @@ interface ExpectedExecution {
   arn: string;
 }
 
-function expectedExecution(envelope: CleanupOperationEnvelope, versionArn: string, generation: number): ExpectedExecution {
+function expectedExecution(envelope: CleanupOperationEnvelope, versionArn: string,
+  generation: CleanupExecutionGeneration): ExpectedExecution {
   const name = deterministicCleanupExecutionName(envelope, generation);
   return { envelope, versionArn, name, arn: cleanupExecutionArn(versionArn, name) };
 }
@@ -611,14 +648,29 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * Start or resume the deterministic cleanup operation for one captured run
  * scope.
  *
- * The rule is the same for an ordinary qualification cleanup and a protected
- * `recover` dispatch: resolve generation 0, resume it while it runs, verify it
- * when it succeeded, and start generation 1 only after generation 0 is terminal
- * non-success and exactly one bounded predecessor check (its describe plus one
- * cleanup-family inventory) shows the cleanup families stopped. If generation 1
- * already exists it is resumed or verified; if it is already terminal
- * non-success the dispatch refuses and starts nothing. At most two deterministic
- * names exist per captured scope.
+ * The rule is the same for an ordinary qualification cleanup, the ordinary
+ * reconcile and a protected `recover` dispatch: resolve generation 0, resume it
+ * while it runs, verify it when it succeeded, and start generation 1 only after
+ * generation 0 is terminal non-success and exactly one bounded predecessor check
+ * (its describe plus one cleanup-family inventory) shows the cleanup families
+ * stopped. If generation 1 already exists it is resumed or verified; if it is
+ * already terminal non-success the dispatch refuses and starts nothing. Without
+ * the explicit migration allowance, at most two deterministic names exist per
+ * captured scope.
+ *
+ * Only the 90-day migration reconcile passes `options.migrationGeneration`, and
+ * that allowance adds exactly one more name, `-migration1`, derived from the
+ * same envelope and therefore the same `runScope` and request hash. It may start
+ * only when generation 0 and generation 1 both exist and are terminal
+ * non-success, and one bounded predecessor check shows the cleanup families
+ * stopped. That name is started at most once: if it already exists it is resumed
+ * while running and verified when it succeeded, and if it is itself terminal
+ * non-success the dispatch refuses and starts nothing else. The allowance never
+ * manufactures its own precondition: a migration dispatch that finds generation
+ * 1 absent refuses instead of starting the ordinary retry, because the extra
+ * generation is defined only against an already-exhausted captured scope.
+ * Generation 0 keeps its ordinary behavior — absent is started, running is
+ * resumed, succeeded is verified — so a scope with no execution is still cleaned.
  *
  * A recovery dispatch supplies the original owner evidence. That evidence is
  * validated in its own terms, so an execution captured before a reviewed version
@@ -632,6 +684,12 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
   io?: CleanupOperationIo, options: CleanupOperationOptions = {}): Promise<CleanupOperationEvidence | undefined> {
+  // The allowance is an explicit opt-in, never a truthy side effect of a caller that
+  // forwards an arbitrary options object. It is rejected before the first read or start.
+  if (options.migrationGeneration !== undefined && typeof options.migrationGeneration !== 'boolean') {
+    throw new Error('Cleanup migration allowance must be an explicit boolean');
+  }
+  const migrationAllowed = options.migrationGeneration === true;
   const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
   if (!versionArn) {
     console.warn('Beta cleanup capability is not configured; cleanup deferred and identities retained');
@@ -767,6 +825,13 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     refusalCategory = 'execution_observation_unavailable';
     let retry = await describeExecution(transport, current[1].arn);
     if (!retry) {
+      if (migrationAllowed) {
+        // The extra generation is defined against an exhausted captured scope; a
+        // migration dispatch never starts the ordinary retry to manufacture one.
+        refusalPhase = 'retry_eligibility';
+        refusalCategory = 'retry_not_authorized';
+        throw new Error('Migration cleanup requires the captured scope\'s one retry to exist; no ordinary retry is started');
+      }
       refusalPhase = 'operation_start';
       refusalCategory = 'operation_start_unavailable';
       await start();
@@ -783,9 +848,49 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       refusalCategory = 'execution_not_succeeded';
       throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
     }
+    if (!migrationAllowed) {
+      refusalPhase = 'retry_eligibility';
+      refusalCategory = 'retry_not_authorized';
+      throw new Error('Cleanup retry already exists and is terminal non-success; no third execution is started');
+    }
+    // The 90-day migration reconcile's one extra generation. Both ordinary generations
+    // exist and are terminal non-success, and the request is unchanged, so the migration
+    // name is derived from the same envelope as the base: the captured run scope and its
+    // cleanup operation identity are preserved, never re-scoped.
+    const migration = expectedExecution(envelope, versionArn, MIGRATION_GENERATION);
+    target(migration);
+    refusalPhase = 'execution_observation';
+    refusalCategory = 'execution_observation_unavailable';
+    let migrated = await describeExecution(transport, migration.arn);
+    if (!migrated) {
+      // The single bounded predecessor check for this generation: retry 1's terminal
+      // describe above plus one cleanup-family inventory, the same check and refusal
+      // categories that gate generation 1.
+      refusalPhase = 'retry_proof';
+      refusalCategory = 'retry_proof_unavailable';
+      const migrationFamilies = await cleanupFamiliesStopped(transport);
+      evidence.operation.preceding_execution = { execution_arn: retry.executionArn!, status: retry.status!,
+        ...(retry.stopDate ? { stopped_at: retry.stopDate.toISOString() } : {}), cleanup_families: migrationFamilies };
+      await writeEvidence(path, evidence);
+      refusalPhase = 'operation_start';
+      refusalCategory = 'operation_start_unavailable';
+      await start();
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_observation_unavailable';
+      migrated = await awaitTerminal(transport, migration.arn, migration.envelope, migration.versionArn, migration.name, evidence, path, undefined, options.deadline);
+    } else {
+      validateDescription(migrated, migration.envelope, migration.versionArn, migration.name);
+      migrated = await observePresent(transport, migrated, migration, evidence, path, options.deadline);
+    }
+    if (migrated.status === 'SUCCEEDED') return await verifySuccess(migrated, migration.envelope);
+    if (migrated.status === 'RUNNING') {
+      refusalPhase = 'execution_observation';
+      refusalCategory = 'execution_not_succeeded';
+      throw new Error('Cleanup migration generation did not reach a terminal state within the bounded wait');
+    }
     refusalPhase = 'retry_eligibility';
     refusalCategory = 'retry_not_authorized';
-    throw new Error('Cleanup retry already exists and is terminal non-success; no third execution is started');
+    throw new Error('Cleanup migration generation already exists and is terminal non-success; no fourth execution is started');
   } catch (error) {
     evidence.operation.proof_status = 'refused';
     evidence.operation.failure = 'Exact execution/task/committed-result proof unavailable; Cognito identities retained';
