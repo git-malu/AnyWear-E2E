@@ -786,12 +786,15 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     refusalPhase = 'retry_eligibility';
     refusalCategory = 'retry_not_authorized';
     throw new Error('Cleanup retry already exists and is terminal non-success; no third execution is started');
-  } catch {
+  } catch (error) {
     evidence.operation.proof_status = 'refused';
     evidence.operation.failure = 'Exact execution/task/committed-result proof unavailable; Cognito identities retained';
     evidence.operation.refusal_phase = refusalPhase;
     evidence.operation.refusal_category = refusalCategory;
     await writeEvidence(path, evidence);
-    throw new Error(evidence.operation.failure);
+    // The deadline stop stays distinguishable for the caller: a reconcile records it as
+    // `deadline_exceeded` and still writes its record, rather than as a Service refusal.
+    if (error instanceof CleanupDeadlineExceededError) throw error;
+    throw new Error(evidence.operation.failure, { cause: error });
   }
 }

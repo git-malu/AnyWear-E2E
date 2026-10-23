@@ -57,6 +57,13 @@ export const RECONCILE_MIGRATION_WINDOW_DAYS = 90;
 export const RECONCILE_LOOKBACK_DAYS = Object.freeze([RECONCILE_WINDOW_DAYS, RECONCILE_MIGRATION_WINDOW_DAYS]);
 /** At most nine lifecycle artifacts per lookback day; the listing fails closed above it. */
 export const RECONCILE_ARTIFACTS_PER_DAY = 9;
+/**
+ * The migration window must start marginally inside CloudTrail's 90-day history: `LookupEvents`
+ * accepts only the last 90 days, and a range that starts exactly at `now - 90 days` is often
+ * already outside it by the time the request is evaluated. Five minutes is enough for the clock
+ * and request latency, and it still rounds to the reviewed 90-day lookback.
+ */
+export const RECONCILE_CLOUDTRAIL_MARGIN_MS = 5 * 60_000;
 export const RECONCILE_RETENTION_HOURS = 24;
 export const RECONCILE_MAX_EVENTS = 1000;
 export const RECONCILE_MAX_USERS_PER_REQUEST = 8;
@@ -67,6 +74,16 @@ export const LIFECYCLE_DIAGNOSTICS = Object.freeze(['service-cleanup-operation.j
 export const LIFECYCLE_UPLOAD_SET = Object.freeze([...LIFECYCLE_MANIFESTS, ...LIFECYCLE_DIAGNOSTICS]);
 export const LIFECYCLE_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
 export const LIFECYCLE_FILE_MAX_BYTES = 1024 * 1024;
+/** One page of the repository artifact list, and the safety bound on walking it. */
+export const ARTIFACT_PAGE_SIZE = 100;
+/**
+ * The listing walks every page the repository has, because unrelated workflows fill the list and
+ * must not consume the lifecycle bound. This is a sanity bound on the API walk itself, not the
+ * nine-per-lookback-day lifecycle bound: a repository this large is a listing failure, never a
+ * silent truncation.
+ */
+export const MAX_ARTIFACT_PAGES = 500;
+export const ARTIFACT_DIGEST = /^sha256:[a-f0-9]{64}$/;
 /** The one workflow that may produce a lifecycle artifact a reconcile treats as authoritative. */
 export const LIFECYCLE_WORKFLOW_PATH = '.github/workflows/beta-qualification.yml';
 export const E2E_QUALIFICATION_CALLER = /^arn:aws:sts::650880818323:assumed-role\/beta-e2e-qualification-role\/[A-Za-z0-9+=,.@_-]{1,64}$/;
@@ -143,7 +160,10 @@ export function reconcileWindow(now = Date.now(), days = RECONCILE_WINDOW_DAYS) 
     throw new Error(`Reconcile lookback must be one of ${RECONCILE_LOOKBACK_DAYS.join(', ')} days`);
   }
   const to = new Date(now);
-  const from = new Date(to.getTime() - days * 24 * 60 * 60_000);
+  // CloudTrail's event history is exactly 90 days, so the migration window starts just inside it;
+  // a range starting at `now - 90 days` is already outside the accepted range when it is read.
+  const margin = days === RECONCILE_MIGRATION_WINDOW_DAYS ? RECONCILE_CLOUDTRAIL_MARGIN_MS : 0;
+  const from = new Date(to.getTime() - days * 24 * 60 * 60_000 + margin);
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
@@ -182,6 +202,68 @@ export function parseManifestArtifactName(name) {
 
 /** The E2E repository's immutable GitHub id, which the artifact and its run must name. */
 export const E2E_REPOSITORY_ID = 1317091305;
+
+/**
+ * A bound lifecycle artifact must carry the digest GitHub publishes for it, so the bytes the
+ * reader verifies are the bytes the listing named. A missing or malformed digest is refused as a
+ * source failure: skipping the check would accept an artifact whose bytes nobody vouched for.
+ */
+export function requireLifecycleArtifactDigest(value, label) {
+  if (typeof value !== 'string' || !ARTIFACT_DIGEST.test(value)) {
+    throw new Error(`${label} has no well-formed sha256 digest`);
+  }
+  return value;
+}
+
+/**
+ * The repository's lifecycle artifacts inside the window, read from the whole artifact list.
+ *
+ * The repository keeps every workflow's artifacts, and they are not this operation's budget:
+ * the listing walks every page the API reports (`total_count`) and keeps only non-expired,
+ * lifecycle-named rows created inside the window. Only those count against the nine-per-lookback-
+ * day bound. A page failure, a malformed page, a short or empty page before the API's last page,
+ * or an exhausted page walk fails closed: a truncated list would read as a quiet scan.
+ *
+ * `fetchPage(page, perPage)` returns one parsed page; the production transport is the GitHub API
+ * and the tests inject a fake.
+ */
+export async function collectLifecycleArtifacts({ window, fetchPage, pageSize = ARTIFACT_PAGE_SIZE } = {}) {
+  if (typeof fetchPage !== 'function') throw new Error('Artifact listing requires its page transport');
+  requirePositiveInteger(pageSize, 'Artifact page size');
+  const bound = maxArtifactsForWindow(window);
+  const from = Date.parse(window.from);
+  const to = Date.parse(window.to);
+  const artifacts = [];
+  for (let page = 1; ; page += 1) {
+    if (page > MAX_ARTIFACT_PAGES) throw new Error('Artifact listing exceeds its page bound');
+    const response = await fetchPage(page, pageSize);
+    if (!response || typeof response !== 'object' || Array.isArray(response) || !Array.isArray(response.artifacts)) {
+      throw new Error('Artifact list response is malformed');
+    }
+    if (!Number.isSafeInteger(response.total_count) || response.total_count < 0) {
+      throw new Error('Artifact list response is malformed');
+    }
+    const pages = Math.max(1, Math.ceil(response.total_count / pageSize));
+    if (page < pages && response.artifacts.length === 0) throw new Error('Artifact listing is truncated');
+    for (const artifact of response.artifacts) {
+      // An expired artifact has no bytes left to read; it is outside the scan rather than
+      // unbound, and the recorded residual is the leftover older than both retention windows.
+      if (artifact?.expired !== false || !parseManifestArtifactName(artifact?.name)) continue;
+      const createdAt = Date.parse(artifact.created_at ?? '');
+      if (!Number.isFinite(createdAt) || createdAt < from || createdAt > to) continue;
+      artifacts.push({
+        id: requirePositiveInteger(artifact.id, 'Artifact id'),
+        name: artifact.name,
+        digest: requireLifecycleArtifactDigest(artifact.digest, `Lifecycle artifact ${artifact.name}`),
+        workflow_run: artifact.workflow_run,
+      });
+    }
+    if (artifacts.length > bound) throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
+    if (page >= pages) break;
+    if (response.artifacts.length < pageSize) throw new Error('Artifact listing is truncated');
+  }
+  return artifacts;
+}
 
 /**
  * The closed upload set one lifecycle artifact may contain.
@@ -242,14 +324,20 @@ export function lifecycleArtifactBinding(artifact) {
 /**
  * The cached `GET actions/runs/<run>` half of the binding: the artifact must have been produced
  * by the protected `main` `workflow_dispatch` run of `beta-qualification.yml`, at the same head
- * the artifact recorded. A run that cannot be read is a source failure, not an unbound artifact.
+ * the artifact recorded.
+ *
+ * A readable run that fails any of these checks is a verdict, not an exception: the artifact is
+ * ignored and counted in `sources.artifacts_ignored`, and it is never authoritative. Only an
+ * unreadable run lookup — the transport could not say anything — is a source failure, and that
+ * is raised by the caller around `io.getWorkflowRun`.
  */
-export function validateLifecycleWorkflowRun(run, artifact, headSha) {
-  if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error(`Lifecycle artifact ${artifact.id} workflow run is unavailable`);
-  if (run.path !== LIFECYCLE_WORKFLOW_PATH) throw new Error(`Lifecycle artifact ${artifact.id} was not produced by ${LIFECYCLE_WORKFLOW_PATH}`);
-  if (run.event !== 'workflow_dispatch') throw new Error(`Lifecycle artifact ${artifact.id} workflow run is not a workflow_dispatch`);
-  if (run.head_branch !== 'main') throw new Error(`Lifecycle artifact ${artifact.id} workflow run is not on main`);
-  if (run.head_sha !== headSha) throw new Error(`Lifecycle artifact ${artifact.id} workflow run head does not match its artifact`);
+export function lifecycleWorkflowRunBinding(run, headSha) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) return { bound: false, reason: 'run' };
+  if (run.path !== LIFECYCLE_WORKFLOW_PATH) return { bound: false, reason: 'path' };
+  if (run.event !== 'workflow_dispatch') return { bound: false, reason: 'event' };
+  if (run.head_branch !== 'main') return { bound: false, reason: 'branch' };
+  if (run.head_sha !== headSha) return { bound: false, reason: 'head-sha' };
+  return { bound: true };
 }
 
 /**
@@ -832,7 +920,7 @@ function requireDeadline(value, label) {
  *   lookupCreateUserEvents(window) -> CloudTrail lookup-events rows
  *   getUser(email)                 -> { Username, UserAttributes } or UserNotFoundException
  *   deleteUser(username)           -> deletes by immutable username
- *   runServiceCleanup(inputs, env) -> { proof_status, committed_result } or undefined
+ *   runServiceCleanup(inputs, env, { deadline }) -> { proof_status, committed_result } or undefined
  */
 export async function reconcileAccounts({
   io,
@@ -865,8 +953,10 @@ export async function reconcileAccounts({
     throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
   }
 
-  // Bind every lifecycle-named artifact to the protected run. An unbound one is ignored and
-  // counted; a run that cannot be read is a source failure (the binding cannot be decided).
+  // Bind every lifecycle-named artifact to the protected run. An unbound one — including one
+  // whose readable cached run fails the workflow half of the binding — is ignored and counted;
+  // only a run lookup the transport cannot answer is a source failure, because then the binding
+  // cannot be decided at all.
   const artifacts = [];
   let artifactsIgnored = 0;
   const runs = new Map();
@@ -876,8 +966,15 @@ export async function reconcileAccounts({
       artifactsIgnored += 1;
       continue;
     }
-    if (!runs.has(binding.parsed.runId)) runs.set(binding.parsed.runId, await io.getWorkflowRun(binding.parsed.runId));
-    validateLifecycleWorkflowRun(runs.get(binding.parsed.runId), artifact, binding.headSha);
+    if (!runs.has(binding.parsed.runId)) {
+      const run = await io.getWorkflowRun(binding.parsed.runId);
+      if (run === undefined) throw new Error(`Lifecycle artifact ${artifact.id} workflow run is unavailable`);
+      runs.set(binding.parsed.runId, run);
+    }
+    if (!lifecycleWorkflowRunBinding(runs.get(binding.parsed.runId), binding.headSha).bound) {
+      artifactsIgnored += 1;
+      continue;
+    }
     artifacts.push({ artifact, parsed: binding.parsed });
   }
 
@@ -934,7 +1031,7 @@ export async function reconcileAccounts({
       }
       continue;
     }
-    await reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, remainingMs: remaining });
+    await reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline });
   }
 
   const result = judgeResult(unresolved, now, bounds);
@@ -951,7 +1048,7 @@ export async function reconcileAccounts({
   return { record, result, identitySet };
 }
 
-async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, remainingMs }) {
+async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline }) {
   const members = [];
   for (const identity of group.identities) {
     let live;
@@ -1018,9 +1115,9 @@ async function reconcileGroup({ group, index, io, environment, recordIdentities,
     evidence = await io.runServiceCleanup(inputs, {
       ...environment,
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: cleanupEvidencePath(environment.E2E_ACCOUNT_RECONCILE_DIRECTORY ?? 'reconcile', index, group.runScope),
-    }, { remainingMs });
+    }, { deadline });
   } catch (error) {
-    // The cleanup wait is bounded by the remaining in-job deadline, so a Service wait cannot
+    // The cleanup wait is bounded by the absolute in-job deadline, so a Service wait cannot
     // outlive the job and lose the record. A deadline stop is the design's own condition.
     const deadlineStopped = error instanceof Error && error.name === 'CleanupDeadlineExceeded';
     recordServiceFailure(members, recordIdentities, unresolved, deadlineStopped ? 'deadline_exceeded' : 'service_cleanup_refused');
@@ -1149,41 +1246,21 @@ function extractLifecycleArchive(archivePath) {
 }
 
 // The production transports. They are the only places that touch GitHub, AWS or the Service
-// cleanup capability; the tests inject the same interface instead.
-export function createReconcileIo(environment = process.env) {
+// cleanup capability; the tests inject the same interface instead. `cleanupIo` is the test seam
+// for the real `runCleanupOperation` transport; production always leaves it undefined.
+export function createReconcileIo(environment = process.env, { cleanupIo } = {}) {
   const repository = repositories.e2e;
   const userPoolId = environment.USER_POOL_ID;
   if (!userPoolId) throw new Error('USER_POOL_ID is required to read the Beta pool');
   const client = new CognitoIdentityProviderClient({ region: environment.AWS_REGION ?? 'ap-east-1' });
 
   async function listArtifacts(window) {
-    const artifacts = [];
-    // The page budget covers the largest lookback at nine artifacts per day, and it fails
-    // closed when it is exhausted: a truncated list would read as a quiet scan.
-    const bound = maxArtifactsForWindow(window);
-    const pages = Math.ceil(bound / 100) + 1;
-    let complete = false;
-    for (let page = 1; page <= pages; page += 1) {
-      const response = parseStrictJson(ghApi(`repos/${repository}/actions/artifacts?per_page=100&page=${page}`, false, environment));
-      if (!response || !Array.isArray(response.artifacts)) throw new Error('Artifact list response is malformed');
-      for (const artifact of response.artifacts) {
-        // An expired artifact has no bytes left to read; it is outside the scan rather than
-        // unbound, and the recorded residual is the leftover older than both retention windows.
-        if (artifact.expired !== false || !parseManifestArtifactName(artifact.name)) continue;
-        const createdAt = Date.parse(artifact.created_at ?? '');
-        if (!Number.isFinite(createdAt) || createdAt < Date.parse(window.from) || createdAt > Date.parse(window.to)) continue;
-        artifacts.push({
-          id: requirePositiveInteger(artifact.id, 'Artifact id'),
-          name: artifact.name,
-          digest: artifact.digest,
-          workflow_run: artifact.workflow_run,
-        });
-      }
-      if (artifacts.length > bound) throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
-      if (response.artifacts.length < 100) { complete = true; break; }
-    }
-    if (!complete) throw new Error('Lifecycle artifact listing page budget is exhausted');
-    return artifacts;
+    return await collectLifecycleArtifacts({
+      window,
+      fetchPage: (page, perPage) => parseStrictJson(
+        ghApi(`repos/${repository}/actions/artifacts?per_page=${perPage}&page=${page}`, false, environment),
+      ),
+    });
   }
 
   async function getWorkflowRun(runId) {
@@ -1193,12 +1270,13 @@ export function createReconcileIo(environment = process.env) {
   }
 
   async function readArtifact(artifact) {
+    // A bound artifact is read only against its published digest, so a listing row that lost it
+    // is refused before a byte is fetched instead of skipping verification.
+    const digest = requireLifecycleArtifactDigest(artifact?.digest, `Lifecycle artifact ${artifact?.id}`);
     const archive = ghApi(`repos/${repository}/actions/artifacts/${artifact.id}/zip`, true, environment);
     if (!Buffer.isBuffer(archive) || archive.length === 0) throw new Error('Lifecycle artifact is empty or unavailable');
     if (archive.length > LIFECYCLE_ARCHIVE_MAX_BYTES) throw new Error('Lifecycle artifact exceeds its bound');
-    if (typeof artifact.digest === 'string' && /^sha256:[a-f0-9]{64}$/.test(artifact.digest) && artifact.digest !== `sha256:${byteHash(archive)}`) {
-      throw new Error('Lifecycle artifact digest does not match its bytes');
-    }
+    if (digest !== `sha256:${byteHash(archive)}`) throw new Error('Lifecycle artifact digest does not match its bytes');
     const directory = await mkdtemp(join(tmpdir(), 'anywear-reconcile-'));
     try {
       const path = join(directory, 'artifact.zip');
@@ -1243,10 +1321,13 @@ export function createReconcileIo(environment = process.env) {
       assertE2EExecution(environment);
       await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
     },
-    async runServiceCleanup(inputs, cleanupEnvironment, { remainingMs } = {}) {
-      // The remaining in-job deadline bounds the Service wait, so a 30-minute capability wait
+    async runServiceCleanup(inputs, cleanupEnvironment, { deadline } = {}) {
+      // The absolute in-job deadline bounds the Service wait, so a 30-minute capability wait
       // cannot outlive the 15-minute job and lose the record it was about to write.
-      const evidence = await runCleanupOperation(inputs, cleanupEnvironment, undefined, { remainingMs });
+      if (typeof deadline !== 'number' || !Number.isFinite(deadline) || deadline <= 0) {
+        throw new Error('Service cleanup requires the caller\'s absolute deadline');
+      }
+      const evidence = await runCleanupOperation(inputs, cleanupEnvironment, cleanupIo, { deadline });
       if (!evidence) return undefined;
       const operation = evidence.operation ?? {};
       return { proof_status: operation.proof_status, committed_result: operation.committed_result };

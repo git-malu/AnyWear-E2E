@@ -122,14 +122,14 @@ function fixture(options = {}) {
   };
   return io;
 }
-async function run(options = {}, environmentPatch = {}, before) {
+async function run(options = {}, environmentPatch = {}, before, operationOptions) {
   const directory = await mkdtemp(join(tmpdir(), 'anywear-cleanup-proof-'));
   const evidencePath = join(directory, 'operation.json');
   const effective = { ...environment, ...environmentPatch };
   const io = fixture({ currentVersionArn: effective.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, ...options });
   try {
     const extra = await before?.(directory);
-    const execution = () => runCleanupOperation(inputs, { ...effective, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: evidencePath, ...extra }, io);
+    const execution = () => runCleanupOperation(inputs, { ...effective, E2E_SERVICE_CLEANUP_EVIDENCE_PATH: evidencePath, ...extra }, io, operationOptions);
     return await options.verify(execution, io, evidencePath);
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -548,6 +548,20 @@ test('a pending execution remains bounded and retains its recoverable execution 
     assert.equal(record.operation.status, 'RUNNING');
     assert.equal(record.operation.execution_arn, arn0);
   } });
+});
+
+test('an absolute deadline stops the wait with its own error, which the caller can distinguish from a refusal', async () => {
+  let written;
+  await run({ existing: { 0: 'RUNNING' }, verify: async (execute, io, path) => {
+    await assert.rejects(execute(), error => error instanceof Error && error.name === 'CleanupDeadlineExceeded');
+    // The deadline stop is not the unbounded 900-observation wait, and the refusal evidence is
+    // still written so the caller keeps a diagnostic of what it did.
+    assert.equal(io.calls.filter(call => call.describe).length, 1);
+    written = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(written.operation.proof_status, 'refused');
+    assert.equal(written.operation.execution_arn, arn0);
+  } }, undefined, undefined, { deadline: Date.now() - 1 });
+  assert.ok(written, 'the refusal evidence is written before the deadline error propagates');
 });
 
 test('original operation evidence is validated in its own terms and request drift refuses any start', async () => {

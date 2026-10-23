@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   assertIdentitySetWithinContract,
@@ -7,9 +10,13 @@ import {
   classifyLifecycleArchive,
   cleanupGroups,
   cleanupRequest,
+  collectLifecycleArtifacts,
+  createReconcileIo,
   creationRunScope,
   judgeResult,
   lifecycleArtifactBinding,
+  lifecycleWorkflowRunBinding,
+  lookbackDaysOfWindow,
   manifestIdentities,
   maxArtifactsForWindow,
   normalizeAccountStatus,
@@ -21,11 +28,11 @@ import {
   reconcileAccounts,
   reconcileWindow,
   recordAnnotations,
-  validateLifecycleWorkflowRun,
   validateReconcileRecord,
   E2E_REPOSITORY_ID,
   LIFECYCLE_FILE_MAX_BYTES,
   RECONCILE_ARTIFACTS_PER_DAY,
+  RECONCILE_CLOUDTRAIL_MARGIN_MS,
   RECONCILE_MAX_USERS_PER_REQUEST,
   RECONCILE_MIGRATION_WINDOW_DAYS,
   RECONCILE_RECORD_TYPE,
@@ -95,12 +102,30 @@ function artifactFixture(index, { runId = 123, attempt = 1, files = ['account-bu
     entry: {
       id: index + 1,
       name: `beta-account-lifecycle-${runId}-${attempt}`,
+      expired: false,
       created_at: new Date(NOW - 2 * DAY).toISOString(),
       digest: `sha256:${'b'.repeat(64)}`,
       workflow_run: { id: runId, head_branch: headBranch, head_sha: HEAD_SHA, repository_id: E2E_REPOSITORY_ID, head_repository_id: E2E_REPOSITORY_ID },
     },
     entries,
     run: { path: '.github/workflows/beta-qualification.yml', event: 'workflow_dispatch', head_branch: 'main', head_sha: HEAD_SHA, ...run },
+  };
+}
+
+/** One repository artifact-list page, as the production listing transport returns it. */
+function artifactPages(rows, pageSize = 100) {
+  return (page) => ({ total_count: rows.length, artifacts: rows.slice((page - 1) * pageSize, page * pageSize) });
+}
+
+/** One artifact belonging to another workflow: it must never consume the lifecycle bound. */
+function unrelatedArtifact(index) {
+  return {
+    id: 10_000 + index,
+    name: `playwright-report-${index}`,
+    expired: false,
+    created_at: new Date(NOW - DAY).toISOString(),
+    digest: `sha256:${'c'.repeat(64)}`,
+    workflow_run: { id: 50_000 + index, head_branch: 'main', head_sha: HEAD_SHA, repository_id: E2E_REPOSITORY_ID, head_repository_id: E2E_REPOSITORY_ID },
   };
 }
 
@@ -133,9 +158,9 @@ function harness({ artifacts = [], events = [], users = [], cleanup = async () =
         calls.push({ delete: username });
         for (const [email, entry] of directory) if (entry.username === username) directory.delete(email);
       },
-      async runServiceCleanup(inputs, environment) {
-        calls.push({ service: inputs, environment });
-        return cleanup(inputs, environment);
+      async runServiceCleanup(inputs, environment, options) {
+        calls.push({ service: inputs, environment, options });
+        return cleanup(inputs, environment, options);
       },
     },
   };
@@ -155,9 +180,13 @@ test('the reconcile window is a closed lookback: seven days, or the one 90-day m
   assert.throws(() => reconcileWindow(NOW, 0), /positive integer/);
   for (const days of [1, 30, 89, 91]) assert.throws(() => reconcileWindow(NOW, days), /one of 7, 90 days/, String(days));
 
-  // The migration dispatch reads the 90-day artifact retention, nine artifacts per day.
+  // The migration dispatch reads the 90-day artifact retention, nine artifacts per day, but it
+  // starts just inside CloudTrail's 90-day LookupEvents range: a window starting exactly at
+  // `now - 90 days` can be rejected as outside the accepted range when the request is evaluated.
   const migration = reconcileWindow(NOW, RECONCILE_MIGRATION_WINDOW_DAYS);
-  assert.equal((Date.parse(migration.to) - Date.parse(migration.from)) / DAY, RECONCILE_MIGRATION_WINDOW_DAYS);
+  assert.equal(Date.parse(migration.to) - Date.parse(migration.from), RECONCILE_MIGRATION_WINDOW_DAYS * DAY - RECONCILE_CLOUDTRAIL_MARGIN_MS);
+  assert.ok(RECONCILE_CLOUDTRAIL_MARGIN_MS > 0 && RECONCILE_CLOUDTRAIL_MARGIN_MS < 60 * 60_000);
+  assert.equal(lookbackDaysOfWindow(migration), RECONCILE_MIGRATION_WINDOW_DAYS);
   assert.equal(maxArtifactsForWindow(window), RECONCILE_WINDOW_DAYS * RECONCILE_ARTIFACTS_PER_DAY);
   assert.equal(maxArtifactsForWindow(migration), RECONCILE_MIGRATION_WINDOW_DAYS * RECONCILE_ARTIFACTS_PER_DAY);
   assert.equal(RECONCILE_ARTIFACTS_PER_DAY, 9);
@@ -256,14 +285,16 @@ test('a lifecycle artifact is authoritative only when it is bound to the protect
   assert.deepEqual(lifecycleArtifactBinding(run({ head_sha: 'not-a-sha' })), { bound: false, reason: 'head-sha' });
   assert.deepEqual(lifecycleArtifactBinding({ ...fixture.entry, workflow_run: undefined }), { bound: false, reason: 'run' });
 
-  // The cached run lookup must show the protected workflow dispatch at the artifact's head.
-  validateLifecycleWorkflowRun(fixture.run, fixture.entry, HEAD_SHA);
-  for (const [patch, pattern] of [
-    [{ path: '.github/workflows/other.yml' }, /not produced by/],
-    [{ event: 'schedule' }, /not a workflow_dispatch/],
-    [{ head_branch: 'release' }, /not on main/],
-    [{ head_sha: 'c'.repeat(40) }, /does not match its artifact/],
-  ]) assert.throws(() => validateLifecycleWorkflowRun({ ...fixture.run, ...patch }, fixture.entry, HEAD_SHA), pattern);
+  // The cached run lookup must show the protected workflow dispatch at the artifact's head. A
+  // readable mismatch is a verdict, not an exception: the artifact is ignored and counted later.
+  assert.deepEqual(lifecycleWorkflowRunBinding(fixture.run, HEAD_SHA), { bound: true });
+  for (const [patch, reason] of [
+    [{ path: '.github/workflows/other.yml' }, 'path'],
+    [{ event: 'schedule' }, 'event'],
+    [{ head_branch: 'release' }, 'branch'],
+    [{ head_sha: 'c'.repeat(40) }, 'head-sha'],
+  ]) assert.deepEqual(lifecycleWorkflowRunBinding({ ...fixture.run, ...patch }, HEAD_SHA), { bound: false, reason }, reason);
+  assert.deepEqual(lifecycleWorkflowRunBinding(undefined, HEAD_SHA), { bound: false, reason: 'run' });
 });
 
 test('a manifest must name the artifact run and attempt, and a historical status reads as retained', () => {
@@ -719,6 +750,150 @@ test('the artifact read is bounded at nine per lookback day, at both lookback bo
     io: { ...migrationHarness.io, async listArtifacts() { return Array.from({ length: 811 }, (_, index) => diagnostics(index).entry); } },
     now: NOW, runIdentity, window: migration, environment: {},
   }), /exceed the reconcile bound/);
+});
+
+test('a repository with hundreds of unrelated artifacts still reconciles its lifecycle window', async () => {
+  // The Beta repository keeps every workflow's artifacts. 703 unrelated rows pushed the old
+  // two-page listing budget past its limit even though one artifact belonged to the run; the
+  // production listing now walks to the API's last page and applies the bound only to
+  // lifecycle-named, in-window rows.
+  const lifecycle = retainedFixture();
+  const pages = artifactPages([...Array.from({ length: 703 }, (_, index) => unrelatedArtifact(index)), lifecycle.entry]);
+  const harnessed = harness({ artifacts: [lifecycle], users: [{ email: stable(0), sub: subject(1) }] });
+  const { record } = await reconcileAccounts({
+    io: { ...harnessed.io, async listArtifacts(window) { return await collectLifecycleArtifacts({ window, fetchPage: pages }); } },
+    now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.equal(record.sources.artifacts, 1);
+  assert.equal(record.sources.artifacts_ignored, 0);
+  assert.deepEqual(record.identities.map((identity) => [identity.email, identity.outcome]), [[stable(0), 'reconciled']]);
+  assert.equal(record.result, 'passed');
+});
+
+test('the production listing counts only lifecycle artifacts against the nine-per-day bound', async () => {
+  const window = reconcileWindow(NOW);
+  const bound = maxArtifactsForWindow(window);
+  assert.equal(bound, 63);
+  const lifecycle = (count) => Array.from({ length: count }, (_, index) => artifactFixture(index, { files: ['service-cleanup-run.json'] }).entry);
+  const unrelated = Array.from({ length: 700 }, (_, index) => unrelatedArtifact(index));
+  // Seven hundred unrelated artifacts do not consume one unit of the lifecycle bound.
+  const accepted = await collectLifecycleArtifacts({ window, fetchPage: artifactPages([...unrelated, ...lifecycle(bound)]) });
+  assert.equal(accepted.length, bound);
+  // The sixty-fourth lifecycle artifact is the bound the listing refuses, not the page count.
+  await assert.rejects(
+    collectLifecycleArtifacts({ window, fetchPage: artifactPages([...unrelated, ...lifecycle(bound + 1)]) }),
+    /exceed the reconcile bound/,
+  );
+});
+
+test('a truncated or unreadable artifact listing fails closed', async () => {
+  const window = reconcileWindow(NOW);
+  const rows = Array.from({ length: 704 }, (_, index) => unrelatedArtifact(index));
+  const pages = artifactPages(rows);
+  // An empty page before the API's last page is a truncated scan, not an empty window.
+  await assert.rejects(collectLifecycleArtifacts({
+    window,
+    fetchPage: (page, size) => (page === 2 ? { total_count: rows.length, artifacts: [] } : pages(page, size)),
+  }), /truncated/);
+  // A short page before the API's last page is truncated too.
+  await assert.rejects(collectLifecycleArtifacts({
+    window,
+    fetchPage: (page, size) => (page === 3 ? { total_count: rows.length, artifacts: rows.slice(0, 1) } : pages(page, size)),
+  }), /truncated/);
+  // A transport failure or a malformed page aborts the whole listing.
+  await assert.rejects(collectLifecycleArtifacts({ window, fetchPage: () => { throw new Error('gh api unavailable'); } }), /gh api unavailable/);
+  await assert.rejects(collectLifecycleArtifacts({ window, fetchPage: () => ({ artifacts: [] }) }), /malformed/);
+  // A listing that never reaches its last page is refused at the walk bound, never truncated.
+  await assert.rejects(collectLifecycleArtifacts({
+    window,
+    fetchPage: (page, size) => ({ total_count: 100_000, artifacts: Array.from({ length: size }, (_, index) => unrelatedArtifact(index)) }),
+  }), /page bound/);
+});
+
+test('a lifecycle artifact with a missing or malformed digest is refused before its bytes are read', async () => {
+  const window = reconcileWindow(NOW);
+  for (const digest of [undefined, null, '', 'sha256:abc', `md5:${'a'.repeat(32)}`, `sha256:${'A'.repeat(64)}`]) {
+    const entry = { ...artifactFixture(0).entry, digest };
+    await assert.rejects(collectLifecycleArtifacts({ window, fetchPage: artifactPages([entry]) }), /well-formed sha256 digest/, String(digest));
+  }
+  // The production reader refuses a row that bypassed the listing as well, before any fetch.
+  const io = createReconcileIo({ USER_POOL_ID: 'ap-east-1_example' });
+  try {
+    await assert.rejects(io.readArtifact({ id: 1, digest: undefined }), /well-formed sha256 digest/);
+  } finally {
+    io.destroy();
+  }
+});
+
+test('a readable cached run that fails the binding is ignored and counted, never a source failure', async () => {
+  for (const [patch, reason] of [
+    [{ path: '.github/workflows/other.yml' }, 'path'],
+    [{ event: 'schedule' }, 'event'],
+    [{ head_branch: 'release' }, 'branch'],
+    [{ head_sha: 'c'.repeat(40) }, 'head-sha'],
+  ]) {
+    const artifact = retainedFixture();
+    const harnessed = harness({ artifacts: [artifact], users: [{ email: stable(0), sub: subject(1) }] });
+    const io = { ...harnessed.io, async getWorkflowRun() { return { ...artifact.run, ...patch }; } };
+    const { record } = await reconcileAccounts({ io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {} });
+    assert.equal(record.sources.artifacts, 0, reason);
+    assert.equal(record.sources.artifacts_ignored, 1, reason);
+    assert.deepEqual(record.identities, [], reason);
+    assert.equal(record.result, 'passed', reason);
+    assert.equal(harnessed.calls.some((call) => call.get || call.service || call.delete), false, `${reason}: nothing is read or mutated`);
+  }
+  // A lookup the transport cannot answer is a source failure: the binding cannot be decided.
+  const bound = harness({ artifacts: [retainedFixture()], users: [{ email: stable(0), sub: subject(1) }] });
+  await assert.rejects(reconcileAccounts({
+    io: { ...bound.io, async getWorkflowRun() { return undefined; } },
+    now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  }), /workflow run is unavailable/);
+  assert.equal(bound.calls.some((call) => call.service || call.delete), false);
+});
+
+test('the reconcile threads the absolute in-job deadline into every cleanup wait', async () => {
+  const harnessed = harness({ artifacts: [retainedFixture()], users: [{ email: stable(0), sub: subject(1) }] });
+  const startedAt = Date.now();
+  await reconcileAccounts({ io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {}, deadlineMs: 12 * 60_000 });
+  const call = harnessed.calls.find((entry) => entry.service);
+  // The cleanup wait expects `{ deadline }`; a leftover `remainingMs` would leave it unbounded.
+  assert.equal(call.options.remainingMs, undefined);
+  assert.equal(typeof call.options.deadline, 'number');
+  assert.ok(call.options.deadline >= startedAt + 12 * 60_000 - 1_000);
+  assert.ok(call.options.deadline <= Date.now() + 12 * 60_000 + 1_000);
+});
+
+test('the production cleanup wrapper passes the absolute deadline to the real cleanup wait', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'anywear-reconcile-deadline-'));
+  const cleanupIo = {
+    async describe() { throw Object.assign(new Error('Execution does not exist'), { name: 'ExecutionDoesNotExist' }); },
+    async start() { return {}; },
+    async aws() { return {}; },
+    async sleep() {},
+  };
+  const io = createReconcileIo({ USER_POOL_ID: 'ap-east-1_example' }, { cleanupIo });
+  const cleanupEnvironment = {
+    E2E_CLEANUP_SERVICE_SHA: 'a'.repeat(40),
+    E2E_CLEANUP_SERVICE_IMAGE_DIGEST: `sha256:${'b'.repeat(64)}`,
+    BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:7',
+    E2E_SERVICE_CLEANUP_EVIDENCE_PATH: join(directory, 'service-cleanup-operation.json'),
+  };
+  const inputs = { action: 'cleanup', emails: '[]', cleanup_json: JSON.stringify({
+    runScope: '123-1-0123456789abcdef', users: [{ sub: subject(1), email: stable(0) }],
+  }) };
+  try {
+    // A call site that forgot the deadline would let the wait outlive the job; it fails closed.
+    await assert.rejects(io.runServiceCleanup(inputs, cleanupEnvironment), /absolute deadline/);
+    // The deadline the reconcile computes is absolute, and the real cleanup wait reads it: if
+    // either side drifted back to `remainingMs`, the wait would poll instead of stopping.
+    await assert.rejects(
+      io.runServiceCleanup(inputs, cleanupEnvironment, { deadline: Date.now() - 1 }),
+      (error) => error instanceof Error && error.name === 'CleanupDeadlineExceeded',
+    );
+  } finally {
+    io.destroy();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('an identity already absent with no captured subject is already absent, without a cleanup request', async () => {
