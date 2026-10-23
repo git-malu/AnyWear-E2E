@@ -1,3 +1,11 @@
+// #207: frozen historical account-recovery diagnostic. This is the single labelled historical
+// exception to #207's retirement of the operation/deployment record chain: it replays only the
+// pinned 2026-01 Infra run artifacts named in `DIAGNOSTIC_EXPECTED` (Infra run 38899879395,
+// artifacts `infra-deployment-38899879395-1` / `infra-operation-38899879395-1`, record schemas
+// `anywear_infra_family_observation` v2 / `anywear_infra_operation` v3 /
+// `anywear_infra_selection` v2) and reads no new run. The record shapes below are preserved
+// evidence of the frozen account-recovery capability, not a live contract: no other module in
+// this repository may read or validate a producer operation/deployment record.
 import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';

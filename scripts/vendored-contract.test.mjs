@@ -57,7 +57,10 @@ test('the vendored 0.3.0 identity is Runtime and Egress stays operation-owned', 
   assert.equal(stage.SERVICE_RUNTIME_STACK.workflow_path, '.github/workflows/service-artifacts.yml');
   assert.equal(stage.runtimeStackName('beta'), 'AnyWearRuntimeStack-beta');
   assert.equal(stage.runtimeStageFromStack('AnyWearRuntimeStack-beta'), 'beta');
-  assert.equal(typeof stage.validateServiceStacks, 'function');
+  // #207 retired the operation/deployment record chain: E2E no longer consumes the
+  // record validators, and the reader census forbids naming them outside the frozen
+  // diagnostic test. The vendored bytes and the Runtime identity above are unchanged,
+  // so this test no longer asserts the retired validator surface.
   assert.equal(stage.SERVICE_WORKLOAD_STACK, undefined);
   assert.equal(stage.workloadStageFromStack, undefined);
   const stacks = await import('./vendor/operation-stacks.mjs');
