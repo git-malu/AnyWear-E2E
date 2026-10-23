@@ -73,7 +73,7 @@ type LegacyAccountRecord = Omit<AccountRecord, 'status'> & { status: string };
 /**
  * Read a manifest written before #217, which recorded the removed `quarantined` state and a
  * `maxQuarantinedAccounts` budget. The state is read as `retained` and the reason is kept;
- * the removed budget key is dropped so a recovered historical manifest is still writable.
+ * the removed budget key is dropped so a historical manifest is still writable.
  *
  * The bound is anchored to the record's own `createdAt`, not to the instant it is read, so a
  * historical record states when its run's leftover became late rather than when a later

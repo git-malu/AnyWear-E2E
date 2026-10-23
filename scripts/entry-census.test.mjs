@@ -57,6 +57,10 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   assert.match(operation, /required: true/);
   assert.match(operation, /type: choice/);
   assert.match(operation, /options: \[full, smoke, reconcile\]/);
+  // #217: the manual `recover` operation is removed. The menu is the allow-list a dispatch
+  // reads, so the removed operation must be absent from it and no `recover` job may exist.
+  assert.doesNotMatch(operation, /recover/, 'the operation menu must not offer the removed recover operation');
+  assert.equal(job('recover'), '' , 'the qualify entry must not declare a recover job');
   // The retired measurement operation carried the only sizing stage input; nothing in the
   // entry may declare it again.
   assert.doesNotMatch(qualify, /sizing_stage/, 'the retired measurement operation carries no dispatch input');

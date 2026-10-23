@@ -294,6 +294,8 @@ test('execution guard binds protected dispatch/source and the captured dedicated
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/retired-recovery.yml@refs/heads/main' },
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/runtime-drill.yml@refs/heads/main' },
     { E2E_OPERATION: undefined }, { E2E_OPERATION: '' }, { E2E_OPERATION: 'measure' },
+    // #217: the manual recover operation is removed, so the guard refuses it explicitly.
+    { E2E_OPERATION: 'recover' },
     { E2E_OPERATION: 'instrumentation' },
     { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '9007199254740992' }, { GITHUB_RUN_ATTEMPT: '0' },
     { AWS_ACCOUNT_ID: '1' }, { AWS_REGION: 'us-east-1' }, { E2E_CLEANUP_SERVICE_SHA: 'main' },

@@ -611,24 +611,24 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * Start or resume the deterministic cleanup operation for one captured run
  * scope.
  *
- * The rule is the same for an ordinary qualification cleanup and a protected
- * `recover` dispatch: resolve generation 0, resume it while it runs, verify it
- * when it succeeded, and start generation 1 only after generation 0 is terminal
- * non-success and exactly one bounded predecessor check (its describe plus one
- * cleanup-family inventory) shows the cleanup families stopped. If generation 1
- * already exists it is resumed or verified; if it is already terminal
- * non-success the dispatch refuses and starts nothing. At most two deterministic
- * names exist per captured scope.
+ * The caller is the run's own teardown or the `reconcile` operation, and both
+ * take the same normal path: resolve generation 0, resume it while it runs,
+ * verify it when it succeeded, and start generation 1 only after generation 0 is
+ * terminal non-success and exactly one bounded predecessor check (its describe
+ * plus one cleanup-family inventory) shows the cleanup families stopped. If
+ * generation 1 already exists it is resumed or verified; if it is already
+ * terminal non-success the dispatch refuses and starts nothing. At most two
+ * deterministic names exist per captured scope.
  *
- * A recovery dispatch supplies the original owner evidence. That evidence is
- * validated in its own terms, so an execution captured before a reviewed version
- * or Service image/source advance is still observed under its own envelope and
- * version. A generation 1 newly started by this dispatch always uses the current
- * normal envelope under the current version; a retry already recorded in the
- * owner evidence is observed and, when it succeeded, verified under that
- * evidence's own version and envelope. If the owner evidence already used the
- * retry name, that name is the last allowed name and a terminal non-success
- * refuses.
+ * A historical owner evidence file (`E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH`, which
+ * no live dispatch sets since the removal of `recover`) is still observed in its
+ * own terms, so an execution captured before a reviewed version or Service
+ * image/source advance is read under its own envelope and version. A generation 1
+ * newly started by this dispatch always uses the current normal envelope under
+ * the current version; a retry already recorded in the owner evidence is observed
+ * and, when it succeeded, verified under that evidence's own version and
+ * envelope. If the owner evidence already used the retry name, that name is the
+ * last allowed name and a terminal non-success refuses.
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
   io?: CleanupOperationIo, options: CleanupOperationOptions = {}): Promise<CleanupOperationEvidence | undefined> {
@@ -718,11 +718,11 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       refusalCategory = 'retry_not_authorized';
       throw new Error('Original captured retry execution is terminal non-success; no third execution is started');
     }
-    // Generation 0. A normal dispatch resolves the current operation; a recovery
-    // dispatch may instead find the execution the original evidence recorded,
-    // under the owner's own envelope and version, or a generation 0 started by an
-    // earlier recovery dispatch under the current pair. An absent generation 0 is
-    // started under the current version and normal envelope.
+    // Generation 0. A live dispatch resolves the current operation; only a
+    // historical owner evidence file can instead name the execution it recorded,
+    // under the owner's own envelope and version, or a generation 0 started under
+    // the current pair. An absent generation 0 is started under the current
+    // version and normal envelope.
     refusalPhase = 'execution_observation';
     refusalCategory = 'execution_observation_unavailable';
     const originalBase = original ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 0) : undefined;

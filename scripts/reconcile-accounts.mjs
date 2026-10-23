@@ -16,7 +16,7 @@ import { byteHash, parseStrictJson, repositories } from './evidence-contract.mjs
 import { runCleanupOperation } from '../tests/support/service-cleanup-operation.ts';
 import { isCapturedBetaWorkerEmail, STABLE_WORKER_EMAIL_PATTERN } from '../tests/support/beta-address.ts';
 
-// #217: the reconciler that replaces the manual `recover` exit.
+// #217: the reconciler that replaced the manual `recover` exit.
 //
 // Attribution follows the creator, not the address. A new attempt leases one of the eight
 // stable pool rows, so the address alone never names the run that created the identity now

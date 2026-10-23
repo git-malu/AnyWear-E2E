@@ -11,9 +11,10 @@
  *
  * A pre-#129 account manifest still names run-scoped addresses
  * (`e2e-beta-<runScope>-<slot>-<8 hex>@anywear.local`). The Service's cleanup
- * parser accepts both families, so captured-identity deletion and account
- * recovery must keep accepting them: a historical identity still has to be
- * deletable. No attempt address is built from the scoped family any more.
+ * parser accepts both families, so captured-identity deletion must keep
+ * accepting them: the reconcile operation still has to delete a historical
+ * identity a manifest names. No attempt address is built from the scoped family
+ * any more, and the address never carries the creating run (#217).
  */
 
 import { WORKER_ADDRESS_PATTERN } from '../../scripts/worker-slots.mjs';
