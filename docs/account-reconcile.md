@@ -36,8 +36,12 @@ one. The live `sub` is read back with `AdminGetUser` instead.
 
 Both sources are read over the same window, and the window is recorded in the result: seven
 days for every ordinary invocation, or the 90-day artifact retention for the one recorded
-migration dispatch. The artifact read is bounded to nine lifecycle artifacts per lookback day,
-and the listing fails closed rather than truncating when its page budget is exhausted.
+migration dispatch. The migration window starts marginally inside CloudTrail's 90-day
+`LookupEvents` history, because a range starting exactly at `now - 90 days` can already be
+outside the accepted range when it is read. The artifact read is bounded to nine lifecycle
+artifacts per lookback day; the repository's other workflows' artifacts are paged through but
+never consume that bound, and a listing that cannot be read to its last page fails closed
+rather than truncating.
 
 - **Lifecycle artifacts** — the `beta-account-lifecycle-<run>-<attempt>` and
   `beta-smoke-account-lifecycle-<run>-<attempt>` artifacts of the lookback. An artifact is
@@ -47,8 +51,11 @@ and the listing fails closed rather than truncating when its page budget is exha
   `path: .github/workflows/beta-qualification.yml`, `event: workflow_dispatch`,
   `head_branch: main` and a consistent `head_sha`. A run's conclusion is deliberately not
   required: a failed or cancelled run's manifest is exactly the leftover to read. An unbound
-  artifact is ignored and counted in `sources.artifacts_ignored`, never authoritative; a bound
-  artifact whose bytes fail the digest or archive checks is a source failure.
+  artifact — including a lifecycle-named artifact whose readable cached run fails the workflow
+  binding — is ignored and counted in `sources.artifacts_ignored`, never authoritative. Only a
+  lookup that cannot be read at all is a source failure. A bound artifact whose bytes fail the
+  digest or archive checks is a source failure too, and so is one whose listing has no
+  well-formed `sha256:<64 hex>` digest.
 - **The upload set is closed** — `account-budget.json`, `account-budget-oldest-client.json`,
   `service-cleanup-operation.json` and `service-cleanup-run.json`. The smoke artifact carries
   the first, third and fourth. Every `account-budget*.json` present is read as a manifest, so
@@ -58,9 +65,10 @@ and the listing fails closed rather than truncating when its page budget is exha
 - **CloudTrail `AdminCreateUser`** — the Beta pool creations in the window, attributed through
   the caller and the credential session. A creation for an address with no manifest entry is an
   orphan whose run comes from the session and whose `sub` is read back; a creation recorded
-  before run-scoped sessions has no run and is recorded with the qualification role and the
-  event. A creation by any other principal is reported as `unattributable_caller` and **never
-  deleted**.
+  before run-scoped sessions has no run, and its record names the creation event. The caller is
+  still checked against the qualification role, so the identity is attributable even though the
+  record's `origin` carries no role field. A creation by any other principal is reported as
+  `unattributable_caller` and **never deleted**.
 
 A manifest entry is authoritative for its address, captured subject and run. Every
 non-`deleted` worker record is a leftover: `reserved`, `provisioning`, `in_use` and
@@ -156,11 +164,12 @@ and the durable audit trail — the artifacts it was built from expire, the reco
 
 The artifact scan is valid when it returns nothing: a seven-day window with no lifecycle
 artifact is exactly the crashed-run case, and the identity set is then built from CloudTrail
-alone with `sources.artifacts: 0`. Only an unreadable artifact list, unreadable CloudTrail, an
-unreadable bound artifact, or an unreadable workflow-run lookup fails closed before any
-deletion — the empty scan is a recorded no-op, not a refusal. A source failure writes no record
-and leaves the environment untouched, because a record is a statement about a scan that read a
-stated window, and a record whose sources are zeros would read as a quiet scan.
+alone with `sources.artifacts: 0`. Only an unreadable or truncated artifact list, unreadable
+CloudTrail, an unreadable bound artifact (including a missing or malformed digest), or an
+unreadable workflow-run lookup fails closed before any deletion — the empty scan is a recorded
+no-op, not a refusal. A source failure writes no record and leaves the environment untouched,
+because a record is a statement about a scan that read a stated window, and a record whose
+sources are zeros would read as a quiet scan.
 
 `result` is `passed` when every leftover was resolved or is still inside its `reconcileBy`
 bound, and `failed` when a leftover is past its bound. A reported condition never fails the
@@ -172,7 +181,7 @@ so the alert carries the attribution:
 ::error title=Unresolved E2E leftover::e2e-beta-worker-3-chromium@anywear.local (service_cleanup_refused) from run 123 attempt 1
 ```
 
-The job is bounded to 15 minutes and stops starting work at 720 seconds; the remaining in-job
+The job is bounded to 15 minutes and stops starting work at 720 seconds; the absolute in-job
 deadline is passed into the cleanup wait, so a Service wait cannot outlive the job and the
 record is still written. An identity a group could not finish is recorded `deadline_exceeded`
 and retried by the next reconcile.
@@ -183,10 +192,10 @@ One reconciliation with `reconcile_lookback_days=90` is permitted before the rem
 every artifact inside the 90-day retention, so a `quarantined` manifest from any run still
 inside that retention is reconciled by the same path, and a pre-change creation inside
 CloudTrail's 90-day history is cleared through its creation event even though its credential
-session does not name a run. Its job is bounded to 30 minutes, it states the window it read,
-and its record names every leftover it could not resolve. A leftover older than both the
-artifact retention and CloudTrail's event history is the one recorded residual, bounded by the
-eight pool rows.
+session does not name a run; the record then names the creation event and no run. Its job is
+bounded to 30 minutes, it states the window it read, and its record names every leftover it
+could not resolve. A leftover older than both the artifact retention and CloudTrail's event
+history is the one recorded residual, bounded by the eight pool rows.
 
 Dispatch it from `main` with:
 
