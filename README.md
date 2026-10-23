@@ -334,12 +334,14 @@ it.
 
 v4 replaces v3's `manifest_asset_id`/`manifest_sha256` with the release's own identity, so no
 record member names a manifest asset and the release gate never reads one. There is no
-`compatibility` and no `deployment` member either: the record consumes no producer
-deployment record, and the observation is this repository's own authenticated platform read
-(`scripts/infra-observation.mjs`) through the vendored contract. The deployment-record
-lineage — which Infra or Service commit deployed the platform — stays with the deployment
-record ([#181](https://github.com/git-malu/AnyWear/issues/181)); the qualification record
-proves the deployed *content*.
+`compatibility` and no `deployment` member either: the record consumes no producer record,
+and the observation is this repository's own authenticated platform read
+(`scripts/infra-observation.mjs`) through the vendored contract. The deployment lineage —
+which Infra or Service commit deployed the platform — is a platform fact: the GitHub
+Environment deployment `beta`, the CloudFormation stack events, the Service release
+tag→commit and the ECR image digest. There is no deployment record
+([#207](https://github.com/git-malu/AnyWear/issues/207)); the qualification record proves
+the deployed *content*.
 
 Before and after the suite, `full` collects the same observation and refuses any difference in
 Client, Service or platform. The record's two observations must be identical, and the
