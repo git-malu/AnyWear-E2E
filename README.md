@@ -398,7 +398,7 @@ four expected assets carry published digests (`scripts/service-release.mjs`), wi
 executing the retired Service parser, reading a manifest or downloading a release asset.
 
 Verify that Infra/Client/legacy writers have ceased before allocating an E2E
-qualification or recovery window. Repository-local concurrency
+qualification window. Repository-local concurrency
 does not serialize those other repositories. Keep `ENABLE_BETA_MUTATION` unset or
 `false` during preparation. For an authorized protected Beta dispatch, configure:
 

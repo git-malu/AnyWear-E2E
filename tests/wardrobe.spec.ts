@@ -26,7 +26,8 @@ interface WardrobeItem extends WardrobeStatus {
 
 test.describe('Wardrobe Management @regression @full-stack', () => {
   // This scenario invokes the external VLM. A failed attempt must not be
-  // repeated automatically; protected recovery owns non-terminal resources.
+  // repeated automatically; a leftover is resolved by the reconcile operation
+  // inside its 24-hour bound.
   test.describe.configure({ retries: 0 });
 
   let createdItemId: string | undefined;

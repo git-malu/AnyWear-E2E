@@ -1082,6 +1082,7 @@ jobs:
             test-results/**/worker-profile-binding.json
           retention-days: 7
           if-no-files-found: ignore
+
   # The credential-free half of the qualification record: it downloads the `full` job's
   # handoff, re-runs the verifier in a job with no environment and no id-token, and only
   # then attaches the artifact a release consumer reads. It holds no AWS credential and is

@@ -56,8 +56,8 @@ interface Generation {
 
 test.describe('Virtual try-on @regression @full-stack', () => {
   // This scenario spends real provider work: one upload, one auto-tagging call and one VTO
-  // generation per attempt. A failed attempt must not be repeated automatically; protected
-  // recovery owns non-terminal resources.
+  // generation per attempt. A failed attempt must not be repeated automatically; a leftover is
+  // resolved by the reconcile operation inside its 24-hour bound.
   test.describe.configure({ retries: 0 });
 
   let teardown: DirectTeardown | undefined;
