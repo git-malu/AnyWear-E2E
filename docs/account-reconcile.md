@@ -26,9 +26,14 @@ result.
   written.
 - **CloudTrail `AdminCreateUser`** — the Beta pool creations in the window. A creation inside a
   manifest record's own lifetime belongs to that record. A creation outside every window has
-  no manifest entry: its address grammar proves it synthetic, its `sub` is read back with
-  `AdminGetUser`, and it becomes a reconcile identity. A creation whose caller is not the E2E
-  qualification role is reported as `unattributable_caller` and **never deleted**.
+  no manifest entry: only an address in the scoped historical grammar
+  (`e2e-beta-<runScope>-<slot>-<8hex>@anywear.local`) proves it synthetic then — it carries its
+  own run scope, so its `sub` is read back with `AdminGetUser` and it becomes a reconcile
+  identity. A **stable allowlist row** (`e2e-beta-worker-<n>-chromium@anywear.local`) is an
+  address a human tester can hold too, so it is reconciled only when a manifest captures its
+  subject, and is otherwise reported as `unprovable_ownership` and never deleted. A creation
+  whose caller is not the E2E qualification role is reported as `unattributable_caller` and
+  **never deleted**.
 
 ## What the operation does per identity
 

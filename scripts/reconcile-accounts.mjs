@@ -1,5 +1,4 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -291,29 +290,37 @@ export function orphanCreations(created, windows) {
 }
 
 /**
- * The derived run scope for a creation no manifest names.
+ * The run scope of a creation no manifest names.
  *
- * The Service cleanup request requires a run scope. A scoped historical address carries its
- * own; a stable pool row does not, so the orphan is given a deterministic scope derived from
- * its CloudTrail event id. It is stable across retries — the Service execution name derives
- * from the request — and it never has to match an address, because a stable pool row is
- * accepted under every scope.
+ * Only an address in the scoped historical grammar can be reconciled without a manifest: the
+ * grammar embeds the run scope, so the exact request is still provable. A stable pool row does
+ * not carry one, which is one of the two reasons it needs the captured subject instead (§4 of
+ * ADR-0031); this function therefore refuses it rather than inventing a scope.
  */
-export function orphanRunScope(email, eventId, runIdentity) {
+export function orphanRunScope(email) {
   const scoped = WORKER_SCOPE.exec(email);
   if (scoped) return scoped[1];
-  if (!STABLE_WORKER_EMAIL_PATTERN.test(email)) throw new Error('Orphan address is outside the captured Beta worker families');
-  requirePositiveInteger(runIdentity?.runId, 'Reconcile run id');
-  requirePositiveInteger(runIdentity?.attempt, 'Reconcile run attempt');
-  return `${runIdentity.runId}-${runIdentity.attempt}-${createHash('sha256').update(String(eventId), 'utf8').digest('hex').slice(0, 16)}`;
+  throw new Error('An address outside the scoped grammar cannot be attributed a run scope');
 }
 
 /** One reconcile identity set: manifests authoritative, CloudTrail additions reported. */
-export function buildIdentitySet({ manifests, events, window, userPoolId, runIdentity }) {
+export function buildIdentitySet({ manifests, events, window, userPoolId }) {
   const unresolved = [];
   const identities = [];
   for (const record of manifestIdentities(manifests)) {
     if (record.mode !== 'worker' || !isCapturedBetaWorkerEmail(record.email)) {
+      unresolved.push({
+        email: record.email,
+        reason: 'unprovable_ownership',
+        origin: record.origin,
+        boundAt: record.boundAt,
+      });
+      continue;
+    }
+    // A stable allowlist row is an address a human tester can hold too, so its grammar proves
+    // nothing: the captured subject is the only ownership proof, and without one the record is
+    // reported instead of deleted (ADR-0031 §4). A scoped address carries its own proof.
+    if (STABLE_WORKER_EMAIL_PATTERN.test(record.email) && !record.subject) {
       unresolved.push({
         email: record.email,
         reason: 'unprovable_ownership',
@@ -343,6 +350,18 @@ export function buildIdentitySet({ manifests, events, window, userPoolId, runIde
       existing.boundAt = Math.max(existing.boundAt, Date.parse(reconcileBound(creation.eventTime)));
       continue;
     }
+    // A creation with no manifest entry is only attributable through the scoped grammar: a
+    // stable pool row has no captured subject here and no scope in its address, so it is
+    // reported rather than deleted.
+    if (STABLE_WORKER_EMAIL_PATTERN.test(creation.email)) {
+      unresolved.push({
+        email: creation.email,
+        reason: 'unprovable_ownership',
+        origin: { kind: 'cloudtrail', event_id: creation.eventId, event_time: creation.eventTime },
+        boundAt: Date.parse(reconcileBound(creation.eventTime)),
+      });
+      continue;
+    }
     identities.push({
       email: creation.email,
       mode: 'worker',
@@ -351,7 +370,7 @@ export function buildIdentitySet({ manifests, events, window, userPoolId, runIde
       retainedReason: 'manifest artifact missing for this creation',
       reconcileBy: undefined,
       origin: { kind: 'cloudtrail', event_id: creation.eventId, event_time: creation.eventTime },
-      runScope: orphanRunScope(creation.email, creation.eventId, runIdentity),
+      runScope: orphanRunScope(creation.email),
       boundAt: Date.parse(reconcileBound(creation.eventTime)),
     });
   }
@@ -559,7 +578,7 @@ export async function reconcileAccounts({
     manifests.push(readManifest(bytes, parseManifestArtifactName(artifact.name)));
   }
   const events = await io.lookupCreateUserEvents(window);
-  const identitySet = buildIdentitySet({ manifests, events, window, userPoolId: environment.USER_POOL_ID, runIdentity });
+  const identitySet = buildIdentitySet({ manifests, events, window, userPoolId: environment.USER_POOL_ID });
   log(`Reconcile ${reconcileId}: ${manifests.length} manifest(s), ${events.length} CloudTrail event(s), `
     + `${identitySet.identities.length} attributable identit(ies), ${identitySet.unresolved.length} unattributable creation(s).`);
 

@@ -238,38 +238,70 @@ test('a creation inside a manifest lifetime is attributed; one outside is an orp
   assert.equal(orphans[0].email, stable(1));
 });
 
-test('an orphan without a manifest gets a deterministic run scope, and a foreign address is refused', () => {
-  assert.equal(orphanRunScope(scoped(2, '777-1-0123456789abcdef'), 'event-x', runIdentity), '777-1-0123456789abcdef');
-  const derived = orphanRunScope(stable(3), 'event-x', runIdentity);
-  assert.match(derived, /^900-1-[a-f0-9]{16}$/);
-  assert.equal(derived, orphanRunScope(stable(3), 'event-x', runIdentity), 'stable across a retry');
-  assert.notEqual(derived, orphanRunScope(stable(3), 'event-y', runIdentity), 'distinct per creation');
-  assert.throws(() => orphanRunScope('someone@example.com', 'event-x', runIdentity), /outside the captured Beta worker families/);
+test('an orphan without a manifest is attributable only through the scoped grammar', () => {
+  assert.equal(orphanRunScope(scoped(2, '777-1-0123456789abcdef')), '777-1-0123456789abcdef');
+  // A stable pool row carries no scope and no captured subject, so it has no ownership proof.
+  assert.throws(() => orphanRunScope(stable(3)), /outside the scoped grammar/);
+  assert.throws(() => orphanRunScope('someone@example.com'), /outside the scoped grammar/);
 });
 
-test('the identity set is manifests first, then CloudTrail orphans, with unattributable creations reported', () => {
-  const fixture = manifestFixture(123, 1, [manifestRecord({ email: stable(0) })]);
+test('the identity set is manifests first, then scoped CloudTrail orphans, with unattributable creations reported', () => {
+  const runScope = '123-1-0123456789abcdef';
+  const fixture = manifestFixture(123, 1, [manifestRecord({ email: stable(0), subject: subject(1) })]);
   const { identities, unresolved } = buildIdentitySet({
     manifests: [fixture],
     events: [
-      creation(stable(1), { eventId: 'orphan', eventTime: new Date(NOW - DAY).toISOString() }),
+      creation(scoped(1, runScope), { eventId: 'orphan', eventTime: new Date(NOW - DAY).toISOString() }),
       creation(stable(2), { eventId: 'foreign', caller: 'arn:aws:sts::650880818323:assumed-role/other/session' }),
     ],
     window: reconcileWindow(NOW),
-    runIdentity,
   });
-  assert.deepEqual(identities.map((identity) => identity.email).sort(), [stable(0), stable(1)]);
+  assert.deepEqual(identities.map((identity) => identity.email).sort(), [stable(0), scoped(1, runScope)].sort());
   assert.equal(identities.find((identity) => identity.email === stable(0)).origin.kind, 'manifest');
-  assert.equal(identities.find((identity) => identity.email === stable(1)).origin.kind, 'cloudtrail');
+  assert.equal(identities.find((identity) => identity.email === scoped(1, runScope)).origin.kind, 'cloudtrail');
   assert.deepEqual(unresolved.map((entry) => entry.reason), ['unattributable_caller']);
   assert.equal(unresolved[0].email, stable(2));
+});
+
+test('a stable allowlist row is reconciled only when the manifest captures its subject', () => {
+  // Without a captured subject the eight shared allowlist rows prove nothing: a human tester
+  // holds the same address, so the record is reported and never deleted (ADR-0031 §4).
+  const withoutSubject = manifestFixture(123, 1, [manifestRecord({ email: stable(0), subject: undefined })]);
+  const reported = buildIdentitySet({ manifests: [withoutSubject], events: [], window: reconcileWindow(NOW) });
+  assert.deepEqual(reported.identities, []);
+  assert.deepEqual(reported.unresolved.map((entry) => [entry.email, entry.reason]), [[stable(0), 'unprovable_ownership']]);
+
+  const withSubject = manifestFixture(123, 1, [manifestRecord({ email: stable(0), subject: subject(1) })]);
+  const reconciled = buildIdentitySet({ manifests: [withSubject], events: [], window: reconcileWindow(NOW) });
+  assert.deepEqual(reconciled.identities.map((identity) => identity.email), [stable(0)]);
+  assert.deepEqual(reconciled.unresolved, []);
+});
+
+test('a stable pool creation with no manifest entry is reported, never reconciled', () => {
+  const empty = manifestFixture(123, 1, [manifestRecord({ email: stable(0), status: 'deleted' })]);
+  const { identities, unresolved } = buildIdentitySet({
+    manifests: [empty],
+    events: [creation(stable(1), { eventId: 'stable-orphan', eventTime: new Date(NOW - DAY).toISOString() })],
+    window: reconcileWindow(NOW),
+  });
+  assert.deepEqual(identities, []);
+  assert.deepEqual(unresolved.map((entry) => [entry.email, entry.reason]), [[stable(1), 'unprovable_ownership']]);
+  assert.equal(unresolved[0].origin.kind, 'cloudtrail');
+});
+
+test('a scoped manifest record without a captured subject stays reconcilable', () => {
+  const runScope = '123-1-0123456789abcdef';
+  const fixture = manifestFixture(123, 1, [manifestRecord({ email: scoped(0, runScope), subject: undefined })]);
+  const { identities, unresolved } = buildIdentitySet({ manifests: [fixture], events: [], window: reconcileWindow(NOW) });
+  assert.deepEqual(identities.map((identity) => identity.email), [scoped(0, runScope)]);
+  assert.deepEqual(unresolved, []);
 });
 
 test('a non-worker or foreign manifest record is reported as unprovable ownership', () => {
   const fixture = manifestFixture(123, 1, [
     manifestRecord({ email: 'e2e-functional-account@anywear.local', mode: 'ephemeral' }),
   ]);
-  const { identities, unresolved } = buildIdentitySet({ manifests: [fixture], events: [], window: reconcileWindow(NOW), runIdentity });
+  const { identities, unresolved } = buildIdentitySet({ manifests: [fixture], events: [], window: reconcileWindow(NOW) });
   assert.deepEqual(identities, []);
   assert.deepEqual(unresolved.map((entry) => entry.reason), ['unprovable_ownership']);
 });
@@ -351,12 +383,14 @@ test('a retained manifest identity is reconciled through the exact cleanup, dele
   assert.deepEqual(harnessed.calls.filter((call) => call.delete), [{ delete: `sub-${subject(1).slice(0, 8)}` }]);
 });
 
-test('a CloudTrail orphan whose manifest was never uploaded is reconciled from its own creation', async () => {
+test('a scoped CloudTrail orphan whose manifest was never uploaded is reconciled from its own creation', async () => {
+  const runScope = '321-1-0123456789abcdef';
+  const orphan = scoped(1, runScope);
   const empty = manifestFixture(123, 1, [manifestRecord({ email: stable(0), status: 'deleted' })]);
   const harnessed = harness({
     manifests: [empty],
-    events: [creation(stable(1), { eventId: 'orphan-event', eventTime: new Date(NOW - DAY).toISOString() })],
-    users: [{ email: stable(1), sub: subject(2) }],
+    events: [creation(orphan, { eventId: 'orphan-event', eventTime: new Date(NOW - DAY).toISOString() })],
+    users: [{ email: orphan, sub: subject(2) }],
   });
   const { record } = await reconcileAccounts({ io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {} });
   assert.equal(record.identities.length, 1);
@@ -364,6 +398,22 @@ test('a CloudTrail orphan whose manifest was never uploaded is reconciled from i
   assert.equal(record.identities[0].subject, subject(2), 'the orphan sub is read back from Cognito');
   assert.equal(record.identities[0].outcome, 'reconciled');
   assert.equal(record.sources.cloudtrail_events, 1);
+  // The scoped address carries its own run scope, so the exact request is still provable.
+  const serviceCall = harnessed.calls.find((call) => call.service);
+  assert.deepEqual(JSON.parse(serviceCall.service.cleanup_json), { runScope, users: [{ sub: subject(2), email: orphan }] });
+});
+
+test('a stable pool creation with no manifest entry is reported and never deleted', async () => {
+  const harnessed = harness({
+    manifests: [manifestFixture(123, 1, [manifestRecord({ email: stable(0), status: 'deleted' })])],
+    events: [creation(stable(1), { eventId: 'stable-orphan', eventTime: new Date(NOW - DAY).toISOString() })],
+    users: [{ email: stable(1), sub: subject(3) }],
+  });
+  const { record } = await reconcileAccounts({ io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {} });
+  assert.deepEqual(record.identities, []);
+  assert.deepEqual(record.unresolved.map((entry) => [entry.email, entry.reason]), [[stable(1), 'unprovable_ownership']]);
+  assert.equal(harnessed.calls.some((call) => call.delete), false);
+  assert.equal(harnessed.calls.some((call) => call.service), false);
 });
 
 test('a creation by another role is reported and never deleted', async () => {
@@ -380,9 +430,10 @@ test('a creation by another role is reported and never deleted', async () => {
 });
 
 test('an identity already absent with no captured subject is already absent, without a cleanup request', async () => {
+  const orphan = scoped(1, '321-1-0123456789abcdef');
   const harnessed = harness({
     manifests: [manifestFixture(123, 1, [manifestRecord({ email: stable(0), status: 'deleted' })])],
-    events: [creation(stable(1), { eventId: 'gone', eventTime: new Date(NOW - DAY).toISOString() })],
+    events: [creation(orphan, { eventId: 'gone', eventTime: new Date(NOW - DAY).toISOString() })],
     users: [],
   });
   const { record } = await reconcileAccounts({ io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {} });
