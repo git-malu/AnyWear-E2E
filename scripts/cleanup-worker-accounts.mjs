@@ -112,9 +112,9 @@ export async function runCapturedWorkerCleanup(manifest, environment, io,
 /**
  * The ledger half of the repair: every worker the request admitted reached a
  * verified delete and absence readback, so its record becomes `deleted`. The
- * predicate is the same one the request used, so an unproven quarantined record
+ * predicate is the same one the request used, so an unproven retained record
  * is never marked and stays terminal. `markAccountDeleted` rewrites only status
- * and `updatedAt`, which keeps the original quarantine reason.
+ * and `updatedAt`, which keeps the original retention reason.
  */
 export async function markRepairedWorkerAccounts(manifest) {
   const admitted = manifest.accounts.filter(account => isAdmittedCleanupWorker(account, manifest));

@@ -323,6 +323,11 @@ async function observeTask(io: CleanupOperationIo, envelope: CleanupOperationEnv
 function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): Record<string, unknown> {
   const result = object(value, 'Service committed result');
   const counters = ['users', 'missingUsers', 'tasks', 'outbox', 'idempotency', 'generations', 'relations', 'outfits', 'items', 'photos'];
+  // #217: the object phase is part of the committed result. `objects` is what the task
+  // deleted under the captured users' prefixes and `objectsMissing` is what their own rows
+  // expected but the listing did not contain. Both are required: a Service release without
+  // them cannot prove the objects are gone.
+  const objectCounters = ['objects', 'objectsMissing'];
   if (result.schema_version !== 1 || result.record_type !== 'anywear_beta_cleanup_result' || result.source !== 'beta-tester-cleanup'
     || result.cleanup !== 'beta-testers' || result.operation_id !== envelope.operation_id || result.request_sha256 !== envelope.request_sha256
     || result.run_scope !== envelope.run_scope || result.operation_mode !== envelope.operation_mode
@@ -330,6 +335,7 @@ function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): 
     || result.service_commit_sha !== envelope.service_commit_sha || result.service_image_digest !== envelope.service_image_digest
     || typeof result.envelope_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.envelope_sha256)
     || counters.some(key => !Number.isSafeInteger(result[key]) || (result[key] as number) < 0)
+    || objectCounters.some(key => !Number.isSafeInteger(result[key]) || (result[key] as number) < 0)
     || (result.users as number) + (result.missingUsers as number) !== (object(parseStrictJson(envelope.cleanup_request), 'Cleanup request').users as unknown[]).length) {
     throw new Error('Service completion marker lacks exact committed request/source proof');
   }

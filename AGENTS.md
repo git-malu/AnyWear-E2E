@@ -112,10 +112,28 @@ Run install and build commands from this repository.
   record tuple. Do not add an approval Environment or approval/`Approved`/`Rejected` states.
 - The single protected `qualify` entry in `beta-qualification.yml` owns the deployed
   operations for beta and later stages; it must not target dev. Separation between
-  qualification, the smoke diagnostic and account recovery now lives in the
+  qualification, the smoke diagnostic, account recovery and automatic leftover expiry now
+  lives in the
   signed `operation` field, not in a workflow-file boundary: `qualification-record.json` is
   produced only by the `full` operation, the record binds the operation that was dispatched,
   and both this repository's producer/verifier and the Infra-side executor allow-list require
-  `operation: full`. A `smoke` or `recover` run therefore can neither produce nor
+  `operation: full`. A `smoke`, `recover` or `reconcile` run therefore can neither produce nor
   withhold the record the release gate produced, and a recovery result is
   never substituted for qualification evidence.
+- Leftover data is bounded by time, not quarantined (#217). A teardown that cannot prove
+  deletion records its identity `retained` with a `retainedReason` and a `reconcileBy` bound,
+  fails its own run exactly as before, and is resolved by the `reconcile` operation: a job
+  before every `qualify` suite, and a daily dispatch of the same protected `workflow_dispatch`
+  entry from `reconcile-schedule.yml` (`trigger=scheduled`). There is no quarantine budget and
+  no `quarantined` account status; a historical manifest recording `quarantined` reads as
+  `retained`. `reconcile` reads the previous seven days of lifecycle manifests and the
+  CloudTrail `AdminCreateUser` history, replays the exact-reference Service cleanup in normal
+  mode, deletes each identity by its immutable username, reads absence back, and writes the
+  `anywear_e2e_account_reconcile` v1 record. It is bounded to 15 minutes, resolves an identity
+  within 24 hours, and fails the run for a leftover past that bound. Runbook:
+  [docs/account-reconcile.md](docs/account-reconcile.md).
+- Never delete, or list for deletion, by scope label, prefix or address alone. The only
+  deletion selectors are a manifest's captured `{sub, email}` and the Service cleanup's own
+  exact-reference request; the object phase deletes only a captured subject's
+  `wearable-items/<sub>/` and `base-photos/<sub>/` objects. A creation by a principal other
+  than the E2E qualification role is reported and never deleted.

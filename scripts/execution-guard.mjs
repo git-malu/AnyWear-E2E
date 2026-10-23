@@ -10,11 +10,16 @@ const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 // and every operation names the one entry that may serve it. Adding an operation to a
 // different file therefore means changing this map, which is the reviewable point the
 // allow-list used to be.
-export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'recover']);
+//
+// #217: `reconcile` runs as a job of every qualification (before its suite) and as its own
+// dispatched operation from the daily schedule. Both go through the same entry, so both
+// carry `workflow_dispatch` and the exact protected workflow ref this guard requires.
+export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'recover', 'reconcile']);
 const operationEntries = Object.freeze({
   full: 'beta-qualification',
   smoke: 'beta-qualification',
   recover: 'beta-qualification',
+  reconcile: 'beta-qualification',
 });
 
 export function assertE2EExecution(environment = process.env, { sourceOnly = false, sourceSha } = {}) {

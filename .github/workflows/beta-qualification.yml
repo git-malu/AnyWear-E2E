@@ -1,10 +1,20 @@
 name: Beta Qualification
 
 # The E2E deployable unit's single manual entry (#163): the `qualify` entry. One protected
-# dispatch surface carries three operations — `full` (release qualification), `smoke`
-# (deployed diagnostic) and `recover` (account recovery) — and since #180 it is also
+# dispatch surface carries four operations — `full` (release qualification), `smoke`
+# (deployed diagnostic), `recover` (historical account recovery, removed by the stacked #217
+# pull request) and `reconcile` (automatic leftover expiry) — and since #180 it is also
 # dispatched by another workflow: a deployment smoke hook
-# (`trigger=deploy-smoke`) and the release action (`trigger=release-qualify`).
+# (`trigger=deploy-smoke`), the release action (`trigger=release-qualify`) and, since #217,
+# the daily account-reconcile schedule (`trigger=scheduled`).
+#
+# #217: leftover data is bounded by time, not quarantined. The `reconcile` job runs before
+# every qualification suite and as its own dispatched operation. It reads the previous seven
+# days' `beta-account-lifecycle-*` / `beta-smoke-account-lifecycle-*` manifests and the
+# CloudTrail `AdminCreateUser` history, replays the exact-reference Service cleanup, deletes
+# the identity by its immutable username, reads absence back, and writes an
+# `anywear_e2e_account_reconcile` v1 record. A teardown that cannot prove deletion records
+# its identity `retained` with a `reconcileBy` bound and still fails its own run.
 #
 # #180: qualification no longer reads a committed compatibility file. It reads the live
 # deployed tuple (Client `build-metadata.json`, Service `/health`), compares it with the
@@ -29,10 +39,10 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: 'Qualification operation: full (release gate), smoke (diagnostic), recover (account recovery)'
+        description: 'Qualification operation: full (release gate), smoke (diagnostic), recover (account recovery) or reconcile (leftover expiry)'
         required: true
         type: choice
-        options: [full, smoke, recover]
+        options: [full, smoke, recover, reconcile]
       expected_service_commit:
         # #180: supplied by the release action (release-qualify) or by an operator who
         # re-runs a qualification. Only `full` compares it with the live Service commit,
@@ -47,11 +57,11 @@ on:
       trigger:
         # The trigger is evidence, not a permission: the preflight validates the exact
         # combination with the operation and the dispatch inputs, and the record states it.
-        description: 'Qualification trigger: manual, deploy-smoke (operation smoke only) or release-qualify (operation full only)'
+        description: 'Qualification trigger: manual, deploy-smoke (smoke only), release-qualify (full only) or scheduled (reconcile only)'
         required: false
         default: manual
         type: choice
-        options: [manual, deploy-smoke, release-qualify]
+        options: [manual, deploy-smoke, release-qualify, scheduled]
       dispatched_by:
         description: URL of the run that dispatched this qualification; only accepted for a non-manual trigger
         required: false
@@ -161,7 +171,7 @@ jobs:
           WORKER_SLOT_OFFSET: ${{ inputs.worker_slot_offset }}
         run: |
           case "$OPERATION" in
-            full|smoke|recover) ;;
+            full|smoke|recover|reconcile) ;;
             *) echo "::error::Unknown qualification operation '$OPERATION'"; exit 1 ;;
           esac
           if [[ "$OPERATION" != recover ]]; then
@@ -171,6 +181,12 @@ jobs:
                 exit 1
               fi
             done
+          fi
+          # #217: the reconcile operation owns no worker slot, so a slot offset on it is a
+          # dispatch mistake rather than an allocation.
+          if [[ "$OPERATION" == reconcile && "$WORKER_SLOT_OFFSET" != 0 ]]; then
+            echo "::error::operation reconcile accepts no worker_slot_offset (got '$WORKER_SLOT_OFFSET')"
+            exit 1
           fi
           # #180: the dispatch trigger is a closed combination with the operation, the
           # expected commits, the worker slot offset and the dispatching run URL.
@@ -206,6 +222,19 @@ jobs:
               fi
               if [[ "$WORKER_SLOT_OFFSET" != 0 ]]; then
                 echo "::error::trigger release-qualify requires worker_slot_offset 0 (got '$WORKER_SLOT_OFFSET')"
+                exit 1
+              fi
+              ;;
+            scheduled)
+              # #217: the daily account-reconcile schedule dispatches this entry, because the
+              # execution guard requires `workflow_dispatch` and a `schedule` event would fail
+              # closed. It may only ask for the reconcile operation.
+              if [[ "$OPERATION" != reconcile ]]; then
+                echo "::error::trigger scheduled requires operation reconcile (got '$OPERATION')"
+                exit 1
+              fi
+              if [[ "$WORKER_SLOT_OFFSET" != 0 ]]; then
+                echo "::error::trigger scheduled requires worker_slot_offset 0 (got '$WORKER_SLOT_OFFSET')"
                 exit 1
               fi
               ;;
@@ -284,12 +313,122 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # #217: automatic leftover expiry. It runs before every qualification suite and as its own
+  # dispatched operation, so a qualification starts from a reconciled environment and no
+  # leftover waits for an operator. It reads the previous seven days' lifecycle manifests and
+  # the CloudTrail `AdminCreateUser` history, replays the exact-reference Service cleanup,
+  # deletes each identity by its immutable username, reads absence back, and writes the
+  # `anywear_e2e_account_reconcile` v1 record. The job is bounded to 15 minutes and fails
+  # closed without deleting when either source is unavailable.
+  reconcile:
+    name: Reconcile retained E2E identities and objects
+    needs: preflight
+    if: github.ref == 'refs/heads/main' && (needs.preflight.outputs.operation == 'reconcile' || needs.preflight.outputs.operation == 'full' || needs.preflight.outputs.operation == 'smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: beta
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      E2E_STAGE: beta
+      E2E_OPERATION: ${{ inputs.operation }}
+      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+      E2E_CLEANUP_SERVICE_SHA: ${{ vars.E2E_CLEANUP_SERVICE_SHA }}
+      BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ vars.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN }}
+      # The reviewed lookback and the job's own deadline. The job times out at 15 minutes;
+      # the script stops starting work at 720 seconds so an in-flight cleanup can finish and
+      # the record is still written.
+      E2E_ACCOUNT_RECONCILE_LOOKBACK_DAYS: 7
+      E2E_ACCOUNT_RECONCILE_DEADLINE_SECONDS: 720
+      E2E_ACCOUNT_RECONCILE_DIRECTORY: reconcile
+      E2E_ACCOUNT_RECONCILE_RECORD_PATH: reconcile/account-reconcile.json
+
+    steps:
+      - name: Checkout E2E sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install E2E dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The source gate ran in the credential-free preflight; this job only re-proves that
+      # it is the protected source before it holds a credential.
+      - name: Require protected execution
+        run: node scripts/execution-guard.mjs --source-only
+
+      - name: Configure Beta AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify dedicated E2E principal
+        shell: bash
+        run: |
+          identity=$(aws sts get-caller-identity --output json)
+          account=$(jq -r '.Account' <<< "$identity")
+          principal=$(jq -r '.Arn' <<< "$identity")
+          [[ "$account" == 650880818323 ]]
+          [[ "$principal" =~ ^arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/[A-Za-z0-9+=,.@_-]{1,64}$ ]]
+          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
+
+      # The cleanup envelope must name the Service release the cleanup capability was
+      # deployed with, so the live tuple supplies the source/image pair. A qualification run
+      # has already observed it; this job reads it once for its own envelope.
+      - name: Load the Beta pool and the live cleanup identity
+        env:
+          QUALIFICATION_EVIDENCE_PATH: reconcile/deployment-evidence.json
+        run: |
+          mkdir -p reconcile
+          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
+          pnpm qualification:collect
+          {
+            echo "USER_POOL_ID=$pool_id"
+            echo "E2E_CLEANUP_SERVICE_SOURCE_SHA=$(jq -r '.service.service_commit' reconcile/deployment-evidence.json)"
+            echo "E2E_CLEANUP_SERVICE_IMAGE_DIGEST=$(jq -r '.service.image_digest' reconcile/deployment-evidence.json)"
+          } >> "$GITHUB_ENV"
+
+      - name: Reconcile recent E2E leftover identities
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/execution-guard.mjs
+          node scripts/reconcile-accounts.mjs
+
+      - name: Upload the reconcile record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-account-reconcile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reconcile/account-reconcile.json
+            reconcile/deployment-evidence.json
+            reconcile/service-cleanup-*.json
+          retention-days: 90
+          if-no-files-found: ignore
+
   # The only job that may produce `qualification-record.json`. It carries the deployed
   # release-gating suite of the former Beta Qualification workflow. The record path binds
   # the dispatched operation and refuses anything but `full`.
   full:
     name: Qualify the live deployed tuple on Beta
-    needs: preflight
+    needs: [preflight, reconcile]
     if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -311,7 +450,6 @@ jobs:
       E2E_MAX_ACTIVE_ACCOUNTS: 2
       # One lease per attempt: 2 workers x 3 attempts (initial + two CI retries).
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 6
-      E2E_MAX_QUARANTINED_ACCOUNTS: 2
       # The run's own Playwright JSON report. The qualification record's `test` member is
       # derived from these bytes — the selection, the report digest and one outcome per
       # selected spec — and both artifact lists below retain the report, so the digest the
@@ -756,7 +894,7 @@ jobs:
   # qualification evidence.
   smoke:
     name: Deployed Beta smoke diagnostic
-    needs: preflight
+    needs: [preflight, reconcile]
     if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'smoke'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -778,7 +916,6 @@ jobs:
       E2E_MAX_ACTIVE_ACCOUNTS: 2
       # One lease per attempt: 2 workers x 3 attempts (initial + two CI retries).
       E2E_MAX_NEW_ACCOUNTS_PER_RUN: 6
-      E2E_MAX_QUARANTINED_ACCOUNTS: 2
 
     steps:
       - name: Checkout E2E sources

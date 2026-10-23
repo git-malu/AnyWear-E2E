@@ -75,8 +75,8 @@ function attemptIo({
     async releaseWorkerAccount(email) {
       calls.push({ release: email });
     },
-    async quarantineWorkerAccount(email, reason) {
-      calls.push({ quarantine: email, reason });
+    async retainWorkerAccount(email, reason) {
+      calls.push({ retain: email, reason });
     },
   };
 }
@@ -149,15 +149,15 @@ test('malformed or subject-less worker identity fails closed before capability o
   await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, mode: 'worker', status: 'cleanup_pending' }]), io), /captured Beta worker emails and subjects/); assert.deepEqual(io.calls, []);
 });
 
-test('an unproven quarantined record and a deleted record remain untouched', async () => {
+test('an unproven retained record and a deleted record remain untouched', async () => {
   const io = cleanupIo();
-  assert.equal(await cleanupWorkerAccounts(manifest([{ email: workerEmail, mode: 'worker', status: 'quarantined' }]), io), 0);
+  assert.equal(await cleanupWorkerAccounts(manifest([{ email: workerEmail, mode: 'worker', status: 'retained' }]), io), 0);
   assert.equal(await cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'deleted' }]), io), 0); assert.deepEqual(io.calls, []);
 });
 
-test('a proven quarantined worker is repaired through the same request and absence readback', async () => {
+test('a proven retained worker is repaired through the same request and absence readback', async () => {
   const io = cleanupIo();
-  const count = await cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'quarantined' }]), io);
+  const count = await cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'retained' }]), io);
   const cleanupJson = JSON.stringify({ runScope, users: [{ sub: subject, email: workerEmail }] });
   assert.equal(count, 1);
   assert.deepEqual(io.calls, [
@@ -166,11 +166,11 @@ test('a proven quarantined worker is repaired through the same request and absen
   ]);
 });
 
-test('an unproven quarantined record never blocks a proven one in the same manifest', async () => {
+test('an unproven retained record never blocks a proven one in the same manifest', async () => {
   const io = cleanupIo();
   const count = await cleanupWorkerAccounts(manifest([
-    { email: workerEmail, subject, mode: 'worker', status: 'quarantined' },
-    { email: stableWorkerEmail, mode: 'worker', status: 'quarantined' },
+    { email: workerEmail, subject, mode: 'worker', status: 'retained' },
+    { email: stableWorkerEmail, mode: 'worker', status: 'retained' },
   ]), io);
   assert.equal(count, 1);
   assert.deepEqual(JSON.parse(io.calls[0].service.cleanup_json), { runScope, users: [{ sub: subject, email: workerEmail }] });
@@ -178,22 +178,22 @@ test('an unproven quarantined record never blocks a proven one in the same manif
 
 test('a returned identity after deletion fails the repair', async () => {
   const io = cleanupIo({ retainedAfterDelete: true });
-  await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'quarantined' }]), io),
+  await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'retained' }]), io),
     /still present after deletion/);
   assert.equal(io.calls.filter((call) => call.delete).length, 1);
 });
 
 test('an unreadable absence readback fails closed', async () => {
   const io = cleanupIo({ readbackError: new Error('Cognito readback unavailable') });
-  await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'quarantined' }]), io),
+  await assert.rejects(cleanupWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'retained' }]), io),
     /Cognito readback unavailable/);
   assert.equal(io.calls.filter((call) => call.delete).length, 1);
 });
 
-test('a repaired quarantined record becomes deleted and keeps its reason', async () => {
+test('a repaired retained record becomes deleted and keeps its reason', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'issue-142-mark-'));
   const names = ['E2E_ACCOUNT_BUDGET_PATH', 'E2E_ACCOUNT_RUN_SCOPE', 'E2E_WORKERS',
-    'E2E_MAX_ACTIVE_ACCOUNTS', 'E2E_MAX_NEW_ACCOUNTS_PER_RUN', 'E2E_MAX_QUARANTINED_ACCOUNTS'];
+    'E2E_MAX_ACTIVE_ACCOUNTS', 'E2E_MAX_NEW_ACCOUNTS_PER_RUN'];
   const saved = names.map((name) => [name, process.env[name]]);
   try {
     process.env.E2E_ACCOUNT_BUDGET_PATH = path.join(directory, 'account-budget.json');
@@ -201,21 +201,24 @@ test('a repaired quarantined record becomes deleted and keeps its reason', async
     process.env.E2E_WORKERS = '1';
     process.env.E2E_MAX_ACTIVE_ACCOUNTS = '1';
     process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN = '2';
-    process.env.E2E_MAX_QUARANTINED_ACCOUNTS = '2';
     await writeFile(process.env.E2E_ACCOUNT_BUDGET_PATH, `${JSON.stringify({
-      version: 1, runScope, config: { maxActiveAccounts: 1, maxNewAccountsPerRun: 2, maxQuarantinedAccounts: 2 },
+      version: 1, runScope, config: { maxActiveAccounts: 1, maxNewAccountsPerRun: 2 },
       accounts: [{
-        email: workerEmail, mode: 'worker', status: 'quarantined', subject,
+        email: workerEmail, mode: 'worker', status: 'retained', subject,
         leaseId: 'lease-1', leaseGeneration: 'generation-1',
         createdAt: '2026-10-16T05:03:56.709Z', updatedAt: '2026-10-16T05:03:56.709Z',
-        reason: 'teardown: business cleanup partial',
+        retainedReason: 'teardown: business cleanup partial',
+        reconcileBy: '2026-10-17T05:03:56.709Z',
       }],
     })}\n`);
-    const admitted = await markRepairedWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'quarantined' }]));
+    const admitted = await markRepairedWorkerAccounts(manifest([{ email: workerEmail, subject, mode: 'worker', status: 'retained' }]));
     assert.equal(admitted.length, 1);
     const state = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
     assert.equal(state.accounts[0].status, 'deleted');
-    assert.equal(state.accounts[0].reason, 'teardown: business cleanup partial');
+    // The retention reason and its bound are the trace of the teardown defect; the
+    // terminal transition rewrites only the status and the timestamp.
+    assert.equal(state.accounts[0].retainedReason, 'teardown: business cleanup partial');
+    assert.equal(state.accounts[0].reconcileBy, '2026-10-17T05:03:56.709Z');
   } finally {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
@@ -226,14 +229,14 @@ test('a repaired quarantined record becomes deleted and keeps its reason', async
 
 test('a record left non-deleted is reported as skipped, an already deleted one is not', () => {
   const records = [
-    { email: workerEmail, subject, mode: 'worker', status: 'quarantined' },
-    { email: stableWorkerEmail, mode: 'worker', status: 'quarantined' },
+    { email: workerEmail, subject, mode: 'worker', status: 'retained' },
+    { email: stableWorkerEmail, mode: 'worker', status: 'retained' },
     { email: `e2e-beta-${runScope}-1-b1c2d3e4@anywear.local`, subject, mode: 'worker', status: 'deleted' },
   ];
   const workerManifest = manifest(records);
   const admitted = records.filter((account) => isAdmittedCleanupWorker(account, workerManifest));
   assert.deepEqual(admitted.map((account) => account.email), [workerEmail]);
-  // The unproven quarantined record is the only one the step leaves behind.
+  // The unproven retained record is the only one the step leaves behind.
   assert.deepEqual(skippedWorkerAccounts(workerManifest, admitted).map((account) => account.email), [stableWorkerEmail]);
 });
 
@@ -255,7 +258,7 @@ test('one attempt verifies the captured identity, deletes it, reads absence back
   assert.equal(workerLeaseGateError(disposition), undefined);
 });
 
-test('a business cleanup that failed or was partial quarantines the attempt with its identity retained', async () => {
+test('a business cleanup that failed or was partial retains the attempt with its identity retained', async () => {
   const scenarios = [
     { outcome: { state: 'closed', teardownResult: 'failed', reason: 'teardown failed; undeleted wardrobe_item:item-1' }, teardownResult: 'failed', reason: /^teardown: business cleanup failed; teardown failed; undeleted wardrobe_item:item-1$/ },
     { outcome: { state: 'closed', teardownResult: 'failed' }, teardownResult: 'failed', reason: /^teardown: business cleanup failed$/ },
@@ -264,41 +267,41 @@ test('a business cleanup that failed or was partial quarantines the attempt with
   for (const scenario of scenarios) {
     const io = attemptIo();
     const disposition = await releaseWorkerLease(attempt({ businessCleanup: scenario.outcome }), io);
-    assert.equal(disposition.scope, 'quarantined');
+    assert.equal(disposition.scope, 'retained');
     assert.equal(disposition.teardownResult, scenario.teardownResult);
     assert.match(disposition.reason, scenario.reason);
     // The identity is retained: no verification, no delete, no readback, no
-    // release. Only the one quarantine record is written.
-    assert.deepEqual(io.calls, [{ quarantine: workerEmail, reason: disposition.reason }]);
-    assert.match(workerLeaseGateError(disposition).message, new RegExp(`teardown gate failed \\(${scenario.teardownResult}, quarantined\\)`));
+    // release. Only the one retain record is written.
+    assert.deepEqual(io.calls, [{ retain: workerEmail, reason: disposition.reason }]);
+    assert.match(workerLeaseGateError(disposition).message, new RegExp(`teardown gate failed \\(${scenario.teardownResult}, retained\\)`));
   }
 });
 
-test('an attempt whose business cleanup is still open quarantines as partial with no Cognito call', async () => {
+test('an attempt whose business cleanup is still open retains as partial with no Cognito call', async () => {
   const io = attemptIo({ present: false });
   const disposition = await releaseWorkerLease(attempt({ businessCleanup: { state: 'open' } }), io);
-  assert.equal(disposition.scope, 'quarantined');
+  assert.equal(disposition.scope, 'retained');
   assert.equal(disposition.teardownResult, 'partial');
   assert.match(disposition.reason, /the attempt's business cleanup did not commit/);
-  assert.deepEqual(io.calls, [{ quarantine: workerEmail, reason: disposition.reason }]);
+  assert.deepEqual(io.calls, [{ retain: workerEmail, reason: disposition.reason }]);
 });
 
-test('an undeclared attempt fails closed and quarantines without touching Cognito', async () => {
+test('an undeclared attempt fails closed and retains without touching Cognito', async () => {
   const io = attemptIo({ present: false });
   const disposition = await releaseWorkerLease(undeclaredAttempt(), io);
-  assert.equal(disposition.scope, 'quarantined');
+  assert.equal(disposition.scope, 'retained');
   assert.equal(disposition.teardownResult, 'partial');
   assert.match(disposition.reason, /declared no business-cleanup outcome/);
-  assert.deepEqual(io.calls, [{ quarantine: workerEmail, reason: disposition.reason }]);
+  assert.deepEqual(io.calls, [{ retain: workerEmail, reason: disposition.reason }]);
 });
 
 test('an unreadable declaration read is undeclared, and an explicit none is not', async () => {
   const unreadable = attemptIo();
   unreadable.readAttemptBusinessCleanup = () => { throw new Error('registry unavailable'); };
   const blocked = await releaseWorkerLease(undeclaredAttempt(), unreadable);
-  assert.equal(blocked.scope, 'quarantined');
+  assert.equal(blocked.scope, 'retained');
   assert.match(blocked.reason, /declared no business-cleanup outcome/);
-  assert.deepEqual(unreadable.calls, [{ quarantine: workerEmail, reason: blocked.reason }]);
+  assert.deepEqual(unreadable.calls, [{ retain: workerEmail, reason: blocked.reason }]);
 
   // The injected reader is the fixture wiring: it releases only on a committed
   // declaration, through the unchanged verify -> delete -> absence -> release path.
@@ -321,7 +324,7 @@ test('an attempt whose identity is already absent releases the address after the
   assert.deepEqual(io.calls, [{ get: workerEmail }, { get: workerEmail }, { release: workerEmail }]);
 });
 
-test('refused ownership, failed deletion, a retained identity and an uncertain readback quarantine instead of releasing', async () => {
+test('refused ownership, failed deletion, a retained identity and an uncertain readback retain instead of releasing', async () => {
   const scenarios = [
     { name: 'ownership mismatch', options: { identitySubject: '20000000-0000-4000-8000-000000000002' }, teardownResult: 'failed', reason: /refused/ },
     { name: 'deletion failure', options: { deleteError: Object.assign(new Error('AccessDeniedException'), { name: 'AccessDeniedException' }) }, teardownResult: 'failed', reason: /refused/ },
@@ -331,34 +334,34 @@ test('refused ownership, failed deletion, a retained identity and an uncertain r
   for (const scenario of scenarios) {
     const io = attemptIo(scenario.options);
     const disposition = await releaseWorkerLease(attempt(), io);
-    assert.equal(disposition.scope, 'quarantined', scenario.name);
+    assert.equal(disposition.scope, 'retained', scenario.name);
     assert.equal(disposition.teardownResult, scenario.teardownResult, scenario.name);
     assert.match(disposition.reason, scenario.reason, scenario.name);
     assert.equal(io.calls.some((call) => call.release), false, scenario.name);
-    assert.equal(io.calls.filter((call) => call.quarantine).length, 1, scenario.name);
-    assert.equal(io.calls.find((call) => call.quarantine).quarantine, workerEmail, scenario.name);
+    assert.equal(io.calls.filter((call) => call.retain).length, 1, scenario.name);
+    assert.equal(io.calls.find((call) => call.retain).retain, workerEmail, scenario.name);
     assert.equal(/[\r\n]/.test(disposition.reason), false, `${scenario.name}: sanitized reason`);
     assert.ok(disposition.reason.length <= 300, `${scenario.name}: bounded reason`);
-    assert.match(workerLeaseGateError(disposition).message, /teardown gate failed \((failed|partial), quarantined\)/, scenario.name);
+    assert.match(workerLeaseGateError(disposition).message, /teardown gate failed \((failed|partial), retained\)/, scenario.name);
   }
 });
 
 test('a live identity is never reported terminal even when the address was leased again', async () => {
   const io = attemptIo({ identitySubject: '20000000-0000-4000-8000-000000000002', retainedAfterDelete: true });
   const disposition = await releaseWorkerLease(attempt(), io);
-  assert.equal(disposition.scope, 'quarantined');
+  assert.equal(disposition.scope, 'retained');
   assert.equal(io.calls.some((call) => call.delete), false, 'a foreign identity is never deleted');
   assert.equal(io.calls.some((call) => call.release), false, 'a live identity is never released');
 });
 
-test('an attempt that never confirmed ownership quarantines without touching Cognito', async () => {
+test('an attempt that never confirmed ownership retains without touching Cognito', async () => {
   for (const overrides of [{ provisioned: false }, { subject: undefined }]) {
     const io = attemptIo();
     const disposition = await releaseWorkerLease(attempt(overrides), io);
-    assert.equal(disposition.scope, 'quarantined');
+    assert.equal(disposition.scope, 'retained');
     assert.equal(disposition.teardownResult, 'failed');
     assert.match(disposition.reason, /ownership is unverified/);
-    assert.deepEqual(io.calls.map((call) => Object.keys(call)[0]), ['quarantine']);
+    assert.deepEqual(io.calls.map((call) => Object.keys(call)[0]), ['retain']);
   }
 });
 
@@ -370,24 +373,24 @@ test('an attempt that never held the lease writes nothing', async () => {
   assert.equal(workerLeaseGateError(disposition), undefined);
 });
 
-test('a refused quarantine record or a refused release write still reports the attempt quarantined', async () => {
-  const refusedQuarantine = attemptIo({ retainedAfterDelete: true });
-  refusedQuarantine.quarantineWorkerAccount = async (email, reason) => {
-    refusedQuarantine.calls.push({ quarantine: email, reason });
-    throw new Error('E2E quarantine budget exhausted; operator recovery is required');
+test('a refused retain record or a refused release write still reports the attempt retained', async () => {
+  const refusedRetain = attemptIo({ retainedAfterDelete: true });
+  refusedRetain.retainWorkerAccount = async (email, reason) => {
+    refusedRetain.calls.push({ retain: email, reason });
+    throw new Error('retained record could not be written');
   };
-  const quarantined = await releaseWorkerLease(attempt(), refusedQuarantine);
-  assert.equal(quarantined.scope, 'quarantined');
-  assert.match(quarantined.reason, /quarantine record refused/);
-  assert.equal(refusedQuarantine.calls.some((call) => call.release), false);
+  const retained = await releaseWorkerLease(attempt(), refusedRetain);
+  assert.equal(retained.scope, 'retained');
+  assert.match(retained.reason, /retained record refused/);
+  assert.equal(refusedRetain.calls.some((call) => call.release), false);
 
   const refusedRelease = attemptIo();
   refusedRelease.releaseWorkerAccount = async (email) => {
     refusedRelease.calls.push({ release: email });
-    throw new Error('Account scope is quarantined and cannot be released');
+    throw new Error('Account scope is retained pending reconcile and cannot be released');
   };
   const released = await releaseWorkerLease(attempt(), refusedRelease);
-  assert.equal(released.scope, 'quarantined');
+  assert.equal(released.scope, 'retained');
   assert.match(released.reason, /could not be released/);
   assert.deepEqual(refusedRelease.calls.at(-1), { release: workerEmail });
 });

@@ -11,7 +11,7 @@ import {
   reserveTestAccount,
   type TestAccount,
 } from './account.js';
-import { quarantineAccount, releaseWorkerAccount } from './account-budget.js';
+import { releaseWorkerAccount, retainAccount } from './account-budget.js';
 import { assertE2EExecution } from '../../scripts/execution-guard.mjs';
 import { readAttemptBusinessCleanup } from './attempt-cleanup-registry.ts';
 import {
@@ -46,7 +46,7 @@ function workerLeaseIo(testInfo: TestInfo): { io: WorkerLeaseIo; destroy: () => 
         await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
       },
       releaseWorkerAccount,
-      quarantineWorkerAccount: quarantineAccount,
+      retainWorkerAccount: retainAccount,
       // The attempt's own declaration, read with the attempt's own key. A
       // missing record is `undeclared`, so the lease fails closed.
       readAttemptBusinessCleanup: () => readAttemptBusinessCleanup(testInfo),
@@ -90,7 +90,7 @@ async function teardownWorkerAttempt(
 export const test = base.extend<TestFixtures, Record<never, never>>({
   // One bounded lease per test attempt (the ADR-0023 scope
   // `environment/run/worker/project/test/retry`): reserve and provision before
-  // the attempt, then release — or quarantine — the attempt's own scope in the
+  // the attempt, then release — or retain — the attempt's own scope in the
   // teardown. Playwright tears a test-scoped fixture down after the attempt's
   // `afterEach` hooks, so the attempt's own business cleanup has already had its
   // say before the worker identity is touched.

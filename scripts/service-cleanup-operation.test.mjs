@@ -40,7 +40,7 @@ function committed(patch = {}, input = envelope) {
   return { schema_version: 1, record_type: 'anywear_beta_cleanup_result', source: 'beta-tester-cleanup', cleanup: 'beta-testers',
     operation_mode: input.operation_mode, operation_id: input.operation_id, request_sha256: input.request_sha256, run_scope: scope, transaction_committed: true,
     service_commit_sha: input.service_commit_sha, service_image_digest: input.service_image_digest, envelope_sha256: hash(JSON.stringify(input)),
-    users: 1, missingUsers: 0, tasks: 0, outbox: 0, idempotency: 0, generations: 0, relations: 0, outfits: 0, items: 0, photos: 0,
+    users: 1, missingUsers: 0, tasks: 0, outbox: 0, idempotency: 0, generations: 0, relations: 0, outfits: 0, items: 0, photos: 0, objects: 0, objectsMissing: 0,
     dlq: { deleted: 0, preserved: 0 }, ...patch };
 }
 

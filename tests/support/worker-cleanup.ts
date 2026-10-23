@@ -38,11 +38,12 @@ export type WorkerTeardownResult = 'passed' | 'failed' | 'partial';
 /**
  * Scope state of one test attempt.
  *
- * `released` is the only state that returns the allowlisted address to the pool;
- * `none` means the attempt never held the lease, so it owns no scope to dispose
- * of and must not touch a record written by another attempt.
+ * `released` is the only state that returns the allowlisted address to the pool; `none`
+ * means the attempt never held the lease, so it owns no scope to dispose of and must not
+ * touch a record written by another attempt. `retained` keeps the address out of the pool
+ * with its identity in place until the `reconcile` operation resolves it (#217).
  */
-export type WorkerAttemptScope = 'none' | 'released' | 'quarantined';
+export type WorkerAttemptScope = 'none' | 'released' | 'retained';
 
 export interface WorkerAttemptTeardown {
   email: string;
@@ -55,7 +56,7 @@ export interface WorkerAttemptTeardown {
   /**
    * The attempt's own business-cleanup declaration, read from the attempt-keyed
    * registry. Omitted or unreadable means `undeclared`, which fails closed: the
-   * attempt's scope is quarantined with its identity retained rather than
+   * attempt's scope is retained with its identity in place rather than
    * released on an assumption.
    */
   businessCleanup?: AttemptBusinessCleanupOutcome;
@@ -71,8 +72,8 @@ export interface WorkerLeaseDisposition {
 export interface WorkerLeaseIo extends CognitoCleanupIo {
   /** Terminal ledger transition; only a verified absence may reach it. */
   releaseWorkerAccount(email: string): Promise<void>;
-  /** Keeps the address out of the pool with a sanitized reason. */
-  quarantineWorkerAccount(email: string, reason: string): Promise<void>;
+  /** Keeps the address and its identity for the reconcile operation to resolve. */
+  retainWorkerAccount(email: string, reason: string): Promise<void>;
   /**
    * The attempt's business-cleanup declaration. `releaseWorkerLease` passes its
    * own `businessCleanup` input when the caller has one; this reader is the
@@ -96,7 +97,7 @@ function isUserNotFound(error: unknown): boolean {
   return error instanceof Error && (error.name === 'UserNotFoundException' || /UserNotFoundException/.test(error.message));
 }
 
-async function quarantineAttempt(
+async function retainAttempt(
   email: string,
   io: WorkerLeaseIo,
   reason: string,
@@ -104,18 +105,18 @@ async function quarantineAttempt(
 ): Promise<WorkerLeaseDisposition> {
   const sanitized = sanitizedReason(reason);
   try {
-    await io.quarantineWorkerAccount(email, sanitized);
+    await io.retainWorkerAccount(email, sanitized);
   } catch (error) {
     // Fail closed either way: the record keeps an active status (so the address
     // stays out of the pool) and the refusal is reported on the teardown gate.
     return {
       email,
-      scope: 'quarantined',
+      scope: 'retained',
       teardownResult,
-      reason: sanitizedReason(`${sanitized}; quarantine record refused: ${errorMessage(error)}`),
+      reason: sanitizedReason(`${sanitized}; retained record refused: ${errorMessage(error)}`),
     };
   }
-  return { email, scope: 'quarantined', teardownResult, reason: sanitized };
+  return { email, scope: 'retained', teardownResult, reason: sanitized };
 }
 
 /**
@@ -137,7 +138,7 @@ function readBusinessCleanup(io: WorkerLeaseIo): AttemptBusinessCleanupOutcome |
  *
  * A released lease claims that the attempt is finished with everything it
  * created, so an attempt that cannot show a committed business cleanup is
- * quarantined instead — with its identity retained. `undeclared` is deliberate:
+ * retained instead — with its identity in place. `undeclared` is deliberate:
  * a missing declaration is an anomaly, not proof that the attempt created
  * nothing.
  */
@@ -174,7 +175,7 @@ function businessCleanupBlock(
  * only a released address may be re-reserved with a fresh lease generation.
  * Every other outcome — a business cleanup that did not commit, a missing or
  * unreadable declaration, refused ownership, deletion failure, an unverified
- * absence, or provisioning that never confirmed ownership — quarantines this
+ * absence, or provisioning that never confirmed ownership — retains this
  * attempt's scope and keeps the address out of the pool. No live identity is
  * ever reported terminal, and this never deletes or releases a record that
  * belongs to another attempt.
@@ -189,19 +190,19 @@ export async function releaseWorkerLease(
 
   // Before any Cognito call: the attempt's own business cleanup decides whether
   // its identity may be disposed of at all. A failure here can only remove a
-  // release and add a quarantine; it never authorizes a delete.
+  // release and add a retention; it never authorizes a delete.
   const businessCleanup = businessCleanupBlock(
     attempt.businessCleanup ?? readBusinessCleanup(io),
   );
   if (businessCleanup) {
-    return quarantineAttempt(attempt.email, io, businessCleanup.reason, businessCleanup.teardownResult);
+    return retainAttempt(attempt.email, io, businessCleanup.reason, businessCleanup.teardownResult);
   }
 
   const identity: CapturedIdentity | undefined = attempt.provisioned && attempt.subject
     ? { email: attempt.email, sub: attempt.subject }
     : undefined;
   if (!identity) {
-    return quarantineAttempt(attempt.email, io, attempt.provisioned
+    return retainAttempt(attempt.email, io, attempt.provisioned
       ? 'teardown: confirmed Cognito subject was not captured; identity ownership is unverified'
       : 'teardown: provisioning did not complete; identity ownership is unverified', 'failed');
   }
@@ -209,17 +210,17 @@ export async function releaseWorkerLease(
   try {
     await deleteCapturedCognitoIdentity(identity, io);
   } catch (error) {
-    return quarantineAttempt(attempt.email, io, `teardown: captured identity verification or deletion refused: ${errorMessage(error)}`, 'failed');
+    return retainAttempt(attempt.email, io, `teardown: captured identity verification or deletion refused: ${errorMessage(error)}`, 'failed');
   }
 
   // Absence readback: a returned user (the same or a foreign identity) keeps the
   // address out of the pool, and an unreadable state is reported as partial.
   try {
     await io.getUser(identity.email);
-    return quarantineAttempt(attempt.email, io, 'teardown: Cognito identity is still present after deletion', 'failed');
+    return retainAttempt(attempt.email, io, 'teardown: Cognito identity is still present after deletion', 'failed');
   } catch (error) {
     if (!isUserNotFound(error)) {
-      return quarantineAttempt(attempt.email, io, `teardown: absence readback was uncertain: ${errorMessage(error)}`, 'partial');
+      return retainAttempt(attempt.email, io, `teardown: absence readback was uncertain: ${errorMessage(error)}`, 'partial');
     }
   }
 
@@ -228,7 +229,7 @@ export async function releaseWorkerLease(
   } catch (error) {
     return {
       email: attempt.email,
-      scope: 'quarantined',
+      scope: 'retained',
       teardownResult: 'failed',
       reason: sanitizedReason(`teardown: verified absence could not be released: ${errorMessage(error)}`),
     };
@@ -254,17 +255,16 @@ const SUBJECT_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-
 /**
  * One eligibility rule for the cleanup request and the ledger transition.
  *
- * A `cleanup_pending` record is the ordinary case. A `quarantined` record is
- * admitted only when the ownership the quarantine withheld can still be proven:
- * a captured UUID-shaped subject and an address in this manifest's own run
- * scope. An unproven quarantined record stays out of the list — the validation
- * below is all-or-nothing, so admitting it would throw and block a proven
- * record's repair in the same manifest.
+ * A `cleanup_pending` record is the ordinary case. A `retained` record is admitted only
+ * when the ownership its retention kept can still be proven: a captured UUID-shaped subject
+ * and an address in this manifest's own run scope. An unproven retained record stays out of
+ * the list — the validation below is all-or-nothing, so admitting it would throw and block a
+ * proven record's cleanup in the same manifest.
  */
 export function isAdmittedCleanupWorker(account: WorkerAccountRecord, manifest: WorkerAccountManifest): boolean {
   if (account.mode !== 'worker') return false;
   if (account.status === 'cleanup_pending') return true;
-  return account.status === 'quarantined'
+  return account.status === 'retained'
     && typeof account.subject === 'string' && SUBJECT_PATTERN.test(account.subject)
     && isBetaWorkerEmailForScope(account.email, manifest.runScope);
 }

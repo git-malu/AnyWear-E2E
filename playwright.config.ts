@@ -22,15 +22,11 @@ function validateAccountBudget(workers: number | undefined): void {
   // `workers` parallel attempts plus Playwright's two CI retries per slot.
   const raw = process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN ?? String(workers * 3);
   const maxNewAccounts = Number(raw);
-  const maxQuarantinedAccounts = Number(process.env.E2E_MAX_QUARANTINED_ACCOUNTS ?? workers);
   if (!Number.isInteger(maxActiveAccounts) || maxActiveAccounts < workers) {
     throw new Error('E2E_MAX_ACTIVE_ACCOUNTS must be an integer at least E2E_WORKERS');
   }
   if (!Number.isInteger(maxNewAccounts) || maxNewAccounts < maxActiveAccounts) {
     throw new Error('E2E_MAX_NEW_ACCOUNTS_PER_RUN must be an integer at least E2E_WORKERS');
-  }
-  if (!Number.isInteger(maxQuarantinedAccounts) || maxQuarantinedAccounts < 1) {
-    throw new Error('E2E_MAX_QUARANTINED_ACCOUNTS must be a positive integer');
   }
 }
 
