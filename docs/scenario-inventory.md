@@ -30,10 +30,10 @@ can neither satisfy nor fail release qualification.
 
 The separation is carried by the signed `operation` field, not by a workflow boundary, a step
 or a job. One protected dispatch surface, the `qualify` entry in `beta-qualification.yml`,
-carries `full`, `smoke` and `recover`. A release consumer accepts a qualification
+carries `full`, `smoke`, `recover` and `reconcile`. A release consumer accepts a qualification
 record only from the `full` operation of a completed-success qualification run: the record
-states `operation: full` and is produced only by that operation, so a `smoke` or
-`recover` run can neither produce nor withhold a record the gate legitimately produced. The
+states `operation: full` and is produced only by that operation, so a `smoke`, `recover` or
+`reconcile` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record binds
 the operation dispatched, so its producer is uniquely identifiable; and both this repository's
 producer/verifier and the Infra-side executor allow-list check `operation == full`.
@@ -84,7 +84,7 @@ agreeing about the invocations that exist.
 | Side effects | Application rows, two uploaded S3 objects, provider spend, and a Cognito identity |
 | Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |
 | Disposition | Retain |
-| Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation` as they are created, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) for the routed resources and the captured base-photo id's absence from the authenticated `GET /vto/base-photos` list, independently of the product assertion, and a teardown that is not `passed` quarantines the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
+| Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, `base_photo`, `outfit` and `outfit_generation` as they are created, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) for the routed resources and the captured base-photo id's absence from the authenticated `GET /vto/base-photos` list, independently of the product assertion, and a teardown that is not `passed` retains the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
 | Verification rationale | The product assertion stands alone; teardown is reported beside it and never rewrites it. The terminal wait is a bound on the platform's 900 s VTO recovery floor, not a measurement of observed provider latency, so the scenario does not report the platform's own recovery as a product failure. `retries: 0` is configured, because each attempt spends real provider budget and a failed attempt must not be repeated automatically. The terminal `Complete`, the image bytes, the single debit and the Client render can only be proven by a deployed run |
 | Red result means | A release-gating product failure in the try-on path, or an environment/provider condition. A `Failed` generation fails immediately instead of waiting out the recovery floor |
 
@@ -107,7 +107,7 @@ agreeing about the invocations that exist.
 | Side effects | Application rows, an S3 object, provider spend, and a Cognito identity |
 | Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |
 | Disposition | Retain |
-| Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) independently of the product assertion, and a teardown that is not `passed` quarantines the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
+| Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) independently of the product assertion, and a teardown that is not `passed` retains the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
 | Verification rationale | The product assertion stands alone; teardown is reported beside it and never rewrites it. A red result means a product defect or a provider failure — the scenario requires a terminal `ready`, so a provider failure cannot pass by the processing indicator disappearing. `retries: 0` is configured, because a failed provider attempt must not be repeated automatically and protected recovery owns non-terminal resources |
 | Red result means | A release-gating product failure. It is not a measurement: no measurement failure can produce it, and it cannot be excused as one |
 
@@ -130,7 +130,7 @@ agreeing about the invocations that exist.
 | Side effects | A Cognito identity for the duration of the attempt; in-page observation bindings |
 | Evidence level | Deployed smoke for the diagnostic run; Qualification as part of the complete release selection |
 | Disposition | Retain |
-| Cleanup contract | Declares `declareNoBusinessCleanup` with `teardownResult: 'passed'`, because the attempt creates no business resource. The worker-lease fixture then deletes the captured Cognito identity, reads back its absence, and releases the lease; the declaration replaces the business-cleanup operation, never the identity cleanup. An undeclared attempt is treated as `partial` and quarantined rather than released |
+| Cleanup contract | Declares `declareNoBusinessCleanup` with `teardownResult: 'passed'`, because the attempt creates no business resource. The worker-lease fixture then deletes the captured Cognito identity, reads back its absence, and releases the lease; the declaration replaces the business-cleanup operation, never the identity cleanup. An undeclared attempt is treated as `partial` and retained rather than released |
 | Verification rationale | The scenario is the stable critical path the smoke invocation requires, and it is the only `@smoke` scenario that exercises session destruction as well as startup. Its retry budget is the workflow default rather than `0`, so a run that only passes on a retry is a flake to investigate, not evidence that its assertion needed the retry |
 | Red result means | A product failure in session startup, restore or logout — or an environment or credential condition. A red smoke run withholds diagnostic confidence but asserts no release verdict by itself; the same red inside the qualification selection fails the release gate |
 

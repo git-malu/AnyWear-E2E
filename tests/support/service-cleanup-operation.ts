@@ -94,6 +94,15 @@ export interface CleanupOperationIo {
   sleep(milliseconds: number): Promise<void>;
 }
 
+export interface CleanupOperationOptions {
+  /**
+   * The absolute instant the caller's job must be done by (#217). A wait that reaches it stops
+   * with `CleanupDeadlineExceededError`, so the caller can still record what it did instead of
+   * losing the record when the job is cancelled.
+   */
+  deadline?: number;
+}
+
 interface CanonicalTask {
   taskArn: string;
   clusterArn: string;
@@ -323,6 +332,11 @@ async function observeTask(io: CleanupOperationIo, envelope: CleanupOperationEnv
 function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): Record<string, unknown> {
   const result = object(value, 'Service committed result');
   const counters = ['users', 'missingUsers', 'tasks', 'outbox', 'idempotency', 'generations', 'relations', 'outfits', 'items', 'photos'];
+  // #217: the object phase is part of the committed result. `objects` is what the task
+  // deleted under the captured users' prefixes and `objectsMissing` is what their own rows
+  // expected but the listing did not contain. Both are required: a Service release without
+  // them cannot prove the objects are gone.
+  const objectCounters = ['objects', 'objectsMissing'];
   if (result.schema_version !== 1 || result.record_type !== 'anywear_beta_cleanup_result' || result.source !== 'beta-tester-cleanup'
     || result.cleanup !== 'beta-testers' || result.operation_id !== envelope.operation_id || result.request_sha256 !== envelope.request_sha256
     || result.run_scope !== envelope.run_scope || result.operation_mode !== envelope.operation_mode
@@ -330,6 +344,7 @@ function validateCommitted(value: unknown, envelope: CleanupOperationEnvelope): 
     || result.service_commit_sha !== envelope.service_commit_sha || result.service_image_digest !== envelope.service_image_digest
     || typeof result.envelope_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(result.envelope_sha256)
     || counters.some(key => !Number.isSafeInteger(result[key]) || (result[key] as number) < 0)
+    || objectCounters.some(key => !Number.isSafeInteger(result[key]) || (result[key] as number) < 0)
     || (result.users as number) + (result.missingUsers as number) !== (object(parseStrictJson(envelope.cleanup_request), 'Cleanup request').users as unknown[]).length) {
     throw new Error('Service completion marker lacks exact committed request/source proof');
   }
@@ -508,12 +523,30 @@ async function recordDescription(evidence: CleanupOperationEvidence, path: strin
   await writeEvidence(path, evidence);
 }
 
-/** Resume one execution: observe it until it is terminal, bounded to 900 observations. */
+/**
+ * The in-job budget a cleanup wait must not outlive (#217).
+ *
+ * A reconcile job passes the deadline it has left, so the wait stops with this error before the
+ * job is cancelled and the record it needs to write is lost. Nothing about the operation's
+ * evidence changes: the caller records the identities as retained against the deadline.
+ */
+export class CleanupDeadlineExceededError extends Error {
+  readonly code = 'E2E_CLEANUP_DEADLINE_EXCEEDED';
+
+  constructor() {
+    super('Cleanup wait reached the caller\'s in-job deadline');
+    this.name = 'CleanupDeadlineExceeded';
+  }
+}
+
+/** Resume one execution: observe it until it is terminal, bounded to 900 observations or the deadline. */
 async function awaitTerminal(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope, versionArn: string,
-  name: string, evidence: CleanupOperationEvidence, path: string, initial?: DescribeExecutionOutput): Promise<DescribeExecutionOutput> {
+  name: string, evidence: CleanupOperationEvidence, path: string, initial?: DescribeExecutionOutput,
+  deadline?: number): Promise<DescribeExecutionOutput> {
   let description = initial;
   let last: DescribeExecutionOutput | undefined;
   for (let observation = 0; observation < 900; observation += 1) {
+    if (deadline !== undefined && Date.now() >= deadline) throw new CleanupDeadlineExceededError();
     if (!description) description = await io.describe(arn);
     validateDescription(description, envelope, versionArn, name);
     last = description;
@@ -528,9 +561,9 @@ async function awaitTerminal(io: CleanupOperationIo, arn: string, envelope: Clea
 }
 
 async function observePresent(io: CleanupOperationIo, description: DescribeExecutionOutput, expected: ExpectedExecution,
-  evidence: CleanupOperationEvidence, path: string): Promise<DescribeExecutionOutput> {
+  evidence: CleanupOperationEvidence, path: string, deadline?: number): Promise<DescribeExecutionOutput> {
   if (description.status === 'RUNNING') {
-    return awaitTerminal(io, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, description);
+    return awaitTerminal(io, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, description, deadline);
   }
   await recordDescription(evidence, path, description);
   return description;
@@ -598,7 +631,7 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * refuses.
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
-  io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
+  io?: CleanupOperationIo, options: CleanupOperationOptions = {}): Promise<CleanupOperationEvidence | undefined> {
   const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
   if (!versionArn) {
     console.warn('Beta cleanup capability is not configured; cleanup deferred and identities retained');
@@ -674,7 +707,7 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       if (!present) throw new Error('Original captured retry execution is unavailable');
       validateDescription(present, originalRetry.envelope, originalRetry.versionArn, originalRetry.name);
       target(originalRetry);
-      const description = await observePresent(transport, present, originalRetry, evidence, path);
+      const description = await observePresent(transport, present, originalRetry, evidence, path, options.deadline);
       if (description.status === 'SUCCEEDED') return await verifySuccess(description, originalRetry.envelope);
       if (description.status === 'RUNNING') {
         refusalPhase = 'execution_observation';
@@ -703,15 +736,15 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       await start();
       refusalPhase = 'execution_observation';
       refusalCategory = 'execution_observation_unavailable';
-      description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path);
+      description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, undefined, options.deadline);
     } else if (originalBase && bindsExpected(description, originalBase)) {
       expected = originalBase;
       target(expected);
-      description = await observePresent(transport, description, expected, evidence, path);
+      description = await observePresent(transport, description, expected, evidence, path, options.deadline);
     } else if (bindsExpected(description, current[0])) {
       expected = current[0];
       target(expected);
-      description = await observePresent(transport, description, expected, evidence, path);
+      description = await observePresent(transport, description, expected, evidence, path, options.deadline);
     } else {
       throw new Error('Observed generation 0 does not bind the original owner or the current operation');
     }
@@ -739,10 +772,10 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       await start();
       refusalPhase = 'execution_observation';
       refusalCategory = 'execution_observation_unavailable';
-      retry = await awaitTerminal(transport, current[1].arn, current[1].envelope, current[1].versionArn, current[1].name, evidence, path);
+      retry = await awaitTerminal(transport, current[1].arn, current[1].envelope, current[1].versionArn, current[1].name, evidence, path, undefined, options.deadline);
     } else {
       validateDescription(retry, current[1].envelope, current[1].versionArn, current[1].name);
-      retry = await observePresent(transport, retry, current[1], evidence, path);
+      retry = await observePresent(transport, retry, current[1], evidence, path, options.deadline);
     }
     if (retry.status === 'SUCCEEDED') return await verifySuccess(retry, current[1].envelope);
     if (retry.status === 'RUNNING') {
@@ -753,12 +786,15 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     refusalPhase = 'retry_eligibility';
     refusalCategory = 'retry_not_authorized';
     throw new Error('Cleanup retry already exists and is terminal non-success; no third execution is started');
-  } catch {
+  } catch (error) {
     evidence.operation.proof_status = 'refused';
     evidence.operation.failure = 'Exact execution/task/committed-result proof unavailable; Cognito identities retained';
     evidence.operation.refusal_phase = refusalPhase;
     evidence.operation.refusal_category = refusalCategory;
     await writeEvidence(path, evidence);
-    throw new Error(evidence.operation.failure);
+    // The deadline stop stays distinguishable for the caller: a reconcile records it as
+    // `deadline_exceeded` and still writes its record, rather than as a Service refusal.
+    if (error instanceof CleanupDeadlineExceededError) throw error;
+    throw new Error(evidence.operation.failure, { cause: error });
   }
 }

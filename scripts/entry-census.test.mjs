@@ -27,6 +27,7 @@ function jobSection(workflow, name) {
 
 const check = read('check.yml');
 const qualify = read('beta-qualification.yml');
+const schedule = read('reconcile-schedule.yml');
 const job = (name) => jobSection(qualify, name);
 
 function inputBlock(name) {
@@ -38,7 +39,10 @@ function inputBlock(name) {
 }
 
 test('the deployable unit exposes exactly two entries: one automatic check and one manual qualify', () => {
-  assert.deepEqual(entries, ['beta-qualification.yml', 'check.yml']);
+  // #217 adds one dispatching entry: the daily account-reconcile schedule. It is not a
+  // second dispatch surface — it commits no qualification action of its own, it only
+  // dispatches `operation=reconcile` through the protected `qualify` entry.
+  assert.deepEqual(entries, ['beta-qualification.yml', 'check.yml', 'reconcile-schedule.yml']);
 
   // The automatic entry absorbs quality and tool-regressions. `quality.yml` carried no path
   // filter, so the workflow-level union is unfiltered and tool-regressions now runs on every
@@ -52,7 +56,7 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   const operation = inputBlock('operation');
   assert.match(operation, /required: true/);
   assert.match(operation, /type: choice/);
-  assert.match(operation, /options: \[full, smoke, recover\]/);
+  assert.match(operation, /options: \[full, smoke, recover, reconcile\]/);
   // The retired measurement operation carried the only sizing stage input; nothing in the
   // entry may declare it again.
   assert.doesNotMatch(qualify, /sizing_stage/, 'the retired measurement operation carries no dispatch input');
@@ -68,7 +72,8 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   const trigger = inputBlock('trigger');
   assert.match(trigger, /type: choice/);
   assert.match(trigger, /default: manual/);
-  assert.match(trigger, /options: \[manual, deploy-smoke, release-qualify\]/);
+  // #217: `scheduled` is the daily reconcile dispatch; it may only ask for reconcile.
+  assert.match(trigger, /options: \[manual, deploy-smoke, release-qualify, scheduled\]/);
   const dispatchedBy = inputBlock('dispatched_by');
   assert.match(dispatchedBy, /required: false/);
   assert.match(dispatchedBy, /type: string/);
@@ -98,11 +103,46 @@ test('the qualify chain keeps one credential job per operation and a credential-
   for (const operation of ['full', 'smoke', 'recover']) {
     const section = job(operation);
     assert.ok(section.length > 0, `the qualify entry must declare ${operation}`);
-    assert.match(section, /needs: preflight/);
+    assert.match(section, /needs: .*preflight/, `${operation} must need preflight`);
     assert.match(section, new RegExp(`if: github\\.ref == 'refs/heads/main' && needs\\.preflight\\.outputs\\.operation == '${operation}'`));
     assert.match(section, /environment: beta/);
     assert.match(section, /id-token: write/);
     assert.equal([...section.matchAll(/configure-aws-credentials/g)].length, 1, `${operation} has exactly one AWS credential step`);
+    // #217: a step that can create or delete an identity must assume the qualification role
+    // under the run-scoped session the reconcile attributes the creation through.
+    assert.match(section, /role-session-name: e2e-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/, `${operation} must set the run-scoped credential session`);
+  }
+
+  // #217: the reconcile job is both its own operation and the job every qualification suite
+  // waits for. It gates on the validated preflight output, never on the raw dispatch input,
+  // and its bound is the 15 minutes the reviewed retention states.
+  const reconcile = job('reconcile');
+  assert.ok(reconcile.length > 0, 'the qualify entry must declare reconcile');
+  assert.match(reconcile, /needs: preflight/);
+  assert.match(reconcile, /if: github\.ref == 'refs\/heads\/main' && \(needs\.preflight\.outputs\.operation == 'reconcile' \|\| needs\.preflight\.outputs\.operation == 'full' \|\| needs\.preflight\.outputs\.operation == 'smoke'\)/);
+  const reconcileIf = reconcile.match(/^ {4}if: (.+)$/m)?.[1] ?? '';
+  assert.doesNotMatch(reconcileIf, /inputs\.operation/, 'reconcile must not gate its job on the raw dispatch input');
+  assert.match(reconcile, /environment: beta/);
+  assert.match(reconcile, /id-token: write/);
+  assert.match(reconcile, /actions: read/, 'reconcile reads the recent lifecycle artifacts');
+  // The ordinary bound is 15 minutes; the one 90-day migration dispatch is bounded to 30.
+  assert.match(reconcile, /timeout-minutes: \$\{\{ inputs\.operation == 'reconcile' && inputs\.reconcile_lookback_days == '90' && 30 \|\| 15 \}\}/);
+  assert.equal([...reconcile.matchAll(/configure-aws-credentials/g)].length, 1, 'reconcile has exactly one AWS credential step');
+  assert.match(reconcile, /role-session-name: e2e-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/, 'reconcile must set the run-scoped credential session');
+  // #217: the lookback is a closed dispatch input, 7 or 90, and only the reconcile operation
+  // accepts the 90-day migration window. The job deadline follows the window it reads.
+  assert.match(qualify, /reconcile_lookback_days:\n(?: {8}.*\n)*? {8}options: \['7', '90'\]/);
+  assert.match(reconcile, /timeout-minutes: \$\{\{ inputs\.operation == 'reconcile' && inputs\.reconcile_lookback_days == '90' && 30 \|\| 15 \}\}/);
+  assert.match(reconcile, /E2E_ACCOUNT_RECONCILE_LOOKBACK_DAYS: \$\{\{ inputs\.reconcile_lookback_days \}\}/);
+  assert.match(reconcile, /E2E_ACCOUNT_RECONCILE_DEADLINE_SECONDS: \$\{\{ inputs\.reconcile_lookback_days == '90' && '1500' \|\| '720' \}\}/);
+  assert.match(preflight, /RECONCILE_LOOKBACK_DAYS: \$\{\{ inputs\.reconcile_lookback_days \}\}/);
+  assert.match(preflight, /7\|90\) ;;/);
+  assert.match(preflight, /reconcile_lookback_days is only accepted by operation reconcile/);
+  assert.match(reconcile, /node scripts\/reconcile-accounts\.mjs/);
+  // Every qualification suite runs after the reconcile job, so a run starts from a
+  // reconciled environment and cannot report a clean one it did not verify.
+  for (const operation of ['full', 'smoke']) {
+    assert.match(job(operation), /needs: \[preflight, reconcile\]/, `${operation} must run after reconcile`);
   }
 
   // The record job holds no credential and runs only for full. Only full may produce the
@@ -124,7 +164,7 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.match(qualify, /dispatched_by/);
   assert.doesNotMatch(qualify, /beta-release-approval/);
   assert.doesNotMatch(qualify, /AwaitingApproval|Approved|Rejected/);
-  for (const name of ['preflight', 'smoke', 'recover', 'record']) {
+  for (const name of ['preflight', 'smoke', 'recover', 'reconcile', 'record']) {
     assert.doesNotMatch(job(name), /qualification:generate/, `${name} must not produce the qualification record`);
   }
   // `record` is the last job in the workflow.
@@ -132,7 +172,7 @@ test('the qualify chain keeps one credential job per operation and a credential-
 });
 
 test('no qualification job downloads a producer deployment record or checks out producer source', () => {
-  for (const name of ['preflight', 'full', 'smoke', 'record']) {
+  for (const name of ['preflight', 'reconcile', 'full', 'smoke', 'record']) {
     const section = job(name);
     assert.doesNotMatch(section, /platform-deployment-record\.json/, `${name} must not retain the retired platform record`);
     assert.doesNotMatch(section, /\.qualification-inputs\/deployment-record\.json/, `${name} must not retain the retired workload record`);
@@ -155,7 +195,36 @@ test('the only activation switch in this repository is ENABLE_BETA_MUTATION', ()
   const names = new Set([...qualify.matchAll(/\bENABLE_[A-Z0-9_]+\b/g)].map((match) => match[0]));
   assert.deepEqual([...names], ['ENABLE_BETA_MUTATION']);
   assert.doesNotMatch(check, /\bENABLE_[A-Z0-9_]+\b/);
+  assert.doesNotMatch(schedule, /\bENABLE_[A-Z0-9_]+\b/);
   const guard = readFileSync(join(repositoryRoot, 'scripts', 'execution-guard.mjs'), 'utf8');
   assert.match(guard, /environment\.ENABLE_BETA_MUTATION/);
   assert.doesNotMatch(guard, /ENABLE_INFRA_E2E/);
+});
+
+test('the daily reconcile schedule dispatches the protected operation and holds no credential', () => {
+  // #163/#217: the schedule cannot be a `schedule` event on the qualify entry, because the
+  // execution guard requires `workflow_dispatch`. It is a dispatching entry only.
+  const triggerBlock = schedule.slice(schedule.indexOf('\non:') + 1, schedule.indexOf('\npermissions:'));
+  assert.match(triggerBlock, /^on:\n {2}schedule:\n(?: {4}#[^\n]*\n)* {4}- cron: '[^']+'\n$/);
+  assert.doesNotMatch(triggerBlock, /push:|pull_request:|workflow_dispatch:/,
+    'the schedule declares no second dispatch surface and no branch trigger');
+
+  // It dispatches exactly the protected entry with the reconcile operation and the
+  // `scheduled` trigger, naming the dispatching run as evidence.
+  assert.match(schedule, /gh workflow run beta-qualification\.yml/);
+  assert.match(schedule, /--repo "\$GITHUB_REPOSITORY"/);
+  assert.match(schedule, /--ref main/);
+  assert.match(schedule, /-f operation=reconcile/);
+  assert.match(schedule, /-f trigger=scheduled/);
+  assert.match(schedule, /-f dispatched_by="\$DISPATCHED_BY"/);
+  assert.match(schedule, /DISPATCHED_BY: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/);
+
+  // The dispatching job needs Actions write, no AWS credential and no environment: it
+  // resolves no environment-scoped value and never enters the Beta environment.
+  const dispatch = jobSection(schedule, 'dispatch');
+  assert.ok(dispatch.length > 0, 'the schedule must declare its dispatch job');
+  assert.match(dispatch, /permissions:\n(?: {6}#[^\n]*\n)* {6}actions: write\n {6}contents: read\n/);
+  assert.doesNotMatch(dispatch, /configure-aws-credentials|id-token|environment: beta/);
+  assert.match(dispatch, /timeout-minutes: 5/);
+  assert.match(dispatch, /if: github\.ref == 'refs\/heads\/main'/);
 });

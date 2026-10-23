@@ -11,7 +11,7 @@ import { assertE2EExecution } from '../../scripts/execution-guard.mjs';
 import { workerSlotOffset } from '../../scripts/worker-slots.mjs';
 import {
   markAccountInUse,
-  quarantineAccount,
+  retainAccount,
   recordAccountSubject,
   reserveAccount,
   type AccountMode,
@@ -117,9 +117,9 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
     assertE2EExecution();
     // The attempt leases a stable pool address, so a pre-existing Cognito binding
     // for it is always a defect rather than an identity to adopt:
-    // `UsernameExistsException` is therefore fatal. The outer catch quarantines
-    // this scope with whatever is bound there, and no later attempt is handed the
-    // same address until an operator repairs the lease. A stale Service profile
+    // `UsernameExistsException` is therefore fatal. The outer catch retains this
+    // scope with whatever is bound there, and no later attempt is handed the same
+    // address until the reconcile operation resolves it. A stale Service profile
     // row is not this failure: issue #137's release/adopt contract releases and
     // re-adopts that binding inside profile sync, and the E2E side never deletes a
     // profile row.
@@ -150,7 +150,7 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
     }
     await markAccountInUse(account.email);
   } catch (error) {
-    await quarantineAccount(account.email, `provisioning failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    await retainAccount(account.email, `provisioning failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     throw error;
   } finally {
     client.destroy();

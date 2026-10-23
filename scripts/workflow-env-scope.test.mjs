@@ -234,6 +234,16 @@ test('every operation gate uses the preflight-validated operation output', () =>
       `${operation} must not gate its job on the raw dispatch input`);
   }
 
+  // #217: the reconcile job serves its own operation and runs before every qualification
+  // suite, so its gate names all three operations and still reads only the validated output.
+  const reconcile = job('reconcile');
+  assert.match(reconcile.needsLine, /preflight/, 'reconcile must need preflight');
+  for (const operation of ['reconcile', 'full', 'smoke']) {
+    assert.match(reconcile.ifLine, new RegExp(`needs\\.preflight\\.outputs\\.operation == '${operation}'`),
+      `reconcile must gate on the validated ${operation} operation`);
+  }
+  assert.doesNotMatch(reconcile.ifLine, /inputs\.operation/, 'reconcile must not gate its job on the raw dispatch input');
+
   // `record` gates on the same validated output, so it must also need the job that
   // produces it: `needs: full` alone would leave needs.preflight.outputs unresolved.
   const record = job('record');

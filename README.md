@@ -32,8 +32,10 @@ and Beta's Cognito IDs. The deployment workflows load the identity IDs from
 `/anywear/beta/cognito_user_pool_id` and `/anywear/beta/cognito_client_id` in SSM.
 Do not commit `.env` or Playwright authentication state.
 
-The deployed qualification profile sets two workers, two active-account slots, six new
-account leases per run, and two quarantine slots. Beta registration is gated by the exact
+The deployed qualification profile sets two workers, two active-account slots and six new
+account leases per run. There is no quarantine budget: a teardown that cannot prove deletion
+records the identity `retained` with a reason and a `reconcileBy` bound, and the `reconcile`
+operation resolves it inside 24 hours (#217). Beta registration is gated by the exact
 tester allowlist, so an attempt may only use a listed address: each Playwright parallel slot
 leases one of the eight stable worker-pool addresses
 (`e2e-beta-worker-0-chromium@anywear.local` … `e2e-beta-worker-7-chromium@anywear.local`) and
@@ -44,13 +46,15 @@ qualification never mutates the allowlist and needs no real tester mailbox. The 
 synthetic address family and `custom:e2e_bootstrap` marker are no longer written; a historical
 captured identity in either worker family stays deletable.
 The operations of the `qualify` entry share a non-cancelling Beta account-pool
-concurrency group, and each run uploads its account-budget manifest for recovery.
+concurrency group. Each run uploads its account-budget manifest, and the `reconcile`
+operation reads the previous seven days of those manifests plus the CloudTrail
+`AdminCreateUser` history to clear a leftover without operator input.
 
 ## Commands
 
 ```bash
 pnpm check             # vendored contract, explicit core contracts, lint, typecheck and safe discovery
-pnpm test:core         # 21 registered offline identity/cleanup/qualification/artifact contracts
+pnpm test:core         # the registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # the one retained offline operational-support test file
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
@@ -82,29 +86,42 @@ scenario must satisfy.
 | `test:regression` / `test` | E2E maintainers; the `full` operation's protected Beta qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this operation and its evidence can qualify a release |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario; not a release-gating selection on its own |
 
-The release-gating selection, the smoke diagnostic and account recovery are
-separated by the signed `operation` field, not by a workflow boundary, a step or a job. One
-protected dispatch surface, the `qualify` entry in `beta-qualification.yml`, carries
-`full`, `smoke` and `recover`. A release consumer accepts a qualification record
+The release-gating selection, the smoke diagnostic, account recovery and automatic leftover
+expiry are separated by the signed `operation` field, not by a workflow boundary, a step or a
+job. One protected dispatch surface, the `qualify` entry in `beta-qualification.yml`, carries
+`full`, `smoke`, `recover` and `reconcile`. A release consumer accepts a qualification record
 only from the `full` operation of a completed-success qualification run; the record states
-`operation: full` and is produced only by that operation, so a `smoke` or
-`recover` run can neither produce nor withhold a record the gate legitimately produced. The
+`operation: full` and is produced only by that operation, so a `smoke`, `recover` or
+`reconcile` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record
 binds the operation dispatched, so its producer is uniquely identifiable; and both this
 repository's producer/verifier and the Infra-side executor allow-list check
 `operation == full`. The [scenario inventory](docs/scenario-inventory.md) states which
 verdict each invocation carries.
 
-The 21 registered core files retain account-budget, Cognito cleanup, qualification
-record, cleanup operation, wardrobe cleanup, worker cleanup and deployed-scenario
+`reconcile` runs twice: as a job before every qualification suite, so a run starts from a
+reconciled environment, and as a daily dispatch of the same protected `workflow_dispatch`
+entry from `reconcile-schedule.yml` (`trigger=scheduled`). The scheduled file only dispatches
+— the execution guard requires `workflow_dispatch`, so a `schedule` event on the qualify entry
+would fail closed — and the dispatched run is what joins the `beta-e2e-account-pool`
+concurrency group and holds the Beta credential. Its runbook is
+[docs/account-reconcile.md](docs/account-reconcile.md).
+
+The registered core files retain account-budget, Cognito cleanup, qualification
+record, cleanup operation, wardrobe cleanup, worker cleanup, account reconcile and
+deployed-scenario
 declaration contracts plus the v4 live-tuple contracts: `qualification-record.test.mjs`
 (the live identity, the supported-Client floor and the v4 record), `infra-qualification.test.mjs`
 (this repository's own platform observation, the record's self-containment and its release
 consumer), `service-release.test.mjs` (the immutable Service release identity, the
 four-asset gate, the five-asset transition and the no-asset-read rule), and
-`entry-census.test.mjs`, which asserts the two-entry face, the one manual dispatch surface,
+`entry-census.test.mjs`, which asserts the three-entry face, the one manual dispatch surface,
 the credential ordering, the absence of an approval job and the single
 `ENABLE_BETA_MUTATION` name. `test:core` also owns
+`scripts/reconcile-accounts.test.mjs`, which asserts the reconcile diff, the captured address
+grammar, the seven-day window and 24-hour bound, the closed `anywear_e2e_account_reconcile`
+v1 record and the fail-closed paths offline, without credentials, cloud calls or deployed
+reads; and
 `scripts/beta-cleanup-diagnostic.test.mjs`, which asserts the cleanup diagnostic's
 `DIAGNOSTIC_EXPECTED` evidence record offline and its manifest-free Service release
 resolution, without credentials, cloud calls or deployed reads; it belongs with its
@@ -182,7 +199,7 @@ Dev verification remains in the Client and Service unit and integration suites.
 
 The non-skipped `worker-smoke.spec.ts` signs in with the existing leased
 `workerAccount` fixture and opens Dashboard and Wardrobe. Provisioning, budget,
-protected execution, quarantine and Service/Cognito cleanup controls remain shared with
+protected execution, retention and Service/Cognito cleanup controls remain shared with
 the deployed selection. `auth.spec.ts` and its `E2E_PUBLIC_REGISTRATION_OPEN` switch are
 retired: registration is gated by the Beta tester allowlist in the Cognito `PreSignUp`
 trigger, so public self-registration is no longer a product surface for the scenario to
@@ -190,10 +207,12 @@ observe. The [scenario inventory](docs/scenario-inventory.md) records the retire
 replacement coverage.
 
 The manual `Beta Qualification` entry (`qualify`) is the single protected dispatch
-surface, with the required operation menu `full` (release gate), `smoke` (diagnostic)
-and `recover` (account recovery). Its dispatch also carries
+surface, with the required operation menu `full` (release gate), `smoke` (diagnostic),
+`recover` (historical account recovery) and `reconcile` (automatic leftover expiry). Its
+dispatch also carries
 `expected_service_commit` and `expected_client_commit` (`full` only), `trigger` (`manual`,
-`deploy-smoke` for the deployment smoke hook, `release-qualify` for the release action) and
+`deploy-smoke` for the deployment smoke hook, `release-qualify` for the release action,
+`scheduled` for the daily reconcile dispatch) and
 `dispatched_by` (the dispatching run URL; non-manual triggers only), and the credential-free
 preflight validates that combination before any credential job. The `full` operation is the
 production-readiness gate for an already-deployed Beta environment. It reads the live Client
@@ -404,29 +423,38 @@ does not serialize those other repositories. Keep `ENABLE_BETA_MUTATION` unset o
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
 the single `qualify` entry and the explicitly stated `operation` establish source
 identity. `execution-guard.mjs --source-only` checks that identity before credentials,
-including that the operation is one of `full`, `smoke` or `recover` and that
+including that the operation is one of `full`, `smoke`, `recover` or `reconcile` and that
 the workflow ref is the entry the operation map names. After
 assuming the dedicated `beta-e2e-qualification-role`, each operation job captures fresh
 STS account/principal values and checks the exact account, role and region. Those
 values are supplied by the workflow, not dispatch inputs. The default guard requires
 that captured principal before observations, suite and mutation boundaries, including
 Cognito deletion after a fixed cleanup operation wait. Missing or mismatched identity
-retains the cleanup manifest for protected recovery. `full` has a 90-minute
-job bound; `smoke` and `recover` have 60-minute bounds. All three share
+retains the cleanup manifest, and the `reconcile` operation resolves it inside its bound.
+`full` has a 90-minute job bound; `smoke` and `recover` have 60-minute bounds;
+`reconcile` has a 15-minute bound and stops starting work after 720 seconds so the record
+is still written. All four share
 the `beta-e2e-account-pool` concurrency group with cancellation disabled. Verify
 all local/Actions/CFN/ECS/nested Service jobs have ceased before handing the
 environment to another writer; timeout alone never releases it.
 
 The Infra-owned versioned Step Functions cleanup capability invokes Service's fixed
-application-data task. An ordinary qualification cleanup and a protected `recover`
+application-data task. An ordinary qualification cleanup, the `reconcile` operation and a
+protected `recover`
 dispatch submit the same strict normal-mode envelope and enter the same resume/verify/
-retry rule. Recovery validates the completed original E2E owner and captured worker
-subjects. A quarantined record whose captured subject and worker-family address (a stable
+retry rule. The Service cleanup deletes the captured users' objects under
+`wearable-items/<sub>/` and `base-photos/<sub>/`, reads absence back by listing, and only then
+deletes their PostgreSQL rows; it reports `objects` and
+`objectsMissing` in its committed result; `reconcile` requires both counters before it
+deletes an identity, so a Service release that cannot prove the object phase leaves the
+identity retained. Recovery validates the completed original E2E owner and captured worker
+subjects. A retained record whose captured subject and worker-family address (a stable
 pool row, or a historical run-scoped address of that run) are intact is
-repaired by the same reviewed cleanup — capability tuple, Service commit proof, absence
+resolved by the same reviewed cleanup — capability tuple, Service commit proof, absence
 readback and ledger `deleted` with the original reason preserved — while a record whose
-ownership is unproven stays terminal, remains in the manifest and fails recovery. The
-operator path is in [docs/account-recovery.md](docs/account-recovery.md). The account artifact preserves the capability execution,
+ownership is unproven is reported and never deleted. The
+reconcile path is in [docs/account-reconcile.md](docs/account-reconcile.md) and the
+recovery path is in [docs/account-recovery.md](docs/account-recovery.md). The account artifact preserves the capability execution,
 source/image binding and exact cleanup request before any Cognito deletion, including
 when later cleanup fails. Legacy `service-cleanup-run.json` records remain accepted as
 historical recovery input; new runs use `service-cleanup-operation.json`. E2E does not
@@ -452,7 +480,8 @@ unassigned diagnostic `known_message`; those counters alone do not establish
 per-message ownership. Source/image-bound Service validation and live unrelated
 data/message preservation evidence provide that acceptance boundary.
 
-Protected account recovery and the ordinary qualification cleanup share one rule. For the
+Protected account recovery, the automatic reconcile and the ordinary qualification cleanup
+share one rule. For the
 exact captured run scope, the entry point resolves one deterministic execution name,
 `beta-cleanup-<runScope>-<requestHash16>`; an absent generation 0 is started under the
 current version and normal envelope. It resumes that execution while it is `RUNNING`,

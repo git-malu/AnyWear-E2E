@@ -40,7 +40,7 @@ export interface AttemptBusinessCleanupDeclaration {
   email: string;
   state: AttemptBusinessCleanupState;
   teardownResult?: AttemptTeardownResult;
-  /** Sanitized, single-line, bounded; safe to carry into a quarantine record. */
+  /** Sanitized, single-line, bounded; safe to carry into a retention record. */
   reason?: string;
 }
 
@@ -54,7 +54,7 @@ export type AttemptBusinessCleanupOutcome = Omit<AttemptBusinessCleanupDeclarati
  */
 export type AttemptKey = object;
 
-/** Bounded so a Service or Cognito message can never enlarge a quarantine record. */
+/** Bounded so a Service or Cognito message can never enlarge a retention record. */
 const MAX_REASON_LENGTH = 300;
 
 interface AttemptCleanupRecord {

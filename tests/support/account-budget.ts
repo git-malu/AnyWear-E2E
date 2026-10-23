@@ -4,18 +4,25 @@ import { randomUUID } from 'node:crypto';
 import { STABLE_WORKER_EMAIL_PATTERN } from './beta-address.ts';
 
 export type AccountMode = 'worker' | 'ephemeral';
+/**
+ * The account state model (#217).
+ *
+ * `retained` replaced the terminal `quarantined` state: a teardown that cannot prove
+ * deletion records the identity `retained` with a reason and a `reconcileBy` bound, fails
+ * its own run exactly as before, and is resolved by the `reconcile` operation inside that
+ * bound. There is no terminal state that only an operator can clear.
+ */
 export type AccountStatus =
   | 'reserved'
   | 'provisioning'
   | 'in_use'
   | 'cleanup_pending'
   | 'deleted'
-  | 'quarantined';
+  | 'retained';
 
 export interface AccountBudgetConfig {
   maxActiveAccounts: number;
   maxNewAccountsPerRun: number;
-  maxQuarantinedAccounts: number;
 }
 
 interface AccountRecord {
@@ -28,6 +35,10 @@ interface AccountRecord {
   createdAt: string;
   updatedAt: string;
   reason?: string;
+  /** The bounded reason a retained scope kept its identity (#217). */
+  retainedReason?: string;
+  /** The instant the reconciler must have resolved this identity by (#217). */
+  reconcileBy?: string;
 }
 
 interface AccountBudgetState {
@@ -37,13 +48,52 @@ interface AccountBudgetState {
   accounts: AccountRecord[];
 }
 
+/**
+ * The statuses that consume the active-account budget (#217).
+ *
+ * `retained` is deliberately absent: it is not a capacity gate. A retained identity consumes no
+ * active budget, so it cannot exhaust a later run's budget, while its own address stays out of
+ * the pool — the per-address guard in `reserveAccount` refuses the lease and names the retained
+ * reason — until the reconcile operation deletes the identity. `maxNewAccountsPerRun` still
+ * counts every attempt, retained or not.
+ */
 const ACTIVE_STATUSES = new Set<AccountStatus>([
   'reserved',
   'provisioning',
   'in_use',
   'cleanup_pending',
-  'quarantined',
 ]);
+
+/** The bound a retained identity must be reconciled inside (#217). */
+export const RECONCILE_BOUND_MS = 24 * 60 * 60_000;
+
+/** A record as a pre-#217 manifest wrote it: the removed status is still a string. */
+type LegacyAccountRecord = Omit<AccountRecord, 'status'> & { status: string };
+
+/**
+ * Read a manifest written before #217, which recorded the removed `quarantined` state and a
+ * `maxQuarantinedAccounts` budget. The state is read as `retained` and the reason is kept;
+ * the removed budget key is dropped so a recovered historical manifest is still writable.
+ *
+ * The bound is anchored to the record's own `createdAt`, not to the instant it is read, so a
+ * historical record states when its run's leftover became late rather than when a later
+ * reader noticed it.
+ */
+function normalizeState(state: AccountBudgetState): AccountBudgetState {
+  const accounts = (state.accounts as unknown as LegacyAccountRecord[]).map((account): AccountRecord => {
+    if (account.status !== 'quarantined') return account as AccountRecord;
+    const { reason, ...rest } = account;
+    return {
+      ...rest,
+      status: 'retained',
+      retainedReason: rest.retainedReason ?? reason,
+      reconcileBy: rest.reconcileBy ?? new Date(Date.parse(rest.createdAt) + RECONCILE_BOUND_MS).toISOString(),
+    };
+  });
+  const { maxQuarantinedAccounts: _removed, ...config } = state.config as AccountBudgetConfig & { maxQuarantinedAccounts?: number };
+  void _removed;
+  return { ...state, config, accounts };
+}
 
 function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name] ?? fallback);
@@ -59,7 +109,6 @@ export function accountBudgetConfig(workers: number): AccountBudgetConfig {
   const config = {
     maxActiveAccounts: positiveInteger('E2E_MAX_ACTIVE_ACCOUNTS', workers),
     maxNewAccountsPerRun: positiveInteger('E2E_MAX_NEW_ACCOUNTS_PER_RUN', workers * 3),
-    maxQuarantinedAccounts: positiveInteger('E2E_MAX_QUARANTINED_ACCOUNTS', workers),
   };
   if (config.maxActiveAccounts < workers) {
     throw new Error('E2E_MAX_ACTIVE_ACCOUNTS must be at least E2E_WORKERS');
@@ -124,7 +173,7 @@ async function withLockedState<T>(operation: (state: AccountBudgetState) => Prom
   try {
     let state: AccountBudgetState;
     try {
-      state = JSON.parse(await readFile(filePath, 'utf8')) as AccountBudgetState;
+      state = normalizeState(JSON.parse(await readFile(filePath, 'utf8')) as AccountBudgetState);
     } catch (error: unknown) {
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
       state = { version: 1, runScope: accountRunScope(), config: accountBudgetConfig(configuredWorkers()), accounts: [] };
@@ -155,10 +204,6 @@ function newAccountCount(state: AccountBudgetState): number {
   return state.accounts.length;
 }
 
-function quarantinedCount(state: AccountBudgetState): number {
-  return state.accounts.filter((account) => account.status === 'quarantined').length;
-}
-
 function latestAccountRecord(state: AccountBudgetState, email: string): AccountRecord | undefined {
   for (let index = state.accounts.length - 1; index >= 0; index -= 1) {
     const account = state.accounts[index];
@@ -168,15 +213,15 @@ function latestAccountRecord(state: AccountBudgetState, email: string): AccountR
 }
 
 /**
- * The generation guard's refusal, named so a retry of a held or quarantined slot
+ * The generation guard's refusal, named so a retry of a held or retained slot
  * reports what happened instead of a bare collision.
  *
  * The guard itself is unchanged: an active record with a foreign generation is
  * still refused, nothing is written, and the message text is byte-for-byte the
  * same so existing evidence, log comparisons and Beta-log reading stay
  * comparable. The diagnosis lives in the error's identity and its structured
- * fields; `reason` is the refused record's own recorded reason, already
- * sanitized and bounded by `quarantineAccount`.
+ * fields; `reason` is the refused record's own recorded retention reason, already
+ * sanitized and bounded by `retainAccount`.
  */
 export class AccountLeaseRefusalError extends Error {
   readonly code = 'E2E_ACCOUNT_LEASE_REFUSED';
@@ -200,7 +245,7 @@ export async function reserveAccount(
 ): Promise<void> {
   // Beta registration admits only allowlisted addresses, so a worker lease may
   // only be taken for one of the eight pool rows. The guard is here, before any
-  // identity exists, so a depleted or quarantined pool fails with this budget
+  // identity exists, so a depleted or retained pool fails with this budget
   // error instead of an attempt minting an address the allowlist never lists.
   if (mode === 'worker' && !STABLE_WORKER_EMAIL_PATTERN.test(email)) {
     throw new Error(`E2E account budget leases only the eight Beta worker-pool addresses: ${email}`);
@@ -209,12 +254,12 @@ export async function reserveAccount(
     const existing = latestAccountRecord(state, email);
     if (existing && existing.status !== 'deleted') {
       if (existing.leaseGeneration !== leaseGeneration) {
-        throw new AccountLeaseRefusalError(email, existing.leaseGeneration, existing.reason);
+        throw new AccountLeaseRefusalError(email, existing.leaseGeneration, existing.retainedReason ?? existing.reason);
       }
       return;
     }
     if (activeCount(state) >= state.config.maxActiveAccounts) {
-      throw new Error('E2E active account budget exhausted; wait for cleanup or recovery');
+      throw new Error('E2E active account budget exhausted; a retained address is resolved by the reconcile operation');
     }
     if (newAccountCount(state) >= state.config.maxNewAccountsPerRun) {
       throw new Error('E2E new-account budget exhausted; deletion does not restore this quota');
@@ -274,12 +319,11 @@ export async function markAccountDeleted(email: string): Promise<void> {
 /**
  * Terminal transition for one verified worker attempt.
  *
- * `deleted` is the only status `reserveAccount` may supersede, so this write —
- * and only this write — returns a pool address to the pool for the next
- * attempt's fresh lease generation. It is reachable only after the attempt's
- * exact identity was deleted and its absence was read back, and it refuses to
- * supersede a quarantined scope: a quarantined pool slot stays out of the pool
- * until an operator repairs it.
+ * `deleted` is the only status `reserveAccount` may supersede, so this write — and only
+ * this write — returns a pool address to the pool for the next attempt's fresh lease
+ * generation. It is reachable only after the attempt's exact identity was deleted and its
+ * absence was read back. A retained scope is not released here: its identity is still
+ * present, and the reconcile operation is what resolves it and marks it `deleted`.
  */
 export async function releaseWorkerAccount(
   email: string,
@@ -288,8 +332,8 @@ export async function releaseWorkerAccount(
   await withLockedState(async (state) => {
     const account = latestAccountRecord(state, email);
     if (!account) return;
-    if (account.status === 'quarantined') {
-      throw new Error(`Account scope is quarantined and cannot be released: ${email}`);
+    if (account.status === 'retained') {
+      throw new Error(`Account scope is retained pending reconcile and cannot be released: ${email}`);
     }
     account.status = 'deleted';
     account.reason = reason;
@@ -297,15 +341,24 @@ export async function releaseWorkerAccount(
   });
 }
 
-export async function quarantineAccount(email: string, reason: string): Promise<void> {
+/**
+ * Keeps the address out of the pool with a bounded, sanitized reason and the instant the
+ * reconciler must have resolved it by (#217).
+ *
+ * There is no capacity budget: the bound is time, not pool size, so a retained scope can never
+ * exhaust a budget that would need an operator to clear. The bound is anchored to this
+ * record's own `createdAt` — when the creating run made the identity — not to the instant of
+ * this write, so it states when that run's leftover became late. The run that produced the
+ * retention still fails its own teardown gate; the reconcile operation resolves the scope and
+ * writes `deleted`, which is what returns the address to the pool.
+ */
+export async function retainAccount(email: string, reason: string): Promise<void> {
   await withLockedState(async (state) => {
     const account = latestAccountRecord(state, email);
     if (!account || account.status === 'deleted') return;
-    if (account.status !== 'quarantined' && quarantinedCount(state) >= state.config.maxQuarantinedAccounts) {
-      throw new Error('E2E quarantine budget exhausted; operator recovery is required');
-    }
-    account.status = 'quarantined';
-    account.reason = reason;
+    account.status = 'retained';
+    account.retainedReason = reason;
+    account.reconcileBy = new Date(Date.parse(account.createdAt) + RECONCILE_BOUND_MS).toISOString();
     account.updatedAt = now();
   });
 }

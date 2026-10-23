@@ -112,10 +112,43 @@ Run install and build commands from this repository.
   record tuple. Do not add an approval Environment or approval/`Approved`/`Rejected` states.
 - The single protected `qualify` entry in `beta-qualification.yml` owns the deployed
   operations for beta and later stages; it must not target dev. Separation between
-  qualification, the smoke diagnostic and account recovery now lives in the
+  qualification, the smoke diagnostic, account recovery and automatic leftover expiry now
+  lives in the
   signed `operation` field, not in a workflow-file boundary: `qualification-record.json` is
   produced only by the `full` operation, the record binds the operation that was dispatched,
   and both this repository's producer/verifier and the Infra-side executor allow-list require
-  `operation: full`. A `smoke` or `recover` run therefore can neither produce nor
+  `operation: full`. A `smoke`, `recover` or `reconcile` run therefore can neither produce nor
   withhold the record the release gate produced, and a recovery result is
   never substituted for qualification evidence.
+- Leftover data is bounded by time, not quarantined (#217). A teardown that cannot prove
+  deletion records its identity `retained` with a `retainedReason` and a `reconcileBy` bound
+  (24 hours after the account record's own `createdAt`), fails its own run exactly as before,
+  and is resolved by the `reconcile` operation: a job before every `qualify` suite, and a
+  daily dispatch of the same protected `workflow_dispatch` entry from `reconcile-schedule.yml`
+  (`trigger=scheduled`). There is no quarantine budget and no `quarantined` account status; a
+  historical manifest recording `quarantined` reads as `retained`. `retained` consumes no
+  active-account budget, while its own address stays out of the pool until the identity is
+  deleted; `maxNewAccountsPerRun` still counts every attempt.
+- Attribution follows the creator, not the address (#217). Every protected credential step
+  assumes `beta-e2e-qualification-role` with
+  `role-session-name: e2e-${{ github.run_id }}-${{ github.run_attempt }}`, and
+  `scripts/execution-guard.mjs` requires the authenticated principal ARN to end
+  `/e2e-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`; `tests/support/account.ts` calls the guard
+  immediately before `AdminCreateUser`. A pool-address identity is deleted only with a
+  qualification-role creation for that exact address **or** a captured manifest subject, plus a
+  live `AdminGetUser` identity read-back and a committed exact-reference cleanup; a newer
+  creation displaces an older manifest record. `reconcile` accepts only lifecycle artifacts
+  bound to the protected `main` `workflow_dispatch` run of `beta-qualification.yml`, reads the
+  closed upload set (both `account-budget*.json` manifests, the two cleanup diagnostics) and
+  every manifest must name that run and attempt. It is bounded to 15 minutes and nine
+  artifacts per lookback day, resolves an identity within 24 hours, and fails the run for a
+  leftover past that bound. A source failure writes no record and mutates nothing;
+  `unattributable_caller`, `unprovable_ownership` and `outside_worker_family` are reported as
+  warnings and never fail a run. One `reconcile_lookback_days=90` migration dispatch over the
+  artifact retention is permitted before the removals. Runbook:
+  [docs/account-reconcile.md](docs/account-reconcile.md).
+- Never delete, or list for deletion, by scope label, prefix or address alone. The only
+  deletion selectors are a manifest's captured `{sub, email}` and the Service cleanup's own
+  exact-reference request; the object phase deletes only a captured subject's
+  `wearable-items/<sub>/` and `base-photos/<sub>/` objects. A creation by a principal other
+  than the E2E qualification role is reported and never deleted.
