@@ -27,7 +27,7 @@ gh workflow run beta-qualification.yml --repo git-malu/AnyWear-E2E --ref main \
 
 A quarantined worker record is terminal only while its ownership cannot be proven.
 
-- The record must carry a captured UUID-shaped subject and an address in its own run scope. `prepareAccountRecovery` then normalizes it to `cleanup_pending`, and `createServiceCleanupInputs` admits it to the same request as an ordinary pending record.
+- The record must carry a captured UUID-shaped subject and an address in the retained worker families: a stable pool row, or a historical run-scoped address belonging to this manifest's run. `prepareAccountRecovery` then normalizes it to `cleanup_pending`, and `createServiceCleanupInputs` admits it to the same request as an ordinary pending record.
 - The repair uses the same reviewed capability tuple, the same Service commit proof (`proof_status: verified`) before any identity deletion, and the same subject-verified absence readback.
 - On success the ledger record becomes `deleted` and keeps its original quarantine `reason`, which is the trace of the teardown defect that produced it.
 - A record whose subject is missing or malformed, or a repair the Service refuses or that cannot prove its result, stays `quarantined`, keeps its reason and fails the step. Unproven ownership is never admitted.
@@ -47,7 +47,7 @@ A refusal writes `account-recovery-failure.json` with `phase: owner_preflight`, 
 
 ## Budget interaction
 
-The recovered run's `E2E_WORKERS`, `E2E_MAX_ACTIVE_ACCOUNTS`, `E2E_MAX_NEW_ACCOUNTS_PER_RUN` and `E2E_MAX_QUARANTINED_ACCOUNTS` come from the retained manifest, not from the workflow defaults for a fresh qualification run. A quarantine consumes a slot in the run that produced it; a later run has its own manifest, its own budget and a fresh worker address.
+The recovered run's `E2E_WORKERS`, `E2E_MAX_ACTIVE_ACCOUNTS`, `E2E_MAX_NEW_ACCOUNTS_PER_RUN` and `E2E_MAX_QUARANTINED_ACCOUNTS` come from the retained manifest, not from the workflow defaults for a fresh qualification run. A quarantine consumes one of that run's pool leases; the stable pool address stays out of the pool until this repair releases it, and restoring it is what lets a later run lease the slot again.
 
 ## Artifact
 

@@ -32,12 +32,17 @@ and Beta's Cognito IDs. The deployment workflows load the identity IDs from
 `/anywear/beta/cognito_user_pool_id` and `/anywear/beta/cognito_client_id` in SSM.
 Do not commit `.env` or Playwright authentication state.
 
-The deployed qualification profile sets two workers, two active-account slots, four new
-accounts per run, and two quarantine slots. Wardrobe tests use one exclusive synthetic
-Cognito account per Playwright parallel slot, provisioned through the protected AWS admin
-path and deleted during worker teardown. Public registration remains governed by the
-Service-owned tester policy; ordinary qualification does not mutate admission policy or
-require a real tester mailbox.
+The deployed qualification profile sets two workers, two active-account slots, six new
+account leases per run, and two quarantine slots. Beta registration is gated by the exact
+tester allowlist, so an attempt may only use a listed address: each Playwright parallel slot
+leases one of the eight stable worker-pool addresses
+(`e2e-beta-worker-0-chromium@anywear.local` … `e2e-beta-worker-7-chromium@anywear.local`) and
+`E2E_WORKER_SLOT_OFFSET` selects the first slot when a slot allocation must avoid one in use.
+The identity is provisioned through the protected AWS admin path, deleted during worker
+teardown, and its lease is released only after the subject is read back deleted. Ordinary
+qualification never mutates the allowlist and needs no real tester mailbox. The retired
+synthetic address family and `custom:e2e_bootstrap` marker are no longer written; a historical
+captured identity in either worker family stays deletable.
 The operations of the `qualify` entry share a non-cancelling Beta account-pool
 concurrency group, and each run uploads its account-budget manifest for recovery.
 
@@ -46,7 +51,7 @@ concurrency group, and each run uploads its account-budget manifest for recovery
 ```bash
 pnpm check             # vendored contract, explicit core contracts, lint, typecheck and safe discovery
 pnpm test:core         # 21 registered offline identity/cleanup/qualification/artifact contracts
-pnpm test:tool-regressions # sixteen retained offline operational-support test files
+pnpm test:tool-regressions # the one retained offline operational-support test file
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
 pnpm audit             # fail on high/critical dependency advisories
 pnpm test:smoke        # on-demand deployed Beta diagnostic, @smoke only
@@ -71,12 +76,11 @@ scenario must satisfy.
 | Command | Owner and trigger | Actual effects and evidence |
 | --- | --- | --- |
 | `check` / `test:core` | E2E maintainers; the automatic Check entry (PR/main) and qualify preflight source preparation | Offline fixtures, temporary files/Git repositories, lint, typecheck and discovery; no credentials, cloud calls or deployed result |
-| `test:tool-regressions` | E2E operational-tool maintainers; the automatic Check entry's `tool-regressions` job on every PR/main | Mock AWS/Cognito/fetch, temporary files, a loopback HTTP fixture and bounded Bash checkpoint helper; no AWS/App credentials or live drill proof |
+| `test:tool-regressions` | E2E operational-tool maintainers; the automatic Check entry's `tool-regressions` job on every PR/main | The retained SSE replica-attribution contract: mocked AWS/fetch and temporary files; no AWS/App credentials or live diagnostic proof |
 | `test:deferred-sqs` | Repository maintainer under [#58](https://github.com/git-malu/AnyWear/issues/58); manual future-protocol review only | Two offline ARM/ACK/FIRE prototype files; no live transport, trusted AWS identity or receipt proof, and no #54 acceptance claim |
 | `test:smoke` | E2E maintainers; the `smoke` operation of the protected `qualify` entry | Real login/dashboard/wardrobe navigation using a bounded worker identity and existing cleanup contract; diagnostic only |
 | `test:regression` / `test` | E2E maintainers; the `full` operation's protected Beta qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this operation and its evidence can qualify a release |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario; not a release-gating selection on its own |
-| `runtime:plan` / `runtime:preflight` / `runtime:verify` | E2E operational-tool maintainers; explicitly selected diagnostic | Plan/evidence file operations, or authenticated read-only Beta observations for preflight; `--plan` needs no expected tuple, `--preflight` compares the live identities only when a `qualification-record.json` v3 is supplied with `--tuple`/`RUNTIME_DRILL_TUPLE`, and `--verify` requires one; never live drill execution |
 
 The release-gating selection, the smoke diagnostic and account recovery are
 separated by the signed `operation` field, not by a workflow boundary, a step or a job. One
@@ -111,8 +115,8 @@ deployed identity, the supported-Client floor and the immutable release binding;
 offline assertions remain required by `check` without claiming actual publication or
 qualification.
 
-The automatic `Check` entry's `tool-regressions` job runs the retained tool tests, their
-implementation and fixture dependencies, shared evidence/source contracts, the
+The automatic `Check` entry's `tool-regressions` job runs the one retained operational-support
+test file, its implementation and shared evidence/source contracts, the
 vendored deployment contract (the v3 core plus the v4 Service bake gate) with its
 provenance assertion, and
 the lockfile. `quality.yml` carried no path
@@ -179,9 +183,11 @@ Dev verification remains in the Client and Service unit and integration suites.
 The non-skipped `worker-smoke.spec.ts` signs in with the existing leased
 `workerAccount` fixture and opens Dashboard and Wardrobe. Provisioning, budget,
 protected execution, quarantine and Service/Cognito cleanup controls remain shared with
-the deployed selection. `auth.spec.ts` is optional public-registration acceptance; it
-skips unless `E2E_PUBLIC_REGISTRATION_OPEN=true` and cannot appear
-as a passing smoke gate. No workflow opens public registration for this scenario.
+the deployed selection. `auth.spec.ts` and its `E2E_PUBLIC_REGISTRATION_OPEN` switch are
+retired: registration is gated by the Beta tester allowlist in the Cognito `PreSignUp`
+trigger, so public self-registration is no longer a product surface for the scenario to
+observe. The [scenario inventory](docs/scenario-inventory.md) records the retirement and its
+replacement coverage.
 
 The manual `Beta Qualification` entry (`qualify`) is the single protected dispatch
 surface, with the required operation menu `full` (release gate), `smoke` (diagnostic)
@@ -232,28 +238,19 @@ and dedicated runtime-recovery workflows were retired under
 [issue #79](https://github.com/git-malu/AnyWear/issues/79). Historical Actions runs and
 artifacts remain available as evidence of their actual outcomes.
 
-The repository retains read-only planning, preflight, and evidence-verification helpers.
-They are separate from `pnpm test` and do not start or restore runtime drills:
-
-```bash
-pnpm runtime:plan                 # writes runtime-drill-plan.json; no AWS calls
-pnpm runtime:preflight            # reads Beta health, stacks, ECS services, and queue attributes
-pnpm runtime:verify -- evidence.json --tuple qualification-record.json
-```
-
-Set `E2E_STAGE=beta`, `AWS_ACCOUNT_ID=650880818323`, `AWS_REGION=ap-east-1`, and both
-HTTPS endpoint variables before the AWS-backed preflight. The manual drill and recovery
-CLIs take the expected deployed tuple from a `qualification-record.json` v3
-(`revisions.client.sha` / `revisions.service.sha`) named by `--tuple <path>` or the
-`RUNTIME_DRILL_TUPLE` environment variable; the former committed pin is deleted.
-`--plan` needs no tuple and stays offline;
-`--preflight` observes the live identities without comparing when no tuple is supplied,
-and compares them when one is; `--verify`, `--execute` and `--recover` refuse without one.
-These drill CLIs are **manual-only**: no workflow, `pnpm check`, `test:core` or `test:list`
-path reads that input.
-Any future expanded-release work must first select the smallest required risk-based scope
-in issue #58; the historical fault-injection design is not an instruction to rerun its
-full matrix or rebuild a separate control platform.
+The retained manual runtime instrumentation ladder was retired under
+[#213](https://github.com/git-malu/AnyWear/issues/213), together with the admission mode it
+operated: `runtime-drill`, `runtime-window-controls`, `nonpaid-runtime-controls`,
+`runtime-one-shot`, `runtime-no-start`, `runtime-identity-creation`, `beta-runtime-adapter`
+and their exclusive support modules, fixtures and tests. Their admission-window half had no
+subject once Beta registration became the only admission decision, and their fault-injection
+half had no workflow caller since #79; the testing policy's retirement rule requires an
+ongoing owner and trigger for retained tooling, and Git history plus the original run
+artifacts preserve their provenance. The credential-free `sse-replica-attribution` contract
+is the one retained operational-support regression. Any future expanded-release work must
+first select the smallest required risk-based scope in issue #58; the historical
+fault-injection design is not an instruction to rerun its full matrix or rebuild a separate
+control platform.
 
 The deployed Client must serve the exact reviewed build at an HTTPS URL, support its
 browser routes, and expose `/build-metadata.json`. The Client-owned Beta workflow publishes
@@ -270,12 +267,10 @@ Qualification reads the live deployed tuple; the committed compatibility pin, it
 its two documents are **deleted** (#192), and no release-qualification path reads a committed
 deployment file: `beta-qualification.yml`, `pnpm check`, `test:core` and `test:list` were
 already pin-free. The former measurement workload was the last executed reader of the pin,
-and it was deleted with the sizing apparatus. Only the manual
-`runtime-drill.mjs` / `runtime-recovery-artifact.mjs` CLIs take an expected tuple, from a
-`qualification-record.json` v3 passed with `--tuple <path>` or `RUNTIME_DRILL_TUPLE`:
-`--plan` needs none, `--preflight` compares only when one is supplied, and `--verify`,
-`--execute` and `--recover` require one. No workflow or tracked command runs them, and no
-new reader of a committed deployment file may be added.
+and it was deleted with the sizing apparatus. The last expected-tuple readers were the manual
+drill and recovery CLIs, retired under
+[#213](https://github.com/git-malu/AnyWear/issues/213), so no tracked command reads a
+qualification tuple and no new reader of a committed deployment file may be added.
 
 The live tuple is:
 
@@ -401,7 +396,7 @@ does not serialize those other repositories. Keep `ENABLE_BETA_MUTATION` unset o
 | `E2E_CLEANUP_SERVICE_SHA` | Legacy source/operator guard value retained during cutover |
 | `E2E_CLEANUP_SERVICE_IMAGE_DIGEST` | Reviewed deployed Service image digest |
 | `BETA_CLEANUP_STATE_MACHINE_VERSION_ARN` | Immutable version ARN of the Infra-owned cleanup state machine |
-| `E2E_WORKER_SLOT_OFFSET` | Allocated first slot, integer 0 through 6; selected workers must fit within slots 0 through 7 |
+| `E2E_WORKER_SLOT_OFFSET` | Allocated first slot, integer 0 through 7; the selected workers must fit within slots 0 through 7 |
 | `AWS_ACCOUNT_ID`, `AWS_REGION` | `650880818323`, `ap-east-1` |
 
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
@@ -424,7 +419,8 @@ The Infra-owned versioned Step Functions cleanup capability invokes Service's fi
 application-data task. An ordinary qualification cleanup and a protected `recover`
 dispatch submit the same strict normal-mode envelope and enter the same resume/verify/
 retry rule. Recovery validates the completed original E2E owner and captured worker
-subjects. A quarantined record whose captured subject and run-scoped address are intact is
+subjects. A quarantined record whose captured subject and worker-family address (a stable
+pool row, or a historical run-scoped address of that run) are intact is
 repaired by the same reviewed cleanup — capability tuple, Service commit proof, absence
 readback and ledger `deleted` with the original reason preserved — while a record whose
 ownership is unproven stays terminal, remains in the manifest and fails recovery. The
@@ -435,8 +431,8 @@ historical recovery input; new runs use `service-cleanup-operation.json`. E2E do
 check out a mutable cleanup helper or pass the Lifecycle/Cleanup task roles. Service's
 surviving operator must select the dedicated `CleanupTaskRoleArn` with no fallback to
 the old Lifecycle role. Its legacy image still needs narrowly reviewed data-cleanup
-permissions for the two Beta DLQs, while admission controls remain outside that role.
-None of these operations deploy CDK, change admission policy, or revive the retired
+permissions for the two Beta DLQs, while tester-allowlist controls remain outside that role.
+None of these operations deploy CDK, change the tester allowlist, or revive the retired
 runtime drill.
 
 Operation evidence uses schema 3 and records initiation, observed terminal state,
@@ -503,8 +499,9 @@ operational preflight gate.
 
 The `full` and `smoke` operations accept `worker_slot_offset` (default `0`) for
 allocating the run's two worker slots; for example `2` selects slots 2 and 3 without
-reusing slots 0 and 1. Admission eligibility does not
-use the offset. Recovery always uses the exact captured
+reusing slots 0 and 1. The admission pre-flight uses the same offset: it requires every
+pool address this run can lease, and only those, to be on the tester allowlist before the
+first account exists. Recovery always uses the exact captured
 original emails/subjects, independent of later slot allocations. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: verify
 outstanding executions, tasks and manifests are reconciled before reuse.

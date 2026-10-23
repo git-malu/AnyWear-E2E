@@ -1,70 +1,83 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { ADMISSION_MODE_PARAMETER, TESTER_ALLOWLIST_PARAMETER, effectiveAdmissionMode, parseAdmissionMode } from './beta-admission-mode.mjs';
+import { leaseableWorkerAddresses } from './worker-slots.mjs';
 import { parseStrictJson } from './evidence-contract.mjs';
 import { assertE2EExecution } from './execution-guard.mjs';
 
-const parameters = { admission_mode: ADMISSION_MODE_PARAMETER, tester_allowlist: TESTER_ALLOWLIST_PARAMETER };
-const policyNames = Object.keys(parameters);
-const parameterNames = Object.values(parameters);
+// Beta registration admits exactly the addresses on this one allowlist (issue #213), so
+// the qualification pre-flight has to prove two things before the first account is
+// created: the list is in the writer's canonical shape, and it lists every stable pool
+// address this run can lease. The shapes are the Infra writer's
+// (`normalizeTesterEmails`): a compact JSON array of sorted, trimmed, lowercase exact
+// emails, at most 50, within the SSM value size.
+const TESTER_ALLOWLIST_PARAMETER = '/anywear/beta/tester_allowlist';
 const qualificationWorkflow = 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main';
+// #163: operation `full` runs exactly two workers, and that width is part of the
+// operation's shape. The pre-flight checks the same width the suite will use.
+const QUALIFICATION_WORKERS = 2;
+const MAX_TESTERS = 50;
+const MAX_PARAMETER_BYTES = 4096;
+const MAX_EMAIL_LENGTH = 254;
 // Match the Infra tester producer's accepted email syntax and normalization.
 const emailPattern = /^[a-z0-9.!#$%&'+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
 
-export function validateBetaAdmissionPolicy(response) {
-  if (!response || !Array.isArray(response.Parameters) || response.Parameters.length !== parameterNames.length
-    || (response.InvalidParameters !== undefined
-      && (!Array.isArray(response.InvalidParameters) || response.InvalidParameters.length !== 0))) {
-    throw new Error('Beta admission eligibility requires both exact SSM parameters');
-  }
-  const read = new Map();
-  for (const parameter of response.Parameters) {
-    if (!parameter || !parameterNames.includes(parameter.Name) || read.has(parameter.Name)
-      || parameter.Type !== 'String' || typeof parameter.Value !== 'string'
-      || Buffer.byteLength(parameter.Value, 'utf8') > 4096
-      || !Number.isSafeInteger(parameter.Version) || parameter.Version < 1) {
-      throw new Error('Beta admission eligibility received malformed or duplicate SSM parameters');
-    }
-    read.set(parameter.Name, parameter);
-  }
-  const policy = Object.fromEntries(policyNames.map(name => [name, read.get(parameters[name])]));
-  // The mode record states its own condition, so the pre-flight names one requirement
-  // instead of remembering two booleans: admission is `testers`. The record is windowless,
-  // so a closed decision stays closed until an operator opens it explicitly; nothing
-  // expires, and no bound can make an open record refuse.
-  const declared = parseAdmissionMode(policy.admission_mode.Value);
-  if (!declared) throw new Error('Beta admission eligibility received a malformed admission mode record');
-  if (effectiveAdmissionMode(policy.admission_mode.Value).mode !== 'testers') {
-    throw new Error('Beta admission is closed; it must be explicitly opened (open-admission / lifecycle resume) before qualification');
+/**
+ * Validate one `ssm:GetParameter` read of the tester allowlist.
+ *
+ * `requiredAddresses` is every pool address the run can lease, derived from the same
+ * slot arithmetic the worker fixture uses. A list that is valid but misses one of them
+ * would let the suite create an account the registration gate refuses, so the refusal
+ * names the missing address here instead.
+ */
+export function validateBetaAdmissionPolicy(response, requiredAddresses) {
+  const parameter = response?.Parameter;
+  if (!parameter || parameter.Name !== TESTER_ALLOWLIST_PARAMETER || parameter.Type !== 'String'
+    || typeof parameter.Value !== 'string'
+    || Buffer.byteLength(parameter.Value, 'utf8') > MAX_PARAMETER_BYTES
+    || !Number.isSafeInteger(parameter.Version) || parameter.Version < 1) {
+    throw new Error('Beta admission eligibility received a malformed tester allowlist parameter');
   }
   let testers;
-  try { testers = parseStrictJson(policy.tester_allowlist.Value); }
+  try { testers = parseStrictJson(parameter.Value); }
   catch { throw new Error('Beta admission eligibility received malformed tester allowlist JSON'); }
-  if (!Array.isArray(testers) || testers.length > 50 || testers.some(email => typeof email !== 'string')) {
+  if (!Array.isArray(testers) || testers.length > MAX_TESTERS || testers.some(email => typeof email !== 'string')) {
     throw new Error('Beta admission eligibility requires a valid tester email list');
   }
-  const normalized = testers.map(email => email.trim().toLowerCase());
-  if (normalized.some(email => email.length > 254 || !emailPattern.test(email))
-    || new Set(normalized).size !== normalized.length) {
-    throw new Error('Beta admission eligibility requires valid unique tester emails');
+  // Canonical and normalized: the writer trims, lowercases, de-duplicates and sorts, and
+  // emits `JSON.stringify`, so an entry that would mean something else here than it does
+  // to the Service reader is refused rather than repaired.
+  if (testers.some(email => email !== email.trim().toLowerCase()
+      || email.length > MAX_EMAIL_LENGTH || !emailPattern.test(email))
+    || new Set(testers).size !== testers.length) {
+    throw new Error('Beta admission eligibility requires canonical unique tester emails');
   }
-  // The list's shape is validated, never its membership: a run-scoped harness
-  // address is admitted through the anchored namespace, so no run needs a row.
-  // Return only non-sensitive policy versions; never log the tester membership.
-  return { versions: Object.fromEntries(policyNames.map(name => [name, policy[name].Version])) };
+  if (JSON.stringify(testers) !== parameter.Value) {
+    throw new Error('Beta admission eligibility requires the canonical tester list bytes');
+  }
+  if (!Array.isArray(requiredAddresses) || requiredAddresses.length === 0) {
+    throw new Error('Beta admission eligibility requires at least one leaseable worker-pool address');
+  }
+  const missing = requiredAddresses.filter((address) => !testers.includes(address));
+  if (missing.length > 0) {
+    throw new Error(`Beta admission eligibility requires every leaseable worker-pool address in the tester allowlist: missing ${missing.join(', ')}`);
+  }
+  // Return only the parameter version; the membership itself is never logged.
+  return { versions: { tester_allowlist: parameter.Version } };
 }
 
 export function verifyBetaAdmissionEligibility(environment = process.env, { execute = execFileSync, sourceSha } = {}) {
   assertE2EExecution(environment, { sourceSha });
-  // #163: the `full` operation qualifies with two workers and is the only remaining caller
-  // of this check. The worker count is part of the operation's shape, so the exact entry is
-  // no longer enough on its own.
+  // #163: operation `full` qualifies with two workers and is the only caller of this
+  // check. The worker count is part of the operation's shape.
   if (environment.GITHUB_WORKFLOW_REF !== qualificationWorkflow || environment.E2E_WORKERS !== '2') {
     throw new Error(`Beta admission eligibility requires the exact qualification workflow with exactly 2 workers for operation ${environment.E2E_OPERATION}`);
   }
+  // The slot offset is validated before the read: an out-of-range offset must never
+  // become an address outside the pool, and validation costs no cloud call.
+  const requiredAddresses = leaseableWorkerAddresses(environment, QUALIFICATION_WORKERS);
   let response;
   try {
-    response = parseStrictJson(execute('aws', ['ssm', 'get-parameters', '--names', ...parameterNames,
+    response = parseStrictJson(execute('aws', ['ssm', 'get-parameter', '--name', TESTER_ALLOWLIST_PARAMETER,
       '--region', environment.AWS_REGION, '--output', 'json', '--no-cli-pager'], {
       encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'], env: environment,
@@ -73,11 +86,11 @@ export function verifyBetaAdmissionEligibility(environment = process.env, { exec
     // CLI failures may include raw values or credentials; keep the diagnostic bounded.
     throw new Error('Beta admission eligibility could not read valid SSM policy; qualification refused');
   }
-  return validateBetaAdmissionPolicy(response);
+  return validateBetaAdmissionPolicy(response, requiredAddresses);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length !== 2) throw new Error('Unknown Beta admission eligibility option');
   verifyBetaAdmissionEligibility();
-  console.log('Verified explicitly open Beta admission for the qualification run.');
+  console.log('Verified the Beta tester allowlist admits every worker-pool address this run can lease.');
 }

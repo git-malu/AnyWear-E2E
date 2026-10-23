@@ -252,19 +252,19 @@ test('derives each invocation tag from package.json and refuses any that selects
   }
 });
 
-test('the spec titles, the scenario inventory and the release-gating selection agree on the five members', () => {
+test('the spec titles, the scenario inventory and the release-gating selection agree on the four members', () => {
   const declarations = assertScenarioDeclarations();
   assert.deepEqual(declarations.map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/vto.spec.ts',
     'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(qualificationSelection(), { invocation: 'test', tag: '@regression' });
   // Every tracked deployed scenario is in the release-gating selection.
   assert.deepEqual(selectedScenarios('@regression').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(selectedScenarios('@full-stack').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/vto.spec.ts',
     'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
 });
@@ -311,11 +311,10 @@ test('refuses a report with no scenario, an unknown status, or a file that disag
 });
 
 test('refuses a selection that omits a declared member or adds one the tag does not select', () => {
-  const regression = ['tests/auth-startup.spec.ts', 'tests/auth.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
+  const regression = ['tests/auth-startup.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
   // A record that drops a declared member silently narrows what it claims to have qualified.
   assert.throws(() => assertTestSelection(testMember('@regression', [
-    scenario('tests/auth-startup.spec.ts'), scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
-    scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
+    scenario('tests/auth-startup.spec.ts'), scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
   ])), /omits tests\/wardrobe\.spec\.ts/);
   // A scenario file neither the tag nor this repository selects is refused rather than added
   // to the record's claim.
@@ -327,20 +326,15 @@ test('refuses a selection that omits a declared member or adds one the tag does 
   assert.throws(() => assertTestSelection(testMember('@full-stack', [
     ...regression.map((file) => scenario(file)),
   ])), /Qualification selection mismatch/);
-  // The declared selection itself, with the one declared skip, is accepted.
+  // The declared selection itself is accepted.
   assert.doesNotThrow(() => assertTestSelection(testMember('@regression', [
-    scenario('tests/auth-startup.spec.ts'),
-    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
-    scenario('tests/vto.spec.ts'),
-    scenario('tests/wardrobe.spec.ts'),
-    scenario('tests/worker-smoke.spec.ts'),
+    ...regression.map((file) => scenario(file)),
   ])));
 });
 
 test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   const member = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
-    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/vto.spec.ts'),
     // wardrobe.spec.ts has no `test.skip(condition)` at all: a collected-and-skipped entry
     // here would excuse an acceptance path that never ran.
@@ -352,17 +346,15 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   // completed spec.
   assert.throws(() => assertTestSelection(testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
-    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { collected: 2, skipped: 1 }),
     scenario('tests/worker-smoke.spec.ts'),
   ])), /tests\/wardrobe\.spec\.ts records 1 skipped test/);
 });
 
-test('refuses a failed scenario even when the run reported success, and a run where nothing executed', () => {
+test('refuses a failed scenario even when the run reported success', () => {
   const failed = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
-    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
     scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { outcome: 'failed' }),
     scenario('tests/worker-smoke.spec.ts'),
@@ -373,22 +365,31 @@ test('refuses a failed scenario even when the run reported success, and a run wh
   // never reaches it.
   assert.throws(() => buildTestMember(reportBytes([
     fileSuite('tests/auth-startup.spec.ts', ['expected']),
-    fileSuite('tests/auth.spec.ts', ['skipped']),
     fileSuite('tests/vto.spec.ts', ['expected']),
     fileSuite('tests/wardrobe.spec.ts', ['unexpected']),
     fileSuite('tests/worker-smoke.spec.ts', ['expected']),
   ])), /tests\/wardrobe\.spec\.ts failed/);
+});
 
-  // Collected and executed nothing: every scenario is skipped, so the run establishes no
-  // acceptance result even though each skip is legally declared.
-  const nothing = testMember('@regression', [
-    scenario('tests/auth-startup.spec.ts', { outcome: 'skipped', skipped: 1 }),
-    scenario('tests/auth.spec.ts', { outcome: 'skipped', skipped: 1 }),
-    scenario('tests/vto.spec.ts', { outcome: 'skipped', skipped: 1 }),
-    scenario('tests/wardrobe.spec.ts', { outcome: 'skipped', skipped: 1 }),
-    scenario('tests/worker-smoke.spec.ts', { outcome: 'skipped', skipped: 1 }),
-  ]);
-  assert.throws(() => assertTestSelection(nothing), /requires at least one scenario that executed/);
+test('refuses a run where nothing executed, using a synthetic spec that declares its skip', async (t) => {
+  // No current deployed spec declares a runtime skip, so an all-skipped real run is already
+  // refused by the declaration rule above. The "nothing executed" rule still needs coverage,
+  // so this case builds the smallest checkout in which every skip is legally declared.
+  const root = await temporaryRoot(t, {
+    [QUALIFICATION_WORKFLOW_PATH]: syntheticWorkflow('node scripts/execution-guard.mjs\npnpm test'),
+    'package.json': JSON.stringify({ scripts: { test: 'playwright test --grep @regression' } }),
+    'docs/scenario-inventory.md': '# Scenario inventory\n\n### `tests/alpha.spec.ts`\n\n'
+      + '| Field | Value |\n| --- | --- |\n| Declared title | `Alpha @regression @full-stack` |\n'
+      + '| Tags | `@regression @full-stack` |\n',
+    'tests/alpha.spec.ts': "test.describe('Alpha @regression @full-stack', () => {\n"
+      + "  test.skip(process.env.E2E_ALPHA !== 'true', 'alpha is optional');\n});\n",
+  });
+  const skipped = testMember('@regression', [scenario('tests/alpha.spec.ts', { outcome: 'skipped', skipped: 1 })]);
+  assert.throws(() => assertTestSelection(skipped, { root }), /requires at least one scenario that executed/);
+  // The same skip with a second case executed is a legal pass with a counted skip.
+  assert.doesNotThrow(() => assertTestSelection(testMember('@regression', [
+    scenario('tests/alpha.spec.ts', { collected: 2, skipped: 1 }),
+  ]), { root }));
 });
 
 test('the qualification workflow writes the report the record reads, in every artifact list', () => {

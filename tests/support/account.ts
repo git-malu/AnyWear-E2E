@@ -1,7 +1,6 @@
 import {
   AdminConfirmSignUpCommand,
   AdminCreateUserCommand,
-  AdminDeleteUserCommand,
   AdminGetUserCommand,
   AdminSetUserPasswordCommand,
   CognitoIdentityProviderClient,
@@ -11,16 +10,13 @@ import { randomUUID } from 'node:crypto';
 import { assertE2EExecution } from '../../scripts/execution-guard.mjs';
 import { workerSlotOffset } from '../../scripts/worker-slots.mjs';
 import {
-  markAccountCleanupPending,
-  markAccountDeleted,
   markAccountInUse,
   quarantineAccount,
   recordAccountSubject,
   reserveAccount,
-  accountRunScope,
   type AccountMode,
 } from './account-budget.ts';
-import { betaWorkerAddress } from './beta-address.ts';
+import { workerPoolAddress } from './beta-address.ts';
 
 export interface TestAccount {
   email: string;
@@ -39,23 +35,6 @@ export function requireEnvironment(name: string): string {
   return value;
 }
 
-export function createTestAccount(prefix: string): TestAccount {
-  return {
-    email: `e2e-${accountScopeSegment(process.env.E2E_STAGE ?? 'test', 'test', 8)}-${accountScopeSegment(
-      process.env.GITHUB_RUN_ID ?? `local-${process.pid}`,
-      `local-${process.pid}`,
-      16,
-    )}-${accountScopeSegment(prefix, 'test', 8)}-${randomUUID().replaceAll('-', '').slice(0, 12)}@anywear.local`,
-    password: process.env.E2E_TEST_PASSWORD ?? DEFAULT_TEST_PASSWORD,
-    leaseGeneration: randomUUID(),
-  };
-}
-
-function accountScopeSegment(value: string, fallback: string, maxLength: number): string {
-  const segment = value.replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  return (segment || fallback).slice(0, maxLength);
-}
-
 export function configuredE2eWorkers(): number {
   const raw = process.env.E2E_WORKERS ?? '1';
   const workers = Number(raw);
@@ -65,27 +44,31 @@ export function configuredE2eWorkers(): number {
   return workers;
 }
 
+/**
+ * One attempt's lease of one pool slot (issue #213).
+ *
+ * Beta registration admits exactly the addresses on the tester allowlist, so the
+ * attempt may only use a stable pool address. The slot is the Playwright parallel
+ * index plus the operator's `E2E_WORKER_SLOT_OFFSET`; `workerSlotOffset` holds
+ * the first slot inside the pool, so an offset can never silently hand out an
+ * address the allowlist does not list. The address is stable across runs and
+ * retries — the lease generation, not a fresh address, distinguishes attempts.
+ */
 export function createWorkerAccount(workerInfo: WorkerInfo, browserName: string): TestAccount {
+  // Every pool row is a chromium row (`e2e-beta-worker-<slot>-chromium`). A project that
+  // asks for another browser has no listed address, so it refuses instead of reusing a
+  // chromium identity.
+  if (browserName !== 'chromium') {
+    throw new Error(`Beta worker pool addresses are chromium-only: ${browserName}`);
+  }
   const workers = configuredE2eWorkers();
   if (!Number.isInteger(workerInfo.parallelIndex) || workerInfo.parallelIndex < 0 || workerInfo.parallelIndex >= workers) {
     throw new Error(`parallelIndex ${workerInfo.parallelIndex} exceeds E2E_WORKERS=${workers}`);
   }
-
-  const stage = accountScopeSegment(process.env.E2E_STAGE ?? 'test', 'test', 8);
-  const slot = String(workerInfo.parallelIndex + workerSlotOffset(process.env, workers));
-  const browser = accountScopeSegment(browserName, 'browser', 12);
-  const attemptSuffix = randomUUID().replaceAll('-', '').slice(0, 8);
-  // A Beta worker address is a captured-subject Service cleanup input, so its
-  // scope has to survive verbatim: `betaWorkerAddress` keeps the full run scope
-  // and refuses one the Service cleanup capability could never address. Any
-  // other stage only needs a run-unique address, and keeps its sanitized,
-  // length-bounded scope segment.
-  const email = stage === 'beta'
-    ? betaWorkerAddress(accountRunScope(), slot, attemptSuffix)
-    : `e2e-${stage}-${accountScopeSegment(accountRunScope(), `local-${process.pid}`, 33)}-${slot}-${browser}-${attemptSuffix}@anywear.local`;
+  const slot = workerInfo.parallelIndex + workerSlotOffset(process.env, workers);
 
   return {
-    email,
+    email: workerPoolAddress(slot),
     password: process.env.E2E_TEST_PASSWORD ?? DEFAULT_TEST_PASSWORD,
     leaseGeneration: randomUUID(),
   };
@@ -132,12 +115,14 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
   const client = cognitoClient();
   try {
     assertE2EExecution();
-    // Every attempt address is scope-bound and never re-bound, so a pre-existing
-    // Cognito binding for it is always a defect rather than a reusable identity:
-    // adopting that subject is what produced issue #129's 409 on the first
-    // profile sync. `UsernameExistsException` is therefore fatal — the outer
-    // catch quarantines this scope with whatever is bound there, and no later
-    // attempt is handed the same address.
+    // The attempt leases a stable pool address, so a pre-existing Cognito binding
+    // for it is always a defect rather than an identity to adopt:
+    // `UsernameExistsException` is therefore fatal. The outer catch quarantines
+    // this scope with whatever is bound there, and no later attempt is handed the
+    // same address until an operator repairs the lease. A stale Service profile
+    // row is not this failure: issue #137's release/adopt contract releases and
+    // re-adopts that binding inside profile sync, and the E2E side never deletes a
+    // profile row.
     await client.send(new AdminCreateUserCommand({
       UserPoolId: userPoolId,
       Username: account.email,
@@ -145,7 +130,6 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
       UserAttributes: [
         { Name: 'email', Value: account.email },
         { Name: 'email_verified', Value: 'true' },
-        { Name: 'custom:e2e_bootstrap', Value: 'true' },
       ],
     }));
     await getAccountSubject(client, userPoolId, account);
@@ -173,25 +157,6 @@ export async function provisionConfirmedTestAccount(account: TestAccount): Promi
   }
 }
 
-export async function registerAndLogin(page: Page, account: TestAccount): Promise<void> {
-  assertE2EExecution();
-  await page.goto('/register');
-  await page.locator('input[type="email"]').fill(account.email);
-  await page.locator('input[type="password"]').fill(account.password);
-  assertE2EExecution();
-  await page.getByRole('button', { name: 'Sign up' }).click();
-  await page.waitForURL('/login');
-  const userPoolId = requireEnvironment('USER_POOL_ID');
-  const client = cognitoClient();
-  try {
-    await getAccountSubject(client, userPoolId, account);
-    await markAccountInUse(account.email);
-  } finally {
-    client.destroy();
-  }
-  await login(page, account);
-}
-
 export async function login(page: Page, account: TestAccount): Promise<void> {
   await page.goto('/login');
   await page.getByRole('heading', { name: 'Sign in' }).waitFor();
@@ -200,29 +165,4 @@ export async function login(page: Page, account: TestAccount): Promise<void> {
   await page.locator('input[type="password"]').fill(account.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL('/dashboard');
-}
-
-export async function deleteTestAccount(account: TestAccount): Promise<void> {
-  const userPoolId = requireEnvironment('USER_POOL_ID');
-  const client = cognitoClient();
-
-  try {
-    await markAccountCleanupPending(account.email);
-    await getAccountSubject(client, userPoolId, account);
-    assertE2EExecution();
-    await client.send(new AdminDeleteUserCommand({
-      UserPoolId: userPoolId,
-      Username: account.email,
-    }));
-    await markAccountDeleted(account.email);
-  } catch (error: unknown) {
-    if (error instanceof Error && error.name === 'UserNotFoundException') {
-      await markAccountDeleted(account.email);
-      return;
-    }
-    await quarantineAccount(account.email, `cleanup failed: ${error instanceof Error ? error.message : 'unknown error'}`);
-    throw error;
-  } finally {
-    client.destroy();
-  }
 }

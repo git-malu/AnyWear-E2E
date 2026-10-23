@@ -134,29 +134,6 @@ agreeing about the invocations that exist.
 | Verification rationale | The scenario is the stable critical path the smoke invocation requires, and it is the only `@smoke` scenario that exercises session destruction as well as startup. Its retry budget is the workflow default rather than `0`, so a run that only passes on a retry is a flake to investigate, not evidence that its assertion needed the retry |
 | Red result means | A product failure in session startup, restore or logout — or an environment or credential condition. A red smoke run withholds diagnostic confidence but asserts no release verdict by itself; the same red inside the qualification selection fails the release gate |
 
-### `tests/auth.spec.ts`
-
-| Field | Value |
-| --- | --- |
-| Declared title | `Optional public registration @regression @full-stack` |
-| Policy class | Full deployed system E2E |
-| Tags | `@regression @full-stack` |
-| Intent | Public registration, when explicitly opened, admits a synthetic user through the deployed Client and that user can sign in and reach the dashboard |
-| Current caller | The release-gating selection in the `full` operation. No workflow sets `E2E_PUBLIC_REGISTRATION_OPEN`, so it is collected and skipped in every current run |
-| Assertion boundary | Deployed Client registration and sign-in flow against the real identity provider |
-| Actual operation | Creates and reserves an `ephemeral` test account, registers it through the UI, confirms it, signs in, and deletes the identity |
-| Owner | AnyWear-E2E maintainers |
-| Lifecycle | Retain while admission policy can change; the scenario is the only acceptance path for an opened registration surface |
-| Command | `pnpm test:regression` |
-| Default trigger | Skipped by default. It runs only when an operator explicitly opens registration for the environment, which no workflow does |
-| Cost | External write: one ephemeral identity per attempt. No provider spend |
-| Side effects | A Cognito identity, deleted in the scenario's own `afterEach` |
-| Evidence level | Qualification for the admission claim, on a run that actually executed it rather than skipped it |
-| Disposition | Retain as an explicitly optional acceptance scenario |
-| Cleanup contract | Its own account lifecycle rather than the shared worker-lease fixture: reserve the account in `ephemeral` mode, then `deleteTestAccount` in `afterEach`, which re-verifies the captured subject before `AdminDeleteUser` and quarantines the account if deletion refuses. It does not use `tests/support/fixtures.ts`, so it has no attempt-keyed business-cleanup declaration and the post-suite worker cleanup cannot dispose of an abandoned ephemeral account |
-| Verification rationale | The scenario is the registration-path acceptance the policy allows to stay optional with a separate purpose, and it can never be the sole smoke case. A skipped run establishes nothing, so it must never be read as a passing admission result |
-| Red result means | A product failure in the registration or admission path. A skipped result means the claim was not established, not that it holds |
-
 ### `tests/worker-smoke.spec.ts`
 
 | Field | Value |
@@ -179,6 +156,16 @@ agreeing about the invocations that exist.
 | Cleanup contract | Declares `declareNoBusinessCleanup` with `teardownResult: 'passed'`. The worker-lease fixture deletes the captured Cognito identity, reads back its absence, and releases the lease. Ownership is per attempt: the address is bound to the run scope and slot and is never re-bound |
 | Verification rationale | The binding assertion is the reason the scenario exists and it cannot be established at a lower boundary: the defect it guards against appeared only against the deployed identity boundary. The profile status is attached as evidence for a red run |
 | Red result means | A product failure in the identity/profile binding contract, or an environment condition. As smoke it withholds diagnostic confidence; inside the release selection it fails the gate |
+
+## Retired scenarios
+
+A retired scenario keeps its record here because the policy treats retirement as a caller and
+lifecycle decision with a recorded rationale, not as a test-count change. Its source stays in
+Git history and its original acceptance evidence stays in the immutable run artifacts.
+
+| Scenario | Retired | Reason | Replacement coverage |
+| --- | --- | --- | --- |
+| `tests/auth.spec.ts` — Optional public registration, `@regression @full-stack` | [#213](https://github.com/git-malu/AnyWear/issues/213), 2026-10-23 | Beta registration is gated by the exact tester allowlist in the Cognito `PreSignUp` trigger; public self-registration is no longer a product surface, so there is no "registration open" state for the scenario to observe. It never ran: it required `E2E_PUBLIC_REGISTRATION_OPEN=true`, which no workflow set, and that variable is removed with it. | The deployed suite proves a leased allowlisted pool identity signs in and binds its profile through the real identity boundary (`tests/auth-startup.spec.ts`, `tests/worker-smoke.spec.ts`), and `scripts/beta-admission-eligibility.mjs` refuses before any account exists unless every pool address this run can lease is on the exact allowlist. A refusal for an unlisted address is proven by the Service's `PreSignUp` tests against the deployed policy, not by a deployed E2E scenario, because this repository cannot hold an unlisted account in Beta. |
 
 ## Admission rule
 

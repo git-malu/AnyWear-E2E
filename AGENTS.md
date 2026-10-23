@@ -42,7 +42,9 @@ Run install and build commands from this repository.
   its policy class, intent, selecting invocation, evidence level, cleanup contract
   and what a red result means. A new scenario is admitted only under the testing
   policy's admission rule.
-- Generate unique users and records per test so parallel execution is safe.
+- Lease a distinct worker-pool address per parallel test attempt through the account-budget
+  ledger, and generate unique records per test, so parallel execution is safe. The pool rows
+  are stable by design; the lease, not a random address, is what separates attempts.
 - Clean up every cloud resource created by a test in teardown, even after a
   failed assertion.
 - Fail clearly when required environment variables are missing; do not silently
@@ -91,14 +93,19 @@ Run install and build commands from this repository.
   `docs/compatibility-v3.md` and the pin tools (`validate-compatibility-pin.mjs`,
   `migrate-compatibility.mjs`, `check-compatibility.mjs`) were removed, and no
   **release-qualification** path read them (`beta-qualification.yml`, `pnpm check`, `test:core`
-  and `test:list` were pin-free). The manual `runtime-drill.mjs` and
-  `runtime-recovery-artifact.mjs` CLIs read the expected deployed tuple from a
-  `qualification-record.json` v3 (`revisions.client.sha` / `revisions.service.sha`) named by
-  `--tuple <path>` or `RUNTIME_DRILL_TUPLE`; `--plan` needs no tuple, `--preflight` compares the
-  live identities only when one is supplied, and `--verify`, `--execute` and `--recover` refuse
-  without one. No release-qualification path reads a committed deployment file, no workflow,
-  `pnpm check`, `test:core` or `test:list` path is affected, and `minimum-supported-client.json`
-  remains the only committed input on the live path.
+  and `test:list` were pin-free). The last manual expected-tuple readers — the
+  `runtime-drill.mjs` and `runtime-recovery-artifact.mjs` CLIs — were retired with the runtime
+  instrumentation ladder under #213, so no tracked command reads a qualification tuple or a
+  committed deployment file, no workflow, `pnpm check`, `test:core` or `test:list` path is
+  affected, and `minimum-supported-client.json` remains the only committed input on the live
+  path.
+- Beta registration is gated by the exact tester allowlist in the Cognito `PreSignUp`
+  trigger (#213). The deployed scenarios lease one of the eight stable worker-pool addresses
+  (`e2e-beta-worker-0-chromium@anywear.local` … `-7-`, offset by `E2E_WORKER_SLOT_OFFSET`) and
+  never mint an address; the qualification pre-flight refuses before the first account exists
+  unless every pool address the run can lease is on the allowlist. Do not add a synthetic
+  address family, an `E2E_PUBLIC_REGISTRATION_OPEN` switch, or any reader/writer of
+  `custom:e2e_bootstrap` back.
 - The release decision is the green `full` run plus the sealed record that `record` verifies
   and attaches. There is no separate approval job or approval Environment: the audit trail is
   the `qualify` `workflow_dispatch` event (actor and time), the E2E `full` run/attempt and the
