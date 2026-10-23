@@ -44,8 +44,9 @@ result.
    unprovable address is reported and never deleted.
 3. Submit the existing exact-reference Service cleanup in **normal** mode
    (`{runScope, users:[{sub,email}]}`, at most eight users), grouped by the captured run scope.
-   The Service deletes the captured users' rows, then their `wearable-items/<sub>/` and
-   `base-photos/<sub>/` objects, and commits `objects` and `objectsMissing`. Both counters are
+   The Service deletes the captured users' objects under `wearable-items/<sub>/` and
+   `base-photos/<sub>/`, reads absence back by listing, and only then deletes their rows; it
+   commits `objects` and `objectsMissing`. Both counters are
    required: a Service release without them cannot prove the object phase, and the identity
    stays `retained` rather than being reported clean.
 4. Delete the Cognito identity by its immutable username — never by address — then read absence
@@ -92,6 +93,11 @@ and the durable audit trail — the artifacts it was built from expire, the reco
   `subject_mismatch`, `unattributable_caller`, `unprovable_ownership`.
 
 ## Result and failure
+
+The artifact scan is valid when it returns nothing: a seven-day window with no lifecycle
+manifest is exactly the crashed-run case, and the identity set is then built from CloudTrail
+alone with `sources.artifacts: 0`. Only an unreadable artifact list or CloudTrail response
+fails closed before any deletion — the empty scan is a recorded no-op, not a refusal.
 
 `result` is `passed` when every leftover was resolved or is still inside its `reconcileBy`
 bound, and `failed` when a leftover is past its bound. A failed run emits one error annotation

@@ -433,9 +433,9 @@ environment to another writer; timeout alone never releases it.
 The Infra-owned versioned Step Functions cleanup capability invokes Service's fixed
 application-data task. The ordinary qualification cleanup and the `reconcile` operation
 submit the same strict normal-mode envelope and enter the same resume/verify/
-retry rule. The Service cleanup deletes the captured users' PostgreSQL rows, then their
-`wearable-items/<sub>/` and `base-photos/<sub>/` objects, and reports `objects` and
-`objectsMissing` in its committed result; `reconcile` requires both counters before it
+retry rule. The Service cleanup deletes the captured users' objects under
+`wearable-items/<sub>/` and `base-photos/<sub>/`, reads absence back by listing, and only then
+deletes their PostgreSQL rows; it reports `objects` and `objectsMissing` in its committed result; `reconcile` requires both counters before it
 deletes an identity, so a Service release that cannot prove the object phase leaves the
 identity retained. A retained record whose captured subject and worker-family address (a stable
 pool row, or a historical run-scoped address of that run) are intact is

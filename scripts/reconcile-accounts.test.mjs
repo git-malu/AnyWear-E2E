@@ -17,6 +17,7 @@ import {
   reconcileAccounts,
   reconcileWindow,
   validateReconcileRecord,
+  RECONCILE_MAX_ARTIFACTS,
   RECONCILE_MAX_USERS_PER_REQUEST,
   RECONCILE_RECORD_TYPE,
   RECONCILE_SCHEMA_VERSION,
@@ -123,6 +124,18 @@ test('the reconcile window is the reviewed seven-day span and the record refuses
   });
   assert.equal(record.record_type, RECONCILE_RECORD_TYPE);
   assert.equal(record.schema_version, RECONCILE_SCHEMA_VERSION);
+  // A zero-artifact scan is valid (CloudTrail-only reconcile); the count is bounded 0..60.
+  const emptyScan = buildReconcileRecord({
+    reconcileId: '900-1', window, sources: { artifacts: 0, cloudtrail_events: 0 },
+    identities: [], unresolved: [], result: 'passed',
+  });
+  assert.equal(emptyScan.sources.artifacts, 0);
+  for (const artifacts of [-1, RECONCILE_MAX_ARTIFACTS + 1, 1.5]) {
+    assert.throws(() => buildReconcileRecord({
+      reconcileId: '900-1', window, sources: { artifacts, cloudtrail_events: 0 },
+      identities: [], unresolved: [], result: 'passed',
+    }), /artifact count is unbounded/, String(artifacts));
+  }
   assert.throws(() => buildReconcileRecord({
     reconcileId: '900-1',
     window: { from: '2026-10-20T00:00:00.000Z', to: '2026-10-23T00:00:00.000Z' },
@@ -507,10 +520,46 @@ test('a deadline that has already passed records the leftover and starts no clea
   assert.equal(harnessed.calls.some((call) => call.delete), false);
 });
 
-test('an unavailable source fails closed before any deletion', async () => {
+test('an empty seven-day window is a valid scan, not a refusal', async () => {
+  // The design's own orphan case: a run whose manifest was never uploaded. When it is the
+  // only run in the lookback there is no artifact at all, so the identity set has to come
+  // from CloudTrail alone — otherwise the orphan could never be cleared (#217).
+  const orphan = scoped(1, '321-1-0123456789abcdef');
+  const harnessed = harness({
+    manifests: [],
+    events: [creation(orphan, { eventId: 'only-event', eventTime: new Date(NOW - DAY).toISOString() })],
+    users: [{ email: orphan, sub: subject(4) }],
+  });
+  const empty = await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.equal(empty.record.sources.artifacts, 0);
+  assert.equal(empty.record.identities.length, 1);
+  assert.deepEqual(empty.record.identities[0].origin, { kind: 'cloudtrail', event_id: 'only-event', event_time: new Date(NOW - DAY).toISOString() });
+  assert.equal(empty.record.identities[0].outcome, 'reconciled');
+  assert.equal(empty.record.result, 'passed');
+
+  // Nothing to reconcile at all: a passed no-op record that still states the empty scan.
+  const quiet = harness({ manifests: [], events: [], users: [] });
+  const noop = await reconcileAccounts({
+    io: quiet.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.equal(noop.record.sources.artifacts, 0);
+  assert.equal(noop.record.sources.cloudtrail_events, 0);
+  assert.deepEqual(noop.record.identities, []);
+  assert.deepEqual(noop.record.unresolved, []);
+  assert.equal(noop.record.result, 'passed');
+  assert.equal(quiet.calls.some((call) => call.service || call.delete), false);
+});
+
+test('a real source failure still fails closed before any deletion', async () => {
   const fixture = manifestFixture(123, 1, [manifestRecord({ email: stable(0), subject: subject(1) })]);
   const withUsers = harness({ manifests: [fixture], users: [{ email: stable(0), sub: subject(1) }] });
-  await assert.rejects(reconcileAccounts({ io: { ...withUsers.io, listArtifacts: async () => [] }, now: NOW, runIdentity }), /No lifecycle artifact/);
+  // An unreadable artifact list (transport/API failure, not an empty window).
+  await assert.rejects(reconcileAccounts({
+    io: { ...withUsers.io, listArtifacts: async () => { throw new Error('artifact list unavailable'); } },
+    now: NOW, runIdentity,
+  }), /artifact list unavailable/);
   await assert.rejects(reconcileAccounts({
     io: { ...withUsers.io, lookupCreateUserEvents: async () => { throw new Error('CloudTrail unavailable'); } },
     now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
