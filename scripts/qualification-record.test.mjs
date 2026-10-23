@@ -185,7 +185,7 @@ test('binds the dispatched full operation and refuses every other operation', ()
   const f = fixture();
   const build = (operation) => buildQualificationRecord({ ...f.input, operation }, f.expected, f.evidence, now, f.environment, f.report);
   assert.equal(build('full').operation, 'full');
-  for (const operation of ['smoke', 'recover', undefined]) {
+  for (const operation of ['smoke', 'reconcile', undefined]) {
     let refusal;
     try { build(operation); } catch (error) { refusal = error; }
     assert.ok(refusal, `${operation} must not issue a record`);

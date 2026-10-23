@@ -115,7 +115,7 @@ test('every attempt leases a stable pool address, and the generation distinguish
 
 test('the historical scoped family stays deletable and scope-bound for old manifests', () => {
   // The Service's cleanup parser still accepts the run-scoped family #129 introduced, and
-  // account recovery still has to delete identities a pre-#213 manifest names. No attempt
+  // a historical cleanup still has to delete identities a pre-#213 manifest names. No attempt
   // address is built from it any more, so it is accepted only as a captured artifact.
   assert.match(scoped(0, 'a1b2c3d4'), SCOPED_WORKER_EMAIL_PATTERN);
   assert.equal(isBetaWorkerEmailForScope(scoped(0, 'a1b2c3d4'), runScope), true);

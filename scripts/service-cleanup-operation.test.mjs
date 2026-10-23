@@ -582,33 +582,26 @@ test('original operation evidence is validated in its own terms and request drif
   }
 });
 
-test('the dispatch surface keeps one recover operation with the captured identities only', async () => {
+test('the dispatch surface no longer declares the manual recovery entry', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(packageJson.scripts['test:core'].includes('scripts/service-cleanup-operation.test.mjs'));
   const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
-  // #163: account recovery is the `recover` operation of the single qualify entry.
-  const recover = workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'));
-  assert.ok(recover.length > 0, 'the qualify entry must declare a recover job');
-  assert.match(recover, /E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH:.*original_operation_path/);
-  assert.match(recover, /RECOVERY_SOURCE_RUN_ID: \${{ inputs\.source_run_id }}/);
-  assert.match(recover, /RECOVERY_SOURCE_RUN_ATTEMPT: \${{ inputs\.source_run_attempt }}/);
-  assert.match(workflow, /^ {6}source_run_id:$/m);
-  assert.match(workflow, /^ {6}source_run_attempt:$/m);
-  for (const removed of ['operation_mode', 'recovery_attempt', 'previous_recovery_run_id', 'previous_recovery_run_attempt', 'retry_failed_execution']) {
+  // #217: the manual `recover` operation, its captured-identity inputs and its original-
+  // evidence replay are removed; only `full`, `smoke` and `reconcile` remain.
+  assert.doesNotMatch(workflow, /^ {2}recover:$/m, 'the qualify entry must not declare a recover job');
+  for (const removed of ['source_run_id', 'source_run_attempt', 'operation_mode', 'recovery_attempt',
+    'previous_recovery_run_id', 'previous_recovery_run_attempt', 'retry_failed_execution']) {
     assert.doesNotMatch(workflow, new RegExp(`^ {6}${removed}:$`, 'm'), `${removed} must not remain a dispatch input`);
   }
   assert.doesNotMatch(workflow, /E2E_CLEANUP_(?:OPERATION_MODE|RECOVERY_ATTEMPT|RETRY_FAILED|PREVIOUS_RECOVERY_EVIDENCE_PATH)/);
-  assert.doesNotMatch(workflow, /RECOVERY_PREVIOUS_RUN_/);
-  assert.equal([...workflow.matchAll(/--record-failure/g)].length, 1, 'the recover job keeps exactly one failure-marker invocation');
-  assert.ok(recover.indexOf('--validate-inputs') < recover.indexOf('Configure Beta AWS credentials'));
-  assert.ok(recover.indexOf('Verify exact original E2E owner artifact') < recover.indexOf('Configure Beta AWS credentials'));
+  assert.doesNotMatch(workflow, /RECOVERY_PREVIOUS_RUN_|E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH/);
   assert.match(workflow, /worker_slot_offset:/);
   assert.match(workflow, /E2E_WORKER_SLOT_OFFSET:.*inputs.worker_slot_offset/);
 });
 
 test('the replay chain leaves no tracked production reference or callerless entry behind', () => {
   const production = ['tests/support/service-cleanup-operation.ts', 'scripts/cleanup-worker-accounts.mjs',
-    'scripts/account-recovery-inputs.mjs', '.github/workflows/beta-qualification.yml'];
+    '.github/workflows/beta-qualification.yml'];
   for (const file of production) {
     const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
     for (const removed of ['beta-cleanup-recovery-', 'assertPreviousRecovery', 'assertRecoveryOperationEvidence',
@@ -620,7 +613,6 @@ test('the replay chain leaves no tracked production reference or callerless entr
   }
   assert.equal(existsSync(new URL('../scripts/delete-recovered-identities.mjs', import.meta.url)), false,
     'the callerless delete-recovered-identities entry point is removed');
-  const accountRecovery = readFileSync(new URL('../scripts/account-recovery-inputs.mjs', import.meta.url), 'utf8');
-  assert.equal(accountRecovery.includes("process.argv[2] === '--record-failure'"), true,
-    'the recover job still calls --record-failure');
+  assert.equal(existsSync(new URL('../scripts/account-recovery-inputs.mjs', import.meta.url)), false,
+    'the manual recovery input validator is removed');
 });

@@ -22,11 +22,10 @@ import { collectDeploymentEvidence, SERVICE_RELEASE_ASSET_NAMES, serviceArtifact
 // wrong tag→commit binding, a missing or malformed expected asset, an HTTP failure and a
 // floor mismatch all fail closed before any AWS credential is requested.
 export { SERVICE_RELEASE_ASSET_NAMES };
-// The operations whose gate depends on the live deployed tuple. `recover` deliberately
-// does not consult it: recovery must stay available when the live environment is unhealthy.
-// `reconcile` does not either (#217): it must resolve a leftover even while the deployed
-// tuple is being replaced, and the Service cleanup envelope takes its source/image pair from
-// the live deployment evidence the reconcile job reads for itself.
+// The operations whose gate depends on the live deployed tuple. `reconcile` does not consult
+// it (#217): it must resolve a leftover even while the deployed tuple is being replaced, and
+// the Service cleanup envelope takes its source/image pair from the live deployment evidence
+// the reconcile job reads for itself.
 export const LIVE_OPERATIONS = Object.freeze(['full', 'smoke']);
 
 const ASSET_DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -121,7 +120,7 @@ export async function readServiceRelease({ serviceSha, repository = repositories
   };
 }
 
-const USAGE = `Usage: node scripts/service-release.mjs --operation <full|smoke|recover|reconcile> --client-url <url> --service-url <url> [--expected-service-commit <sha>] [--expected-client-commit <sha>] [--inputs-dir <dir>]
+const USAGE = `Usage: node scripts/service-release.mjs --operation <full|smoke|reconcile> --client-url <url> --service-url <url> [--expected-service-commit <sha>] [--expected-client-commit <sha>] [--inputs-dir <dir>]
 
 Reads the live Client build metadata and Service health, compares them with the
 dispatch expectation, enforces the committed supported-Client floor, and verifies
@@ -154,7 +153,7 @@ export function serviceReleaseArguments(argv = []) {
     options[key] = value;
   }
   if (!options.operation) throw new Error('service-release requires --operation');
-  if (!['full', 'smoke', 'recover', 'reconcile'].includes(options.operation)) {
+  if (!['full', 'smoke', 'reconcile'].includes(options.operation)) {
     throw new Error(`service-release does not know the operation ${describe(options.operation)}`);
   }
   if (LIVE_OPERATIONS.includes(options.operation)) {

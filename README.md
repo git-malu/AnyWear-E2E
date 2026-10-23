@@ -86,12 +86,12 @@ scenario must satisfy.
 | `test:regression` / `test` | E2E maintainers; the `full` operation's protected Beta qualification suite step, or explicit local investigation | The release-gating business scenarios, including identity creation and cleanup and external VLM/provider work; only this operation and its evidence can qualify a release |
 | `test:full-stack` | E2E maintainers; explicit local investigation | Every cross-repository scenario; not a release-gating selection on its own |
 
-The release-gating selection, the smoke diagnostic, account recovery and automatic leftover
-expiry are separated by the signed `operation` field, not by a workflow boundary, a step or a
+The release-gating selection, the smoke diagnostic and automatic leftover expiry are
+separated by the signed `operation` field, not by a workflow boundary, a step or a
 job. One protected dispatch surface, the `qualify` entry in `beta-qualification.yml`, carries
-`full`, `smoke`, `recover` and `reconcile`. A release consumer accepts a qualification record
+`full`, `smoke` and `reconcile`. A release consumer accepts a qualification record
 only from the `full` operation of a completed-success qualification run; the record states
-`operation: full` and is produced only by that operation, so a `smoke`, `recover` or
+`operation: full` and is produced only by that operation, so a `smoke` or
 `reconcile` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record
 binds the operation dispatched, so its producer is uniquely identifiable; and both this
@@ -121,13 +121,7 @@ the credential ordering, the absence of an approval job and the single
 `scripts/reconcile-accounts.test.mjs`, which asserts the reconcile diff, the captured address
 grammar, the seven-day window and 24-hour bound, the closed `anywear_e2e_account_reconcile`
 v1 record and the fail-closed paths offline, without credentials, cloud calls or deployed
-reads; and
-`scripts/beta-cleanup-diagnostic.test.mjs`, which asserts the cleanup diagnostic's
-`DIAGNOSTIC_EXPECTED` evidence record offline and its manifest-free Service release
-resolution, without credentials, cloud calls or deployed reads; it belongs with its
-`service-cleanup-operation.test.mjs` and `worker-cleanup.test.mjs` neighbours, and its
-production module is consumed by `scripts/account-recovery-inputs.mjs` and
-`scripts/cleanup-worker-accounts.mjs`. The live-tuple contracts protect the observed
+reads. The live-tuple contracts protect the observed
 deployed identity, the supported-Client floor and the immutable release binding; their
 offline assertions remain required by `check` without claiming actual publication or
 qualification.
@@ -207,8 +201,8 @@ observe. The [scenario inventory](docs/scenario-inventory.md) records the retire
 replacement coverage.
 
 The manual `Beta Qualification` entry (`qualify`) is the single protected dispatch
-surface, with the required operation menu `full` (release gate), `smoke` (diagnostic),
-`recover` (historical account recovery) and `reconcile` (automatic leftover expiry). Its
+surface, with the required operation menu `full` (release gate), `smoke` (diagnostic) and
+`reconcile` (automatic leftover expiry). Its
 dispatch also carries
 `expected_service_commit` and `expected_client_commit` (`full` only), `trigger` (`manual`,
 `deploy-smoke` for the deployment smoke hook, `release-qualify` for the release action,
@@ -377,14 +371,12 @@ tuple are the audit trail. A failed run produces no record, so there is nothing 
 
 Private retrieval uses separate GitHub App readers. The immutable Service release identity is
 read with a token scoped to `AnyWear-Service` (Contents/Actions read): the gate reads the
-release and its tag ref only and downloads no release asset. `recover` reads its original E2E
-owner artifact with the workflow token and the historical cleanup diagnostic with an
-Infra-scoped reader (`GH_TOKEN`) plus the Service reader, which resolves the recorded release
-by tag→commit and immutability without a manifest. `scripts/github-read.mjs` owns the
+release and its tag ref only and downloads no release asset. `scripts/github-read.mjs` owns the
 `gh` seam and the per-repository token scoping that renames the one allowed reader to
 `GH_TOKEN` and removes every other reader token. The E2E deployment-record download chain
-(`trusted-deployment-inputs.mjs`) and the cross-repository Infra observer checkout
-(`infra-source.mjs`) are deleted in Wave 1.
+(`trusted-deployment-inputs.mjs`), the cross-repository Infra observer checkout
+(`infra-source.mjs`), the recovery owner-artifact reader and the cleanup diagnostic reader
+(`account-recovery-inputs.mjs`, `beta-cleanup-diagnostic.mjs`) are deleted.
 
 AWS credentials are assumed after the live-tuple gate. `beta-e2e-qualification-role` reads the
 three stage-base stacks of the release-slice split (Bootstrap/Foundation, the Base stack
@@ -423,7 +415,7 @@ does not serialize those other repositories. Keep `ENABLE_BETA_MUTATION` unset o
 The protected Beta environment, exact repository/owner IDs, main workflow dispatch,
 the single `qualify` entry and the explicitly stated `operation` establish source
 identity. `execution-guard.mjs --source-only` checks that identity before credentials,
-including that the operation is one of `full`, `smoke`, `recover` or `reconcile` and that
+including that the operation is one of `full`, `smoke` or `reconcile` and that
 the workflow ref is the entry the operation map names. After
 assuming the dedicated `beta-e2e-qualification-role`, each operation job captures fresh
 STS account/principal values and checks the exact account, role and region. Those
@@ -431,32 +423,29 @@ values are supplied by the workflow, not dispatch inputs. The default guard requ
 that captured principal before observations, suite and mutation boundaries, including
 Cognito deletion after a fixed cleanup operation wait. Missing or mismatched identity
 retains the cleanup manifest, and the `reconcile` operation resolves it inside its bound.
-`full` has a 90-minute job bound; `smoke` and `recover` have 60-minute bounds;
+`full` has a 90-minute job bound; `smoke` has a 60-minute bound;
 `reconcile` has a 15-minute bound and stops starting work after 720 seconds so the record
-is still written. All four share
+is still written. All three share
 the `beta-e2e-account-pool` concurrency group with cancellation disabled. Verify
 all local/Actions/CFN/ECS/nested Service jobs have ceased before handing the
 environment to another writer; timeout alone never releases it.
 
 The Infra-owned versioned Step Functions cleanup capability invokes Service's fixed
-application-data task. An ordinary qualification cleanup, the `reconcile` operation and a
-protected `recover`
-dispatch submit the same strict normal-mode envelope and enter the same resume/verify/
+application-data task. The ordinary qualification cleanup and the `reconcile` operation
+submit the same strict normal-mode envelope and enter the same resume/verify/
 retry rule. The Service cleanup deletes the captured users' PostgreSQL rows, then their
 `wearable-items/<sub>/` and `base-photos/<sub>/` objects, and reports `objects` and
 `objectsMissing` in its committed result; `reconcile` requires both counters before it
 deletes an identity, so a Service release that cannot prove the object phase leaves the
-identity retained. Recovery validates the completed original E2E owner and captured worker
-subjects. A retained record whose captured subject and worker-family address (a stable
+identity retained. A retained record whose captured subject and worker-family address (a stable
 pool row, or a historical run-scoped address of that run) are intact is
 resolved by the same reviewed cleanup — capability tuple, Service commit proof, absence
 readback and ledger `deleted` with the original reason preserved — while a record whose
 ownership is unproven is reported and never deleted. The
-reconcile path is in [docs/account-reconcile.md](docs/account-reconcile.md) and the
-recovery path is in [docs/account-recovery.md](docs/account-recovery.md). The account artifact preserves the capability execution,
+reconcile path is in [docs/account-reconcile.md](docs/account-reconcile.md). The account artifact preserves the capability execution,
 source/image binding and exact cleanup request before any Cognito deletion, including
 when later cleanup fails. Legacy `service-cleanup-run.json` records remain accepted as
-historical recovery input; new runs use `service-cleanup-operation.json`. E2E does not
+historical operation input; new runs use `service-cleanup-operation.json`. E2E does not
 check out a mutable cleanup helper or pass the Lifecycle/Cleanup task roles. Service's
 surviving operator must select the dedicated `CleanupTaskRoleArn` with no fallback to
 the old Lifecycle role. Its legacy image still needs narrowly reviewed data-cleanup
@@ -479,7 +468,7 @@ unassigned diagnostic `known_message`; those counters alone do not establish
 per-message ownership. Source/image-bound Service validation and live unrelated
 data/message preservation evidence provide that acceptance boundary.
 
-Protected account recovery, the automatic reconcile and the ordinary qualification cleanup
+The automatic reconcile and the ordinary qualification cleanup
 share one rule. For the
 exact captured run scope, the entry point resolves one deterministic execution name,
 `beta-cleanup-<runScope>-<requestHash16>`; an absent generation 0 is started under the
@@ -495,35 +484,30 @@ desired status is therefore outside this single-inventory check. Otherwise the d
 starts `beta-cleanup-<runScope>-<requestHash16>-retry1` once, or resumes or verifies that
 name when it already exists.
 
-A protected `recover` dispatch supplies the original owner evidence. That evidence is
-validated in its own terms, so an execution captured under an older state-machine
-version, an older Service image/source or a legacy mode-less owner input is observed and
-verified under its own envelope and version. A retry newly started by this dispatch
-always uses the current version and normal envelope; a retry already recorded in the
-original evidence is observed and, when `SUCCEEDED`, verified under that evidence's own
-version and envelope. The original evidence's captured request and run scope must equal
-the current canonical request and scope.
+The original-owner-evidence read is retained only as a compatibility path for a historical
+operation record. It is validated in its own terms, so an execution captured under an older
+state-machine version, an older Service image/source or a legacy mode-less owner input is
+observed and verified under its own envelope and version. No dispatch supplies it any more:
+the manual `recover` operation and its original-artifact preparation are removed, so the
+current run scope, the ordinary teardown and `reconcile` are the only producers.
 
 A captured run scope therefore carries at most two executions: the base deterministic
-name and one `-retry1`. A retry newly started by this dispatch uses the current version
-and normal envelope. An existing retry that binds the original owner evidence or the
-current pair is resumed when it is `RUNNING` and verified when it is `SUCCEEDED`, under
-that envelope and version. A recorded retry that is already terminal non-success refuses
-the same way: it records `refusal_phase`/`refusal_category`, starts no third execution and
+name and one `-retry1`. A retry newly started by this rule uses the current version
+and normal envelope. An existing retry that binds the current pair is resumed when it is
+`RUNNING` and verified when it is `SUCCEEDED`, under that envelope and version. A recorded
+retry that is already terminal non-success refuses the same way: it records
+`refusal_phase`/`refusal_category`, starts no third execution and
 deletes no identity. An execution that binds neither — for example a retry started
-by an earlier recovery under an intermediate reviewed tuple — is refused fail-closed: the
+under an intermediate reviewed tuple — is refused fail-closed: the
 dispatch records `refusal_phase`/`refusal_category`, starts no third execution and deletes
 no identity. The retry is the only retry: there is no attempt number, attempt input,
-predecessor artifact or execution-history hash, and no second cessation sample. An
-operator supplies the captured identities once; the protected `recover` dispatch takes
-`source_run_id`/`source_run_attempt`.
+predecessor artifact or execution-history hash, and no second cessation sample.
 
 Every dispatch always emits `operation_mode: 'normal'` and no `recovery_attempt`; the
 envelope keeps the optional attempt field only because the Service validates it.
 `validateCommitted` still compares both echoed fields, so a Service that echoes an
-attempt is refused. The `recover` operation and its original-artifact preparation remain
-the only consumer of the capture inputs in the shared `qualify` entry; partial Cognito
-reconciliation never shrinks the canonical cleanup request. Shared account-pool
+attempt is refused. Partial Cognito reconciliation never shrinks the canonical cleanup
+request. Shared account-pool
 concurrency does not establish a cross-repository writer allocation; that remains an
 operational preflight gate.
 
@@ -531,8 +515,8 @@ The `full` and `smoke` operations accept `worker_slot_offset` (default `0`) for
 allocating the run's two worker slots; for example `2` selects slots 2 and 3 without
 reusing slots 0 and 1. The admission pre-flight uses the same offset: it requires every
 pool address this run can lease, and only those, to be on the tester allowlist before the
-first account exists. Recovery always uses the exact captured
-original emails/subjects, independent of later slot allocations. An offset does
+first account exists. `reconcile` uses no slot: it resolves the exact captured
+emails/subjects a retained manifest records. An offset does
 not establish cessation of other jobs or authorize use of occupied slots: verify
 outstanding executions, tasks and manifests are reconciled before reuse.
 

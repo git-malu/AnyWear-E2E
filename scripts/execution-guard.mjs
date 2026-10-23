@@ -4,7 +4,7 @@ import { repositories, requireCommit, requireString } from './evidence-contract.
 
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 
-// #163: the three protected operations all run from the single `qualify` entry. The old
+// #163: the protected operations all run from the single `qualify` entry. The old
 // workflow-file allow-list is replaced by an operation → entry map: an operation must be
 // stated explicitly instead of being inferred from whichever file happened to dispatch,
 // and every operation names the one entry that may serve it. Adding an operation to a
@@ -13,12 +13,12 @@ const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 //
 // #217: `reconcile` runs as a job of every qualification (before its suite) and as its own
 // dispatched operation from the daily schedule. Both go through the same entry, so both
-// carry `workflow_dispatch` and the exact protected workflow ref this guard requires.
-export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'recover', 'reconcile']);
+// carry `workflow_dispatch` and the exact protected workflow ref this guard requires. The
+// manual `recover` operation was removed with the same change.
+export const E2E_OPERATIONS = Object.freeze(['full', 'smoke', 'reconcile']);
 const operationEntries = Object.freeze({
   full: 'beta-qualification',
   smoke: 'beta-qualification',
-  recover: 'beta-qualification',
   reconcile: 'beta-qualification',
 });
 

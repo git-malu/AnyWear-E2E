@@ -104,10 +104,12 @@ is still written. The job itself is bounded to 15 minutes.
 A `full` run whose own cleanup is not verified still withholds the qualification record: the
 teardown gate is unchanged, and a deferred cleanup is never evidence of a verified one.
 
-## Relationship to `recover`
+## Relationship to the removed `recover` operation
 
-`recover` and its six dispatch inputs, `account-recovery-inputs.mjs`, the frozen cleanup
-diagnostic (`beta-cleanup-diagnostic.mjs`) and the retained diagnostic tuple are removed in the
-stacked #217 pull request once this operation has been delivered. Their runbook is
-[account-recovery.md](account-recovery.md) until that removal lands. `reconcile` needs none of
-them: it reads the manifests and CloudTrail, not a pinned historical evidence artifact.
+The manual `recover` operation is removed, together with its dispatch inputs,
+`account-recovery-inputs.mjs`, the frozen cleanup diagnostic (`beta-cleanup-diagnostic.mjs`) and
+its retained diagnostic tuple (#217). `reconcile` needs none of them: it reads the recent
+manifests and CloudTrail, not a pinned historical evidence artifact, and it resolves a leftover
+without an operator supplying a run id, an attempt number or a predecessor chain. A historical
+manifest that recorded `quarantined` is read as `retained`, so the records written before the
+removal are resolved by this operation rather than stranded.

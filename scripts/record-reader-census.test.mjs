@@ -1,30 +1,37 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import test from 'node:test';
 import { repositoryRoot } from './test-selection.mjs';
 
-// AnyWear #207 retired the self-built Infra operation/deployment evidence chain. It left
+// AnyWear #207 retired the self-built Infra operation/deployment evidence chain and left
 // exactly one labelled historical reader in this repository: `scripts/beta-cleanup-diagnostic.mjs`,
-// the frozen account-recovery diagnostic that replays only the pinned 2026-01 Infra run
-// artifacts named in its own `DIAGNOSTIC_EXPECTED` and reads no new run. Everything else
-// qualifies from platform facts (the Environment deployment `beta`, the CloudFormation stack
-// events, the release tag→commit and the ECR image digest), never from a producer record.
+// the frozen account-recovery diagnostic that replayed only the pinned 2026-01 Infra run
+// artifacts named in its own `DIAGNOSTIC_EXPECTED` (#212). AnyWear #217 removed the manual
+// `recover` operation, that diagnostic and its tests, so this repository now has **no**
+// historical record reader: everything qualifies from platform facts (the Environment
+// deployment `beta`, the CloudFormation stack events, the release tag→commit and the ECR
+// image digest) and from this repository's own artifacts.
 //
-// These source assertions keep a second reader from appearing silently. They are a census,
-// not a parser: every `.mjs` module under `scripts/` and `tests/` is scanned (the frozen
+// These source assertions keep a reader from reappearing silently. They are a census, not a
+// parser: every `.mjs` module under `scripts/` and `tests/` is scanned (the frozen
 // `scripts/vendor/**` producer copy is excluded because it is kept byte-identical and its own
 // validators are checked by `vendored-contract.test.mjs`). The census file itself must name
 // the forbidden tokens to assert on them, so it excludes itself from its own scan.
 
-const DIAGNOSTIC = 'scripts/beta-cleanup-diagnostic.mjs';
-const DIAGNOSTIC_TEST = 'scripts/beta-cleanup-diagnostic.test.mjs';
 const CENSUS = 'scripts/record-reader-census.test.mjs';
 const MODULE_ROOTS = Object.freeze(['scripts', 'tests']);
 const VENDOR = 'scripts/vendor';
 
-// The record-shape validators of the retired producer contract. Only the diagnostic test may
-// mention one, and only to assert that the pinned historical fixture is not a current record.
+// The one labelled historical reader #207 left and #217 removed. Naming them here is what
+// makes the census non-vacuous: the assertion fails if either comes back.
+const REMOVED_DIAGNOSTIC = Object.freeze([
+  'scripts/beta-cleanup-diagnostic.mjs',
+  'scripts/beta-cleanup-diagnostic.test.mjs',
+]);
+
+// The record-shape validators of the retired producer contract. No module in this repository
+// may name one any more.
 const RECORD_VALIDATORS = Object.freeze([
   'validateDeploymentRecord',
   'validateServiceDeploymentRecord',
@@ -37,7 +44,8 @@ const RECORD_VALIDATORS = Object.freeze([
 ]);
 
 // The record types and artifact names of the retired chain. In a module that is not a test,
-// only the frozen diagnostic may mention one; a test may use them as fixture data.
+// none may be named; a test may still use a token as fixture data (one fixture names the
+// unrelated `beta-infra-deployment-role` IAM role).
 const RECORD_SHAPES = Object.freeze([
   'anywear_infra_operation',
   'anywear_infra_verified_inputs',
@@ -82,39 +90,32 @@ function mentions(path, tokens) {
 }
 
 // One line per offending file and token, so a second importer is named in the failure.
-function offenders(tokens, allowed, { skipTests = false } = {}) {
+function offenders(tokens, { skipTests = false } = {}) {
   const found = [];
   for (const path of FILES) {
     if (path === CENSUS) continue;
     if (skipTests && path.endsWith('.test.mjs')) continue;
-    for (const token of mentions(path, tokens)) {
-      if (!allowed.includes(path)) found.push(`${path}: ${token}`);
-    }
+    for (const token of mentions(path, tokens)) found.push(`${path}: ${token}`);
   }
   return found;
 }
 
-test('the record-shape validators appear only in the frozen diagnostic test', () => {
-  // The allow-list is not vacuous: the diagnostic test still imports the validator to prove
-  // the pinned historical fixture is not a current producer record.
-  const diagnosticTest = readFileSync(join(repositoryRoot, DIAGNOSTIC_TEST), 'utf8');
-  assert.match(diagnosticTest, /import \{ validateDeploymentRecord \} from '\.\/vendor\/deployment-contract\.mjs';/,
-    `${DIAGNOSTIC_TEST} must keep importing the validator for the frozen fixture`);
-
-  const found = offenders(RECORD_VALIDATORS, [DIAGNOSTIC_TEST]);
-  assert.deepEqual(found, [],
-    `record-shape validators may appear only in ${DIAGNOSTIC_TEST}; found:\n${found.join('\n')}`);
+test('the frozen recovery diagnostic and its test are removed', () => {
+  for (const path of REMOVED_DIAGNOSTIC) {
+    assert.equal(existsSync(join(repositoryRoot, path)), false, `${path} must not be restored: the manual recovery path is removed (#217)`);
+  }
+  assert.equal(existsSync(join(repositoryRoot, 'scripts', 'account-recovery-inputs.mjs')), false);
+  assert.equal(existsSync(join(repositoryRoot, 'docs', 'account-recovery.md')), false);
 });
 
-test('only the frozen diagnostic names the retired record and artifact shapes', () => {
-  // The allow-list is not vacuous either: the frozen diagnostic still pins the artifact and
-  // record names it replays from the historical run.
-  const diagnostic = readFileSync(join(repositoryRoot, DIAGNOSTIC), 'utf8');
-  for (const token of ['anywear_infra_operation', 'operation-record.json']) {
-    assert.ok(diagnostic.includes(token), `${DIAGNOSTIC} must keep naming ${token}`);
-  }
-
-  const found = offenders(RECORD_SHAPES, [DIAGNOSTIC], { skipTests: true });
+test('the retired producer record-shape validators appear in no module', () => {
+  const found = offenders(RECORD_VALIDATORS);
   assert.deepEqual(found, [],
-    `retired record/artifact shapes may appear only in ${DIAGNOSTIC}; found:\n${found.join('\n')}`);
+    `retired record-shape validators may appear nowhere; found:\n${found.join('\n')}`);
+});
+
+test('only a test fixture may name a retired record or artifact shape', () => {
+  const found = offenders(RECORD_SHAPES, { skipTests: true });
+  assert.deepEqual(found, [],
+    `retired record/artifact shapes may appear only in test fixtures; found:\n${found.join('\n')}`);
 });

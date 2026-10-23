@@ -112,13 +112,13 @@ Run install and build commands from this repository.
   record tuple. Do not add an approval Environment or approval/`Approved`/`Rejected` states.
 - The single protected `qualify` entry in `beta-qualification.yml` owns the deployed
   operations for beta and later stages; it must not target dev. Separation between
-  qualification, the smoke diagnostic, account recovery and automatic leftover expiry now
+  qualification, the smoke diagnostic and automatic leftover expiry now
   lives in the
   signed `operation` field, not in a workflow-file boundary: `qualification-record.json` is
   produced only by the `full` operation, the record binds the operation that was dispatched,
   and both this repository's producer/verifier and the Infra-side executor allow-list require
-  `operation: full`. A `smoke`, `recover` or `reconcile` run therefore can neither produce nor
-  withhold the record the release gate produced, and a recovery result is
+  `operation: full`. A `smoke` or `reconcile` run therefore can neither produce nor
+  withhold the record the release gate produced, and a reconcile result is
   never substituted for qualification evidence.
 - Leftover data is bounded by time, not quarantined (#217). A teardown that cannot prove
   deletion records its identity `retained` with a `retainedReason` and a `reconcileBy` bound,

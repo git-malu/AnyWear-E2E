@@ -10,7 +10,7 @@ import {
   releaseWorkerLease,
   workerLeaseGateError,
 } from '../tests/support/worker-cleanup.ts';
-import { bindCleanupEnvironment, markRepairedWorkerAccounts, skippedWorkerAccounts } from './cleanup-worker-accounts.mjs';
+import { markRepairedWorkerAccounts, skippedWorkerAccounts } from './cleanup-worker-accounts.mjs';
 
 const runScope = `123456789-1-${'a'.repeat(16)}`;
 const workerEmail = `e2e-beta-${runScope}-0-a1b2c3d4@anywear.local`;
@@ -119,7 +119,7 @@ test('scoped worker cleanup transmits exact runScope and subject/email before Co
 
 test('a pre-#129 stable allowlist row is still cleanable, but only for its own scope', async () => {
   // Historical artifacts name the retained rows and their identities are still
-  // in Cognito, so recovery has to keep accepting them.
+  // in Cognito, so a historical cleanup has to keep accepting them.
   assert.deepEqual(createServiceCleanupInputs(manifest([{ email: stableWorkerEmail, subject, mode: 'worker', status: 'cleanup_pending' }])).cleanup_json,
     JSON.stringify({ runScope, users: [{ sub: subject, email: stableWorkerEmail }] }));
   // A scoped address from another run is not this manifest's captured identity.
@@ -393,26 +393,4 @@ test('a refused retain record or a refused release write still reports the attem
   assert.equal(released.scope, 'retained');
   assert.match(released.reason, /could not be released/);
   assert.deepEqual(refusedRelease.calls.at(-1), { release: workerEmail });
-});
-
-test('validated diagnostic tuple is copied to the operation environment and mismatches refuse', () => {
-  const diagnostic = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:3' } };
-  const bound = bindCleanupEnvironment({}, diagnostic);
-  assert.equal(bound.E2E_CLEANUP_SERVICE_SOURCE_SHA, diagnostic.service.source_sha);
-  assert.equal(bound.E2E_CLEANUP_SERVICE_IMAGE_DIGEST, diagnostic.service.image_digest);
-  assert.equal(bound.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, diagnostic.capability.state_machine_version_arn);
-  assert.throws(() => bindCleanupEnvironment({ E2E_CLEANUP_SERVICE_IMAGE_DIGEST: 'sha256:' + 'c'.repeat(64) }, diagnostic), /differs/);
-});
-
-test('cleanup state machine version is validated by shape, not pinned to one revision', () => {
-  for (const version of [3, 4, 5, 12]) {
-    const candidate = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: `arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:${version}` } };
-    assert.equal(bindCleanupEnvironment({}, candidate).BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, candidate.capability.state_machine_version_arn);
-  }
-  for (const invalid of ['0', '01', 'x', '', '3-extra']) {
-    const candidate = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: `arn:aws:states:ap-east-1:650880818323:stateMachine:beta-anywear-tester-cleanup:${invalid}` } };
-    assert.throws(() => bindCleanupEnvironment({}, candidate), /diagnostic|tuple/);
-  }
-  const foreign = { service: { source_sha: 'a'.repeat(40), image_digest: `sha256:${'b'.repeat(64)}` }, capability: { state_machine_version_arn: 'arn:aws:states:us-east-1:650880818323:stateMachine:other-machine:5' } };
-  assert.throws(() => bindCleanupEnvironment({}, foreign), /diagnostic|tuple/);
 });
