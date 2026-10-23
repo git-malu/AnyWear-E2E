@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import {
   assertEqual, byteHash, exactKeys, payloadDigest as strictPayloadDigest, repositories,
   parseStrictJson, requireHttpsUrl as requireContractHttpsUrl, requireId, requireHash,
@@ -182,59 +181,6 @@ export async function collectDeploymentEvidence(input, expected = {}, fetcher = 
     client_version: clientVersion,
     minimum_client_version: minimumClientVersion,
   };
-}
-
-// The manual runtime-drill and recovery CLIs are the only consumers of the expected tuple
-// outside qualification itself. They take it from the qualification record v3 that names the
-// deployed revisions, never from a committed deployment file: `--tuple <path>` or the
-// `RUNTIME_DRILL_TUPLE` environment variable. The reader accepts exactly the two identities
-// the drill binds and refuses an absent or malformed record instead of inferring a tuple.
-export const QUALIFICATION_TUPLE_ENV = 'RUNTIME_DRILL_TUPLE';
-
-export function qualificationTuplePath({ tuple, environment = process.env } = {}) {
-  const value = tuple ?? environment?.[QUALIFICATION_TUPLE_ENV];
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-export function requireQualificationTuplePath({ tuple, environment = process.env, label = 'This command' } = {}) {
-  const tuplePath = qualificationTuplePath({ tuple, environment });
-  if (!tuplePath) {
-    throw new Error(`${label} requires the expected deployed tuple from a qualification-record.json v3: pass --tuple <qualification-record.json> or set ${QUALIFICATION_TUPLE_ENV}`);
-  }
-  return tuplePath;
-}
-
-export async function readQualificationTuple(tuplePath) {
-  if (typeof tuplePath !== 'string' || tuplePath.length === 0) {
-    throw new Error(`Qualification tuple path is required: pass --tuple <qualification-record.json> or set ${QUALIFICATION_TUPLE_ENV}`);
-  }
-  let bytes;
-  try {
-    bytes = await readFile(tuplePath);
-  } catch (error) {
-    throw new Error(`Qualification tuple ${tuplePath} could not be read (${error.code ?? error.message})`, { cause: error });
-  }
-  let record;
-  try {
-    record = parseStrictJson(bytes);
-  } catch (error) {
-    throw new Error(`Qualification tuple ${tuplePath} is not valid JSON (${error.message})`, { cause: error });
-  }
-  return {
-    client: { sha: requireTupleRevision(record, 'client', tuplePath) },
-    service: { sha: requireTupleRevision(record, 'service', tuplePath) },
-  };
-}
-
-function requireTupleRevision(record, component, tuplePath) {
-  const revision = record?.revisions?.[component];
-  if (!revision || typeof revision !== 'object' || Array.isArray(revision)) {
-    throw new Error(`Qualification tuple ${tuplePath} is missing revisions.${component}`);
-  }
-  if (revision.sha === undefined) {
-    throw new Error(`Qualification tuple ${tuplePath} is missing revisions.${component}.sha`);
-  }
-  return requireCommit(revision.sha, `Qualification tuple ${tuplePath} revisions.${component}.sha`);
 }
 
 export const serviceArtifactsTag = (serviceSha) => `${SERVICE_ARTIFACTS_PREFIX}${requireCommit(serviceSha, 'Service commit')}`;

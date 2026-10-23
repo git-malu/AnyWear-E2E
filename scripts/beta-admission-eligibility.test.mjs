@@ -6,15 +6,14 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { effectiveAdmissionMode, parseAdmissionMode } from './beta-admission-mode.mjs';
 import { validateBetaAdmissionPolicy, verifyBetaAdmissionEligibility } from './beta-admission-eligibility.mjs';
 
 const sourceSha = 'a'.repeat(40);
-const workers = ['e2e-beta-worker-0-chromium@anywear.local', 'e2e-beta-worker-1-chromium@anywear.local'];
-
-function testersRecord(patch = {}) {
-  return JSON.stringify({ mode: 'testers', ...patch });
-}
+// The eight stable Beta worker-pool rows (issue #213). A qualification run with two
+// workers and offset 0 leases rows 0 and 1.
+const pool = Array.from({ length: 8 }, (_, slot) => `e2e-beta-worker-${slot}-chromium@anywear.local`);
+const required = (offset = 0) => [pool[offset], pool[offset + 1]];
+const human = 'human@example.com';
 
 function environment(patch = {}) {
   return {
@@ -32,11 +31,15 @@ function environment(patch = {}) {
   };
 }
 
-function response(patch = {}) {
-  const values = { admission_mode: testersRecord(), tester_allowlist: JSON.stringify([...workers, 'human@example.com']), ...patch };
-  return { Parameters: Object.entries(values).map(([name, Value]) => ({
-    Name: `/anywear/beta/${name}`, Type: 'String', Value, Version: 7,
-  })), InvalidParameters: [] };
+function response({ testers = [...required(), human], value } = {}) {
+  return {
+    Parameter: {
+      Name: '/anywear/beta/tester_allowlist',
+      Type: 'String',
+      Value: value ?? JSON.stringify(testers),
+      Version: 7,
+    },
+  };
 }
 
 function reader(payload = JSON.stringify(response())) {
@@ -51,18 +54,27 @@ function reader(payload = JSON.stringify(response())) {
   };
 }
 
-test('an effectively testers record reads only the exact two admission parameters under the dedicated guarded executor', () => {
+test('the pre-flight reads only the tester allowlist under the dedicated guarded executor', () => {
   const input = environment();
-  const io = reader();
+  const io = reader(JSON.stringify(response({ testers: [...required(), human] })));
   assert.deepEqual(verifyBetaAdmissionEligibility(input, { execute: io.execute, sourceSha }), {
-    versions: { admission_mode: 7, tester_allowlist: 7 },
+    versions: { tester_allowlist: 7 },
   });
   assert.deepEqual(io.calls, [{ command: 'aws', args: [
-    'ssm', 'get-parameters', '--names', '/anywear/beta/admission_mode',
-    '/anywear/beta/tester_allowlist',
+    'ssm', 'get-parameter', '--name', '/anywear/beta/tester_allowlist',
     '--region', 'ap-east-1', '--output', 'json', '--no-cli-pager',
   ], options: { encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'], env: input } }]);
+});
+
+test('the required addresses follow the run\'s worker slot offset', () => {
+  // Offset 2 leases rows 2 and 3, so rows 0 and 1 need not be listed.
+  const io = reader(JSON.stringify(response({ testers: [...required(2)] })));
+  assert.doesNotThrow(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: '2' }), { execute: io.execute, sourceSha }));
+  // With offset 2, a list holding only rows 0 and 1 is refused.
+  const missing = reader(JSON.stringify(response({ testers: [...required(0)] })));
+  assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: '2' }), { execute: missing.execute, sourceSha }),
+    /missing .*worker-2-chromium@anywear\.local, .*worker-3-chromium@anywear\.local/);
 });
 
 test('missing or foreign dedicated identity and untrusted dispatch fail before any cloud access', () => {
@@ -90,10 +102,17 @@ test('missing or foreign dedicated identity and untrusted dispatch fail before a
   assert.deepEqual(io.calls, []);
 });
 
-test('the qualification requires exactly two workers before any SSM read', () => {
+test('the qualification requires exactly two workers and a valid offset before any SSM read', () => {
   for (const E2E_WORKERS of [undefined, '', '1', '3', '02', '2.0']) {
     const io = reader();
     assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKERS }), { execute: io.execute, sourceSha }), /exactly 2 workers/);
+    assert.deepEqual(io.calls, []);
+  }
+  // An offset that cannot fit two workers inside the eight-slot pool refuses before the
+  // read, so an out-of-range value can never select an address the pool does not list.
+  for (const offset of ['7', '8', '-1', '1.5', '02', 'x']) {
+    const io = reader();
+    assert.throws(() => verifyBetaAdmissionEligibility(environment({ E2E_WORKER_SLOT_OFFSET: offset }), { execute: io.execute, sourceSha }), /SLOT_OFFSET/);
     assert.deepEqual(io.calls, []);
   }
   // The retired single-slot `measure` operation is no longer an accepted operation, so it
@@ -105,167 +124,100 @@ test('the qualification requires exactly two workers before any SSM read', () =>
   }
 });
 
-test('a closed or non-canonical admission record refuses qualification without any policy mutation', () => {
-  for (const [patch, message] of [
-    [{ admission_mode: JSON.stringify({ mode: 'closed' }) }, /admission is closed/],
-    // The legacy two-key record is not a reader-valid record any more: admission is
-    // windowless, so a record carrying a bound is malformed rather than partly usable.
-    [{ admission_mode: JSON.stringify({ mode: 'testers', expires_at: new Date(Date.now() + 60 * 60_000).toISOString() }) }, /malformed admission mode record/],
-    [{ admission_mode: JSON.stringify({ mode: 'testers', window_minutes: 60 }) }, /malformed admission mode record/],
+test('every pool address this run can lease must be an exact member of the allowlist', () => {
+  for (const [testers, pattern] of [
+    [[], /missing e2e-beta-worker-0-chromium@anywear\.local, e2e-beta-worker-1-chromium@anywear\.local/],
+    [[pool[0]], /missing e2e-beta-worker-1-chromium@anywear\.local/],
+    [[pool[1]], /missing e2e-beta-worker-0-chromium@anywear\.local/],
+    [[human, ...pool.slice(0, 1)], /worker-1-chromium/],
+    // The stable family is exact: a canonical near-miss is not a member.
+    [[pool[0], 'e2e-beta-worker-01-chromium@anywear.local'], /worker-1-chromium/],
+    [[pool[0], 'e2e-beta-worker-1-chromium@anywear.local.evil.example'], /worker-1-chromium/],
   ]) {
-    const io = reader(JSON.stringify(response(patch)));
-    assert.throws(() => verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }), message);
-    assert.equal(io.calls.length, 1);
-    assert.deepEqual(io.calls[0].args.slice(0, 2), ['ssm', 'get-parameters']);
+    assert.throws(() => validateBetaAdmissionPolicy(response({ testers }), required()), pattern, JSON.stringify(testers));
   }
+  // A list of the whole pool still passes with unrelated human testers beside it.
+  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ testers: [...pool, human] }), required(0)));
+  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ testers: [human, ...required()] }), required()));
+  // The caller must name the addresses it is proving; an empty requirement proves nothing.
+  assert.throws(() => validateBetaAdmissionPolicy(response(), []), /at least one leaseable/);
 });
 
-test('admission mode conformance table: only the writer-canonical mode record is read', () => {
-  // The writer emits `JSON.stringify({mode})`, so the accepted column is exactly that form.
-  // Every other row is fail-closed, and the distinction the table proves is *which*
-  // refusal: a well-formed `closed` record is an explicit close, while anything a reader
-  // cannot parse — including the legacy record that carried a bound — is malformed.
-  const read = (value) => {
-    try { validateBetaAdmissionPolicy(response({ admission_mode: value })); return 'open'; }
-    catch (error) { return error.message; }
-  };
-  for (const [value, expected] of [
-    [JSON.stringify({ mode: 'testers' }), 'open'],
-    [JSON.stringify({ mode: 'closed' }), /admission is closed/],
-    // Syntax and shape.
-    ['', /malformed admission mode record/],
-    ['not json', /malformed admission mode record/],
-    // A JSON array carries no `mode` string, so the mode-membership check refuses it even
-    // though `typeof [] === 'object'`.
-    ['[1]', /malformed admission mode record/],
-    ['[]', /malformed admission mode record/],
-    ['[{"mode":"testers"}]', /malformed admission mode record/],
-    ['null', /malformed admission mode record/],
-    ['"testers"', /malformed admission mode record/],
-    ['{}', /malformed admission mode record/],
-    // A hand-edited duplicate key must never read open: the strict parser refuses it
-    // instead of taking the last value the way `JSON.parse` would.
-    ['{"mode":"closed","mode":"testers"}', /malformed admission mode record/],
-    ['{"mode":"closed","mode":"closed"}', /malformed admission mode record/],
-    // Unknown mode, wrong case, and the extra keys the reader refuses. The legacy record
-    // that carried `expires_at` belongs here: a window-shaped record is not this record.
-    [JSON.stringify({ mode: 'open' }), /malformed admission mode record/],
-    [JSON.stringify({ mode: 'Testers' }), /malformed admission mode record/],
-    [JSON.stringify({ mode: 'testers', expires_at: '2026-10-17T08:30:00.000Z' }), /malformed admission mode record/],
-    [JSON.stringify({ mode: 'testers', expires: '2026-10-17T08:30:00.000Z' }), /malformed admission mode record/],
-    [JSON.stringify({ mode: 'closed', extra: true }), /malformed admission mode record/],
-    [JSON.stringify({ mode: 'closed', expires_at: null }), /malformed admission mode record/],
-    // A mode that is not one of the two strings. The array and object rows are the ones a
-    // property-key lookup would have coerced into `testers` (or crashed on); the reader
-    // matches by value, so they are refused.
-    [JSON.stringify({ mode: ['testers'] }), /malformed admission mode record/],
-    ['{"mode":{"toString":0}}', /malformed admission mode record/],
-    [JSON.stringify({ mode: 1 }), /malformed admission mode record/],
-    [JSON.stringify({ mode: null }), /malformed admission mode record/],
-    [JSON.stringify({ mode: true }), /malformed admission mode record/],
-    [JSON.stringify({ mode: { mode: 'testers' } }), /malformed admission mode record/],
-    // The canonical-bytes rule. Each of these parses to the same object but is not the
-    // serialization the writer emits, and the Service reader refuses it too.
-    ['{"mode": "testers"}', /malformed admission mode record/],
-    ['{"mode": "closed"}', /malformed admission mode record/],
-    [`${JSON.stringify({ mode: 'testers' })}\n`, /malformed admission mode record/],
-    [` ${JSON.stringify({ mode: 'testers' })}`, /malformed admission mode record/],
-    ['{"mode":"test\\u0065rs"}', /malformed admission mode record/],
-    ['{"mod\\u0065":"testers"}', /malformed admission mode record/],
-  ]) {
-    const outcome = read(value);
-    if (expected === 'open') assert.equal(outcome, 'open', value);
-    else assert.match(outcome, expected, value);
-  }
-});
-
-test('the reader refuses every non-string or unwritable shape instead of throwing', () => {
-  // Callers normally pass `Parameter.Value`, so these rows drive the reader's own input
-  // guard directly rather than through the pre-flight.
-  for (const value of [undefined, null, 0, 5, true, {}, [], ['testers'], Buffer.from('{"mode":"closed"}'), () => 'closed']) {
-    assert.equal(parseAdmissionMode(value), null, String(value));
-    assert.deepEqual(effectiveAdmissionMode(value), { mode: 'closed' }, String(value));
-  }
-  // Shapes whose `mode` cannot be used as a key or coerced into one are refused, not
-  // thrown: a TypeError out of the pre-flight reads as a crashed check, not a closed Beta.
-  for (const value of ['{"mode":{"toString":0}}', '{"mode":{"valueOf":0}}',
-    '{"mode":["testers"]}', '[']) {
-    assert.equal(parseAdmissionMode(value), null, value);
-  }
-});
-
-test('no tester allowlist row is required: empty, partial, foreign-browser and near-miss lists pass', () => {
-  for (const testers of [[], workers.slice(0, 1), workers.slice(1),
-    [workers[0], 'e2e-beta-worker-2-chromium@anywear.local'],
-    [workers[0], 'e2e-beta-worker-1-firefox@anywear.local'],
-    ['e2e-beta-worker-1-chromium@anywear.local.evil.example'],
-    [workers[0], "human!#$%&'+/=?^_`{|}~-@example.com"]]) {
-    assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(testers) })),
-      JSON.stringify(testers));
-  }
-  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(workers.map(email => ` ${email.toUpperCase()} `)) })));
-});
-
-test('run-scoped harness addresses pass the policy check, with or without stable rows beside them', () => {
-  // Issue #129 owns the run/attempt-scoped address family and the anchored
-  // namespace on the Service side admits it, so the pre-flight asserts no
-  // membership at all. These lists are only validated for shape.
-  const scoped = [
-    'e2e-beta-123456789-1-0123456789abcdef-0-a1b2c3d4@anywear.local',
-    'e2e-beta-123456789-1-0123456789abcdef-1-b1c2d3e4@anywear.local',
+test('the allowlist shape, normalization and canonical bytes are enforced', () => {
+  const invalid = [
+    ['not json', /malformed tester allowlist JSON/],
+    ['[', /malformed tester allowlist JSON/],
+    ['{} trailing', /malformed tester allowlist JSON/],
+    ['{"x":1}', /valid tester email list/],
+    ['null', /valid tester email list/],
+    ['{}', /valid tester email list/],
+    ['"email"', /valid tester email list/],
+    [JSON.stringify([...required(), null]), /valid tester email list/],
+    [JSON.stringify([...required(), 1]), /valid tester email list/],
+    [JSON.stringify([...required(), '']), /canonical unique tester emails/],
+    [JSON.stringify([...required(), 'not-an-email']), /canonical unique tester emails/],
+    [JSON.stringify([...required(), 'human*@example.com']), /canonical unique tester emails/],
+    [JSON.stringify([...required(), 'human@example-.com']), /canonical unique tester emails/],
+    [JSON.stringify([...required(), `${'a'.repeat(250)}@example.com`]), /canonical unique tester emails/],
+    [JSON.stringify([...required(), human, human]), /canonical unique tester emails/],
+    [JSON.stringify([...required(), ` ${human.toUpperCase()} `]), /canonical unique tester emails/],
+    [JSON.stringify([...required(), human.toUpperCase()]), /canonical unique tester emails/],
+    [`${JSON.stringify([...required(), human])}\n`, /canonical tester list bytes/],
+    [` ${JSON.stringify([...required(), human])}`, /canonical tester list bytes/],
+    [JSON.stringify([...required(), human], null, 2), /canonical tester list bytes/],
   ];
-  for (const testers of [scoped, [workers[0], scoped[0]], [scoped[0], workers[1]], [...scoped, workers[0]]]) {
-    assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ tester_allowlist: JSON.stringify(testers) })),
-      JSON.stringify(testers));
+  for (const [value, message] of invalid) {
+    assert.throws(() => validateBetaAdmissionPolicy(response({ value }), required()), message, value);
   }
+  // At most 50 exact emails, each within the SSM value bound.
+  const many = Array.from({ length: 48 }, (_, index) => `human${index}@example.com`);
+  assert.doesNotThrow(() => validateBetaAdmissionPolicy(response({ testers: [...required(), ...many] }), required()));
+  assert.throws(() => validateBetaAdmissionPolicy(response({ testers: [...required(), ...many, 'extra@example.com'] }), required()),
+    /valid tester email list/);
+  const oversized = Array.from({ length: 50 }, (_, index) => `${String(index).padStart(3, '0')}${'a'.repeat(246)}@example.com`);
+  assert.throws(() => validateBetaAdmissionPolicy(response({ testers: oversized }), required()), /malformed tester allowlist parameter|canonical unique/);
 });
 
-test('an empty tester allowlist passes the whole pre-flight, not only the policy check', () => {
-  const io = reader(JSON.stringify(response({ tester_allowlist: '[]' })));
-  assert.deepEqual(verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }), {
-    versions: { admission_mode: 7, tester_allowlist: 7 },
-  });
-  assert.equal(io.calls.length, 1);
-});
-
-test('incomplete, duplicate, unexpected or malformed parameter entries never supply a permissive default', () => {
-  const valid = response();
-  for (const invalid of [null, {}, { Parameters: null }, { Parameters: [] },
-    { Parameters: valid.Parameters.slice(0, 1) },
-    { Parameters: [...valid.Parameters, valid.Parameters[0]] },
-    { Parameters: [valid.Parameters[0], valid.Parameters[0], valid.Parameters[1]] },
-    { ...valid, InvalidParameters: ['/anywear/beta/admission_mode'] },
-    { ...valid, InvalidParameters: null }]) {
-    assert.throws(() => validateBetaAdmissionPolicy(invalid));
-  }
+test('a malformed parameter record never supplies a permissive default', () => {
+  const valid = () => response().Parameter;
   for (const patch of [
-    { Name: '/anywear/prod/admission_mode' }, { Name: undefined },
-    { Type: 'SecureString' }, { Value: undefined }, { Value: false }, { Value: 'x'.repeat(4097) },
-    { Version: undefined }, { Version: 0 }, { Version: 1.5 }, { Version: '7' },
+    { Name: '/anywear/prod/tester_allowlist' }, { Name: undefined },
+    { Type: 'SecureString' }, { Type: undefined },
+    { Version: undefined }, { Version: 0 }, { Version: 1.5 }, { Version: '7' }, { Version: -1 },
   ]) {
-    const invalid = response();
-    Object.assign(invalid.Parameters[0], patch);
-    assert.throws(() => validateBetaAdmissionPolicy(invalid), /malformed or duplicate/);
+    assert.throws(() => validateBetaAdmissionPolicy({ Parameter: { ...valid(), ...patch } }, required()),
+      /malformed tester allowlist parameter/, JSON.stringify(patch));
   }
-  const invalid = response(); invalid.Parameters[0] = null;
-  assert.throws(() => validateBetaAdmissionPolicy(invalid));
+  for (const responseValue of [null, undefined, {}, { Parameter: null }, { Parameter: {} }, { Parameter: 'x' }]) {
+    assert.throws(() => validateBetaAdmissionPolicy(responseValue, required()), /malformed tester allowlist parameter/);
+  }
+  assert.throws(() => validateBetaAdmissionPolicy(response({ value: 'x'.repeat(4097) }), required()), /malformed tester allowlist parameter/);
+  assert.throws(() => validateBetaAdmissionPolicy({ Parameter: { ...valid(), Value: false } }, required()), /malformed tester allowlist parameter/);
 });
 
-test('tester JSON, email validity and normalized membership uniqueness fail closed', () => {
-  for (const value of ['not json', '[', '{"x":1,"x":2}', 'null', '{}', '"email"',
-    JSON.stringify([...workers, null]), JSON.stringify([...workers, '']),
-    JSON.stringify([...workers, 'not-an-email']), JSON.stringify([...workers, 'human*@example.com']),
-    JSON.stringify([...workers, 'human@example-.com']),
-    JSON.stringify([...workers, `${'a'.repeat(250)}@example.com`]),
-    JSON.stringify([...workers, workers[0]]), JSON.stringify([...workers, ` ${workers[1].toUpperCase()} `]),
-    JSON.stringify([...workers, ...Array.from({ length: 49 }, (_, i) => `human${i}@example.com`)])]) {
-    assert.throws(() => validateBetaAdmissionPolicy(response({ tester_allowlist: value })));
+test('a malformed list or a missing pool address refuses with no account-creation side effect', async () => {
+  for (const payload of [
+    JSON.stringify(response({ value: 'not json' })),
+    JSON.stringify(response({ testers: [pool[0]] })),
+    JSON.stringify(response({ testers: [] })),
+  ]) {
+    const io = reader(payload);
+    assert.throws(() => verifyBetaAdmissionEligibility(environment(), { execute: io.execute, sourceSha }));
+    // Exactly the one read that establishes the refusal: no Cognito, no account, no
+    // mutation. The refusal happens before the fixture exists, not after a partial create.
+    assert.equal(io.calls.length, 1);
+    assert.deepEqual(io.calls[0].args.slice(0, 2), ['ssm', 'get-parameter']);
+    assert.ok(io.calls.every(({ command, args }) => command === 'aws' && args[0] === 'ssm' && args[1] === 'get-parameter'));
   }
+  // The pre-flight cannot create an account even accidentally: it imports no identity or
+  // account-provisioning module.
+  const source = await readFile(new URL('./beta-admission-eligibility.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /cognito|AdminCreateUser|AdminConfirmSignUp|reserveAccount|provisionConfirmedTestAccount/i);
 });
 
 test('unavailable or malformed CLI JSON produces a bounded diagnostic without raw output or secrets', () => {
   const sensitive = 'fixture-secret-that-must-not-appear';
-  const duplicate = JSON.stringify(response()).replace('"InvalidParameters":[]', '"InvalidParameters":[],"InvalidParameters":[]');
+  const duplicate = JSON.stringify(response()).replace('"Version":7', '"Version":7,"Version":7');
   for (const payload of [new Error(sensitive), sensitive, '', '{} trailing', duplicate,
     Buffer.from([0xc0, 0xaf]), JSON.stringify({ Parameters: [], InvalidParameters: [] })]) {
     const io = reader(payload);
@@ -280,57 +232,39 @@ test('unavailable or malformed CLI JSON produces a bounded diagnostic without ra
   }
 });
 
-test('workflow runs mandatory eligibility after dedicated principal verification and before account setup or suite', async () => {
+test('workflow runs mandatory eligibility after principal verification and before account setup or suite', async () => {
   const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
   const steps = workflow.split(/\r?\n {6}- name: /).slice(1);
-  const eligibility = steps.findIndex(step => step.startsWith('Require Beta admission eligibility\n')
-    || step.startsWith('Require Beta admission eligibility\r\n'));
-  assert.ok(eligibility > steps.findIndex(step => step.startsWith('Verify dedicated E2E principal')));
-  assert.match(steps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
-  assert.doesNotMatch(steps[eligibility], /\bif:|continue-on-error:/);
-  // #163: one qualify entry carries three operations. full keeps the release-gating suite
-  // and the only record production; smoke is the diagnostic. Separation lives in the signed
-  // operation, so neither can decide another operation's conclusion.
-  const full = workflow.slice(workflow.indexOf('\n  full:\n'), workflow.indexOf('\n  smoke:\n'));
-  const smoke = workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  recover:\n'));
-  const recover = workflow.slice(workflow.indexOf('\n  recover:\n'), workflow.indexOf('\n  record:\n'));
-  const record = workflow.slice(workflow.indexOf('\n  record:\n'));
-  for (const [name, job, stepName, command] of [
-    ['full', full, 'Run the release-gating business regression suite', 'pnpm test'],
-    ['smoke', smoke, 'Run deployed Beta smoke tests', 'pnpm test:smoke'],
-  ]) {
-    const suite = job.split(/\r?\n {6}- name: /).slice(1).find(step => step.startsWith(stepName));
-    assert.ok(suite, `${name} must carry its own suite step`);
-    assert.match(suite, new RegExp(`node scripts/execution-guard\\.mjs\\r?\\n\\s+${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'));
-    assert.doesNotMatch(suite, /continue-on-error:/);
+  // #163: one qualify entry carries three operations. `full` is the release gate and
+  // `smoke` is the deployed diagnostic; both lease pool accounts, so both prove the
+  // allowlist first. `recover` creates nothing and has no eligibility step.
+  for (const operation of ['full', 'smoke']) {
+    const job = operation === 'full'
+      ? workflow.slice(workflow.indexOf('\n  full:\n'), workflow.indexOf('\n  smoke:\n'))
+      : workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  recover:\n'));
+    const jobSteps = job.split(/\r?\n {6}- name: /).slice(1);
+    const eligibility = jobSteps.findIndex((step) => step.startsWith('Require Beta admission eligibility\n')
+      || step.startsWith('Require Beta admission eligibility\r\n'));
+    assert.ok(eligibility > jobSteps.findIndex((step) => step.startsWith('Verify dedicated E2E principal')), `${operation} verifies its principal first`);
+    assert.ok(eligibility < jobSteps.findIndex((step) => step.startsWith(operation === 'full'
+      ? 'Run the release-gating business regression suite'
+      : 'Run deployed Beta smoke tests')), `${operation} proves eligibility before the suite`);
+    assert.match(jobSteps[eligibility], /run: node scripts\/beta-admission-eligibility\.mjs\s*$/);
+    assert.doesNotMatch(jobSteps[eligibility], /\bif:|continue-on-error:/);
+    assert.match(job, /E2E_WORKERS: 2\r?\n/);
   }
-  assert.doesNotMatch(workflow, /continue-on-error:/);
-  assert.match(full, /E2E_WORKERS: 2\r?\n/);
-  // The retired measurement operation leaves no job, input, script or suite behind. The
-  // operation name is matched as a word, so the retained "measured across two worker task
-  // definitions" gate sentence is not mistaken for it.
+  assert.ok(steps.length > 0);
+  // The worker fixture reserves (and so leases a pool address) only after Playwright starts
+  // in that later step, and never before the pre-flight has run.
+  const fixture = await readFile(new URL('../tests/support/fixtures.ts', import.meta.url), 'utf8');
+  assert.ok(fixture.indexOf('await reserveTestAccount(') < fixture.indexOf('await provisionConfirmedTestAccount('));
+  // The retired measurement operation left no job, input, script or suite behind.
   for (const retired of [/\bmeasure\b/, /sizing_stage/, /test:instrumentation/, /BETA_SIZING_STAGE/]) {
     assert.ok(!retired.test(workflow), `the workflow must not reference ${retired}`);
   }
-  // The record is produced only by full, bound to its dispatched operation, and the record
-  // job only validates and attaches it. Neither smoke nor recover can write one.
-  assert.ok(record.length > 0, 'the qualify entry must declare a record job');
-  assert.match(record, /needs: \[preflight, full\]/);
-  assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
-  // The release decision is the green full run plus the sealed record: no approval job and
-  // no approval Environment.
-  assert.doesNotMatch(workflow, /\n {2}approve:\n/);
-  assert.doesNotMatch(workflow, /beta-release-approval/);
-  assert.match(full, /qualification:generate/);
-  for (const [name, job] of [['smoke', smoke], ['recover', recover], ['record', record]]) {
-    assert.doesNotMatch(job, /qualification:(generate|verify)/, `${name} must not produce a qualification record`);
-  }
-  // The worker fixture reserves/provisions only after Playwright starts in that later step.
-  const fixture = await readFile(new URL('../tests/support/fixtures.ts', import.meta.url), 'utf8');
-  assert.ok(fixture.indexOf('await reserveTestAccount(') < fixture.indexOf('await provisionConfirmedTestAccount('));
 });
 
-test('the real CLI exits nonzero for unsafe or unavailable admission without external commands or success output', async () => {
+test('the real CLI exits nonzero for a malformed or incomplete allowlist without external commands or success output', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'anywear-admission-eligibility-'));
   const callsFile = join(directory, 'calls.jsonl');
   const transport = join(directory, 'transport.mjs');
@@ -342,7 +276,7 @@ import { appendFileSync } from 'node:fs';
 export function execFileSync(command, args) {
   appendFileSync(process.env.TEST_ADMISSION_CALLS, JSON.stringify([command, ...args]) + '\\n');
   if (command === 'git' && args.at(-1) === 'HEAD') return process.env.GITHUB_SHA;
-  if (command !== 'aws' || args[0] !== 'ssm' || args[1] !== 'get-parameters') throw new Error('External commands blocked');
+  if (command !== 'aws' || args[0] !== 'ssm' || args[1] !== 'get-parameter') throw new Error('External commands blocked');
   if (process.env.TEST_ADMISSION_UNAVAILABLE === 'true') throw new Error('fixture-secret');
   return process.env.TEST_ADMISSION_RESPONSE;
 }
@@ -359,12 +293,13 @@ globalThis.fetch = async () => { throw new Error('Network blocked'); };
       NODE_OPTIONS: '', AWS_EC2_METADATA_DISABLED: 'true', ...environment(),
       TEST_ADMISSION_CALLS: callsFile, TEST_ADMISSION_RESPONSE: JSON.stringify(response()) };
     for (const [patch, message] of [
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_mode: JSON.stringify({ mode: 'closed' }) })) }, /admission is closed/],
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_mode: JSON.stringify({ mode: 'testers', expires_at: new Date(Date.now() + 60 * 60_000).toISOString() }) })) }, /malformed admission mode record/],
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ admission_mode: 'not json' })) }, /malformed admission mode record/],
-      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ tester_allowlist: 'not json' })) }, /malformed tester allowlist JSON/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ value: 'not json' })) }, /malformed tester allowlist JSON/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ testers: [pool[0]] })) }, /missing e2e-beta-worker-1-chromium@anywear\.local/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ testers: [] })) }, /missing e2e-beta-worker-0-chromium@anywear\.local/],
+      [{ TEST_ADMISSION_RESPONSE: JSON.stringify(response({ testers: [...required(), human.toUpperCase()] })) }, /canonical unique tester emails/],
       [{ TEST_ADMISSION_UNAVAILABLE: 'true' }, /could not read valid SSM policy/],
       [{ TEST_ADMISSION_RESPONSE: 'not json' }, /could not read valid SSM policy/],
+      [{ E2E_WORKER_SLOT_OFFSET: '7' }, /SLOT_OFFSET/],
       [{ E2E_AWS_PRINCIPAL_ARN: 'arn:aws:iam::650880818323:user/local-admin' }, /dedicated E2E principal/],
     ]) {
       await writeFile(callsFile, '');
@@ -375,21 +310,22 @@ globalThis.fetch = async () => { throw new Error('Network blocked'); };
           env: { ...isolated, ...patch }, timeout: 10_000, maxBuffer: 64 * 1024,
         });
       } catch (error) { failure = error; }
-      assert.ok(failure, 'Unsafe admission must fail the mandatory workflow step');
+      assert.ok(failure, 'An ineligible allowlist must fail the mandatory workflow step');
       assert.equal(failure.code, 1);
       assert.match(failure.stderr, message);
       assert.doesNotMatch(failure.stderr, /fixture-secret|human@example\.com/);
       assert.equal(failure.stdout, '', 'The CLI must not claim eligibility on failure');
       const calls = (await readFile(callsFile, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-      assert.ok(calls.every(call => call[0] === 'git' || (call[0] === 'aws' && call[1] === 'ssm' && call[2] === 'get-parameters')));
-      assert.equal(calls.filter(call => call[0] === 'aws').length, patch.E2E_AWS_PRINCIPAL_ARN ? 0 : 1);
+      assert.ok(calls.every(call => call[0] === 'git' || (call[0] === 'aws' && call[1] === 'ssm' && call[2] === 'get-parameter')));
+      assert.equal(calls.filter(call => call[0] === 'aws').length, patch.E2E_AWS_PRINCIPAL_ARN || patch.E2E_WORKER_SLOT_OFFSET ? 0 : 1,
+        'a refusal before the read performs no AWS call, and one read otherwise');
     }
     const success = await execute(process.execPath, ['--import', pathToFileURL(preload).href,
       fileURLToPath(new URL('./beta-admission-eligibility.mjs', import.meta.url))], {
       env: isolated, timeout: 10_000, maxBuffer: 64 * 1024,
     });
-    assert.match(success.stdout, /^Verified explicitly open Beta admission for the qualification run\.$/m);
-    assert.doesNotMatch(success.stdout, /human@example\.com/);
+    assert.match(success.stdout, /^Verified the Beta tester allowlist admits every worker-pool address this run can lease\.$/m);
+    assert.doesNotMatch(success.stdout, /human@example\.com|e2e-beta-worker-/);
     assert.equal(success.stderr, '');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

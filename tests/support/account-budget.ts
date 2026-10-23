@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { STABLE_WORKER_EMAIL_PATTERN } from './beta-address.ts';
 
 export type AccountMode = 'worker' | 'ephemeral';
 export type AccountStatus =
@@ -197,6 +198,13 @@ export async function reserveAccount(
   mode: AccountMode,
   leaseGeneration: string,
 ): Promise<void> {
+  // Beta registration admits only allowlisted addresses, so a worker lease may
+  // only be taken for one of the eight pool rows. The guard is here, before any
+  // identity exists, so a depleted or quarantined pool fails with this budget
+  // error instead of an attempt minting an address the allowlist never lists.
+  if (mode === 'worker' && !STABLE_WORKER_EMAIL_PATTERN.test(email)) {
+    throw new Error(`E2E account budget leases only the eight Beta worker-pool addresses: ${email}`);
+  }
   await withLockedState(async (state) => {
     const existing = latestAccountRecord(state, email);
     if (existing && existing.status !== 'deleted') {
@@ -267,11 +275,11 @@ export async function markAccountDeleted(email: string): Promise<void> {
  * Terminal transition for one verified worker attempt.
  *
  * `deleted` is the only status `reserveAccount` may supersede, so this write —
- * and only this write — returns an allowlisted address to the pool for the next
+ * and only this write — returns a pool address to the pool for the next
  * attempt's fresh lease generation. It is reachable only after the attempt's
  * exact identity was deleted and its absence was read back, and it refuses to
- * supersede a quarantined scope: a quarantined address stays out of the pool
- * until an operator decides otherwise.
+ * supersede a quarantined scope: a quarantined pool slot stays out of the pool
+ * until an operator repairs it.
  */
 export async function releaseWorkerAccount(
   email: string,

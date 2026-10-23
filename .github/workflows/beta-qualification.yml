@@ -838,6 +838,12 @@ jobs:
           echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
           echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
 
+      # Beta registration admits only the tester allowlist (issue #213), so the smoke
+      # operation leases the same stable worker pool the qualification does. Prove every
+      # pool address it can lease is listed before the first account exists.
+      - name: Require Beta admission eligibility
+        run: node scripts/beta-admission-eligibility.mjs
+
       - name: Observe authenticated deployed tuple before smoke
         env:
           QUALIFICATION_EVIDENCE_PATH: deployment-evidence-before.json

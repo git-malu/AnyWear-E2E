@@ -149,7 +149,6 @@ test('creates and verifies a checksummed passing v4 record from the live tuple',
   assert.equal(record.workflow.dispatched_by, null);
   assert.deepEqual(record.test.scenarios, [
     { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
-    { file: 'tests/auth.spec.ts', outcome: 'skipped', collected: 1, skipped: 1 },
     { file: 'tests/vto.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/wardrobe.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/worker-smoke.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
@@ -428,11 +427,11 @@ test('refuses a record whose stated selection differs from the one the repositor
   }
 });
 
-test('refuses a record that omits a collected but skipped scenario', () => {
+test('refuses a record that omits a collected scenario', () => {
   const { record } = issuedRecord();
   const tampered = structuredClone(record);
-  tampered.test.scenarios = tampered.test.scenarios.filter(({ file }) => file !== 'tests/auth.spec.ts');
-  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /omits tests\/auth\.spec\.ts/);
+  tampered.test.scenarios = tampered.test.scenarios.filter(({ file }) => file !== 'tests/wardrobe.spec.ts');
+  assert.throws(() => verifyQualificationRecord(redigest(tampered)), /omits tests\/wardrobe\.spec\.ts/);
 });
 
 test('refuses the retired constant suite shape instead of accepting two vocabularies', () => {

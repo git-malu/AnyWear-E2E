@@ -193,7 +193,7 @@ test('restart, snapshot restoration, PEM/file keys and runtime transport injecti
 test('consumer and protocol have no runtime adapter, Service implementation, I/O or secret-loader dependency', async () => {
   for (const name of ['beta-sqs-boundary-consumer.mjs', 'beta-sqs-boundary-protocol.mjs']) {
     const source = await readFile(new URL(name, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /(?:from|import\()\s*['"](?:node:(?:fs|child_process|http|https)|@aws-sdk|.*(?:runtime-drill|beta-runtime-adapter|AnyWear-Service))/);
+    assert.doesNotMatch(source, /(?:from|import\()\s*['"](?:node:(?:fs|child_process|http|https)|@aws-sdk|.*(?:runtime-|AnyWear-Service))/);
     assert.doesNotMatch(source, /process\.env|fetch\(|\.export\(|generateKeyPair|writeFile|console\./);
   }
 });
