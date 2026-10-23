@@ -119,7 +119,8 @@ test('a retained pool slot carries a reason and a reconcile bound, and is never 
   const record = manifest.accounts[0];
   assert.equal(record.status, 'retained');
   assert.equal(record.retainedReason, 'teardown: identity is still present');
-  // The bound is time, not pool capacity: 24 hours from the retention write.
+  // The bound is time, not pool capacity: 24 hours from the record's own `createdAt`,
+  // which is when the creating run reserved this address.
   assert.ok(Number.isFinite(Date.parse(record.reconcileBy)), 'retained record carries a reconcile bound');
   assert.ok(Date.parse(record.reconcileBy) >= before + 23 * 60 * 60_000);
   assert.ok(Date.parse(record.reconcileBy) <= Date.now() + 25 * 60 * 60_000);
@@ -248,6 +249,65 @@ test('a historical manifest written before #217 is read as retained and stays wr
   assert.equal(state.accounts[0].retainedReason, 'teardown: business cleanup partial');
   assert.equal(state.accounts[0].reconcileBy, '2026-10-17T05:03:56.709Z');
   assert.equal(Object.hasOwn(state.config, 'maxQuarantinedAccounts'), false, 'the removed budget member is dropped on write');
+});
+
+test('a retained identity consumes no active budget while its own address stays blocked', async () => {
+  await configureBudget();
+  // One active slot and one new-account slot: under the removed model the retained record
+  // would have consumed the active budget and a later attempt could not lease at all.
+  process.env.E2E_MAX_ACTIVE_ACCOUNTS = '1';
+  process.env.E2E_MAX_NEW_ACCOUNTS_PER_RUN = '2';
+  await reserveAccount(workerAddress(0), 'worker', 'lease-0');
+  await retainAccount(workerAddress(0), 'teardown: identity is still present');
+
+  // The second attempt leases normally: `retained` is not a capacity gate.
+  await reserveAccount(workerAddress(1), 'worker', 'lease-1');
+  await markAccountInUse(workerAddress(1));
+  const manifest = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
+  assert.deepEqual(manifest.accounts.map(({ status }) => status), ['retained', 'in_use']);
+
+  // The retained address itself is still refused, with its own reason: the identity is
+  // present, so only the reconcile operation can return the row to the pool.
+  const refusal = await reserveAccount(workerAddress(0), 'worker', 'lease-again').then(
+    () => assert.fail('a retained address must not be leased'),
+    (thrown) => thrown,
+  );
+  assert.ok(refusal instanceof AccountLeaseRefusalError);
+  assert.equal(refusal.reason, 'teardown: identity is still present');
+});
+
+test('a retained attempt still counts against the per-run new-account cap', async () => {
+  await configureBudget(2);
+  process.env.E2E_MAX_ACTIVE_ACCOUNTS = '2';
+  await reserveAccount(workerAddress(0), 'worker', 'lease-0');
+  await retainAccount(workerAddress(0), 'teardown: partial');
+  await reserveAccount(workerAddress(1), 'worker', 'lease-1');
+  await retainAccount(workerAddress(1), 'teardown: partial');
+  // Both attempts were retained, so the active budget is empty, but the per-run cap counts
+  // every attempt: deletion never restores the creation quota.
+  await assert.rejects(reserveAccount(workerAddress(2), 'worker', 'lease-2'), /new-account budget exhausted/);
+});
+
+test('the retained bound is anchored to the record createdAt, not to a later read', async () => {
+  await configureBudget();
+  const email = workerAddress();
+  // A record created three days ago and last written now: the bound states when the creating
+  // run's leftover became late, not when this reader noticed it.
+  await writeFile(process.env.E2E_ACCOUNT_BUDGET_PATH, `${JSON.stringify({
+    version: 1,
+    runScope: process.env.E2E_ACCOUNT_RUN_SCOPE,
+    config: { maxActiveAccounts: 1, maxNewAccountsPerRun: 2 },
+    accounts: [{
+      email, mode: 'worker', status: 'quarantined',
+      leaseId: 'lease-1', leaseGeneration: 'generation-1',
+      createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-19T00:00:00.000Z',
+      reason: 'teardown: business cleanup partial',
+    }],
+  })}\n`);
+  await markAccountDeleted(email);
+  const state = JSON.parse(await readFile(process.env.E2E_ACCOUNT_BUDGET_PATH, 'utf8'));
+  assert.equal(state.accounts[0].status, 'deleted');
+  assert.equal(state.accounts[0].reconcileBy, '2026-10-17T00:00:00.000Z', 'the bound starts at createdAt');
 });
 
 test('attempt-scoped reservations cover every retry of the configured workers', () => {

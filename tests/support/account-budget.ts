@@ -48,12 +48,20 @@ interface AccountBudgetState {
   accounts: AccountRecord[];
 }
 
+/**
+ * The statuses that consume the active-account budget (#217).
+ *
+ * `retained` is deliberately absent: it is not a capacity gate. A retained identity consumes no
+ * active budget, so it cannot exhaust a later run's budget, while its own address stays out of
+ * the pool — the per-address guard in `reserveAccount` refuses the lease and names the retained
+ * reason — until the reconcile operation deletes the identity. `maxNewAccountsPerRun` still
+ * counts every attempt, retained or not.
+ */
 const ACTIVE_STATUSES = new Set<AccountStatus>([
   'reserved',
   'provisioning',
   'in_use',
   'cleanup_pending',
-  'retained',
 ]);
 
 /** The bound a retained identity must be reconciled inside (#217). */
@@ -66,7 +74,10 @@ type LegacyAccountRecord = Omit<AccountRecord, 'status'> & { status: string };
  * Read a manifest written before #217, which recorded the removed `quarantined` state and a
  * `maxQuarantinedAccounts` budget. The state is read as `retained` and the reason is kept;
  * the removed budget key is dropped so a recovered historical manifest is still writable.
- * This is the only place the old vocabulary is accepted.
+ *
+ * The bound is anchored to the record's own `createdAt`, not to the instant it is read, so a
+ * historical record states when its run's leftover became late rather than when a later
+ * reader noticed it.
  */
 function normalizeState(state: AccountBudgetState): AccountBudgetState {
   const accounts = (state.accounts as unknown as LegacyAccountRecord[]).map((account): AccountRecord => {
@@ -76,7 +87,7 @@ function normalizeState(state: AccountBudgetState): AccountBudgetState {
       ...rest,
       status: 'retained',
       retainedReason: rest.retainedReason ?? reason,
-      reconcileBy: rest.reconcileBy ?? new Date(Date.parse(rest.updatedAt) + RECONCILE_BOUND_MS).toISOString(),
+      reconcileBy: rest.reconcileBy ?? new Date(Date.parse(rest.createdAt) + RECONCILE_BOUND_MS).toISOString(),
     };
   });
   const { maxQuarantinedAccounts: _removed, ...config } = state.config as AccountBudgetConfig & { maxQuarantinedAccounts?: number };
@@ -334,19 +345,20 @@ export async function releaseWorkerAccount(
  * Keeps the address out of the pool with a bounded, sanitized reason and the instant the
  * reconciler must have resolved it by (#217).
  *
- * There is no capacity budget: the bound is time, not pool size, so a retained scope can
- * never exhaust a budget that would need an operator to clear. The run that produced the
- * retention still fails its own teardown gate; the reconcile operation resolves the scope
- * and writes `deleted`, which is what returns the address to the pool.
+ * There is no capacity budget: the bound is time, not pool size, so a retained scope can never
+ * exhaust a budget that would need an operator to clear. The bound is anchored to this
+ * record's own `createdAt` — when the creating run made the identity — not to the instant of
+ * this write, so it states when that run's leftover became late. The run that produced the
+ * retention still fails its own teardown gate; the reconcile operation resolves the scope and
+ * writes `deleted`, which is what returns the address to the pool.
  */
 export async function retainAccount(email: string, reason: string): Promise<void> {
   await withLockedState(async (state) => {
     const account = latestAccountRecord(state, email);
     if (!account || account.status === 'deleted') return;
-    const timestamp = now();
     account.status = 'retained';
     account.retainedReason = reason;
-    account.reconcileBy = new Date(Date.now() + RECONCILE_BOUND_MS).toISOString();
-    account.updatedAt = timestamp;
+    account.reconcileBy = new Date(Date.parse(account.createdAt) + RECONCILE_BOUND_MS).toISOString();
+    account.updatedAt = now();
   });
 }

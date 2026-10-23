@@ -108,6 +108,9 @@ test('the qualify chain keeps one credential job per operation and a credential-
     assert.match(section, /environment: beta/);
     assert.match(section, /id-token: write/);
     assert.equal([...section.matchAll(/configure-aws-credentials/g)].length, 1, `${operation} has exactly one AWS credential step`);
+    // #217: a step that can create or delete an identity must assume the qualification role
+    // under the run-scoped session the reconcile attributes the creation through.
+    assert.match(section, /role-session-name: e2e-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/, `${operation} must set the run-scoped credential session`);
   }
 
   // #217: the reconcile job is both its own operation and the job every qualification suite
@@ -122,8 +125,19 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.match(reconcile, /environment: beta/);
   assert.match(reconcile, /id-token: write/);
   assert.match(reconcile, /actions: read/, 'reconcile reads the recent lifecycle artifacts');
-  assert.match(reconcile, /timeout-minutes: 15/);
+  // The ordinary bound is 15 minutes; the one 90-day migration dispatch is bounded to 30.
+  assert.match(reconcile, /timeout-minutes: \$\{\{ inputs\.operation == 'reconcile' && inputs\.reconcile_lookback_days == '90' && 30 \|\| 15 \}\}/);
   assert.equal([...reconcile.matchAll(/configure-aws-credentials/g)].length, 1, 'reconcile has exactly one AWS credential step');
+  assert.match(reconcile, /role-session-name: e2e-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/, 'reconcile must set the run-scoped credential session');
+  // #217: the lookback is a closed dispatch input, 7 or 90, and only the reconcile operation
+  // accepts the 90-day migration window. The job deadline follows the window it reads.
+  assert.match(qualify, /reconcile_lookback_days:\n(?: {8}.*\n)*? {8}options: \['7', '90'\]/);
+  assert.match(reconcile, /timeout-minutes: \$\{\{ inputs\.operation == 'reconcile' && inputs\.reconcile_lookback_days == '90' && 30 \|\| 15 \}\}/);
+  assert.match(reconcile, /E2E_ACCOUNT_RECONCILE_LOOKBACK_DAYS: \$\{\{ inputs\.reconcile_lookback_days \}\}/);
+  assert.match(reconcile, /E2E_ACCOUNT_RECONCILE_DEADLINE_SECONDS: \$\{\{ inputs\.reconcile_lookback_days == '90' && '1500' \|\| '720' \}\}/);
+  assert.match(preflight, /RECONCILE_LOOKBACK_DAYS: \$\{\{ inputs\.reconcile_lookback_days \}\}/);
+  assert.match(preflight, /7\|90\) ;;/);
+  assert.match(preflight, /reconcile_lookback_days is only accepted by operation reconcile/);
   assert.match(reconcile, /node scripts\/reconcile-accounts\.mjs/);
   // Every qualification suite runs after the reconcile job, so a run starts from a
   // reconciled environment and cannot report a clean one it did not verify.
