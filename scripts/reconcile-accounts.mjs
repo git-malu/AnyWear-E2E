@@ -465,8 +465,10 @@ export function validateReconcileRecord(record) {
   if (from >= to) throw new Error('Reconcile window is not a positive span');
   if (Math.round((to - from) / 60_000) !== RECONCILE_WINDOW_DAYS * 24 * 60) throw new Error('Reconcile window is not the reviewed lookback');
   if (!record.sources || Object.keys(record.sources).sort().join(',') !== 'artifacts,cloudtrail_events') throw new Error('Reconcile sources have an unknown or missing member');
-  requirePositiveInteger(record.sources.artifacts, 'Reconcile artifact count');
-  if (record.sources.artifacts > RECONCILE_MAX_ARTIFACTS) throw new Error('Reconcile artifact count exceeds its bound');
+  // Zero is a valid scan: a seven-day window with no lifecycle manifest is exactly the case
+  // in which CloudTrail alone proves a crashed run's orphan.
+  if (!Number.isSafeInteger(record.sources.artifacts) || record.sources.artifacts < 0
+    || record.sources.artifacts > RECONCILE_MAX_ARTIFACTS) throw new Error('Reconcile artifact count is unbounded');
   if (!Number.isSafeInteger(record.sources.cloudtrail_events) || record.sources.cloudtrail_events < 0 || record.sources.cloudtrail_events > RECONCILE_MAX_EVENTS) {
     throw new Error('Reconcile CloudTrail count is unbounded');
   }
@@ -569,7 +571,12 @@ export async function reconcileAccounts({
   const deadline = Date.now() + deadlineMs;
 
   const artifacts = await io.listArtifacts(window);
-  if (!Array.isArray(artifacts) || artifacts.length < 1) throw new Error('No lifecycle artifact was readable in the reconcile window');
+  // An empty window is a valid scan, not a failure (#217): the design's own orphan case is a
+  // run whose manifest was never uploaded, and when that run is the only one in the lookback
+  // there is no artifact at all. The identity set is then built from CloudTrail alone and the
+  // record states `sources.artifacts: 0`. Only a transport/API failure or an unbounded list
+  // refuses before any deletion.
+  if (!Array.isArray(artifacts)) throw new Error('Lifecycle artifact list is unavailable');
   if (artifacts.length > RECONCILE_MAX_ARTIFACTS) throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
   const manifests = [];
   for (const artifact of artifacts) {
@@ -579,6 +586,10 @@ export async function reconcileAccounts({
   }
   const events = await io.lookupCreateUserEvents(window);
   const identitySet = buildIdentitySet({ manifests, events, window, userPoolId: environment.USER_POOL_ID });
+  if (artifacts.length === 0) {
+    log(`Reconcile ${reconcileId}: no lifecycle manifest in the ${RECONCILE_WINDOW_DAYS}-day window; `
+      + `the identity set is built from ${events.length} CloudTrail event(s) alone.`);
+  }
   log(`Reconcile ${reconcileId}: ${manifests.length} manifest(s), ${events.length} CloudTrail event(s), `
     + `${identitySet.identities.length} attributable identit(ies), ${identitySet.unresolved.length} unattributable creation(s).`);
 

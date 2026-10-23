@@ -442,8 +442,9 @@ The Infra-owned versioned Step Functions cleanup capability invokes Service's fi
 application-data task. An ordinary qualification cleanup, the `reconcile` operation and a
 protected `recover`
 dispatch submit the same strict normal-mode envelope and enter the same resume/verify/
-retry rule. The Service cleanup deletes the captured users' PostgreSQL rows, then their
-`wearable-items/<sub>/` and `base-photos/<sub>/` objects, and reports `objects` and
+retry rule. The Service cleanup deletes the captured users' objects under
+`wearable-items/<sub>/` and `base-photos/<sub>/`, reads absence back by listing, and only then
+deletes their PostgreSQL rows; it reports `objects` and
 `objectsMissing` in its committed result; `reconcile` requires both counters before it
 deletes an identity, so a Service release that cannot prove the object phase leaves the
 identity retained. Recovery validates the completed original E2E owner and captured worker
