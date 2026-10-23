@@ -8,32 +8,66 @@ requires that event, so a `schedule` event on the qualify entry would fail close
 
 There is no manual repair step and no attempt or predecessor chain to supply. A teardown that
 cannot prove deletion records the identity `retained` with a reason and a `reconcileBy` bound
-(24 hours after the retention write), fails its own run exactly as before, and is resolved by
-this operation.
+(24 hours after the account record's own `createdAt`), fails its own run exactly as before, and
+is resolved by this operation.
+
+## How an identity is attributed
+
+Attribution follows the creator, not the address. Every attempt leases one of the eight stable
+pool rows (`e2e-beta-worker-0..7-chromium@anywear.local`), so a later run reuses the same
+address; the address alone can never name the run that created the identity now bound to it.
+The creating run is named twice:
+
+- **The credential session.** Every protected credential step assumes
+  `beta-e2e-qualification-role` with
+  `role-session-name: e2e-<github.run_id>-<github.run_attempt>`. AWS writes that session into
+  the `AdminCreateUser` CloudTrail event before the identity exists, so the creation names its
+  run with no new write, store, attribute or permission. `scripts/execution-guard.mjs` requires
+  the authenticated principal ARN to end `/e2e-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`, and
+  `tests/support/account.ts` calls the guard immediately before `AdminCreateUser`.
+- **The run's manifest.** The run's lifecycle artifact records the address and its captured
+  `sub` under its own `runScope`.
+
+A creation newer than a manifest record **displaces** it: a successful `AdminCreateUser` proves
+the identity the record named was absent, so the record's stale subject must not judge the live
+one. The live `sub` is read back with `AdminGetUser` instead.
 
 ## What the operation reads
 
-Both sources are read over the same seven-day window, and the window is recorded in the
-result.
+Both sources are read over the same window, and the window is recorded in the result: seven
+days for every ordinary invocation, or the 90-day artifact retention for the one recorded
+migration dispatch. The artifact read is bounded to nine lifecycle artifacts per lookback day,
+and the listing fails closed rather than truncating when its page budget is exhausted.
 
-- **Lifecycle manifests** — the recent `beta-account-lifecycle-<run>-<attempt>` and
-  `beta-smoke-account-lifecycle-<run>-<attempt>` artifacts, `account-budget.json` each. A
-  manifest entry is authoritative for its address and captured subject. Every non-`deleted`
-  worker record is a leftover: `reserved`, `provisioning`, `in_use` and `cleanup_pending` mean
-  the teardown never proved absence, and `retained` (or a historical `quarantined`) means it
-  ran and failed. The latest record for an address wins, because a stable pool address is
-  reused: a later `deleted` record proves the address was resolved after the older record was
-  written.
-- **CloudTrail `AdminCreateUser`** — the Beta pool creations in the window. A creation inside a
-  manifest record's own lifetime belongs to that record. A creation outside every window has
-  no manifest entry: only an address in the scoped historical grammar
-  (`e2e-beta-<runScope>-<slot>-<8hex>@anywear.local`) proves it synthetic then — it carries its
-  own run scope, so its `sub` is read back with `AdminGetUser` and it becomes a reconcile
-  identity. A **stable allowlist row** (`e2e-beta-worker-<n>-chromium@anywear.local`) is an
-  address a human tester can hold too, so it is reconciled only when a manifest captures its
-  subject, and is otherwise reported as `unprovable_ownership` and never deleted. A creation
-  whose caller is not the E2E qualification role is reported as `unattributable_caller` and
-  **never deleted**.
+- **Lifecycle artifacts** — the `beta-account-lifecycle-<run>-<attempt>` and
+  `beta-smoke-account-lifecycle-<run>-<attempt>` artifacts of the lookback. An artifact is
+  authoritative only when it is bound to the protected run: its name's run is the run the
+  artifact API reports, that run is on `main`, the artifact and its head repository are this
+  repository, and one cached `GET actions/runs/<run>` shows
+  `path: .github/workflows/beta-qualification.yml`, `event: workflow_dispatch`,
+  `head_branch: main` and a consistent `head_sha`. A run's conclusion is deliberately not
+  required: a failed or cancelled run's manifest is exactly the leftover to read. An unbound
+  artifact is ignored and counted in `sources.artifacts_ignored`, never authoritative; a bound
+  artifact whose bytes fail the digest or archive checks is a source failure.
+- **The upload set is closed** — `account-budget.json`, `account-budget-oldest-client.json`,
+  `service-cleanup-operation.json` and `service-cleanup-run.json`. The smoke artifact carries
+  the first, third and fourth. Every `account-budget*.json` present is read as a manifest, so
+  the default and oldest-supported-Client legs feed one identity set; the two cleanup
+  diagnostics are ignored. Any other name, a directory, a symlink, a duplicate or an over-bound
+  file refuses the artifact. No specific manifest is required.
+- **CloudTrail `AdminCreateUser`** — the Beta pool creations in the window, attributed through
+  the caller and the credential session. A creation for an address with no manifest entry is an
+  orphan whose run comes from the session and whose `sub` is read back; a creation recorded
+  before run-scoped sessions has no run and is recorded with the qualification role and the
+  event. A creation by any other principal is reported as `unattributable_caller` and **never
+  deleted**.
+
+A manifest entry is authoritative for its address, captured subject and run. Every
+non-`deleted` worker record is a leftover: `reserved`, `provisioning`, `in_use` and
+`cleanup_pending` mean the teardown never proved absence, and `retained` (or a historical
+`quarantined`) means it ran and failed. The latest record for an address wins, because a stable
+pool address is reused: a later `deleted` record proves the address was resolved after the
+older record was written.
 
 ## What the operation does per identity
 
@@ -43,14 +77,34 @@ result.
 2. Verify the address and the captured subject. A mismatch, a missing immutable username or an
    unprovable address is reported and never deleted.
 3. Submit the existing exact-reference Service cleanup in **normal** mode
-   (`{runScope, users:[{sub,email}]}`, at most eight users), grouped by the captured run scope.
-   The Service deletes the captured users' objects under `wearable-items/<sub>/` and
+   (`{runScope, users:[{sub,email}]}`, at most eight users), grouped by the captured run scope;
+   a creation-only identity derives its scope from the run its session names. The scope is an
+   operation/idempotency name and never a selector — the exact users select the rows and
+   objects. The Service deletes the captured users' objects under `wearable-items/<sub>/` and
    `base-photos/<sub>/`, reads absence back by listing, and only then deletes their rows; it
-   commits `objects` and `objectsMissing`. Both counters are
-   required: a Service release without them cannot prove the object phase, and the identity
-   stays `retained` rather than being reported clean.
+   commits `objects` and `objectsMissing`. Both counters are required: a Service release without
+   them cannot prove the object phase, and the identity is recorded as a Service refusal and
+   retained rather than reported clean.
 4. Delete the Cognito identity by its immutable username — never by address — then read absence
    back. Only `UserNotFoundException` on a fresh read makes it `reconciled`.
+
+The identity set and its unresolved entries are proven against the record's closed contract
+**before the first mutation**, so no input can throw after a deletion and lose the record.
+
+## Outcomes that are reported, never resolved
+
+Three conditions are written to the record, warned about, and never fail the reconcile:
+
+| Reason | Condition |
+| --- | --- |
+| `unattributable_caller` | A creation by a principal other than the qualification role; the record also names the caller. |
+| `unprovable_ownership` | A pool-address record with neither a captured subject nor a qualification-role creation event. |
+| `outside_worker_family` | A manifest record outside the Beta worker families (a retired `ephemeral` or mailbox record). |
+
+None can be resolved by any automatic path this design has, and failing every qualification on
+one would reintroduce the operator dependency the issue removes. Every other unresolved reason
+fails the reconcile at the 24-hour bound, and that failure is the alert. A bound breach is what
+fails a run; a reported condition is what warns on it.
 
 ## The record
 
@@ -64,12 +118,12 @@ and the durable audit trail — the artifacts it was built from expire, the reco
   "record_type": "anywear_e2e_account_reconcile",
   "reconcile_id": "<dispatch run>-<attempt>",
   "window": { "from": "2026-10-16T00:00:00.000Z", "to": "2026-10-23T00:00:00.000Z" },
-  "sources": { "artifacts": 12, "cloudtrail_events": 34 },
+  "sources": { "artifacts": 12, "artifacts_ignored": 1, "cloudtrail_events": 34 },
   "identities": [
     {
-      "email": "e2e-beta-<scope>-0-<hash>@anywear.local",
+      "email": "e2e-beta-worker-0-chromium@anywear.local",
       "subject": "<captured or read-back sub>",
-      "origin": { "kind": "manifest", "run": 123, "attempt": 1 },
+      "origin": { "kind": "cloudtrail", "event_id": "<event id>", "event_time": "2026-10-22T03:14:07.000Z", "run": 1234567890, "attempt": 1 },
       "actions": { "service_cleanup": "committed", "cognito": "deleted", "objects": "deleted", "readback": "absent" },
       "outcome": "reconciled"
     }
@@ -79,46 +133,83 @@ and the durable audit trail — the artifacts it was built from expire, the reco
 }
 ```
 
+- `sources.artifacts` counts run-bound artifacts (not the manifests inside them),
+  `sources.artifacts_ignored` counts lifecycle-named artifacts skipped because they could not be
+  bound to the protected run, and `sources.cloudtrail_events` counts the events the creation set
+  was built from.
 - `origin` is `{kind: manifest, run, attempt}` or
-  `{kind: cloudtrail, event_id, event_time}`. `subject` is `null` only for an absent orphan
-  whose subject could not be read back.
+  `{kind: cloudtrail, event_id, event_time}`, with `run`/`attempt` added to a cloudtrail origin
+  when the creation's credential session names them. `subject` is `null` only for an absent
+  identity whose subject could not be captured or read back.
 - `actions.service_cleanup` is `committed`, `refused`, `unavailable` or `not_required`;
   `actions.cognito` is `deleted`, `already_absent`, `refused` or `not_attempted`;
   `actions.objects` is `deleted`, `absent`, `none`, `unavailable` or `not_required`;
   `actions.readback` is `absent`, `present`, `unreadable` or `not_attempted`.
-- `outcome` is `reconciled`, `already_absent` or `retained`.
+- `outcome` is `reconciled`, `already_absent` or `retained`; a `retained` identity is also in
+  `unresolved[]` with its reason and is retried.
 - `unresolved[]` entries carry `{email, reason, origin}` and, for a foreign caller, `caller`.
   Reasons: `cognito_delete_refused`, `cognito_readback_failed`, `deadline_exceeded`,
-  `object_cleanup_unproven`, `service_cleanup_refused`, `service_cleanup_unavailable`,
+  `outside_worker_family`, `service_cleanup_refused`, `service_cleanup_unavailable`,
   `subject_mismatch`, `unattributable_caller`, `unprovable_ownership`.
 
 ## Result and failure
 
 The artifact scan is valid when it returns nothing: a seven-day window with no lifecycle
-manifest is exactly the crashed-run case, and the identity set is then built from CloudTrail
-alone with `sources.artifacts: 0`. Only an unreadable artifact list or CloudTrail response
-fails closed before any deletion — the empty scan is a recorded no-op, not a refusal.
+artifact is exactly the crashed-run case, and the identity set is then built from CloudTrail
+alone with `sources.artifacts: 0`. Only an unreadable artifact list, unreadable CloudTrail, an
+unreadable bound artifact, or an unreadable workflow-run lookup fails closed before any
+deletion — the empty scan is a recorded no-op, not a refusal. A source failure writes no record
+and leaves the environment untouched, because a record is a statement about a scan that read a
+stated window, and a record whose sources are zeros would read as a quiet scan.
 
 `result` is `passed` when every leftover was resolved or is still inside its `reconcileBy`
-bound, and `failed` when a leftover is past its bound. A failed run emits one error annotation
-per unresolved identity naming its address, its reason and the original run (or CloudTrail
-event), so the alert carries the attribution:
+bound, and `failed` when a leftover is past its bound. A reported condition never fails the
+run: it is emitted as a run warning. A failed run emits one error annotation per unresolved
+identity naming its address, its reason and the original run (or CloudTrail event and session),
+so the alert carries the attribution:
 
 ```text
 ::error title=Unresolved E2E leftover::e2e-beta-worker-3-chromium@anywear.local (service_cleanup_refused) from run 123 attempt 1
 ```
 
-The job fails closed without deleting when the artifact list or CloudTrail is unavailable, and
-it stops starting new work after 720 seconds so an in-flight cleanup can finish and the record
-is still written. The job itself is bounded to 15 minutes.
+The job is bounded to 15 minutes and stops starting work at 720 seconds; the remaining in-job
+deadline is passed into the cleanup wait, so a Service wait cannot outlive the job and the
+record is still written. An identity a group could not finish is recorded `deadline_exceeded`
+and retried by the next reconcile.
+
+## The one migration dispatch
+
+One reconciliation with `reconcile_lookback_days=90` is permitted before the removals. It reads
+every artifact inside the 90-day retention, so a `quarantined` manifest from any run still
+inside that retention is reconciled by the same path, and a pre-change creation inside
+CloudTrail's 90-day history is cleared through its creation event even though its credential
+session does not name a run. Its job is bounded to 30 minutes, it states the window it read,
+and its record names every leftover it could not resolve. A leftover older than both the
+artifact retention and CloudTrail's event history is the one recorded residual, bounded by the
+eight pool rows.
+
+Dispatch it from `main` with:
+
+```text
+gh workflow run beta-qualification.yml --ref main \
+  -f operation=reconcile -f reconcile_lookback_days=90 -f trigger=manual
+```
+
+## Budget
+
+`retained` is not a capacity gate: it consumes no active-account budget, so it cannot exhaust a
+later run's budget, while its own address stays out of the pool — a lease is refused with the
+retained reason — until this operation deletes the identity and the record is written `deleted`.
+`maxNewAccountsPerRun` still counts every attempt, retained or not.
 
 A `full` run whose own cleanup is not verified still withholds the qualification record: the
 teardown gate is unchanged, and a deferred cleanup is never evidence of a verified one.
 
 ## Relationship to `recover`
 
-`recover` and its six dispatch inputs, `account-recovery-inputs.mjs`, the frozen cleanup
-diagnostic (`beta-cleanup-diagnostic.mjs`) and the retained diagnostic tuple are removed in the
-stacked #217 pull request once this operation has been delivered. Their runbook is
-[account-recovery.md](account-recovery.md) until that removal lands. `reconcile` needs none of
-them: it reads the manifests and CloudTrail, not a pinned historical evidence artifact.
+`recover` and its two remaining dispatch inputs, `account-recovery-inputs.mjs`, the frozen
+cleanup diagnostic (`beta-cleanup-diagnostic.mjs`) and the retained diagnostic tuple are removed
+in the stacked #217 pull request once this operation has been delivered and the migration record
+exists. Their runbook is [account-recovery.md](account-recovery.md) until that removal lands.
+`reconcile` needs none of them: it reads the run-bound manifests and CloudTrail, not a pinned
+historical evidence artifact.

@@ -26,7 +26,7 @@ function environment(patch = {}) {
     E2E_STAGE: 'beta', ENABLE_BETA_MUTATION: 'true', E2E_WORKERS: '2', E2E_OPERATION: 'full',
     E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40),
     AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', E2E_AWS_ACCOUNT: '650880818323',
-    E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/fixture',
+    E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/e2e-123456789-1',
     ...patch,
   };
 }

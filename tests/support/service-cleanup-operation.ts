@@ -94,6 +94,15 @@ export interface CleanupOperationIo {
   sleep(milliseconds: number): Promise<void>;
 }
 
+export interface CleanupOperationOptions {
+  /**
+   * The absolute instant the caller's job must be done by (#217). A wait that reaches it stops
+   * with `CleanupDeadlineExceededError`, so the caller can still record what it did instead of
+   * losing the record when the job is cancelled.
+   */
+  deadline?: number;
+}
+
 interface CanonicalTask {
   taskArn: string;
   clusterArn: string;
@@ -514,12 +523,30 @@ async function recordDescription(evidence: CleanupOperationEvidence, path: strin
   await writeEvidence(path, evidence);
 }
 
-/** Resume one execution: observe it until it is terminal, bounded to 900 observations. */
+/**
+ * The in-job budget a cleanup wait must not outlive (#217).
+ *
+ * A reconcile job passes the deadline it has left, so the wait stops with this error before the
+ * job is cancelled and the record it needs to write is lost. Nothing about the operation's
+ * evidence changes: the caller records the identities as retained against the deadline.
+ */
+export class CleanupDeadlineExceededError extends Error {
+  readonly code = 'E2E_CLEANUP_DEADLINE_EXCEEDED';
+
+  constructor() {
+    super('Cleanup wait reached the caller\'s in-job deadline');
+    this.name = 'CleanupDeadlineExceeded';
+  }
+}
+
+/** Resume one execution: observe it until it is terminal, bounded to 900 observations or the deadline. */
 async function awaitTerminal(io: CleanupOperationIo, arn: string, envelope: CleanupOperationEnvelope, versionArn: string,
-  name: string, evidence: CleanupOperationEvidence, path: string, initial?: DescribeExecutionOutput): Promise<DescribeExecutionOutput> {
+  name: string, evidence: CleanupOperationEvidence, path: string, initial?: DescribeExecutionOutput,
+  deadline?: number): Promise<DescribeExecutionOutput> {
   let description = initial;
   let last: DescribeExecutionOutput | undefined;
   for (let observation = 0; observation < 900; observation += 1) {
+    if (deadline !== undefined && Date.now() >= deadline) throw new CleanupDeadlineExceededError();
     if (!description) description = await io.describe(arn);
     validateDescription(description, envelope, versionArn, name);
     last = description;
@@ -534,9 +561,9 @@ async function awaitTerminal(io: CleanupOperationIo, arn: string, envelope: Clea
 }
 
 async function observePresent(io: CleanupOperationIo, description: DescribeExecutionOutput, expected: ExpectedExecution,
-  evidence: CleanupOperationEvidence, path: string): Promise<DescribeExecutionOutput> {
+  evidence: CleanupOperationEvidence, path: string, deadline?: number): Promise<DescribeExecutionOutput> {
   if (description.status === 'RUNNING') {
-    return awaitTerminal(io, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, description);
+    return awaitTerminal(io, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, description, deadline);
   }
   await recordDescription(evidence, path, description);
   return description;
@@ -604,7 +631,7 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * refuses.
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
-  io?: CleanupOperationIo): Promise<CleanupOperationEvidence | undefined> {
+  io?: CleanupOperationIo, options: CleanupOperationOptions = {}): Promise<CleanupOperationEvidence | undefined> {
   const versionArn = environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN;
   if (!versionArn) {
     console.warn('Beta cleanup capability is not configured; cleanup deferred and identities retained');
@@ -680,7 +707,7 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       if (!present) throw new Error('Original captured retry execution is unavailable');
       validateDescription(present, originalRetry.envelope, originalRetry.versionArn, originalRetry.name);
       target(originalRetry);
-      const description = await observePresent(transport, present, originalRetry, evidence, path);
+      const description = await observePresent(transport, present, originalRetry, evidence, path, options.deadline);
       if (description.status === 'SUCCEEDED') return await verifySuccess(description, originalRetry.envelope);
       if (description.status === 'RUNNING') {
         refusalPhase = 'execution_observation';
@@ -709,15 +736,15 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       await start();
       refusalPhase = 'execution_observation';
       refusalCategory = 'execution_observation_unavailable';
-      description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path);
+      description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, undefined, options.deadline);
     } else if (originalBase && bindsExpected(description, originalBase)) {
       expected = originalBase;
       target(expected);
-      description = await observePresent(transport, description, expected, evidence, path);
+      description = await observePresent(transport, description, expected, evidence, path, options.deadline);
     } else if (bindsExpected(description, current[0])) {
       expected = current[0];
       target(expected);
-      description = await observePresent(transport, description, expected, evidence, path);
+      description = await observePresent(transport, description, expected, evidence, path, options.deadline);
     } else {
       throw new Error('Observed generation 0 does not bind the original owner or the current operation');
     }
@@ -745,10 +772,10 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       await start();
       refusalPhase = 'execution_observation';
       refusalCategory = 'execution_observation_unavailable';
-      retry = await awaitTerminal(transport, current[1].arn, current[1].envelope, current[1].versionArn, current[1].name, evidence, path);
+      retry = await awaitTerminal(transport, current[1].arn, current[1].envelope, current[1].versionArn, current[1].name, evidence, path, undefined, options.deadline);
     } else {
       validateDescription(retry, current[1].envelope, current[1].versionArn, current[1].name);
-      retry = await observePresent(transport, retry, current[1], evidence, path);
+      retry = await observePresent(transport, retry, current[1], evidence, path, options.deadline);
     }
     if (retry.status === 'SUCCEEDED') return await verifySuccess(retry, current[1].envelope);
     if (retry.status === 'RUNNING') {

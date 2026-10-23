@@ -22,6 +22,18 @@ const operationEntries = Object.freeze({
   reconcile: 'beta-qualification',
 });
 
+/**
+ * The credential session name every protected step must set (#217).
+ *
+ * Attribution in `reconcile` follows the creator, and the creator is named by this session: an
+ * `AdminCreateUser` CloudTrail event records `role-session-name: e2e-<run>-<attempt>`, so the
+ * creating run is written by AWS before the identity exists. A step that created an identity
+ * under any other session would leave an unattributable leftover, so the guard refuses it.
+ */
+export function qualificationSessionName(environment = process.env) {
+  return `e2e-${requireString(environment.GITHUB_RUN_ID, 'GITHUB_RUN_ID')}-${requireString(environment.GITHUB_RUN_ATTEMPT, 'GITHUB_RUN_ATTEMPT')}`;
+}
+
 export function assertE2EExecution(environment = process.env, { sourceOnly = false, sourceSha } = {}) {
   if (environment.GITHUB_REPOSITORY !== repositories.e2e
     || environment.GITHUB_REPOSITORY_ID !== '1317091305'
@@ -45,10 +57,16 @@ export function assertE2EExecution(environment = process.env, { sourceOnly = fal
   if (environment.AWS_ACCOUNT_ID !== '650880818323' || environment.AWS_REGION !== 'ap-east-1') throw new Error('Unexpected E2E account/region');
   requireCommit(environment.E2E_CLEANUP_SERVICE_SHA, 'Reviewed Service cleanup operator source');
   // Captured from STS immediately after the protected workflow assumes its
-  // dedicated role. Source-only checks run before AWS credentials.
-  if (!sourceOnly && (environment.E2E_AWS_ACCOUNT !== '650880818323'
-    || !/^arn:aws:sts::650880818323:assumed-role\/beta-e2e-qualification-role\/[A-Za-z0-9+=,.@_-]{1,64}$/.test(environment.E2E_AWS_PRINCIPAL_ARN ?? ''))) {
-    throw new Error('Authenticated dedicated E2E principal required');
+  // dedicated role. Source-only checks run before AWS credentials. The session name is the
+  // run-scoped one the credential step set, so an identity can never be created under a
+  // session the reconciler cannot attribute.
+  if (!sourceOnly) {
+    const session = qualificationSessionName(environment);
+    const principal = environment.E2E_AWS_PRINCIPAL_ARN ?? '';
+    const expected = `arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/${session}`;
+    if (environment.E2E_AWS_ACCOUNT !== '650880818323' || principal !== expected) {
+      throw new Error(`Authenticated dedicated E2E principal required (expected the ${session} role session)`);
+    }
   }
   return true;
 }

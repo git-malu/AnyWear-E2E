@@ -1,6 +1,8 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -16,21 +18,29 @@ import { isCapturedBetaWorkerEmail, STABLE_WORKER_EMAIL_PATTERN } from '../tests
 
 // #217: the reconciler that replaces the manual `recover` exit.
 //
-// Every identity a protected `qualify` run creates is attributable to that run: its
-// `e2e-beta-*` address is never reused by a different attempt, and the run's
-// `beta-account-lifecycle-<run>-<attempt>` artifact records the address and its captured
-// subject. A teardown that cannot prove deletion records the identity `retained`; this
-// operation finds it again, replays the same exact-reference Service cleanup, deletes the
-// Cognito identity by its immutable username, reads absence back, and records the outcome
-// against the original run. It runs before every `qualify` suite and daily through the
-// scheduled dispatch of the same protected `workflow_dispatch` entry.
+// Attribution follows the creator, not the address. A new attempt leases one of the eight
+// stable pool rows, so the address alone never names the run that created the identity now
+// bound to it. The creating run is named twice, both by AWS and by the run itself:
+//   - every protected credential step assumes `beta-e2e-qualification-role` with
+//     `role-session-name: e2e-<run>-<attempt>`, so the `AdminCreateUser` CloudTrail event
+//     names the creating run before the identity exists;
+//   - the run's `beta-account-lifecycle-<run>-<attempt>` artifact names the address and its
+//     captured subject.
+// A teardown that cannot prove deletion records the identity `retained`; this operation finds
+// it again, replays the same exact-reference Service cleanup, deletes the Cognito identity by
+// its immutable username, reads absence back, and records the outcome against the original
+// run. It runs before every `qualify` suite and daily through the scheduled dispatch of the
+// same protected `workflow_dispatch` entry.
 //
 // Two sources, one identity set:
-//   - the manifests of the previous seven days are authoritative for their address and
-//     subject;
-//   - CloudTrail `AdminCreateUser` events over the same window find a creation whose
-//     manifest was never uploaded, and prove the caller is the E2E qualification role.
-//     Such an orphan's grammar proves it synthetic and its `sub` is read back.
+//   - the run-bound lifecycle manifests of the lookback are authoritative for their address,
+//     subject and run;
+//   - CloudTrail `AdminCreateUser` events over the same window prove ownership for a creation
+//     whose manifest was never uploaded, and prove the caller is the E2E qualification role.
+//     Such a creation derives its cleanup scope from its run; its `sub` is read back.
+// A creation newer than a manifest record displaces it: a successful `AdminCreateUser` proves
+// the previous identity was absent, so the stale subject of the run that held the address
+// before must not judge the live identity.
 //
 // The record is `anywear_e2e_account_reconcile` v1. It is the audit trail; the artifacts
 // it was built from expire, the record does not.
@@ -42,16 +52,35 @@ import { isCapturedBetaWorkerEmail, STABLE_WORKER_EMAIL_PATTERN } from '../tests
 export const RECONCILE_RECORD_TYPE = 'anywear_e2e_account_reconcile';
 export const RECONCILE_SCHEMA_VERSION = 1;
 export const RECONCILE_WINDOW_DAYS = 7;
+/** The one recorded migration dispatch, which reads the 90-day artifact retention (#217). */
+export const RECONCILE_MIGRATION_WINDOW_DAYS = 90;
+export const RECONCILE_LOOKBACK_DAYS = Object.freeze([RECONCILE_WINDOW_DAYS, RECONCILE_MIGRATION_WINDOW_DAYS]);
+/** At most nine lifecycle artifacts per lookback day; the listing fails closed above it. */
+export const RECONCILE_ARTIFACTS_PER_DAY = 9;
 export const RECONCILE_RETENTION_HOURS = 24;
-export const RECONCILE_MAX_ARTIFACTS = 60;
 export const RECONCILE_MAX_EVENTS = 1000;
 export const RECONCILE_MAX_USERS_PER_REQUEST = 8;
-export const RECONCILE_JOB_MINUTES = 15;
 export const DEFAULT_RECONCILE_DEADLINE_SECONDS = 720;
+/** The closed upload set a lifecycle artifact may contain (#217). */
+export const LIFECYCLE_MANIFESTS = Object.freeze(['account-budget.json', 'account-budget-oldest-client.json']);
+export const LIFECYCLE_DIAGNOSTICS = Object.freeze(['service-cleanup-operation.json', 'service-cleanup-run.json']);
+export const LIFECYCLE_UPLOAD_SET = Object.freeze([...LIFECYCLE_MANIFESTS, ...LIFECYCLE_DIAGNOSTICS]);
+export const LIFECYCLE_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
+export const LIFECYCLE_FILE_MAX_BYTES = 1024 * 1024;
+/** The one workflow that may produce a lifecycle artifact a reconcile treats as authoritative. */
+export const LIFECYCLE_WORKFLOW_PATH = '.github/workflows/beta-qualification.yml';
 export const E2E_QUALIFICATION_CALLER = /^arn:aws:sts::650880818323:assumed-role\/beta-e2e-qualification-role\/[A-Za-z0-9+=,.@_-]{1,64}$/;
 export const E2E_QUALIFICATION_ROLE = /^arn:aws:iam::650880818323:role\/beta-e2e-qualification-role$/;
+/** The run-scoped credential session every protected credential step assumes. */
+export const E2E_QUALIFICATION_SESSION = /^e2e-([1-9][0-9]{0,19})-([1-9][0-9]{0,5})$/;
 export const RECONCILE_RUN_SCOPE = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 export const CAPTURED_SUBJECT = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+/**
+ * The bound on a reported address outside the Beta worker families. `outside_worker_family`
+ * is the only reason that admits one, and it never selects a deletion, so the record states
+ * it without widening what the operation may touch.
+ */
+export const BOUNDED_E2E_ADDRESS = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@anywear\.local$/;
 export const ACCOUNT_STATUSES = Object.freeze([
   'reserved', 'provisioning', 'in_use', 'cleanup_pending', 'deleted', 'retained',
 ]);
@@ -60,11 +89,17 @@ export const COGNITO_ACTION = Object.freeze(['deleted', 'already_absent', 'refus
 export const OBJECT_ACTION = Object.freeze(['deleted', 'absent', 'none', 'unavailable', 'not_required']);
 export const READBACK_ACTION = Object.freeze(['absent', 'present', 'unreadable', 'not_attempted']);
 export const IDENTITY_OUTCOMES = Object.freeze(['reconciled', 'already_absent', 'retained']);
+/**
+ * The three conditions no automatic path in this design can resolve. They are recorded and
+ * warned about, and they never fail a reconcile: failing every qualification on one would
+ * reintroduce the operator dependency the issue removes.
+ */
+export const REPORTED_REASONS = Object.freeze(['outside_worker_family', 'unattributable_caller', 'unprovable_ownership']);
 export const UNRESOLVED_REASONS = Object.freeze([
   'cognito_delete_refused',
   'cognito_readback_failed',
   'deadline_exceeded',
-  'object_cleanup_unproven',
+  'outside_worker_family',
   'service_cleanup_refused',
   'service_cleanup_unavailable',
   'subject_mismatch',
@@ -98,12 +133,33 @@ function instant(value, label) {
 /**
  * The record window. Both sources are read over exactly this span, so the record can be
  * re-read against the artifacts and the CloudTrail history it names.
+ *
+ * The lookback is a closed set: the ordinary seven days, or the 90-day artifact retention the
+ * one recorded migration dispatch reads. Any other value is a dispatch mistake, not a bound.
  */
 export function reconcileWindow(now = Date.now(), days = RECONCILE_WINDOW_DAYS) {
   requirePositiveInteger(days, 'Reconcile lookback');
+  if (!RECONCILE_LOOKBACK_DAYS.includes(days)) {
+    throw new Error(`Reconcile lookback must be one of ${RECONCILE_LOOKBACK_DAYS.join(', ')} days`);
+  }
   const to = new Date(now);
   const from = new Date(to.getTime() - days * 24 * 60 * 60_000);
   return { from: from.toISOString(), to: to.toISOString() };
+}
+
+/** The lookback a recorded window states, in whole days. */
+export function lookbackDaysOfWindow(window) {
+  const from = Date.parse(instant(window?.from, 'Reconcile window start'));
+  const to = Date.parse(instant(window?.to, 'Reconcile window end'));
+  if (from >= to) throw new Error('Reconcile window is not a positive span');
+  const days = Math.round((to - from) / (24 * 60 * 60_000));
+  if (!RECONCILE_LOOKBACK_DAYS.includes(days)) throw new Error('Reconcile window is not the reviewed lookback');
+  return days;
+}
+
+/** The artifact bound for one window: nine lifecycle artifacts per lookback day. */
+export function maxArtifactsForWindow(window) {
+  return lookbackDaysOfWindow(window) * RECONCILE_ARTIFACTS_PER_DAY;
 }
 
 /** The bound an identity must be resolved inside. */
@@ -124,6 +180,78 @@ export function parseManifestArtifactName(name) {
   return { smoke: match[1] === 'beta-smoke-account-lifecycle', runId: Number(match[2]), attempt: Number(match[3]) };
 }
 
+/** The E2E repository's immutable GitHub id, which the artifact and its run must name. */
+export const E2E_REPOSITORY_ID = 1317091305;
+
+/**
+ * The closed upload set one lifecycle artifact may contain.
+ *
+ * A `full` artifact carries both account manifests (the default leg and the oldest-supported
+ * Client leg) and the two Service cleanup diagnostics; a `smoke` artifact carries the first,
+ * third and fourth. Every `account-budget*.json` present is read as a manifest, so a retained
+ * identity from the oldest-client leg is no longer invisible, and both legs feed one identity
+ * set. The diagnostics are ignored, and no specific manifest is required: the reader accepts
+ * whichever legs the run uploaded.
+ *
+ * Everything else is refused: an unknown name, a directory, a symlink, a duplicate, or a file
+ * over its bound. The reader never guesses which file was meant.
+ */
+export function classifyLifecycleArchive(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) throw new Error('Lifecycle artifact is empty');
+  const seen = new Set();
+  const manifests = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || typeof entry.name !== 'string') {
+      throw new Error('Lifecycle artifact entry is malformed');
+    }
+    if (seen.has(entry.name)) throw new Error(`Lifecycle artifact repeats ${entry.name}`);
+    seen.add(entry.name);
+    if (entry.directory === true || entry.symlink === true) throw new Error(`Lifecycle artifact contains a directory or symlink: ${entry.name}`);
+    if (!LIFECYCLE_UPLOAD_SET.includes(entry.name)) throw new Error(`Lifecycle artifact contains an unknown file: ${entry.name}`);
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > LIFECYCLE_FILE_MAX_BYTES) {
+      throw new Error(`Lifecycle artifact file is over its bound: ${entry.name}`);
+    }
+    if (LIFECYCLE_MANIFESTS.includes(entry.name)) manifests.push(entry.name);
+  }
+  return { manifests: manifests.sort(), diagnostics: entries.length - manifests.length };
+}
+
+/**
+ * The artifact list's own binding to the protected run.
+ *
+ * A lifecycle-named artifact is authoritative only when its name's run is the run the artifact
+ * API reports, that run is on `main`, and the artifact and its head repository are this
+ * repository. A run's conclusion is deliberately not required: a failed or cancelled run's
+ * manifest is exactly the leftover this operation must read. An artifact that fails this
+ * binding is ignored and counted, never authoritative.
+ */
+export function lifecycleArtifactBinding(artifact) {
+  const parsed = parseManifestArtifactName(artifact?.name);
+  if (!parsed) return { bound: false, reason: 'name' };
+  const run = artifact.workflow_run;
+  if (!run || typeof run !== 'object' || Array.isArray(run)) return { bound: false, reason: 'run' };
+  if (run.id !== parsed.runId) return { bound: false, reason: 'run-id' };
+  if (run.head_branch !== 'main') return { bound: false, reason: 'branch' };
+  if (Number(run.repository_id) !== E2E_REPOSITORY_ID || Number(run.head_repository_id) !== E2E_REPOSITORY_ID) {
+    return { bound: false, reason: 'repository' };
+  }
+  if (typeof run.head_sha !== 'string' || !/^[0-9a-f]{40}$/.test(run.head_sha)) return { bound: false, reason: 'head-sha' };
+  return { bound: true, parsed, headSha: run.head_sha };
+}
+
+/**
+ * The cached `GET actions/runs/<run>` half of the binding: the artifact must have been produced
+ * by the protected `main` `workflow_dispatch` run of `beta-qualification.yml`, at the same head
+ * the artifact recorded. A run that cannot be read is a source failure, not an unbound artifact.
+ */
+export function validateLifecycleWorkflowRun(run, artifact, headSha) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error(`Lifecycle artifact ${artifact.id} workflow run is unavailable`);
+  if (run.path !== LIFECYCLE_WORKFLOW_PATH) throw new Error(`Lifecycle artifact ${artifact.id} was not produced by ${LIFECYCLE_WORKFLOW_PATH}`);
+  if (run.event !== 'workflow_dispatch') throw new Error(`Lifecycle artifact ${artifact.id} workflow run is not a workflow_dispatch`);
+  if (run.head_branch !== 'main') throw new Error(`Lifecycle artifact ${artifact.id} workflow run is not on main`);
+  if (run.head_sha !== headSha) throw new Error(`Lifecycle artifact ${artifact.id} workflow run head does not match its artifact`);
+}
+
 /**
  * The one compatibility read the new model keeps: a manifest written before #217 records
  * `quarantined`, which is the state this design replaced. It is read as `retained` and its
@@ -136,13 +264,22 @@ export function normalizeAccountStatus(status) {
   return status;
 }
 
-/** One manifest, validated in the manifest's own terms. */
+/**
+ * One manifest, validated in the manifest's own terms.
+ *
+ * The manifest must name the artifact's own run and attempt, so a forged or corrupted
+ * manifest cannot make one run's artifact authoritative for another run's identities. A
+ * mismatch is a contract violation and fails the reconcile closed (nothing is deleted).
+ */
 export function readManifest(bytes, artifact) {
   const manifest = parseStrictJson(bytes);
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('Account manifest must be an object');
   if (manifest.version !== 1 || !RECONCILE_RUN_SCOPE.test(manifest.runScope ?? '')
     || !Array.isArray(manifest.accounts) || manifest.accounts.length > 50) {
     throw new Error('Account manifest does not describe one bounded run scope');
+  }
+  if (!manifest.runScope.startsWith(`${artifact.runId}-${artifact.attempt}-`)) {
+    throw new Error(`Account manifest run scope does not name the artifact's run and attempt: ${artifact.runId}-${artifact.attempt}`);
   }
   return { manifest, artifact };
 }
@@ -190,25 +327,10 @@ export function manifestIdentities(manifests) {
   }
   return [...latest.values()]
     .filter((record) => record.status !== 'deleted')
-    .map((record) => ({ ...record, boundAt: Date.parse(record.reconcileBy ?? reconcileBound(record.updatedAt)) }))
+    // The bound is measured from the creating run, not from the retention write: it states
+    // when this run's leftover became late, not when a later attempt noticed it.
+    .map((record) => ({ ...record, boundAt: Date.parse(record.reconcileBy ?? reconcileBound(record.createdAt)) }))
     .sort((left, right) => left.boundAt - right.boundAt || left.email.localeCompare(right.email));
-}
-
-/** Every manifest record for an address, for CloudTrail attribution. */
-export function manifestAttributionWindows(manifests) {
-  const windows = new Map();
-  for (const { manifest, artifact } of manifests) {
-    for (const account of manifest.accounts) {
-      if (!account || typeof account !== 'object' || Array.isArray(account)) continue;
-      const email = typeof account.email === 'string' ? account.email : undefined;
-      const createdAt = Date.parse(account.createdAt ?? '');
-      const updatedAt = Date.parse(account.updatedAt ?? account.createdAt ?? '');
-      if (!email || !Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) continue;
-      if (!windows.has(email)) windows.set(email, []);
-      windows.get(email).push({ from: createdAt - SKEW_MS, to: updatedAt + SKEW_MS, run: artifact.runId, attempt: artifact.attempt });
-    }
-  }
-  return windows;
 }
 
 function callerOf(event) {
@@ -217,6 +339,22 @@ function callerOf(event) {
   if (typeof identity.arn === 'string') return identity.arn;
   const issuer = identity.sessionContext?.sessionIssuer?.arn;
   return typeof issuer === 'string' ? issuer : undefined;
+}
+
+/**
+ * The run a qualification-role caller names.
+ *
+ * Every protected credential step assumes the qualification role with
+ * `role-session-name: e2e-<run>-<attempt>`, so the assumed-role ARN's session name is the
+ * creating run. A creation recorded before that convention has no run here and is attributed
+ * to the qualification role and the event instead.
+ */
+export function qualificationSession(arn) {
+  if (typeof arn !== 'string') return undefined;
+  const match = /^arn:aws:sts::650880818323:assumed-role\/beta-e2e-qualification-role\/(.+)$/.exec(arn);
+  if (!match) return undefined;
+  const session = E2E_QUALIFICATION_SESSION.exec(match[1]);
+  return session ? { run: Number(session[1]), attempt: Number(session[2]) } : undefined;
 }
 
 function createdUsername(event) {
@@ -238,8 +376,10 @@ function createdUsername(event) {
  *
  * A creation is attributable when its caller assumed the E2E qualification role. Any other
  * caller is reported and never deleted: the design forbids a broad Identity sweep, and the
- * reconciler has no ownership proof for a principal that is not the qualification role. A
- * creation for another user pool is ignored rather than attributed.
+ * reconciler has no ownership proof for a principal that is not the qualification role. The
+ * role session name names the creating run when it carries the `e2e-<run>-<attempt>` form the
+ * protected credential steps set. A creation for another user pool is ignored rather than
+ * attributed.
  */
 export function parseCreateUserEvents(events, window, { userPoolId } = {}) {
   if (!Array.isArray(events)) throw new Error('CloudTrail response must be an event array');
@@ -266,61 +406,96 @@ export function parseCreateUserEvents(events, window, { userPoolId } = {}) {
       unattributable.push({ email, caller: caller ?? 'unknown', eventId, eventTime });
       continue;
     }
-    created.push({ email, eventId, eventTime, caller });
+    const session = qualificationSession(caller);
+    created.push({ email, eventId, eventTime, caller, ...(session ? { run: session.run, attempt: session.attempt } : {}) });
   }
   return { created, unattributable };
 }
 
 /**
- * Diff the creations against the manifest windows. A creation inside a manifest record's own
- * lifetime belongs to that record; one outside every window has no manifest entry and is
- * the orphan the design reconciles. Multiple creations of one address collapse to the
- * latest, because the address names a single Cognito identity and deletion is idempotent.
+ * The cleanup scope a creation-only identity derives from its run.
+ *
+ * `runScope` is an operation/idempotency name, never a selector: the exact users select the
+ * rows and objects. A creation whose credential session names its run therefore derives a
+ * scope from that run, so a retry of the same reconcile reuses the same Service execution
+ * name. A creation recorded before run-scoped sessions has no run to name; its scope is
+ * derived from its own creation fact, so it is still deterministic and still not a selector.
+ * An address in the historical scoped grammar carries its own scope and keeps it.
  */
-export function orphanCreations(created, windows) {
-  const byAddress = new Map();
-  for (const creation of created) {
-    const at = Date.parse(creation.eventTime);
-    const attributed = (windows.get(creation.email) ?? []).some((span) => at >= span.from && at <= span.to);
-    if (attributed) continue;
-    const previous = byAddress.get(creation.email);
-    if (!previous || Date.parse(creation.eventTime) > Date.parse(previous.eventTime)) byAddress.set(creation.email, creation);
-  }
-  return [...byAddress.values()];
+export function creationRunScope(creation) {
+  const scoped = WORKER_SCOPE.exec(creation.email);
+  if (scoped) return scoped[1];
+  const seed = createHash('sha256')
+    .update(`${creation.email}|${creation.eventId}|${creation.eventTime}`)
+    .digest('hex')
+    .slice(0, 16);
+  const run = creation.run ?? Math.floor(Date.parse(creation.eventTime) / 1_000);
+  const attempt = creation.attempt ?? 1;
+  return `${run}-${attempt}-${seed}`;
+}
+
+/** The record origin of a creation, naming its run and attempt when its session does. */
+export function creationOrigin(creation) {
+  return {
+    kind: 'cloudtrail',
+    event_id: creation.eventId,
+    event_time: creation.eventTime,
+    ...(creation.run ? { run: creation.run, attempt: creation.attempt } : {}),
+  };
 }
 
 /**
- * The run scope of a creation no manifest names.
+ * One reconcile identity set: manifests authoritative, CloudTrail proving or displacing them.
  *
- * Only an address in the scoped historical grammar can be reconciled without a manifest: the
- * grammar embeds the run scope, so the exact request is still provable. A stable pool row does
- * not carry one, which is one of the two reasons it needs the captured subject instead (§4 of
- * ADR-0031); this function therefore refuses it rather than inventing a scope.
+ * The rule per address is:
+ *   - a record outside the Beta worker families is reported, never deleted;
+ *   - a creation newer than the record's own `createdAt` displaces it, because a successful
+ *     `AdminCreateUser` proves the identity the record named was absent, so the record's stale
+ *     subject must not judge the live one — the live `sub` is read back instead;
+ *   - a stable pool row needs a captured subject or a qualification-role creation for that
+ *     exact address; without either it is reported as unprovable ownership;
+ *   - a historical scoped address carries its run scope and stays reconcilable;
+ *   - a creation by a caller other than the qualification role is reported, never deleted.
  */
-export function orphanRunScope(email) {
-  const scoped = WORKER_SCOPE.exec(email);
-  if (scoped) return scoped[1];
-  throw new Error('An address outside the scoped grammar cannot be attributed a run scope');
-}
-
-/** One reconcile identity set: manifests authoritative, CloudTrail additions reported. */
 export function buildIdentitySet({ manifests, events, window, userPoolId }) {
   const unresolved = [];
   const identities = [];
+  const { created, unattributable } = parseCreateUserEvents(events, window, { userPoolId });
+  const latestCreation = new Map();
+  for (const creation of created) {
+    const previous = latestCreation.get(creation.email);
+    if (!previous || Date.parse(creation.eventTime) > Date.parse(previous.eventTime)) latestCreation.set(creation.email, creation);
+  }
+
   for (const record of manifestIdentities(manifests)) {
     if (record.mode !== 'worker' || !isCapturedBetaWorkerEmail(record.email)) {
       unresolved.push({
         email: record.email,
-        reason: 'unprovable_ownership',
+        reason: 'outside_worker_family',
         origin: record.origin,
         boundAt: record.boundAt,
       });
       continue;
     }
+    const creation = latestCreation.get(record.email);
+    const displaced = creation !== undefined && Date.parse(creation.eventTime) > Date.parse(record.createdAt) + SKEW_MS;
+    if (displaced) {
+      identities.push({
+        email: record.email,
+        mode: 'worker',
+        status: 'retained',
+        subject: undefined,
+        retainedReason: 'displaced by a newer creation',
+        origin: creationOrigin(creation),
+        runScope: creationRunScope(creation),
+        boundAt: Date.parse(reconcileBound(creation.eventTime)),
+      });
+      continue;
+    }
     // A stable allowlist row is an address a human tester can hold too, so its grammar proves
-    // nothing: the captured subject is the only ownership proof, and without one the record is
-    // reported instead of deleted (ADR-0031 §4). A scoped address carries its own proof.
-    if (STABLE_WORKER_EMAIL_PATTERN.test(record.email) && !record.subject) {
+    // nothing: the captured subject or a qualification-role creation is the ownership proof,
+    // and without either the record is reported instead of deleted (ADR-0031 §4).
+    if (STABLE_WORKER_EMAIL_PATTERN.test(record.email) && !record.subject && !creation) {
       unresolved.push({
         email: record.email,
         reason: 'unprovable_ownership',
@@ -329,11 +504,40 @@ export function buildIdentitySet({ manifests, events, window, userPoolId }) {
       });
       continue;
     }
-    identities.push(record);
+    identities.push(record.subject || !creation
+      ? record
+      // A creation-proven stable record has no captured subject: the creation event is the
+      // proof, and the live `sub` is read back from the identity itself.
+      : {
+        ...record,
+        subject: undefined,
+        origin: creationOrigin(creation),
+        runScope: record.runScope,
+      });
   }
-  const windows = manifestAttributionWindows(manifests);
-  const { created, unattributable } = parseCreateUserEvents(events, window, { userPoolId });
+
   for (const entry of unattributable) {
+    const displacedRecord = identities.find((identity) => identity.email === entry.email
+      && identity.origin.kind === 'manifest'
+      && Date.parse(entry.eventTime) > Date.parse(identity.createdAt) + SKEW_MS);
+    if (displacedRecord) {
+      // A foreign creation newer than the record proves the record's identity was absent, and
+      // the reconciler has no ownership proof for the live one. Report it, delete nothing.
+      identities.splice(identities.indexOf(displacedRecord), 1);
+      unresolved.push({
+        email: entry.email,
+        reason: 'unattributable_caller',
+        caller: entry.caller,
+        origin: { kind: 'cloudtrail', event_id: entry.eventId, event_time: entry.eventTime },
+        boundAt: Date.parse(reconcileBound(entry.eventTime)),
+      });
+      continue;
+    }
+    if (identities.some((identity) => identity.email === entry.email)) {
+      // The record's captured subject still proves the identity it names; the unrelated
+      // foreign creation is not this reconcile's to delete and does not displace it.
+      continue;
+    }
     unresolved.push({
       email: entry.email,
       reason: 'unattributable_caller',
@@ -342,35 +546,21 @@ export function buildIdentitySet({ manifests, events, window, userPoolId }) {
       boundAt: Date.parse(reconcileBound(entry.eventTime)),
     });
   }
-  for (const creation of orphanCreations(created, windows)) {
-    const existing = identities.find((identity) => identity.email === creation.email);
-    if (existing) {
-      // A later creation of an address a retained record already names: one deletion
-      // resolves both, and the later creation moves the bound out.
-      existing.boundAt = Math.max(existing.boundAt, Date.parse(reconcileBound(creation.eventTime)));
-      continue;
-    }
-    // A creation with no manifest entry is only attributable through the scoped grammar: a
-    // stable pool row has no captured subject here and no scope in its address, so it is
-    // reported rather than deleted.
-    if (STABLE_WORKER_EMAIL_PATTERN.test(creation.email)) {
-      unresolved.push({
-        email: creation.email,
-        reason: 'unprovable_ownership',
-        origin: { kind: 'cloudtrail', event_id: creation.eventId, event_time: creation.eventTime },
-        boundAt: Date.parse(reconcileBound(creation.eventTime)),
-      });
-      continue;
-    }
+
+  for (const creation of latestCreation.values()) {
+    if (identities.some((identity) => identity.email === creation.email)) continue;
+    if (unresolved.some((entry) => entry.email === creation.email)) continue;
+    // A creation with no manifest entry is attributed to the run its credential session names
+    // (or, before run-scoped sessions, to the qualification role and the event). Its `sub` is
+    // read back and its cleanup scope is derived from that run, never from its address alone.
     identities.push({
       email: creation.email,
       mode: 'worker',
       status: 'retained',
       subject: undefined,
-      retainedReason: 'manifest artifact missing for this creation',
-      reconcileBy: undefined,
-      origin: { kind: 'cloudtrail', event_id: creation.eventId, event_time: creation.eventTime },
-      runScope: orphanRunScope(creation.email),
+      retainedReason: 'lifecycle manifest missing for this creation',
+      origin: creationOrigin(creation),
+      runScope: creationRunScope(creation),
       boundAt: Date.parse(reconcileBound(creation.eventTime)),
     });
   }
@@ -426,7 +616,12 @@ function recordIdentity(identity, { subject, actions, outcome }) {
     subject: typeof subject === 'string' && CAPTURED_SUBJECT.test(subject) ? subject.toLowerCase() : null,
     origin: identity.origin.kind === 'manifest'
       ? { kind: 'manifest', run: identity.origin.run, attempt: identity.origin.attempt }
-      : { kind: 'cloudtrail', event_id: identity.origin.event_id, event_time: identity.origin.event_time },
+      : {
+        kind: 'cloudtrail',
+        event_id: identity.origin.event_id,
+        event_time: identity.origin.event_time,
+        ...(identity.origin.run ? { run: identity.origin.run, attempt: identity.origin.attempt } : {}),
+      },
     actions,
     outcome,
   };
@@ -443,7 +638,11 @@ export function buildReconcileRecord({ reconcileId, window, sources, identities,
     record_type: RECONCILE_RECORD_TYPE,
     reconcile_id: reconcileId,
     window: { from: window.from, to: window.to },
-    sources: { artifacts: sources.artifacts, cloudtrail_events: sources.cloudtrail_events },
+    sources: {
+      artifacts: sources.artifacts,
+      artifacts_ignored: sources.artifacts_ignored,
+      cloudtrail_events: sources.cloudtrail_events,
+    },
     identities,
     unresolved,
     result,
@@ -460,15 +659,18 @@ export function validateReconcileRecord(record) {
   if (record.schema_version !== RECONCILE_SCHEMA_VERSION || record.record_type !== RECONCILE_RECORD_TYPE) throw new Error('Reconcile record schema is not v1');
   if (typeof record.reconcile_id !== 'string' || !/^[1-9][0-9]*-[1-9][0-9]*$/.test(record.reconcile_id)) throw new Error('Reconcile record id is not a run/attempt pair');
   if (!record.window || Object.keys(record.window).sort().join(',') !== 'from,to') throw new Error('Reconcile window has an unknown or missing member');
-  const from = Date.parse(instant(record.window.from, 'Reconcile window start'));
-  const to = Date.parse(instant(record.window.to, 'Reconcile window end'));
-  if (from >= to) throw new Error('Reconcile window is not a positive span');
-  if (Math.round((to - from) / 60_000) !== RECONCILE_WINDOW_DAYS * 24 * 60) throw new Error('Reconcile window is not the reviewed lookback');
-  if (!record.sources || Object.keys(record.sources).sort().join(',') !== 'artifacts,cloudtrail_events') throw new Error('Reconcile sources have an unknown or missing member');
+  const days = lookbackDaysOfWindow(record.window);
+  if (!record.sources || Object.keys(record.sources).sort().join(',') !== 'artifacts,artifacts_ignored,cloudtrail_events') {
+    throw new Error('Reconcile sources have an unknown or missing member');
+  }
   // Zero is a valid scan: a seven-day window with no lifecycle manifest is exactly the case
-  // in which CloudTrail alone proves a crashed run's orphan.
+  // in which CloudTrail alone proves a crashed run's creation.
+  const artifactBound = days * RECONCILE_ARTIFACTS_PER_DAY;
   if (!Number.isSafeInteger(record.sources.artifacts) || record.sources.artifacts < 0
-    || record.sources.artifacts > RECONCILE_MAX_ARTIFACTS) throw new Error('Reconcile artifact count is unbounded');
+    || record.sources.artifacts > artifactBound) throw new Error('Reconcile artifact count is unbounded');
+  if (!Number.isSafeInteger(record.sources.artifacts_ignored) || record.sources.artifacts_ignored < 0) {
+    throw new Error('Reconcile ignored artifact count is unbounded');
+  }
   if (!Number.isSafeInteger(record.sources.cloudtrail_events) || record.sources.cloudtrail_events < 0 || record.sources.cloudtrail_events > RECONCILE_MAX_EVENTS) {
     throw new Error('Reconcile CloudTrail count is unbounded');
   }
@@ -498,7 +700,11 @@ export function validateReconcileRecord(record) {
   for (const entry of record.unresolved) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('Reconcile unresolved entry is malformed');
     if (!['caller,email,origin,reason', 'email,origin,reason'].includes(Object.keys(entry).sort().join(','))) throw new Error('Reconcile unresolved entry has an unknown member');
-    if (!isCapturedBetaWorkerEmail(entry.email)) throw new Error('Reconcile unresolved address is outside the captured Beta worker families');
+    // `outside_worker_family` is the one reason that admits a bounded E2E address outside the
+    // worker families, and it never selects a deletion. Every other reason is a worker address.
+    if (typeof entry.email !== 'string' || (entry.reason === 'outside_worker_family'
+      ? !BOUNDED_E2E_ADDRESS.test(entry.email)
+      : !isCapturedBetaWorkerEmail(entry.email))) throw new Error('Reconcile unresolved address is outside the captured Beta worker families');
     if (!UNRESOLVED_REASONS.includes(entry.reason)) throw new Error('Reconcile unresolved reason is outside the closed set');
     validateOrigin(entry.origin, 'Reconcile unresolved origin');
   }
@@ -514,9 +720,16 @@ function validateOrigin(origin, label) {
     return;
   }
   if (origin?.kind === 'cloudtrail') {
-    if (Object.keys(origin).sort().join(',') !== 'event_id,event_time,kind') throw new Error(`${label} has an unknown member`);
+    // The creation's credential session optionally names the run and attempt, so the record
+    // proves the creating run from the event itself.
+    const members = Object.keys(origin).sort().join(',');
+    if (members !== 'event_id,event_time,kind' && members !== 'attempt,event_id,event_time,kind,run') {
+      throw new Error(`${label} has an unknown member`);
+    }
     requireString(origin.event_id, `${label} event id`);
     instant(origin.event_time, `${label} event time`);
+    if (origin.run !== undefined) requirePositiveInteger(origin.run, `${label} run`);
+    if (origin.attempt !== undefined) requirePositiveInteger(origin.attempt, `${label} attempt`);
     return;
   }
   throw new Error(`${label} is not manifest or cloudtrail`);
@@ -525,13 +738,15 @@ function validateOrigin(origin, label) {
 /**
  * The run fails only for a leftover it was supposed to resolve inside its bound. A retry
  * inside the bound is the ordinary path: the identity is recorded and the next run — or the
- * daily schedule — tries again. A creation by a foreign principal and an address outside the
- * captured grammar are reported but never resolved by this operation, so neither fails the
- * run on its own.
+ * daily schedule — tries again. The three reported conditions — a foreign caller, a
+ * pool-address record with neither a captured subject nor a creation event, and a record
+ * outside the Beta worker families — cannot be resolved by any automatic path this design has,
+ * so they are recorded and warned about but never fail the run on their own. A bound breach is
+ * what the alert is for.
  */
 export function judgeResult(unresolved, now, bounds) {
   for (const entry of unresolved) {
-    if (entry.reason === 'unattributable_caller' || entry.reason === 'unprovable_ownership') continue;
+    if (REPORTED_REASONS.includes(entry.reason)) continue;
     const bound = bounds.get(entry.email);
     if (bound === undefined || now > bound) return 'failed';
   }
@@ -544,12 +759,76 @@ export function cleanupEvidencePath(directory, index, runScope) {
 }
 
 /**
+ * The run annotations the record earns (#217).
+ *
+ * A reported condition — a foreign caller, a pool-address record with no proof, a record
+ * outside the Beta worker families — is a warning that never fails the run. An unresolved
+ * leftover past its bound is an error and fails it. The distinction is the whole point of the
+ * reported-exception rule, so it is stated in one place and asserted by a test.
+ */
+export function recordAnnotations(record) {
+  const warnings = [];
+  const errors = [];
+  for (const entry of record.unresolved) {
+    const run = entry.origin.kind === 'manifest'
+      ? `run ${entry.origin.run} attempt ${entry.origin.attempt}`
+      : `CloudTrail event ${entry.origin.event_id} at ${entry.origin.event_time}`
+        + `${entry.origin.run ? ` (run ${entry.origin.run} attempt ${entry.origin.attempt})` : ''}`;
+    if (REPORTED_REASONS.includes(entry.reason)) {
+      warnings.push(`::warning title=Reported E2E leftover condition::${entry.email} (${entry.reason}) from ${run}`);
+      continue;
+    }
+    errors.push(`::error title=Unresolved E2E leftover::${entry.email} (${entry.reason}) from ${run}`);
+  }
+  return { warnings, errors };
+}
+
+/**
+ * Prove the identity set and its unresolved entries against the record's closed contract
+ * *before the first mutation*.
+ *
+ * A record is only useful if it can be written, and writing it after a deletion is too late to
+ * refuse: a foreign address, an unknown origin or an off-contract reason discovered at that
+ * point would lose the statement about work already done. The skeleton is the record's own
+ * shape with placeholder actions, so an identity set that validates here can only produce
+ * closed-set values afterwards.
+ */
+export function assertIdentitySetWithinContract({ reconcileId, window, identities, unresolved }) {
+  return buildReconcileRecord({
+    reconcileId,
+    window,
+    sources: { artifacts: 0, artifacts_ignored: 0, cloudtrail_events: 0 },
+    identities: identities.map((identity) => recordIdentity(identity, {
+      subject: identity.subject ?? null,
+      actions: { service_cleanup: 'not_required', cognito: 'not_attempted', objects: 'not_required', readback: 'not_attempted' },
+      outcome: 'retained',
+    })),
+    unresolved: unresolved.map((entry) => ({
+      email: entry.email,
+      reason: entry.reason,
+      ...(entry.caller ? { caller: entry.caller } : {}),
+      origin: entry.origin,
+    })),
+    result: 'passed',
+  });
+}
+
+/** The in-job deadline, which a NaN or a non-positive value must refuse rather than disable. */
+function requireDeadline(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive number of milliseconds`);
+  }
+  return value;
+}
+
+/**
  * The reconcile operation.
  *
- * `io` is the whole transport seam, so the offline tests exercise the diff, the bounds and
- * the record without an AWS or GitHub call:
- *   listArtifacts(window)          -> artifact rows in the window
- *   downloadManifest(artifact)     -> the artifact's account-budget.json bytes
+ * `io` is the whole transport seam, so the offline tests exercise the reader, the binding, the
+ * diff, the bounds and the record without an AWS or GitHub call:
+ *   listArtifacts(window)          -> lifecycle-named artifact rows in the window
+ *   readArtifact(artifact)         -> the artifact's entries, each {name, size, directory, symlink, bytes}
+ *   getWorkflowRun(runId)          -> { path, event, head_branch, head_sha } of one workflow run
  *   lookupCreateUserEvents(window) -> CloudTrail lookup-events rows
  *   getUser(email)                 -> { Username, UserAttributes } or UserNotFoundException
  *   deleteUser(username)           -> deletes by immutable username
@@ -568,30 +847,60 @@ export async function reconcileAccounts({
   requirePositiveInteger(runIdentity?.runId, 'Reconcile run id');
   requirePositiveInteger(runIdentity?.attempt, 'Reconcile run attempt');
   const reconcileId = `${runIdentity.runId}-${runIdentity.attempt}`;
-  const deadline = Date.now() + deadlineMs;
+  const deadline = Date.now() + requireDeadline(deadlineMs, 'Reconcile deadline');
 
-  const artifacts = await io.listArtifacts(window);
+  const listed = await io.listArtifacts(window);
   // An empty window is a valid scan, not a failure (#217): the design's own orphan case is a
   // run whose manifest was never uploaded, and when that run is the only one in the lookback
   // there is no artifact at all. The identity set is then built from CloudTrail alone and the
-  // record states `sources.artifacts: 0`. Only a transport/API failure or an unbounded list
+  // record states `sources.artifacts: 0`. Only a transport/API failure or an over-bound list
   // refuses before any deletion.
-  if (!Array.isArray(artifacts)) throw new Error('Lifecycle artifact list is unavailable');
-  if (artifacts.length > RECONCILE_MAX_ARTIFACTS) throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
-  const manifests = [];
-  for (const artifact of artifacts) {
-    if (!parseManifestArtifactName(artifact.name)) throw new Error('Reconcile was offered a non-lifecycle artifact');
-    const bytes = await io.downloadManifest(artifact);
-    manifests.push(readManifest(bytes, parseManifestArtifactName(artifact.name)));
+  if (!Array.isArray(listed)) throw new Error('Lifecycle artifact list is unavailable');
+  const artifactBound = maxArtifactsForWindow(window);
+  for (const artifact of listed) {
+    if (!parseManifestArtifactName(artifact?.name)) throw new Error('Reconcile was offered a non-lifecycle artifact');
   }
+  if (listed.length > artifactBound) {
+    // Fail closed rather than truncate: a truncated list would read as a quiet scan.
+    throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
+  }
+
+  // Bind every lifecycle-named artifact to the protected run. An unbound one is ignored and
+  // counted; a run that cannot be read is a source failure (the binding cannot be decided).
+  const artifacts = [];
+  let artifactsIgnored = 0;
+  const runs = new Map();
+  for (const artifact of listed) {
+    const binding = lifecycleArtifactBinding(artifact);
+    if (!binding.bound) {
+      artifactsIgnored += 1;
+      continue;
+    }
+    if (!runs.has(binding.parsed.runId)) runs.set(binding.parsed.runId, await io.getWorkflowRun(binding.parsed.runId));
+    validateLifecycleWorkflowRun(runs.get(binding.parsed.runId), artifact, binding.headSha);
+    artifacts.push({ artifact, parsed: binding.parsed });
+  }
+
+  const manifests = [];
+  for (const { artifact, parsed } of artifacts) {
+    const entries = await io.readArtifact(artifact);
+    const { manifests: names } = classifyLifecycleArchive(entries);
+    for (const name of names) {
+      const entry = entries.find((candidate) => candidate.name === name);
+      manifests.push(readManifest(entry.bytes, parsed));
+    }
+  }
+
   const events = await io.lookupCreateUserEvents(window);
   const identitySet = buildIdentitySet({ manifests, events, window, userPoolId: environment.USER_POOL_ID });
   if (artifacts.length === 0) {
-    log(`Reconcile ${reconcileId}: no lifecycle manifest in the ${RECONCILE_WINDOW_DAYS}-day window; `
+    log(`Reconcile ${reconcileId}: no run-bound lifecycle artifact in the ${lookbackDaysOfWindow(window)}-day window`
+      + `${artifactsIgnored > 0 ? ` (${artifactsIgnored} ignored as unbound)` : ''}; `
       + `the identity set is built from ${events.length} CloudTrail event(s) alone.`);
   }
-  log(`Reconcile ${reconcileId}: ${manifests.length} manifest(s), ${events.length} CloudTrail event(s), `
-    + `${identitySet.identities.length} attributable identit(ies), ${identitySet.unresolved.length} unattributable creation(s).`);
+  log(`Reconcile ${reconcileId}: ${artifacts.length} run-bound artifact(s), ${artifactsIgnored} ignored, `
+    + `${manifests.length} manifest(s), ${events.length} CloudTrail event(s), `
+    + `${identitySet.identities.length} attributable identit(ies), ${identitySet.unresolved.length} reportable condition(s).`);
 
   const recordIdentities = [];
   const unresolved = [];
@@ -607,9 +916,14 @@ export async function reconcileAccounts({
   }
   for (const identity of identitySet.identities) bounds.set(identity.email, identity.boundAt);
 
+  // Nothing below may discover an input the contract cannot state: the whole identity set is
+  // proven against the record's closed shape before the first Service, Cognito or delete call.
+  assertIdentitySetWithinContract({ reconcileId, window, identities: identitySet.identities, unresolved });
+
   const groups = cleanupGroups(identitySet.identities);
   for (const [index, group] of groups.entries()) {
-    if (Date.now() > deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       for (const identity of group.identities) {
         unresolved.push({ email: identity.email, reason: 'deadline_exceeded', origin: identity.origin });
         recordIdentities.push(recordIdentity(identity, {
@@ -620,14 +934,16 @@ export async function reconcileAccounts({
       }
       continue;
     }
-    await reconcileGroup({ group, index, io, environment, recordIdentities, unresolved });
+    await reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, remainingMs: remaining });
   }
 
   const result = judgeResult(unresolved, now, bounds);
+  // The values here were all validated before the first mutation; this call re-proves the same
+  // closed set and cannot introduce a new failure mode.
   const record = buildReconcileRecord({
     reconcileId,
     window,
-    sources: { artifacts: manifests.length, cloudtrail_events: events.length },
+    sources: { artifacts: artifacts.length, artifacts_ignored: artifactsIgnored, cloudtrail_events: events.length },
     identities: recordIdentities.sort((left, right) => left.email.localeCompare(right.email)),
     unresolved: unresolved.sort((left, right) => left.email.localeCompare(right.email)),
     result,
@@ -635,7 +951,7 @@ export async function reconcileAccounts({
   return { record, result, identitySet };
 }
 
-async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved }) {
+async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, remainingMs }) {
   const members = [];
   for (const identity of group.identities) {
     let live;
@@ -702,9 +1018,12 @@ async function reconcileGroup({ group, index, io, environment, recordIdentities,
     evidence = await io.runServiceCleanup(inputs, {
       ...environment,
       E2E_SERVICE_CLEANUP_EVIDENCE_PATH: cleanupEvidencePath(environment.E2E_ACCOUNT_RECONCILE_DIRECTORY ?? 'reconcile', index, group.runScope),
-    });
-  } catch {
-    recordServiceFailure(members, recordIdentities, unresolved, 'service_cleanup_refused');
+    }, { remainingMs });
+  } catch (error) {
+    // The cleanup wait is bounded by the remaining in-job deadline, so a Service wait cannot
+    // outlive the job and lose the record. A deadline stop is the design's own condition.
+    const deadlineStopped = error instanceof Error && error.name === 'CleanupDeadlineExceeded';
+    recordServiceFailure(members, recordIdentities, unresolved, deadlineStopped ? 'deadline_exceeded' : 'service_cleanup_refused');
     return;
   }
   if (!evidence) {
@@ -715,20 +1034,15 @@ async function reconcileGroup({ group, index, io, environment, recordIdentities,
     recordServiceFailure(members, recordIdentities, unresolved, 'service_cleanup_refused');
     return;
   }
-  // The object phase is proven by the committed result's own counters. A Service that cannot
-  // state them cannot prove the objects are gone, so the identity is retained until the
-  // reviewed Service release is deployed rather than reported clean on an assumption.
+  // The object phase is proven by the committed result's own counters. A committed result that
+  // cannot state them is not proof of the object phase: the Service's own refusal vocabulary
+  // covers a partial object deletion, so it is recorded as a Service refusal and retried.
   const objects = objectAction(evidence.committed_result);
+  if (objects === 'unavailable') {
+    recordServiceFailure(members, recordIdentities, unresolved, 'service_cleanup_refused');
+    return;
+  }
   for (const member of members) {
-    if (objects === 'unavailable') {
-      unresolved.push({ email: member.identity.email, reason: 'object_cleanup_unproven', origin: member.identity.origin });
-      recordIdentities.push(recordIdentity(member.identity, {
-        subject: member.identity.subject ?? member.subject,
-        actions: { service_cleanup: 'committed', cognito: 'not_attempted', objects: 'unavailable', readback: 'not_attempted' },
-        outcome: 'retained',
-      }));
-      continue;
-    }
     if (member.username === undefined) {
       recordIdentities.push(recordIdentity(member.identity, {
         subject: member.identity.subject ?? member.subject,
@@ -798,24 +1112,40 @@ function isUserNotFound(error) {
   return error instanceof Error && (error.name === 'UserNotFoundException' || /UserNotFoundException/.test(error.message));
 }
 
-// The artifact zip's `account-budget.json`, checked the same way the recovery reader checks
-// its own archive: known names only, bounded size, no directories or symlinks. A v4 artifact
-// upload flattens `test-results/account-budget.json` to `account-budget.json`.
-const ACCOUNT_ARCHIVE_READER = [
-  'import sys, zipfile, base64',
+// One lifecycle artifact's closed upload set, listed and extracted in one pass so the reader
+// can reject an unknown name, a directory, a symlink or a repeated file before it reads
+// anything. A v4 artifact upload flattens `test-results/account-budget.json` to
+// `account-budget.json`; both account legs and the two cleanup diagnostics keep their names.
+const LIFECYCLE_ARCHIVE_READER = [
+  'import sys, json, zipfile, base64',
+  'closed=["account-budget.json","account-budget-oldest-client.json","service-cleanup-operation.json","service-cleanup-run.json"]',
   'with zipfile.ZipFile(sys.argv[1]) as z:',
   ' entries=z.infolist()',
   ' names=[e.filename for e in entries]',
-  ' if len(names)!=len(set(names)) or names!=["account-budget.json"]: raise ValueError("Unexpected account artifact contents")',
-  ' if any(e.is_dir() or e.file_size>1048576 or (e.external_attr>>16)&0o170000==0o120000 for e in entries): raise ValueError("Unbounded or unsafe account artifact file")',
-  ' print(base64.b64encode(z.read("account-budget.json")).decode("ascii"))',
+  ' if len(names)!=len(set(names)): raise ValueError("Lifecycle artifact repeats a file")',
+  ' listed=[]',
+  ' files={}',
+  ' for e in entries:',
+  '  symlink=((e.external_attr>>16)&0o170000)==0o120000',
+  '  listed.append({"name":e.filename,"size":e.file_size,"directory":e.is_dir(),"symlink":symlink})',
+  '  if e.filename in closed and not e.is_dir() and not symlink and e.file_size<=1048576:',
+  '   files[e.filename]=base64.b64encode(z.read(e.filename)).decode("ascii")',
+  ' print(json.dumps({"entries":listed,"files":files}))',
 ].join('\n');
 
-function extractAccountManifest(archivePath) {
-  const stdout = execFileSync('python3', ['-c', ACCOUNT_ARCHIVE_READER, archivePath], {
-    timeout: 15_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+function extractLifecycleArchive(archivePath) {
+  const stdout = execFileSync('python3', ['-c', LIFECYCLE_ARCHIVE_READER, archivePath], {
+    timeout: 15_000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
   });
-  return Buffer.from(stdout.trim(), 'base64');
+  const parsed = parseStrictJson(stdout);
+  if (!parsed || !Array.isArray(parsed.entries)) throw new Error('Lifecycle artifact listing is malformed');
+  return parsed.entries.map((entry) => ({
+    name: entry.name,
+    size: entry.size,
+    directory: entry.directory === true,
+    symlink: entry.symlink === true,
+    bytes: typeof parsed.files?.[entry.name] === 'string' ? Buffer.from(parsed.files[entry.name], 'base64') : undefined,
+  }));
 }
 
 // The production transports. They are the only places that touch GitHub, AWS or the Service
@@ -828,33 +1158,56 @@ export function createReconcileIo(environment = process.env) {
 
   async function listArtifacts(window) {
     const artifacts = [];
-    for (let page = 1; page <= 5; page += 1) {
+    // The page budget covers the largest lookback at nine artifacts per day, and it fails
+    // closed when it is exhausted: a truncated list would read as a quiet scan.
+    const bound = maxArtifactsForWindow(window);
+    const pages = Math.ceil(bound / 100) + 1;
+    let complete = false;
+    for (let page = 1; page <= pages; page += 1) {
       const response = parseStrictJson(ghApi(`repos/${repository}/actions/artifacts?per_page=100&page=${page}`, false, environment));
       if (!response || !Array.isArray(response.artifacts)) throw new Error('Artifact list response is malformed');
       for (const artifact of response.artifacts) {
+        // An expired artifact has no bytes left to read; it is outside the scan rather than
+        // unbound, and the recorded residual is the leftover older than both retention windows.
         if (artifact.expired !== false || !parseManifestArtifactName(artifact.name)) continue;
         const createdAt = Date.parse(artifact.created_at ?? '');
         if (!Number.isFinite(createdAt) || createdAt < Date.parse(window.from) || createdAt > Date.parse(window.to)) continue;
-        artifacts.push({ id: requirePositiveInteger(artifact.id, 'Artifact id'), name: artifact.name, digest: artifact.digest });
+        artifacts.push({
+          id: requirePositiveInteger(artifact.id, 'Artifact id'),
+          name: artifact.name,
+          digest: artifact.digest,
+          workflow_run: artifact.workflow_run,
+        });
       }
-      if (response.artifacts.length < 100) break;
+      if (artifacts.length > bound) throw new Error('Lifecycle artifacts in the window exceed the reconcile bound');
+      if (response.artifacts.length < 100) { complete = true; break; }
     }
+    if (!complete) throw new Error('Lifecycle artifact listing page budget is exhausted');
     return artifacts;
   }
 
-  async function downloadManifest(artifact) {
+  async function getWorkflowRun(runId) {
+    const run = parseStrictJson(ghApi(`repos/${repository}/actions/runs/${requirePositiveInteger(runId, 'Workflow run id')}`, false, environment));
+    if (!run || typeof run !== 'object' || Array.isArray(run)) throw new Error('Workflow run response is malformed');
+    return { path: run.path, event: run.event, head_branch: run.head_branch, head_sha: run.head_sha };
+  }
+
+  async function readArtifact(artifact) {
     const archive = ghApi(`repos/${repository}/actions/artifacts/${artifact.id}/zip`, true, environment);
-    if (!Buffer.isBuffer(archive) || archive.length === 0 || archive.length > 8 * 1024 * 1024) throw new Error('Lifecycle artifact is empty or exceeds its bound');
+    if (!Buffer.isBuffer(archive) || archive.length === 0) throw new Error('Lifecycle artifact is empty or unavailable');
+    if (archive.length > LIFECYCLE_ARCHIVE_MAX_BYTES) throw new Error('Lifecycle artifact exceeds its bound');
     if (typeof artifact.digest === 'string' && /^sha256:[a-f0-9]{64}$/.test(artifact.digest) && artifact.digest !== `sha256:${byteHash(archive)}`) {
       throw new Error('Lifecycle artifact digest does not match its bytes');
     }
-    const { mkdtemp } = await import('node:fs/promises');
-    const { tmpdir } = await import('node:os');
-    const { join } = await import('node:path');
     const directory = await mkdtemp(join(tmpdir(), 'anywear-reconcile-'));
-    const path = join(directory, 'artifact.zip');
-    await writeFile(path, archive);
-    return extractAccountManifest(path);
+    try {
+      const path = join(directory, 'artifact.zip');
+      await writeFile(path, archive);
+      return extractLifecycleArchive(path);
+    } finally {
+      // The extracted copy is a scratch detail; nothing read from it is kept on disk.
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 
   async function lookupCreateUserEvents(window) {
@@ -879,7 +1232,8 @@ export function createReconcileIo(environment = process.env) {
 
   return {
     listArtifacts,
-    downloadManifest,
+    readArtifact,
+    getWorkflowRun,
     lookupCreateUserEvents,
     async getUser(email) {
       const user = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
@@ -889,8 +1243,10 @@ export function createReconcileIo(environment = process.env) {
       assertE2EExecution(environment);
       await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
     },
-    async runServiceCleanup(inputs, cleanupEnvironment) {
-      const evidence = await runCleanupOperation(inputs, cleanupEnvironment);
+    async runServiceCleanup(inputs, cleanupEnvironment, { remainingMs } = {}) {
+      // The remaining in-job deadline bounds the Service wait, so a 30-minute capability wait
+      // cannot outlive the 15-minute job and lose the record it was about to write.
+      const evidence = await runCleanupOperation(inputs, cleanupEnvironment, undefined, { remainingMs });
       if (!evidence) return undefined;
       const operation = evidence.operation ?? {};
       return { proof_status: operation.proof_status, committed_result: operation.committed_result };
@@ -910,15 +1266,10 @@ async function main() {
     await mkdir(dirname(resolve(recordPath)), { recursive: true });
     await writeFile(resolve(recordPath), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`Reconcile record: ${record.reconcile_id} result=${record.result} identities=${record.identities.length} unresolved=${record.unresolved.length}\n`);
-    if (record.result !== 'passed') {
-      for (const entry of record.unresolved) {
-        const origin = entry.origin.kind === 'manifest'
-          ? `run ${entry.origin.run} attempt ${entry.origin.attempt}`
-          : `CloudTrail event ${entry.origin.event_id} at ${entry.origin.event_time}`;
-        process.stderr.write(`::error title=Unresolved E2E leftover::${entry.email} (${entry.reason}) from ${origin}\n`);
-      }
-      process.exitCode = 1;
-    }
+    const annotations = recordAnnotations(record);
+    for (const warning of annotations.warnings) process.stderr.write(`${warning}\n`);
+    for (const error of annotations.errors) process.stderr.write(`${error}\n`);
+    if (record.result !== 'passed') process.exitCode = 1;
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : 'Account reconcile failed'}\n`);
     process.exitCode = 1;
