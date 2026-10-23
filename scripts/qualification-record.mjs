@@ -19,12 +19,13 @@ import {
 // (`service_artifacts`: repository, release id, tag, tag target commit and the four
 // released assets with their published size and digest), adds the expectation the run was
 // dispatched for (`expected`), and has no member that only existed to carry a committed
-// pin: `compatibility` (the whole pin) and `deployment` (the two producer deployment-record
-// bodies) are gone. Removing them is what makes the record self-contained: qualification
-// proves the deployed content, and the deployment-record lineage belongs to the deployment
-// record (#181), not to the test evidence. v4 replaces v3's manifest asset id/hash with
-// the release's own identity and refuses a v2/v3 record, so one version never means two
-// shapes.
+// pin: `compatibility` (the whole pin) and `deployment` (the two producer record bodies) are
+// gone. Removing them is what makes the record self-contained: qualification proves the
+// deployed content, and the deployment lineage lives in platform facts (#207) — the GitHub
+// Environment deployment `beta`, the CloudFormation stack events, the release tag→commit and
+// the ECR image digest — not in a record or in the test evidence. v4 replaces v3's manifest
+// asset id/hash with the release's own identity and refuses a v2/v3 record, so one version
+// never means two shapes.
 //
 // The record cannot be issued from anything but the protected `full` operation: the
 // suite result, the environment verdict, the run report bytes and the dispatched

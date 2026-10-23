@@ -10,8 +10,9 @@ import { parseStrictJson } from './evidence-contract.mjs';
 // `compatibility.infra.sha`, and it proved the platform record against a producer
 // record. Qualification no longer consumes a producer record at all: it reads the
 // live CloudFormation / SSM / Lambda / SQS / CloudFront state through the vendored
-// contract, and the deployment-record lineage that used to be checked here now
-// belongs to the deployment record (#181). What this observation proves is the
+// contract, and the deployment lineage that used to be checked here is no longer a
+// record (#207): it is the Environment deployment `beta`, the CloudFormation stack
+// events, the release tag→commit and the ECR digest. What this observation proves is the
 // deployed *content*: the three stage-base stacks' Original template hashes, the
 // `/anywear/beta/*` stage inputs, the two Service-built Lambdas, the two task
 // queues and the Client distribution domain.

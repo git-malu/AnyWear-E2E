@@ -146,3 +146,14 @@ observation from this contract instead of consuming a producer record. Historica
 v2 records were readable only in the pin tooling, which #192 deletes; no live
 input reads them. Pre-gate Service v3 records were never
 produced; the Service record is only ever the v4 gated shape.
+
+## #207: frozen copy
+
+This vendored copy is frozen at Infra `9382e40810fa451b626f13a3303fe205614305f7`
+(`@git-malu/stage-contracts` `0.3.0`) and is **not** re-vendored by
+[#207](https://github.com/git-malu/AnyWear/issues/207). #207 retires the
+self-built operation/deployment evidence chain and only narrows the producer
+package; re-vendoring from that narrowed package would delete
+`stableLambdaConfiguration`, which `scripts/infra-observation.mjs` still needs for
+the authenticated platform observation. The vendored bytes, `provenance.json` and
+`scripts/vendored-contract.mjs` are therefore unchanged by #207.
