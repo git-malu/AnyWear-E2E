@@ -1,39 +1,31 @@
 {
   "source_repository": "git-malu/AnyWear-Infra",
-  "source_sha": "9382e40810fa451b626f13a3303fe205614305f7",
-  "source_note": "0.3.0 Base/Egress/Runtime contract source (Issues #166 and #180). stage-contracts.mjs, json-contract.mjs and operation-stacks.mjs are exact byte copies from that commit; their producer blobs are byte-identical at the previous pin c9983520edbff92c425d7db4261fd55e8f2ecbfb, so only stage-contract-parameters.mjs moved between the two commits. stage-contract-parameters.mjs is E2E's own stage-input reader: AnyWear-E2E now performs the authenticated platform observation itself (#180) instead of checking out the Infra observer, so it reads the `/anywear/beta/...` stage contract in bounded `ssm get-parameters` batches from this copy. deployment-contract.mjs and stage-contract-parameters.mjs are raw producer files with exactly one declared import rewrite each, recorded in import_rewrites: the bare package specifier is replaced with the vendored package entry because this repository consumes the dependency-free package source instead of installing a tarball. The loader reverses each declared rewrite, asserts the raw producer hash from producer_files and refuses any other difference. The Service release slice is the Runtime stack: SERVICE_RUNTIME_STACK (AnyWearRuntimeStack-beta, ap-east-1), runtimeStackName and runtimeStageFromStack replace the former Workload identity, and the stage contract adds the unconditional api_base_url parameter (36 definitions, 35 unconditional, 1 conditional). AnyWearEgressStack-beta is operation-owned and is never part of the configured three-stack Infra manifest, so the recorded tuple stays three Infra stacks plus one Service stack.",
+  "source_sha": "8022da659001d0c14bcc35e09f5d667180c49dd5",
+  "source_note": "Re-sourced for #191 from the AnyWear-Infra issue-branch head: the stage and deployment contract is ordinary Infra source now — lib/contracts.mjs plus four operation scripts — with no package, no tarball and no registry consumer. contracts.mjs, deployment-contract.mjs, json-contract.mjs and operation-stacks.mjs are exact byte copies of the producer paths recorded in producer_paths. stage-contract-parameters.mjs is E2E's own stage-input reader and the only declared rewrite: its producer imports ../lib/contracts.mjs, which this copy resolves to the vendored ./contracts.mjs. producer_files records the raw producer hash of that one rewritten copy; the loader reverses the declared rewrite, asserts the producer bytes and re-applies it forward. The Service release slice is the Runtime stack: SERVICE_RUNTIME_STACK (AnyWearRuntimeStack-beta, ap-east-1, .github/workflows/mutate.yml), runtimeStackName and runtimeStageFromStack. AnyWearEgressStack-beta and AnyWearRuntimeStack-beta are operation-owned and never part of the always-present configured three-stack Infra manifest, so the recorded tuple stays three Infra stacks. E2E owns the Lambda stable-configuration projection (scripts/lambda-configuration.mjs) because the producer copy carries only the account, region and repository constants.",
   "files": {
-    "deployment-contract.mjs": "54a6986f9b399b6935f45829404a3e36b1bd7874da623ad8d56e3d7790728a21",
+    "contracts.mjs": "ec687601fcdabd8cd96668c07d004805a1540b43b803b905e96c12f7e9a182ec",
+    "deployment-contract.mjs": "5648c7bdf069efe184ae978d3753774ac28bed8abb9d979c7af7d8d97848b565",
     "json-contract.mjs": "c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047",
-    "operation-stacks.mjs": "7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab",
-    "stage-contract-parameters.mjs": "b6e506ebc74cf120d696779d5f0bc4376735e5a0cb76e5aa9c1411c9090e57f8",
-    "stage-contracts.mjs": "4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784"
+    "operation-stacks.mjs": "cfd3c3838b3b5806d27f52a918b73d72a4d4613159cbfa6be26cb589d67074b6",
+    "stage-contract-parameters.mjs": "13e39e5257604f8f9be08c144374d8e7ef1b0fae1157abf22bf6e681e67df1c2"
+  },
+  "producer_paths": {
+    "contracts.mjs": "lib/contracts.mjs",
+    "deployment-contract.mjs": "scripts/deployment-contract.mjs",
+    "json-contract.mjs": "scripts/json-contract.mjs",
+    "operation-stacks.mjs": "scripts/operation-stacks.mjs",
+    "stage-contract-parameters.mjs": "scripts/stage-contract-parameters.mjs"
   },
   "producer_files": {
-    "deployment-contract.mjs": "c17ee5136d01f69309b55bfd18eb8b62b05c20d1306aea64e33a429e83754d5a",
-    "stage-contract-parameters.mjs": "f5a5f82b289de57840821fcee4fb3f4a25b399a1b5f86fb0d5d4b3db52ef6b68"
+    "stage-contract-parameters.mjs": "956c1345be6d8dd3c0ac9ba4670415105c24b4861987a609c41a48589bb18d37"
   },
   "import_rewrites": {
-    "deployment-contract.mjs": [
-      {
-        "from": "from '@git-malu/stage-contracts'",
-        "to": "from './stage-contracts.mjs'"
-      }
-    ],
     "stage-contract-parameters.mjs": [
       {
-        "from": "from '@git-malu/stage-contracts'",
-        "to": "from './stage-contracts.mjs'"
+        "from": "from '../lib/contracts.mjs'",
+        "to": "from './contracts.mjs'"
       }
     ]
-  },
-  "package": {
-    "name": "@git-malu/stage-contracts",
-    "version": "0.3.0",
-    "source": "packages/stage-contracts",
-    "sha256": "0180a2788e7df0bf695d235f17af2f7ee2cff81520bccf2d9efe7f5d1da0fadb",
-    "tarball_commit": "29601d9a2264e69544daccbe7d4b7f29fe2a5991",
-    "note": "Packed 0.3.0 tarball pin for consumers that install @git-malu/stage-contracts, packed from Infra commit 29601d9a2264e69544daccbe7d4b7f29fe2a5991; the tarball's index.mjs is exactly the vendored stage-contracts.mjs bytes. Version 0.3.0 renames the Service release slice to the Runtime stack (runtimeStackName, SERVICE_RUNTIME_STACK, runtimeStageFromStack) and exports validateServiceStacks; no AnyWearWorkloadStack, SERVICE_WORKLOAD_STACK or workloadStageFromStack export remains. It adds the unconditional api_base_url stage-contract parameter (36 definitions, 35 unconditional, 1 conditional) that Base publishes and the Service release chain reads. This repository adds no dependency and does not commit the tarball; it consumes the same package entry in install-free form. No stage-contracts-v0.3.0 tag exists: the tag is created only after the Infra merge at Deployment, so this pin does not claim one."
   },
   "retired": {
     "artifact-consumer.mjs": "the v2 selection consumer is removed with the selection contract",

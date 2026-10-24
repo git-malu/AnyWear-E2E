@@ -1,159 +1,124 @@
-# Vendored deployment contract
+# Vendored Infra contract
 
-These files are the public v4 deployment contract from
-[`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) commit
-`9382e40810fa451b626f13a3303fe205614305f7` (`@git-malu/stage-contracts` 0.3.0,
-Issues #166 and #180). The contract keeps the seven-member v3 record core, and the
-Service `anywear_service_deployment` record is schema version 4 with a required
-`gate` block. The Infra `anywear_infra_deployment` record stays schema version 3
-and never carries a gate.
+These five modules are copies of ordinary
+[`AnyWear-Infra`](https://github.com/git-malu/AnyWear-Infra) source pinned at commit
+`8022da659001d0c14bcc35e09f5d667180c49dd5` (#191): four are byte-for-byte copies and
+one carries a single declared import rewrite. The producer is plain source inside the
+Infra repository: there is no published package, no tarball and no registry consumer
+to install. Every vendored file names the producer path it was copied from, and
+`scripts/vendored-contract.mjs` refuses the set before a consumer imports it when a
+copy, its producer path or its declared rewrite disagrees with `provenance.json`.
 
-The source commit moved from `c9983520edbff92c425d7db4261fd55e8f2ecbfb` to
-`9382e40810fa451b626f13a3303fe205614305f7` for #180: the four contract files are
-byte-identical at both commits (their producer blobs were compared), and only
-`stage-contract-parameters.mjs` moved. AnyWear-E2E now takes the authenticated
-platform observation itself instead of checking out the Infra observer, so it
-needs the stage-input reader here rather than in a separate checkout.
+| E2E file | Producer path in Infra | Producer SHA-256 | Committed SHA-256 | Declared rewrite |
+| --- | --- | --- | --- | --- |
+| `contracts.mjs` | `lib/contracts.mjs` | `ec687601fcdabd8cd96668c07d004805a1540b43b803b905e96c12f7e9a182ec` | `ec687601fcdabd8cd96668c07d004805a1540b43b803b905e96c12f7e9a182ec` | none |
+| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `5648c7bdf069efe184ae978d3753774ac28bed8abb9d979c7af7d8d97848b565` | `5648c7bdf069efe184ae978d3753774ac28bed8abb9d979c7af7d8d97848b565` | none |
+| `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` | none |
+| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `cfd3c3838b3b5806d27f52a918b73d72a4d4613159cbfa6be26cb589d67074b6` | `cfd3c3838b3b5806d27f52a918b73d72a4d4613159cbfa6be26cb589d67074b6` | none |
+| `stage-contract-parameters.mjs` | `scripts/stage-contract-parameters.mjs` | `956c1345be6d8dd3c0ac9ba4670415105c24b4861987a609c41a48589bb18d37` | `13e39e5257604f8f9be08c144374d8e7ef1b0fae1157abf22bf6e681e67df1c2` | one (below) |
 
-The Service release slice is the **Runtime** stack. `SERVICE_RUNTIME_STACK` is
-`AnyWearRuntimeStack-beta` (`ap-east-1`, workflow
-`.github/workflows/service-artifacts.yml`); `runtimeStackName` and the exported
-`runtimeStageFromStack` replaced the Workload identity, and no
-`AnyWearWorkloadStack`, `SERVICE_WORKLOAD_STACK` or `workloadStageFromStack`
-export remains. `AnyWearEgressStack-beta` is **operation-owned**: the contract's
-always-present `configuredStacks` manifest is still exactly Foundation,
-`AnyWearPlatformStack-beta` and Billing, and the recorded tuple stays three Infra
-stacks plus one Service stack. Egress appears only in the operation change table
-(`deploy-egress` / `delete-egress`) and in `operationOwnedStacks`, never in the
-record or observation manifest.
+The source commit is the head of the Infra issue branch that retires the old
+packaging layout. `provenance.json` is the machine-readable pin: the source
+repository and commit, the per-file hash, the producer path of every file, the raw
+producer hash of the one rewritten file and the rewrite itself.
 
-Three contract files are exact byte copies. `deployment-contract.mjs` and
-`stage-contract-parameters.mjs` are raw producer files with exactly one declared
-import rewrite each because this repository consumes the dependency-free package
-source instead of installing a tarball:
+## The one declared rewrite
 
-| E2E file | Producer path in Infra | Producer SHA-256 | Committed SHA-256 |
-| --- | --- | --- | --- |
-| `deployment-contract.mjs` | `scripts/deployment-contract.mjs` | `c17ee5136d01f69309b55bfd18eb8b62b05c20d1306aea64e33a429e83754d5a` | `54a6986f9b399b6935f45829404a3e36b1bd7874da623ad8d56e3d7790728a21` |
-| `json-contract.mjs` | `scripts/json-contract.mjs` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` | `c3a59c0645b352b54b012af2adadfdc98773f79702fb6619beb029e83bf63047` |
-| `operation-stacks.mjs` | `scripts/operation-stacks.mjs` | `7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab` | `7ff1e34479cd79207aa9db74b5a8356bb660f520d288c14514bd37ae509aecab` |
-| `stage-contract-parameters.mjs` | `scripts/stage-contract-parameters.mjs` | `f5a5f82b289de57840821fcee4fb3f4a25b399a1b5f86fb0d5d4b3db52ef6b68` | `b6e506ebc74cf120d696779d5f0bc4376735e5a0cb76e5aa9c1411c9090e57f8` |
-| `stage-contracts.mjs` | `packages/stage-contracts/index.mjs` | `4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784` | `4aa26c3a857aa68fb53b09229074acbe4ce9a6912531475a9e748ac14a071784` |
-
-## The two declared rewrites
-
-`deployment-contract.mjs` and `stage-contract-parameters.mjs` import the
-versioned package entry:
+`stage-contract-parameters.mjs` is the only file that differs from its producer. Its
+producer imports the contract module by Infra's repository-relative path; the
+vendored copy resolves it beside itself:
 
 ```diff
--} from '@git-malu/stage-contracts';
-+} from './stage-contracts.mjs';
+-} from '../lib/contracts.mjs';
++} from './contracts.mjs';
 ```
 
-`provenance.json` records each substitution as `import_rewrites` and the raw
-producer file hashes as `producer_files`. `scripts/vendored-contract.mjs` asserts
-the repository, the source SHA and every committed file hash; it also reverses
-the declared rewrites, asserts the raw producer bytes hashes, and re-applies the
-declarations forward. A missing or malformed declaration, an undeclared byte
-change or a doctored file is refused before the consumer imports the contract.
+`provenance.json` records that substitution in `import_rewrites` and the raw
+producer SHA-256 in `producer_files`. No other vendored file carries a rewrite, and
+`provenance.json` declares none for them.
 
-## Package pin
+## What each module owns
 
-| Member | Value |
-| --- | --- |
-| Package | `@git-malu/stage-contracts` |
-| Version | `0.3.0` |
-| Source | `packages/stage-contracts` |
-| Tarball SHA-256 | `0180a2788e7df0bf695d235f17af2f7ee2cff81520bccf2d9efe7f5d1da0fadb` |
+- `contracts.mjs` — the stage parameter surface (`STAGE_CONTRACT_*`,
+  `stageParameters`, `validateStageInputs`, `stageContractSchemaHash`), the Base,
+  Egress and Runtime stack identities (`SERVICE_RUNTIME_STACK`, `runtimeStackName`,
+  `runtimeStageFromStack`, `platformStackName`), the deployed-template
+  normalisation (`DEPLOYED_TEMPLATE_NORMALISATION`, `normaliseDeployedTemplate`,
+  `canonicalDeployedTemplateHash`), the task-definition identity
+  (`stableTaskDefinition`, `taskDefinitionContentHash`) and the 300-second
+  six-signal bake gate (`DEPLOYMENT_GATE_*`, `deploymentBakeName`,
+  `deploymentAlarmName`, `deploymentAlarmNames`, `deploymentQueueNames`).
+- `stage-contract-parameters.mjs` — the stage-input reader: one bounded
+  `ssm get-parameters` request per ten `/anywear/beta/...` names, normalised to
+  `inputs[]` rows with the parameter version and the sha256 of its value. E2E reads
+  the deployed contract itself through this reader (#180) instead of checking out an
+  Infra observer.
+- `operation-stacks.mjs` — one authoritative stack table. `configuredStacks` is the
+  always-present manifest (Foundation, `AnyWearPlatformStack-beta`, Billing);
+  `operationOwnedStacks` is the disposable set (`AnyWearEgressStack-beta`,
+  `AnyWearRuntimeStack-beta`); `changedStackNames` maps an operation to the stacks
+  it changes, so `deploy-runtime` and `stop-runtime` name only
+  `AnyWearRuntimeStack-beta`.
+- `deployment-contract.mjs` — the four single-account constants the controls import:
+  `account`, `region`, `INFRA_REPOSITORY` and `SERVICE_REPOSITORY`. The
+  operation/deployment record chain and its validators were retired with #207 and the
+  pinned producer copy carries none of them.
+- `json-contract.mjs` — canonical JSON, sha256 and content hashing, the strict JSON
+  parser and the small field, pattern and safe-integer assertions the other modules
+  use.
 
-The tarball is the packed `git-malu-stage-contracts-0.3.0.tgz` for consumers that
-install the package; it was packed from Infra commit
-`29601d9a2264e69544daccbe7d4b7f29fe2a5991`, and its `index.mjs` is exactly the
-vendored `stage-contracts.mjs` bytes. This repository does not commit the tarball
-and adds no dependency: `stage-contracts.mjs` is the same package entry in
-install-free form. `provenance.json` is the machine-readable pin of both forms.
-Version 0.3.0 renames the Service release slice to the Runtime stack
-(`runtimeStackName`, `SERVICE_RUNTIME_STACK`, `runtimeStageFromStack`,
-`validateServiceStacks`) and adds the unconditional `api_base_url` stage-contract
-parameter (36 definitions, 35 unconditional, 1 conditional), which the Base stack
-publishes and the Service release chain reads. It does **not** claim a
-`stage-contracts-v0.3.0` tag: the tag is created only after the Infra merge, at
-Deployment.
+The Service release slice is the **Runtime** stack: `SERVICE_RUNTIME_STACK` is
+`AnyWearRuntimeStack-beta` in `ap-east-1`, deployed and stopped through
+`.github/workflows/mutate.yml` (#195). The recorded tuple stays three always-present
+Infra stacks; Egress and Runtime are operation-owned and never enter the configured
+manifest.
 
-## What the contract validates
+## What stays E2E-owned
 
-`deployment-contract.mjs` is producer-parameterized. `validateDeploymentRecord`
-dispatches on `record_type` and accepts exactly one producer's record:
+`stableLambdaConfiguration` now lives in
+[`scripts/lambda-configuration.mjs`](../lambda-configuration.mjs), with its tests in
+[`scripts/lambda-configuration.test.mjs`](../lambda-configuration.test.mjs). The
+pinned producer copy carries only the four constants above, so the projection that
+hashes a deployed Lambda's stable configuration is observation policy owned here. It
+is unchanged from the vendored copy it replaces and imports nothing from this
+directory.
 
-- `anywear_infra_deployment` — schema version 3, producer
-  `git-malu/AnyWear-Infra`, workflow `runtime.yml` or `mutate.yml`. The record
-  lists exactly the three Infra stacks (`AnyWearFoundationStack`,
-  `AnyWearPlatformStack-beta`, `AnyWearBillingStack-beta`). Its `observed` is the
-  Platform tuple: the two Lambdas, the queue configuration hash, the Client
-  commit and the Client endpoint. It has no `gate`.
-- `anywear_service_deployment` — schema version 4, producer
-  `git-malu/AnyWear-Service`, workflow `.github/workflows/service-artifacts.yml`.
-  The record lists exactly `AnyWearRuntimeStack-beta`. Its `observed` is the
-  Runtime tuple: the Service commit, the image digest, the minimum Client
-  version floor the deployed Service enforces, the two ECS service identities and
-  the API endpoint.
-- The stage contract is 36 parameter definitions: 35 unconditional (including
-  `api_base_url`, the public API distribution endpoint Base owns) and the
-  conditional `cleanup_task_role_arn`. A reader accepts the recorded, sorted and
-  unique `inputs[]` without a fixed count or name list and derives the schema hash
-  from it.
-- The Service `gate` is a required top-level member. It records one passed
-  `<stage>-anywear-deployment-bake` window of exactly 600 seconds, the probe
-  budget (`15`-second interval, 30–40 probes, request floor 30), and the six
-  fixed ordered signals (`alb_5xx_rate`, `alb_p95_latency`,
-  `ecs_running_not_desired`, `sqs_oldest_message_age`, `sqs_dlq_depth`,
-  `outbox_oldest_age`). Every signal must be `not-breaching` with its exact
-  value, threshold and comparison, the deployed alarm names and observed states,
-  and its exact read identity and minimum data points. The gate's `service_sha`
-  and `image_digest` must equal the record's `observed` values.
+## The verifier rules
 
-Both records carry `stacks[]` (each row with its producer and the sha256 of the
-deployed `Original` template body), `inputs[]` (stage-contract SSM parameter name,
-version and value hash, sorted), a `schema` member that is a content hash derived
-from those inputs, and a `producer` member with the producing repository, commit,
-workflow, workflow ref and run/attempt. A record that lists another producer's
-stack or mixes producer identities is refused.
+`scripts/vendored-contract.mjs`, run by `pnpm vendor:verify` and first in
+`pnpm check`, enforces:
+
+- the source repository is `git-malu/AnyWear-Infra` and the source SHA is a full
+  40-character commit;
+- the vendored module set equals the `files` key set exactly, and `producer_paths`
+  covers exactly that key set with a non-empty producer path for every file;
+- every `files` SHA-256 equals the committed bytes;
+- for a file whose producer bytes are declared, the declared rewrites are reversed,
+  the reconstructed bytes must hash to the recorded producer SHA-256, every declared
+  rewrite must occur exactly once, and re-applying the rewrites forward must
+  reproduce the committed bytes;
+- an entry in `producer_files` must carry at least one declared rewrite: an empty
+  rewrite list with producer bytes is refused, because it would make the reversal
+  vacuous;
+- a `package` block is refused and the error names the retired artifact it claims:
+  the producer is source, so there is no package identity to pin.
 
 ## Retired sources
 
 `artifact-consumer.mjs` (the v2 selection loader/verifier) and the nested
 `vendor/service-artifact-contract.mjs` / `vendor/service-release-attestation.mjs`
-Service parser copies are deleted. The v2 `selection` contract, its committed
-files and the cross-repository native release verification path no longer exist
-in this consumer; the Service release chain verifies its own sealed release
-before it deploys, and E2E keeps only the release identity as evidence. That
-identity is the v4 `service_artifacts` member — `repository`, `release_id`, `tag`,
-`target_commit` and `assets` — where the tag names the qualified Service commit,
-`target_commit` is the commit the tag resolved to, and `assets` is exactly the
-four released names (`pre-sign-up.zip`, `post-confirmation.zip`,
-`runtime-policy.json`, `service-schema.json`) with their published size and
-`sha256` digest. Qualification reads the release and the tag ref through the
-GitHub API and downloads no release asset, so there is no `service-artifacts.json`
-manifest on the E2E path (#193) and the image digest stays in the live `/health`
-revision instead of a release field. A pre-change five-asset release remains
-qualifiable during the 5→4 transition: the gate requires the four names it
-consumes and ignores the extra legacy asset. #180 also deletes the E2E
-deployment-record consumer
-(`scripts/trusted-deployment-inputs.mjs`, including its frozen historical-v2
-envelope check) and the cross-repository Infra observer checkout
-(`scripts/infra-source.mjs`): qualification takes its own authenticated platform
-observation from this contract instead of consuming a producer record. Historical
-v2 records were readable only in the pin tooling, which #192 deletes; no live
-input reads them. Pre-gate Service v3 records were never
-produced; the Service record is only ever the v4 gated shape.
-
-## #207: frozen copy
-
-This vendored copy is frozen at Infra `9382e40810fa451b626f13a3303fe205614305f7`
-(`@git-malu/stage-contracts` `0.3.0`) and is **not** re-vendored by
-[#207](https://github.com/git-malu/AnyWear/issues/207). #207 retires the
-self-built operation/deployment evidence chain and only narrows the producer
-package; re-vendoring from that narrowed package would delete
-`stableLambdaConfiguration`, which `scripts/infra-observation.mjs` still needs for
-the authenticated platform observation. The vendored bytes, `provenance.json` and
-`scripts/vendored-contract.mjs` are therefore unchanged by #207.
+Service parser copies are deleted; `provenance.json` records them under `retired`.
+The v2 `selection` contract, its committed files and the cross-repository native
+release verification path no longer exist in this consumer. The Service release
+chain verifies its own sealed release before it deploys, and E2E keeps only the
+release identity as evidence: the v4 `service_artifacts` member — `repository`,
+`release_id`, `tag`, `target_commit` and `assets` — where the tag names the qualified
+Service commit, `target_commit` is the commit the tag resolved to, and `assets` is
+exactly the four released names (`pre-sign-up.zip`, `post-confirmation.zip`,
+`runtime-policy.json`, `service-schema.json`) with their published size and `sha256`
+digest. Qualification reads the release and the tag ref through the GitHub API and
+downloads no release asset, so no `service-artifacts.json` manifest is on the E2E
+path (#193) and the image digest stays in the live `/health` revision instead of a
+release field. A pre-change five-asset release remains qualifiable during the 5→4
+transition: the gate requires the four names it consumes and ignores the extra
+legacy asset.

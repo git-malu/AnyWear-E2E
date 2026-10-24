@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { account, region, stableLambdaConfiguration, stageContractSchemaHash } from './vendor/deployment-contract.mjs';
+import { account, region } from './vendor/deployment-contract.mjs';
 import { configuredStacks } from './vendor/operation-stacks.mjs';
 import { contentHash } from './vendor/json-contract.mjs';
 import { readStageInputs } from './vendor/stage-contract-parameters.mjs';
+import { stageContractSchemaHash } from './vendor/contracts.mjs';
+import { stableLambdaConfiguration } from './lambda-configuration.mjs';
 import { parseStrictJson } from './evidence-contract.mjs';
 
 // #180: AnyWear-E2E performs the authenticated platform observation itself. The

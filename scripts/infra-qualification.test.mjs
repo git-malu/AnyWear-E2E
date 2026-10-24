@@ -11,7 +11,7 @@ import {
   buildQualificationRecord, validateObservation, verifyQualificationForPromotion,
 } from './qualification-record.mjs';
 import { configuredStacks } from './vendor/operation-stacks.mjs';
-import { stageContractSchemaHash } from './vendor/deployment-contract.mjs';
+import { stageContractSchemaHash } from './vendor/contracts.mjs';
 
 const now = new Date('2026-10-08T00:20:00.000Z');
 const qualify = (f) => buildQualificationRecord(f.input, f.expected, f.evidence, now, f.environment, f.report);
