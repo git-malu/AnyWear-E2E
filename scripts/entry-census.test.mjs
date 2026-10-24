@@ -83,7 +83,8 @@ test('the deployable unit exposes exactly two entries: one automatic check and o
   assert.match(dispatchedBy, /type: string/);
   // The qualification entry reads no committed compatibility file and checks out no
   // producer source: the live tuple comes from the deployed endpoints and the platform
-  // observation comes from this repository's own vendored contract.
+  // observation is this repository's own authenticated discovery of the live surface
+  // (`scripts/infra-observation.mjs`), with no producer source and no committed name list.
   assert.doesNotMatch(qualify, /compatibility\.json/);
   assert.doesNotMatch(qualify, /check-compatibility\.mjs/);
   assert.doesNotMatch(qualify, /trusted-deployment-inputs\.mjs/);
