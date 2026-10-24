@@ -497,12 +497,10 @@ instead of starting it, while generation 0 keeps its ordinary behavior so a scop
 execution is still cleaned. The ordinary reconcile, `full`, `smoke` and the qualification
 teardown leave the allowance unset and keep the two-name rule above.
 
-The original-owner-evidence read is retained only as a compatibility path for a historical
-operation record. It is validated in its own terms, so an execution captured under an older
-state-machine version, an older Service image/source or a legacy mode-less owner input is
-observed and verified under its own envelope and version. No dispatch supplies it any more:
-the manual `recover` operation and its original-artifact preparation are removed, so the
-current run scope, the ordinary teardown and `reconcile` are the only producers.
+The original-owner-evidence read and its validators are removed with the manual `recover`
+operation (#217). Nothing sets `E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH` any more, so the dispatch
+reads only its own current captured request, and the cleanup regression proves a supplied path
+is ignored. The current run scope, the ordinary teardown and `reconcile` are the only producers.
 
 A captured run scope therefore carries at most two ordinary executions: the base deterministic
 name and one `-retry1` (plus the migration-only `-migration1` name described above, which only
