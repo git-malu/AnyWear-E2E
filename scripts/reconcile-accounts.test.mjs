@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -861,6 +862,39 @@ test('the reconcile threads the absolute in-job deadline into every cleanup wait
   assert.equal(typeof call.options.deadline, 'number');
   assert.ok(call.options.deadline >= startedAt + 12 * 60_000 - 1_000);
   assert.ok(call.options.deadline <= Date.now() + 12 * 60_000 + 1_000);
+});
+
+test('the migration allowance reaches the cleanup only from the 90-day reconcile lookback', async () => {
+  // The allowance follows the recorded window, which is the closed lookback set. An ordinary
+  // reconcile leaves the key absent, so the cleanup keeps its unchanged two-name rule.
+  for (const [environment, expected] of [[{}, false], [{ E2E_ACCOUNT_RECONCILE_LOOKBACK_DAYS: '7' }, false],
+    [{ E2E_ACCOUNT_RECONCILE_LOOKBACK_DAYS: '90' }, true]]) {
+    const harnessed = harness({ artifacts: [retainedFixture()], users: [{ email: stable(0), sub: subject(1) }] });
+    await reconcileAccounts({ io: harnessed.io, now: NOW, runIdentity, environment });
+    const call = harnessed.calls.find((entry) => entry.service);
+    assert.equal(Object.hasOwn(call.options, 'migrationGeneration'), expected, JSON.stringify(environment));
+    assert.equal(call.options.migrationGeneration, expected ? true : undefined, JSON.stringify(environment));
+    assert.equal(typeof call.options.deadline, 'number');
+  }
+  // The same allowance follows the migration window when the caller passes it directly: the
+  // dispatch input and the recorded window cannot disagree.
+  const harnessed = harness({ artifacts: [retainedFixture()], users: [{ email: stable(0), sub: subject(1) }] });
+  await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW, RECONCILE_MIGRATION_WINDOW_DAYS), environment: {},
+  });
+  assert.equal(harnessed.calls.find((entry) => entry.service).options.migrationGeneration, true);
+});
+
+test('the migration allowance is derived from the recorded window and no other caller can request it', () => {
+  // Every qualification teardown and `full`/`smoke` cleanup shares the same
+  // `runCleanupOperation` entry without an options object: none of them can mint the
+  // migration generation, and the protected entry exposes no input that selects it.
+  const teardown = readFileSync(new URL('./cleanup-worker-accounts.mjs', import.meta.url), 'utf8');
+  assert.equal(teardown.includes('migrationGeneration'), false);
+  const workflow = readFileSync(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /migration_generation|MIGRATION_GENERATION/);
+  const reconcile = readFileSync(new URL('./reconcile-accounts.mjs', import.meta.url), 'utf8');
+  assert.match(reconcile, /lookbackDaysOfWindow\(window\) === RECONCILE_MIGRATION_WINDOW_DAYS/);
 });
 
 test('the production cleanup wrapper passes the absolute deadline to the real cleanup wait', async () => {

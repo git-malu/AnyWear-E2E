@@ -17,6 +17,11 @@ const name0 = deterministicCleanupExecutionName(envelope, 0);
 const name1 = deterministicCleanupExecutionName(envelope, 1);
 const arn0 = cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, name0);
 const arn1 = cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, name1);
+// The migration-only generation (#217): derived from the same envelope, so only the
+// explicit allowance can reach it and the captured scope is never re-scoped.
+const migrationName = deterministicCleanupExecutionName(envelope, 'migration1');
+const migrationArn = cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, migrationName);
+const migrationOptions = { migrationGeneration: true };
 const cluster = 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear';
 const task = kind => `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${(kind === 'verification' ? '1' : '2').repeat(32)}`;
 const prefix = kind => kind === 'verification' ? 'beta-anywear-cleanup-verify' : 'beta-anywear-cleanup';
@@ -66,7 +71,9 @@ function fixture(options = {}) {
     executions.set(executionName, { status, patch: {}, envelope, versionArn: currentVersionArn });
     return executionName;
   };
-  for (const [generation, value] of Object.entries(options.existing ?? {})) if (value) seed(Number(generation), value);
+  for (const [generation, value] of Object.entries(options.existing ?? {})) {
+    if (value) seed(generation === 'migration1' ? 'migration1' : Number(generation), value);
+  }
   const proofEnvelope = options.proofEnvelope ?? envelope;
   const io = { calls, executions,
     async start(input, executionName) {
@@ -154,27 +161,48 @@ test('the envelope always emits normal mode with no attempt, and a Service attem
     } });
 });
 
-test('the captured scope has exactly two deterministic names and no recovery-shaped identity', () => {
+test('the captured scope derives exactly two ordinary names and one migration-only name', () => {
   assert.equal(name0, `beta-cleanup-${scope}-${envelope.request_sha256.slice(0, 16)}`);
   assert.equal(name1, `${name0}-retry1`);
+  // The migration name is derived only from the envelope and the migration generation: it
+  // carries no recovery identity, attempt number, reconcile run or re-scoped address.
+  assert.equal(migrationName, `${name0}-migration1`);
+  assert.equal(deterministicCleanupExecutionName(envelope, 'migration1'), migrationName);
+  assert.ok(cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, migrationName));
   assert.throws(() => deterministicCleanupExecutionName(envelope, 2));
   assert.throws(() => deterministicCleanupExecutionName(envelope, -1));
   assert.throws(() => deterministicCleanupExecutionName(envelope, 1.5));
+  // Only the accepted generations are nameable: a near-miss suffix is refused, not coerced.
+  for (const unknown of ['migration2', 'migration0', 'retry1', 'Migration1', '']) {
+    assert.throws(() => deterministicCleanupExecutionName(envelope, unknown), String(unknown));
+  }
+  // A different captured request is a different operation and therefore a different name,
+  // while the same envelope always derives the same one.
+  const otherScope = `987654321-1-${'e'.repeat(16)}`;
+  const otherEnvelope = createCleanupOperationEnvelope({ ...inputs, cleanup_json: JSON.stringify({ runScope: otherScope,
+    users: [{ sub: '10000000-0000-4000-8000-000000000001', email: `e2e-beta-${otherScope}-0-a1b2c3d4@anywear.local` }] }) }, environment);
+  assert.notEqual(deterministicCleanupExecutionName(otherEnvelope, 'migration1'), migrationName);
   // The production surface no longer derives a recovery-shaped execution name.
   const source = readFileSync(new URL('../tests/support/service-cleanup-operation.ts', import.meta.url), 'utf8');
   assert.equal(source.includes('beta-cleanup-recovery-'), false);
 });
 
-test('a maximum-length run scope still has a startable, legacy-compatible retry name', () => {
+test('a maximum-length run scope still has a startable, in-limit retry and migration name', () => {
   const maxScope = `12345678901234567890-999999-${'a'.repeat(16)}`;
   const maxInputs = { ...inputs, cleanup_json: JSON.stringify({ runScope: maxScope,
     users: [{ sub: '10000000-0000-4000-8000-000000000001', email: `e2e-beta-${maxScope}-0-a1b2c3d4@anywear.local` }] }) };
   const maxEnvelope = createCleanupOperationEnvelope(maxInputs, environment);
   const base = deterministicCleanupExecutionName(maxEnvelope, 0);
   const retry = deterministicCleanupExecutionName(maxEnvelope, 1);
+  const migration = deterministicCleanupExecutionName(maxEnvelope, 'migration1');
   assert.equal(base.length, 74);
   assert.equal(retry, `${base.slice(0, 72)}-retry1`);
   assert.equal(retry.length, 79);
+  // The migration suffix is longer than `-retry1`, so the same 72-character base bound is
+  // applied to a shorter prefix: the name is exactly the execution-name limit, never over it.
+  assert.equal(migration, `${base.slice(0, 69)}-migration1`);
+  assert.equal(migration.length, 80);
+  assert.ok(cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, migration));
   assert.ok(cleanupExecutionArn(environment.BETA_CLEANUP_STATE_MACHINE_VERSION_ARN, retry));
 });
 
@@ -304,6 +332,122 @@ test('a dispatch that finds -retry1 already terminal non-success refuses and sta
     assert.equal(operation.refusal_category, 'retry_not_authorized');
     assert.equal(operation.preceding_execution.execution_arn, arn0);
   } });
+});
+
+test('an ordinary dispatch refuses the migration name and still refuses a third generation', async () => {
+  // The allowance is absent, so neither an absent nor an already-succeeded `-migration1` is
+  // observed and the unchanged two-name rule refuses with `retry_not_authorized`.
+  for (const seeded of [undefined, 'SUCCEEDED']) {
+    await run({ existing: { 0: 'FAILED', 1: 'FAILED', migration1: seeded }, verify: async (execute, io, path) => {
+      await assert.rejects(execute(), /identities retained/);
+      assert.equal(io.calls.filter(call => call.start).length, 0);
+      assert.equal(io.calls.some(call => typeof call.describe === 'string' && call.describe.endsWith('-migration1')), false,
+        'an ordinary dispatch never resolves the migration name');
+      const operation = JSON.parse(await readFile(path, 'utf8')).operation;
+      assert.equal(operation.execution_name, name1);
+      assert.equal(operation.refusal_phase, 'retry_eligibility');
+      assert.equal(operation.refusal_category, 'retry_not_authorized');
+    } });
+  }
+});
+
+test('the migration allowance is explicit: absent or false keeps the two-name rule, a non-boolean fails closed', async () => {
+  for (const migrationGeneration of ['true', 1, {}, null]) {
+    await run({ existing: { 0: 'FAILED', 1: 'FAILED' }, verify: async (execute, io) => {
+      await assert.rejects(execute(), /explicit boolean/);
+      // The allowance is rejected before the first read, so nothing can be started under it.
+      assert.equal(io.calls.length, 0);
+    } }, {}, undefined, { migrationGeneration });
+  }
+  await run({ existing: { 0: 'FAILED', 1: 'FAILED' }, verify: async (execute, io) => {
+    await assert.rejects(execute(), /identities retained/);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+    assert.equal(io.calls.some(call => typeof call.describe === 'string' && call.describe.endsWith('-migration1')), false);
+  } }, {}, undefined, { migrationGeneration: false });
+});
+
+test('the migration dispatch starts -migration1 exactly once after both ordinary generations are exhausted', async () => {
+  await run({ existing: { 0: 'FAILED', 1: 'FAILED' }, verify: async (execute, io, path) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.execution_name, migrationName);
+    assert.equal(result.operation.execution_arn, migrationArn);
+    // The captured scope is preserved: the started input is the same envelope bytes, so the
+    // operation identity, run scope and request hash are not re-scoped by the extra generation.
+    const starts = io.calls.filter(call => call.start);
+    assert.equal(starts.length, 1);
+    assert.equal(starts[0].start, migrationName);
+    assert.deepEqual(JSON.parse(JSON.stringify(starts[0].input)), envelope);
+    assert.equal(starts[0].input.run_scope, scope);
+    // Retry 1 is the predecessor this generation's single bounded check proved stopped, and
+    // the migration name was not resolved before both ordinary generations were seen terminal
+    // non-success.
+    assert.deepEqual(result.operation.preceding_execution, { execution_arn: arn1, status: 'FAILED',
+      stopped_at: '2026-10-10T00:00:01.000Z', cleanup_families: ['beta-anywear-cleanup', 'beta-anywear-cleanup-verify', 'beta-anywear-cleanup-acceptance'] });
+    assert.deepEqual(io.calls.filter(call => call.describe).map(call => call.describe), [arn0, arn1, migrationArn, migrationArn]);
+    // One inventory pass gated the ordinary retry and one gated the migration generation.
+    assert.equal(io.calls.filter(call => call.aws?.[1] === 'list-tasks').length, 6);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), result);
+  } }, {}, undefined, migrationOptions);
+});
+
+test('a repeated migration dispatch verifies the existing migration execution without a duplicate start', async () => {
+  await run({ existing: { 0: 'FAILED', 1: 'FAILED' }, verify: async (execute, io) => {
+    assert.equal((await execute()).operation.proof_status, 'verified');
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    const second = await execute();
+    assert.equal(second.operation.proof_status, 'verified');
+    assert.equal(second.operation.execution_name, migrationName);
+    assert.equal(io.calls.filter(call => call.start).length, 1);
+    // Exactly three inventory passes: the ordinary retry gate in each dispatch plus the one
+    // migration gate. The migration generation started at most once.
+    assert.equal(io.calls.filter(call => call.aws?.[1] === 'list-tasks').length, 9);
+  } }, {}, undefined, migrationOptions);
+});
+
+test('an existing migration execution is resumed when RUNNING and verified when SUCCEEDED', async () => {
+  await run({ existing: { 0: 'FAILED', 1: 'FAILED', migration1: 'RUNNING' }, completeRunning: true, verify: async (execute, io) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.execution_name, migrationName);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+    assert.deepEqual(io.calls.filter(call => call.describe).map(call => call.describe), [arn0, arn1, migrationArn, migrationArn]);
+  } }, {}, undefined, migrationOptions);
+  await run({ existing: { 0: 'FAILED', 1: 'FAILED', migration1: 'SUCCEEDED' }, verify: async (execute, io) => {
+    const result = await execute();
+    assert.equal(result.operation.proof_status, 'verified');
+    assert.equal(result.operation.execution_name, migrationName);
+    assert.equal(result.operation.execution_arn, migrationArn);
+    assert.equal(io.calls.filter(call => call.start).length, 0);
+    assert.equal(io.calls.filter(call => call.describe).length, 3);
+  } }, {}, undefined, migrationOptions);
+});
+
+test('the migration dispatch refuses a running predecessor, a missing retry and an exhausted migration run', async () => {
+  let inventoryPasses = 0;
+  const cases = [
+    // The ordinary retry's check passes but the cleanup families are still working when the
+    // migration generation would start: its own single bounded check refuses.
+    [{ existing: { 0: 'FAILED', 1: 'FAILED' }, inventory: () => {
+      inventoryPasses += 1;
+      return inventoryPasses <= 3 ? { taskArns: [] } : { taskArns: [task('cleanup')] };
+    } }, 'retry_proof', 'retry_proof_unavailable', migrationName],
+    // The captured scope is not exhausted. The extra generation is not a second retry, so
+    // the dispatch refuses instead of starting generation 1.
+    [{ existing: { 0: 'FAILED' } }, 'retry_eligibility', 'retry_not_authorized', name1],
+    // The migration generation is itself terminal non-success: no fourth execution.
+    [{ existing: { 0: 'FAILED', 1: 'FAILED', migration1: 'FAILED' } }, 'retry_eligibility', 'retry_not_authorized', migrationName],
+  ];
+  for (const [options, phase, category, executionName] of cases) {
+    await run({ ...options, verify: async (execute, io, path) => {
+      await assert.rejects(execute(), /identities retained/);
+      assert.equal(io.calls.filter(call => call.start).length, 0);
+      const operation = JSON.parse(await readFile(path, 'utf8')).operation;
+      assert.equal(operation.execution_name, executionName);
+      assert.equal(operation.refusal_phase, phase);
+      assert.equal(operation.refusal_category, category);
+    } }, {}, undefined, migrationOptions);
+  }
 });
 
 test('a dispatch refuses to start the retry when the predecessor cannot be shown stopped', async () => {
