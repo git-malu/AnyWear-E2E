@@ -87,6 +87,49 @@ function creation(email, { eventTime = new Date(NOW - 2 * DAY + 30_000).toISOStr
   };
 }
 
+const BETA_POOL_ID = 'ap-east-1_XqXt4Kw1L';
+const MASKED = 'HIDDEN_DUE_TO_SECURITY_REASONS';
+
+/**
+ * A `AdminCreateUser` event in the shape the live pool actually records (#217).
+ *
+ * CloudTrail masks every created identity: `requestParameters.username` and
+ * `requestParameters.userAttributes` are the literal `HIDDEN_DUE_TO_SECURITY_REASONS`, the
+ * response element is masked too, the event carries no `Resources` array, and the immutable
+ * Cognito username is `additionalEventData.sub`. This fixture is that payload, byte for byte in
+ * the fields the parser reads.
+ */
+function maskedCreation(sub, { eventTime = new Date(NOW - 2 * DAY + 30_000).toISOString(), caller = qualificationRole(), eventId = 'masked-1', userPoolId = BETA_POOL_ID } = {}) {
+  return {
+    EventId: eventId,
+    // The AWS CLI serializes its own `EventTime` with a numeric offset, not a `Z` suffix; the
+    // event's embedded `eventTime` stays `Z`. Mirror both, as the live lookup response does.
+    EventTime: new Date(Date.parse(eventTime)).toISOString().replace('Z', '+00:00'),
+    CloudTrailEvent: JSON.stringify({
+      eventVersion: '1.11',
+      eventSource: 'cognito-idp.amazonaws.com',
+      eventName: 'AdminCreateUser',
+      awsRegion: 'ap-east-1',
+      eventID: eventId,
+      eventTime,
+      userIdentity: { type: 'AssumedRole', arn: caller, accountId: '650880818323' },
+      requestParameters: {
+        userPoolId,
+        username: MASKED,
+        userAttributes: MASKED,
+        forceAliasCreation: false,
+        messageAction: 'SUPPRESS',
+      },
+      responseElements: { user: { username: MASKED, attributes: MASKED, userStatus: 'FORCE_CHANGE_PASSWORD' } },
+      ...(sub === undefined ? {} : { additionalEventData: { sub } }),
+      readOnly: false,
+      eventType: 'AwsApiCall',
+      managementEvent: true,
+      recipientAccountId: '650880818323',
+    }),
+  };
+}
+
 function userNotFound() {
   return Object.assign(new Error('User does not exist.'), { name: 'UserNotFoundException' });
 }
@@ -154,6 +197,16 @@ function harness({ artifacts = [], events = [], users = [], cleanup = async () =
         const entry = directory.get(email);
         if (!entry) throw userNotFound();
         return { Username: entry.username, UserAttributes: [{ Name: 'email', Value: email }, { Name: 'sub', Value: entry.sub }] };
+      },
+      /**
+       * Resolve a masked creation's `sub` the way the live pool does: the immutable username is
+       * the sub, and `AdminGetUser(Username=<sub>)` returns that identity and its address.
+       */
+      async getUserByUsername(username) {
+        calls.push({ getUsername: username });
+        const entry = [...directory.entries()].find(([, value]) => value.sub === username);
+        if (!entry) throw userNotFound();
+        return { Username: username, UserAttributes: [{ Name: 'email', Value: entry[0] }, { Name: 'sub', Value: entry[1].sub }] };
       },
       async deleteUser(username) {
         calls.push({ delete: username });
@@ -351,7 +404,7 @@ test('CloudTrail creations are attributed by caller, window, pool and the run-sc
     creation(stable(0), { eventId: 'event-a' }),
     // A creation by a principal that is not the qualification role is reported, never deleted.
     creation(stable(1), { eventId: 'event-b', caller: 'arn:aws:sts::650880818323:assumed-role/some-other-role/session' }),
-    // Not a Beta pool address: outside the family, ignored.
+    // Not a Beta pool address: reported as a warning, never an identity.
     creation('someone@example.com', { eventId: 'event-c' }),
     // Outside the window.
     creation(stable(2), { eventId: 'event-d', eventTime: new Date(NOW - 8 * DAY).toISOString() }),
@@ -362,6 +415,8 @@ test('CloudTrail creations are attributed by caller, window, pool and the run-sc
   assert.deepEqual(parsed.created.map((entry) => entry.eventId), ['event-a']);
   assert.deepEqual(parsed.unattributable.map((entry) => entry.eventId), ['event-b']);
   assert.equal(parsed.unattributable[0].caller, 'arn:aws:sts::650880818323:assumed-role/some-other-role/session');
+  // A creation whose address is outside the families is reported, never silently dropped.
+  assert.deepEqual(parsed.warnings.map((entry) => entry.eventId), ['event-c']);
 
   // The creating run comes from the credential session the protected steps assume.
   const sessionCaller = qualificationRole('e2e-123456789-7');
@@ -381,6 +436,11 @@ test('CloudTrail creations are attributed by caller, window, pool and the run-sc
     eventName: 'AdminCreateUser', userIdentity: { arn: qualificationRole() }, requestParameters: { username: stable(6) },
   }) }], window);
   assert.deepEqual(epoch.created.map((entry) => entry.eventTime), [new Date(NOW - DAY).toISOString()]);
+  // The CLI's own `EventTime` is an offset instant; it is accepted and normalized to UTC.
+  const offset = parseCreateUserEvents([{ EventId: 'event-offset', EventTime: '2026-10-22T02:02:12+00:00', CloudTrailEvent: JSON.stringify({
+    eventName: 'AdminCreateUser', userIdentity: { arn: qualificationRole() }, requestParameters: { username: stable(6) },
+  }) }], window);
+  assert.deepEqual(offset.created.map((entry) => entry.eventTime), ['2026-10-22T02:02:12.000Z']);
   assert.throws(() => parseCreateUserEvents({}, window), /event array/);
 });
 
@@ -706,6 +766,191 @@ test('a creation by another role is reported and never deleted', async () => {
   assert.equal(harnessed.calls.some((call) => call.delete), false);
   assert.equal(harnessed.calls.some((call) => call.service), false);
   assert.equal(record.result, 'passed', 'a foreign creation is reported, never a failure');
+});
+
+test('a masked creation is attributed through its immutable sub and resolves to its worker address', async () => {
+  const harnessed = harness({
+    artifacts: [],
+    events: [maskedCreation(subject(2), {
+      eventId: 'masked-attributed',
+      caller: qualificationRole('e2e-4242-3'),
+      eventTime: new Date(NOW - DAY).toISOString(),
+    })],
+    users: [{ email: stable(2), sub: subject(2) }],
+  });
+  const { record, result, warnings } = await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.equal(result, 'passed');
+  assert.deepEqual(warnings, []);
+  assert.equal(record.identities.length, 1);
+  assert.deepEqual(record.identities[0], {
+    email: stable(2),
+    subject: subject(2),
+    origin: { kind: 'cloudtrail', event_id: 'masked-attributed', event_time: new Date(NOW - DAY).toISOString(), run: 4242, attempt: 3 },
+    actions: { service_cleanup: 'committed', cognito: 'deleted', objects: 'deleted', readback: 'absent' },
+    outcome: 'reconciled',
+  });
+  // The masked literal is never an address: the address was read back from the sub.
+  assert.equal(JSON.stringify(record).includes(MASKED), false);
+  assert.deepEqual(harnessed.calls.filter((call) => call.getUsername).map((call) => call.getUsername), [subject(2)]);
+  const serviceCall = harnessed.calls.find((call) => call.service);
+  const cleanup = JSON.parse(serviceCall.service.cleanup_json);
+  assert.deepEqual(cleanup.users, [{ sub: subject(2), email: stable(2) }]);
+  assert.match(cleanup.runScope, /^4242-3-[a-f0-9]{16}$/);
+  assert.deepEqual(harnessed.calls.filter((call) => call.delete), [{ delete: `sub-${subject(2).slice(0, 8)}` }]);
+});
+
+test('a masked creation recorded before run-scoped sessions is attributed without a run', async () => {
+  // The live 2026-10-23 events were recorded with a plain `GitHubActions` session name, so the
+  // creation names no run; its cleanup scope is derived from the event and the identity still
+  // reconciles.
+  const harnessed = harness({
+    artifacts: [],
+    events: [maskedCreation(subject(7), {
+      eventId: 'masked-legacy',
+      caller: qualificationRole('GitHubActions'),
+      eventTime: new Date(NOW - DAY).toISOString(),
+    })],
+    users: [{ email: stable(7), sub: subject(7) }],
+  });
+  const { record } = await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.deepEqual(record.identities[0].origin, {
+    kind: 'cloudtrail', event_id: 'masked-legacy', event_time: new Date(NOW - DAY).toISOString(),
+  });
+  assert.equal(record.identities[0].outcome, 'reconciled');
+  assert.equal(record.identities[0].subject, subject(7));
+  const scope = JSON.parse(harnessed.calls.find((call) => call.service).service.cleanup_json).runScope;
+  assert.match(scope, /^[1-9][0-9]{9}-1-[a-f0-9]{16}$/);
+});
+
+test('a masked creation by another principal is reported with its caller and address, never deleted', async () => {
+  const foreignCaller = 'arn:aws:sts::650880818323:assumed-role/some-other-role/session';
+  const harnessed = harness({
+    artifacts: [],
+    events: [maskedCreation(subject(3), { eventId: 'masked-foreign', caller: foreignCaller, eventTime: new Date(NOW - DAY).toISOString() })],
+    users: [{ email: stable(3), sub: subject(3) }],
+  });
+  const { record, warnings } = await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.deepEqual(record.identities, []);
+  assert.deepEqual(record.unresolved, [{
+    email: stable(3),
+    reason: 'unattributable_caller',
+    caller: foreignCaller,
+    origin: { kind: 'cloudtrail', event_id: 'masked-foreign', event_time: new Date(NOW - DAY).toISOString() },
+  }]);
+  assert.equal(record.result, 'passed', 'a foreign creation is reported, never a failure');
+  assert.deepEqual(warnings, []);
+  // The caller is checked before any address rule, so the address is resolved and stated.
+  assert.deepEqual(harnessed.calls.filter((call) => call.getUsername).map((call) => call.getUsername), [subject(3)]);
+  assert.equal(harnessed.calls.some((call) => call.delete), false);
+  assert.equal(harnessed.calls.some((call) => call.service), false);
+});
+
+test('a masked creation with no usable sub is warned and never dropped or deleted', async () => {
+  const noSubTime = new Date(NOW - 2 * DAY).toISOString();
+  const goneTime = new Date(NOW - DAY).toISOString();
+  const harnessed = harness({
+    artifacts: [],
+    events: [
+      maskedCreation(undefined, { eventId: 'masked-no-sub', eventTime: noSubTime }),
+      maskedCreation(subject(9), { eventId: 'masked-gone', eventTime: goneTime }),
+    ],
+  });
+  const { record, result, warnings } = await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.equal(result, 'passed');
+  assert.deepEqual(record.identities, []);
+  assert.deepEqual(record.unresolved, []);
+  assert.equal(record.sources.cloudtrail_events, 2, 'both events were read; neither was dropped from the scan');
+  assert.equal(warnings.length, 2);
+  // The warning names the event id, its time and the caller, so the operator can find the event.
+  assert.match(warnings[0], /^::warning title=Unattributed E2E creation::/);
+  assert.match(warnings[0], /masked-no-sub/);
+  assert.ok(warnings[0].includes(noSubTime));
+  assert.ok(warnings[0].includes(qualificationRole()));
+  assert.match(warnings[0], /names no usable username or additionalEventData\.sub/);
+  assert.match(warnings[1], /masked-gone/);
+  assert.ok(warnings[1].includes(goneTime));
+  assert.ok(warnings[1].includes(qualificationRole()));
+  assert.ok(warnings[1].includes(subject(9)));
+  assert.match(warnings[1], /resolves to no live identity/);
+  assert.equal(harnessed.calls.some((call) => call.delete), false);
+  assert.equal(harnessed.calls.some((call) => call.service), false);
+});
+
+test('a masked creation whose sub resolves outside the worker families is reported, never deleted', async () => {
+  const harnessed = harness({
+    artifacts: [],
+    events: [
+      maskedCreation(subject(4), { eventId: 'masked-outside', eventTime: new Date(NOW - DAY).toISOString() }),
+      maskedCreation(subject(5), { eventId: 'masked-tester', eventTime: new Date(NOW - 2 * DAY).toISOString() }),
+    ],
+    users: [
+      { email: 'e2e-functional-account@anywear.local', sub: subject(4) },
+      { email: 'tester@example.com', sub: subject(5) },
+    ],
+  });
+  const { record, warnings } = await reconcileAccounts({
+    io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {},
+  });
+  assert.deepEqual(record.identities, []);
+  // A bounded E2E address outside the families fits the record's one open reason; a real
+  // tester address does not fit the closed grammar and is reported as a warning instead.
+  assert.deepEqual(record.unresolved.map((entry) => [entry.email, entry.reason]), [
+    ['e2e-functional-account@anywear.local', 'outside_worker_family'],
+  ]);
+  assert.equal(record.result, 'passed');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /masked-tester/);
+  assert.match(warnings[0], /tester@example\.com is outside the Beta worker families/);
+  assert.equal(harnessed.calls.some((call) => call.delete), false);
+  assert.equal(harnessed.calls.some((call) => call.service), false);
+});
+
+test('a masked creation whose sub cannot be read fails closed before any mutation', async () => {
+  const harnessed = harness({
+    artifacts: [],
+    events: [maskedCreation(subject(6), { eventId: 'masked-unreadable' })],
+  });
+  harnessed.io.getUserByUsername = async () => {
+    throw Object.assign(new Error('not authorized to perform cognito-idp:AdminGetUser'), { name: 'AccessDeniedException' });
+  };
+  await assert.rejects(
+    reconcileAccounts({ io: harnessed.io, now: NOW, runIdentity, window: reconcileWindow(NOW), environment: {} }),
+    /masked-unreadable: username .* could not be read/,
+  );
+  assert.equal(harnessed.calls.some((call) => call.delete), false);
+  assert.equal(harnessed.calls.some((call) => call.service), false);
+});
+
+test('the masked AdminCreateUser payload is parsed by its immutable sub, never by its masked username', () => {
+  const window = reconcileWindow(NOW);
+  const parsed = parseCreateUserEvents([
+    maskedCreation(subject(1), { eventId: 'masked-parse', caller: qualificationRole('e2e-55-2') }),
+    maskedCreation(subject(6), { eventId: 'masked-legacy-session', caller: qualificationRole('GitHubActions') }),
+    maskedCreation(undefined, { eventId: 'masked-no-address' }),
+    maskedCreation(subject(2), { eventId: 'masked-foreign', caller: 'arn:aws:sts::650880818323:assumed-role/other/session' }),
+    maskedCreation(subject(3), { eventId: 'masked-other-pool', userPoolId: 'ap-east-1_other' }),
+    maskedCreation('not-a-sub', { eventId: 'masked-invalid-sub' }),
+  ], window, { userPoolId: BETA_POOL_ID });
+  assert.deepEqual(parsed.created.map((entry) => [entry.eventId, entry.sub, entry.email, entry.run, entry.attempt]), [
+    ['masked-parse', subject(1), undefined, 55, 2],
+    // The live pre-session shape (the 2026-10-23 events the pool actually recorded): the
+    // qualification role is assumed with a plain session name, so the creation names no run
+    // and its scope is derived from the event itself.
+    ['masked-legacy-session', subject(6), undefined, undefined, undefined],
+  ]);
+  assert.deepEqual(parsed.unattributable.map((entry) => [entry.eventId, entry.email, entry.sub]), [
+    ['masked-foreign', undefined, subject(2)],
+  ]);
+  assert.deepEqual(parsed.warnings.map((entry) => entry.eventId), ['masked-no-address', 'masked-invalid-sub']);
+  assert.equal(JSON.stringify(parsed).includes(MASKED), false, 'the mask literal never becomes a creation fact');
 });
 
 test('an unbound artifact is ignored and counted while a bound one is still read', async () => {

@@ -37,6 +37,12 @@ import { isCapturedBetaWorkerEmail, STABLE_WORKER_EMAIL_PATTERN } from '../tests
 //     subject and run;
 //   - CloudTrail `AdminCreateUser` events over the same window prove ownership for a creation
 //     whose manifest was never uploaded, and prove the caller is the E2E qualification role.
+//     The live event masks the created address (#217): `requestParameters.username` is the
+//     literal `HIDDEN_DUE_TO_SECURITY_REASONS`, `Resources` is absent, and the immutable
+//     username is `additionalEventData.sub`. The reconcile resolves that sub to its address
+//     with `AdminGetUser` before the identity set exists, so a masked creation is attributed
+//     instead of dropped. A creation with no usable sub, or whose sub resolves to no captured
+//     worker, is reported to the operator as a run warning and never deleted.
 //     Such a creation derives its cleanup scope from its run; its `sub` is read back.
 // A creation newer than a manifest record displaces it: a successful `AdminCreateUser` proves
 // the previous identity was absent, so the stale subject of the run that held the address
@@ -93,6 +99,13 @@ export const E2E_QUALIFICATION_SESSION = /^e2e-([1-9][0-9]{0,19})-([1-9][0-9]{0,
 export const RECONCILE_RUN_SCOPE = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16}$/;
 export const CAPTURED_SUBJECT = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 /**
+ * The literal CloudTrail writes instead of a Cognito identity value (#217). `AdminCreateUser`
+ * masks `requestParameters.username`, `requestParameters.userAttributes` and
+ * `responseElements.user`, and the event then carries no `Resources` array, so the request
+ * username is not an address. The immutable username arrives in `additionalEventData.sub`.
+ */
+export const CLOUDTRAIL_MASKED_VALUE = 'HIDDEN_DUE_TO_SECURITY_REASONS';
+/**
  * The bound on a reported address outside the Beta worker families. `outside_worker_family`
  * is the only reason that admits one, and it never selects a deletion, so the record states
  * it without widening what the operation may touch.
@@ -127,7 +140,7 @@ export const UNRESOLVED_REASONS = Object.freeze([
 const execute = promisify(execFile);
 const SKEW_MS = 5 * 60_000;
 const ARTIFACT_NAME = /^(beta-account-lifecycle|beta-smoke-account-lifecycle)-([1-9][0-9]*)-([1-9][0-9]*)$/;
-const ISO_INSTANT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$/;
+const ISO_INSTANT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?(Z|[+-][0-9]{2}:[0-9]{2})$/;
 const WORKER_SCOPE = /^e2e-beta-([1-9][0-9]{0,19}-[1-9][0-9]{0,5}-[a-f0-9]{16})-[0-7]-[a-f0-9]{8}@anywear\.local$/;
 
 function requireString(value, label) {
@@ -140,7 +153,14 @@ function requirePositiveInteger(value, label) {
   return value;
 }
 
-/** A normalized ISO-8601 UTC instant. CloudTrail may hand back a number or a string. */
+/**
+ * A normalized ISO-8601 UTC instant.
+ *
+ * CloudTrail may hand back an epoch number or a string, and the AWS CLI serializes its own
+ * `EventTime` field as an offset (`2026-10-23T14:02:12+00:00`) while the event's embedded
+ * `eventTime` is `Z`. Both are the same instant, so an offset form is normalized rather than
+ * refused; the record always states UTC with a `Z` suffix.
+ */
 function instant(value, label) {
   if (typeof value === 'number' && Number.isFinite(value)) return new Date(value * 1000).toISOString();
   if (typeof value === 'string' && ISO_INSTANT.test(value) && Number.isFinite(Date.parse(value))) return new Date(Date.parse(value)).toISOString();
@@ -445,35 +465,82 @@ export function qualificationSession(arn) {
   return session ? { run: Number(session[1]), attempt: Number(session[2]) } : undefined;
 }
 
+/** A CloudTrail value that is present and not the masking sentinel. */
+function realIdentityValue(value) {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.toUpperCase() === CLOUDTRAIL_MASKED_VALUE) return undefined;
+  return trimmed;
+}
+
+/**
+ * The request username, when the event still carries one.
+ *
+ * A live `AdminCreateUser` event masks `requestParameters.username` (#217), so this normally
+ * returns `undefined` and the creation is named by its `additionalEventData.sub` instead. A
+ * user-pool user resource, when an event carries one, is the fallback.
+ */
 function createdUsername(event) {
   const parameters = event.requestParameters;
   if (parameters && typeof parameters === 'object' && !Array.isArray(parameters)) {
-    if (typeof parameters.username === 'string' && parameters.username.length > 0) return parameters.username;
-    if (typeof parameters.userName === 'string' && parameters.userName.length > 0) return parameters.userName;
+    const username = realIdentityValue(parameters.username) ?? realIdentityValue(parameters.userName);
+    if (username) return username;
   }
   if (Array.isArray(event.Resources)) {
     for (const resource of event.Resources) {
-      if (resource && typeof resource.ResourceName === 'string' && resource.ResourceType === 'AWS::Cognito::UserPoolUser') return resource.ResourceName;
+      if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
+      if (resource.ResourceType !== 'AWS::Cognito::UserPoolUser') continue;
+      const name = realIdentityValue(resource.ResourceName);
+      if (name) return name;
     }
   }
   return undefined;
 }
 
 /**
+ * The immutable username a masked creation names.
+ *
+ * In this pool the Cognito username *is* the `sub`, so `additionalEventData.sub` is both the
+ * immutable username and the identity's subject. A value outside the captured subject grammar
+ * is not usable as a lookup, and no masked literal is ever read as an address.
+ */
+function createdSubject(event) {
+  const additional = event.additionalEventData;
+  if (!additional || typeof additional !== 'object' || Array.isArray(additional)) return undefined;
+  const sub = realIdentityValue(additional.sub);
+  return sub && CAPTURED_SUBJECT.test(sub) ? sub.toLowerCase() : undefined;
+}
+
+/** One operator-facing entry for a creation that never became an identity. */
+function creationWarning(entry, detail) {
+  return { eventId: entry.eventId, eventTime: entry.eventTime, caller: entry.caller ?? 'unknown', detail };
+}
+
+/** The run annotations a creation warning earns. A reported creation never fails a run. */
+export function creationWarningAnnotations(entries) {
+  return entries.map((entry) => `::warning title=Unattributed E2E creation::CloudTrail event ${entry.eventId} at ${entry.eventTime} by ${entry.caller}: ${entry.detail}`);
+}
+
+/**
  * Read the `AdminCreateUser` history into creation facts.
  *
- * A creation is attributable when its caller assumed the E2E qualification role. Any other
- * caller is reported and never deleted: the design forbids a broad Identity sweep, and the
- * reconciler has no ownership proof for a principal that is not the qualification role. The
- * role session name names the creating run when it carries the `e2e-<run>-<attempt>` form the
- * protected credential steps set. A creation for another user pool is ignored rather than
- * attributed.
+ * The live event is masked (#217): `requestParameters.username` is the literal
+ * `HIDDEN_DUE_TO_SECURITY_REASONS`, no `Resources` array is present, and the immutable username
+ * is `additionalEventData.sub`. A creation therefore names either a real request username or a
+ * `sub`; resolving a sub to its address is IO and belongs to `resolveCreateUserEvents`, so this
+ * function stays pure.
+ *
+ * The caller is checked before any address-based exclusion: a creation by a caller other than
+ * the qualification role is reported, with its caller and any address it names, and is never
+ * deleted. A creation that names no address at all — no real username and no usable sub — is
+ * returned as a warning rather than dropped: an in-window creation is always reported.
  */
 export function parseCreateUserEvents(events, window, { userPoolId } = {}) {
   if (!Array.isArray(events)) throw new Error('CloudTrail response must be an event array');
   if (events.length > RECONCILE_MAX_EVENTS) throw new Error('CloudTrail read exceeds its bound');
   const created = [];
   const unattributable = [];
+  const warnings = [];
   for (const entry of events) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('CloudTrail event is malformed');
     let detail;
@@ -481,23 +548,124 @@ export function parseCreateUserEvents(events, window, { userPoolId } = {}) {
     if (!detail || typeof detail !== 'object' || Array.isArray(detail)) throw new Error('CloudTrail event detail is malformed');
     if (detail.eventName !== undefined && detail.eventName !== 'AdminCreateUser') continue;
     if (typeof detail.errorCode === 'string' && detail.errorCode.length > 0) continue;
-    const email = createdUsername(detail);
-    if (!email || !isCapturedBetaWorkerEmail(email)) continue;
+    // A creation for another user pool is not this reconcile's to attribute.
     const parameters = detail.requestParameters;
     if (userPoolId && parameters && typeof parameters === 'object' && typeof parameters.userPoolId === 'string'
       && parameters.userPoolId !== userPoolId) continue;
-    const eventTime = instant(entry.EventTime ?? detail.eventTime, 'CloudTrail event time');
+    // The event's own `eventTime` is the canonical `Z` instant. The CLI envelope's `EventTime`
+    // is the same instant in offset form, and is the fallback for a synthetic event detail.
+    const eventTime = instant(detail.eventTime ?? entry.EventTime, 'CloudTrail event time');
     if (Date.parse(eventTime) < Date.parse(window.from) || Date.parse(eventTime) > Date.parse(window.to)) continue;
     const caller = callerOf(detail);
     const eventId = requireString(entry.EventId ?? detail.eventID, 'CloudTrail event id');
+    const username = createdUsername(detail);
+    const sub = createdSubject(detail);
+    // The caller is decided first: no address rule may drop a foreign creation before it is
+    // reported. `qualificationSession` is only meaningful for the qualification role.
     if (!caller || (!E2E_QUALIFICATION_CALLER.test(caller) && !E2E_QUALIFICATION_ROLE.test(caller))) {
-      unattributable.push({ email, caller: caller ?? 'unknown', eventId, eventTime });
+      if (!username && !sub) {
+        warnings.push(creationWarning({ eventId, eventTime, caller: caller ?? 'unknown' },
+          'the creation names no usable username or additionalEventData.sub'));
+        continue;
+      }
+      unattributable.push({
+        ...(username ? { email: username } : {}),
+        ...(sub ? { sub } : {}),
+        caller: caller ?? 'unknown',
+        eventId,
+        eventTime,
+      });
       continue;
     }
     const session = qualificationSession(caller);
-    created.push({ email, eventId, eventTime, caller, ...(session ? { run: session.run, attempt: session.attempt } : {}) });
+    const identity = {
+      ...(username ? { email: username } : {}),
+      ...(sub ? { sub } : {}),
+      caller,
+      eventId,
+      eventTime,
+      ...(session ? { run: session.run, attempt: session.attempt } : {}),
+    };
+    if (username && !isCapturedBetaWorkerEmail(username)) {
+      // A real request username outside the worker families is reported, never silently
+      // dropped and never an identity: it can never select a deletion.
+      warnings.push(creationWarning(identity, `the creation address ${username} is outside the Beta worker families`));
+      continue;
+    }
+    if (!username && !sub) {
+      warnings.push(creationWarning(identity, 'the creation names no usable username or additionalEventData.sub'));
+      continue;
+    }
+    created.push(identity);
   }
-  return { created, unattributable };
+  return { created, unattributable, warnings };
+}
+
+/**
+ * Resolve the address of every masked creation before the identity set is built.
+ *
+ * The masked request username is not an address; `additionalEventData.sub` is the immutable
+ * Cognito username in this pool, so `AdminGetUser(Username=<sub>)` returns the identity that was
+ * created and its `email` attribute is the pool address. Resolution is the only IO here, which
+ * keeps `parseCreateUserEvents` pure. A sub that no longer resolves to a live identity leaves
+ * nothing to clean and is reported as a warning; any other read failure is a source failure and
+ * refuses before any deletion, because the attribution cannot be decided at all.
+ */
+export async function resolveCreateUserEvents(parsed, { io } = {}) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || !Array.isArray(parsed.created) || !Array.isArray(parsed.unattributable)) {
+    throw new Error('Create-user events must be parsed before they are resolved');
+  }
+  if (!io || typeof io.getUserByUsername !== 'function') throw new Error('Create-user resolution requires the Cognito username read');
+  const warnings = [...(Array.isArray(parsed.warnings) ? parsed.warnings : [])];
+  const resolved = new Map();
+
+  async function addressOf(entry) {
+    if (entry.email) return entry;
+    if (!entry.sub) {
+      warnings.push(creationWarning(entry, 'the creation names no usable username or additionalEventData.sub'));
+      return undefined;
+    }
+    if (!resolved.has(entry.sub)) {
+      try {
+        const user = await io.getUserByUsername(entry.sub);
+        const attributes = Object.fromEntries((user?.UserAttributes ?? []).map(({ Name, Value }) => [Name, Value]));
+        // The pool's immutable username is the sub; a returned identity whose own subject
+        // differs is not the identity the event created, so it cannot be attributed by it.
+        if (typeof user?.Username !== 'string' || attributes.sub?.toLowerCase() !== entry.sub) {
+          throw new Error(`CloudTrail creation ${entry.eventId}: username ${entry.sub} is not that identity`);
+        }
+        const email = typeof attributes.email === 'string' ? attributes.email : undefined;
+        resolved.set(entry.sub, email && /^[^\s@]+@[^\s@]+$/.test(email) ? email : undefined);
+      } catch (error) {
+        if (isUserNotFound(error)) {
+          resolved.set(entry.sub, null);
+        } else {
+          throw new Error(`CloudTrail creation ${entry.eventId}: username ${entry.sub} could not be read (${error instanceof Error ? error.message : 'unknown error'})`, { cause: error });
+        }
+      }
+    }
+    const address = resolved.get(entry.sub);
+    if (address === undefined || address === null) {
+      warnings.push(creationWarning(entry, address === null
+        ? `the sub ${entry.sub} resolves to no live identity`
+        : `the sub ${entry.sub} resolves to an identity with no usable email`));
+      return undefined;
+    }
+    return { ...entry, email: address };
+  }
+
+  const created = [];
+  for (const entry of parsed.created) {
+    const addressed = await addressOf(entry);
+    if (addressed) created.push(addressed);
+  }
+  const unattributable = [];
+  for (const entry of parsed.unattributable) {
+    const addressed = await addressOf(entry);
+    if (addressed) unattributable.push(addressed);
+  }
+  return { created, unattributable, warnings };
 }
 
 /**
@@ -535,6 +703,11 @@ export function creationOrigin(creation) {
 /**
  * One reconcile identity set: manifests authoritative, CloudTrail proving or displacing them.
  *
+ * `parsed` is the resolved creation set (`resolveCreateUserEvents`); when it is absent the
+ * events are parsed here for a pure caller, which is what the offline unit tests use. A masked
+ * creation therefore arrives with its address already read back, and no masked literal is ever
+ * an address.
+ *
  * The rule per address is:
  *   - a record outside the Beta worker families is reported, never deleted;
  *   - a creation newer than the record's own `createdAt` displaces it, because a successful
@@ -543,14 +716,24 @@ export function creationOrigin(creation) {
  *   - a stable pool row needs a captured subject or a qualification-role creation for that
  *     exact address; without either it is reported as unprovable ownership;
  *   - a historical scoped address carries its run scope and stays reconcilable;
- *   - a creation by a caller other than the qualification role is reported, never deleted.
+ *   - a creation by a caller other than the qualification role is reported, never deleted;
+ *   - a creation whose address resolves outside the worker families, or that names no address
+ *     at all, is reported and never deleted.
  */
-export function buildIdentitySet({ manifests, events, window, userPoolId }) {
+export function buildIdentitySet({ manifests, events = [], parsed, window, userPoolId }) {
   const unresolved = [];
   const identities = [];
-  const { created, unattributable } = parseCreateUserEvents(events, window, { userPoolId });
+  const creationSet = parsed ?? parseCreateUserEvents(events, window, { userPoolId });
+  const { created, unattributable } = creationSet;
+  const warnings = [...(Array.isArray(creationSet.warnings) ? creationSet.warnings : [])];
   const latestCreation = new Map();
   for (const creation of created) {
+    // A masked creation is resolved before this point on the reconcile path. A direct caller
+    // that skipped the resolution gets a report rather than an address-less identity.
+    if (!creation.email) {
+      warnings.push(creationWarning(creation, `the creation names no address; resolve the sub ${creation.sub ?? 'none'} before building the identity set`));
+      continue;
+    }
     const previous = latestCreation.get(creation.email);
     if (!previous || Date.parse(creation.eventTime) > Date.parse(previous.eventTime)) latestCreation.set(creation.email, creation);
   }
@@ -605,6 +788,26 @@ export function buildIdentitySet({ manifests, events, window, userPoolId }) {
   }
 
   for (const entry of unattributable) {
+    if (!entry.email) {
+      // No address could be resolved for a foreign creation: it is reported and never dropped.
+      warnings.push(creationWarning(entry, 'the creation names no usable username or additionalEventData.sub'));
+      continue;
+    }
+    if (!isCapturedBetaWorkerEmail(entry.email)) {
+      // A foreign creation is reported with the bounded E2E address it resolved to, and never
+      // deleted. An address the record's closed grammar cannot state is a run warning.
+      if (BOUNDED_E2E_ADDRESS.test(entry.email)) {
+        unresolved.push({
+          email: entry.email,
+          reason: 'outside_worker_family',
+          origin: { kind: 'cloudtrail', event_id: entry.eventId, event_time: entry.eventTime },
+          boundAt: Date.parse(reconcileBound(entry.eventTime)),
+        });
+      } else {
+        warnings.push(creationWarning(entry, `the creation address ${entry.email} is outside the Beta worker families`));
+      }
+      continue;
+    }
     const displacedRecord = identities.find((identity) => identity.email === entry.email
       && identity.origin.kind === 'manifest'
       && Date.parse(entry.eventTime) > Date.parse(identity.createdAt) + SKEW_MS);
@@ -636,6 +839,21 @@ export function buildIdentitySet({ manifests, events, window, userPoolId }) {
   }
 
   for (const creation of latestCreation.values()) {
+    if (!isCapturedBetaWorkerEmail(creation.email)) {
+      // A masked creation whose sub resolves to an address outside the worker families is
+      // reported, never deleted: it cannot select a cleanup.
+      if (BOUNDED_E2E_ADDRESS.test(creation.email)) {
+        unresolved.push({
+          email: creation.email,
+          reason: 'outside_worker_family',
+          origin: { kind: 'cloudtrail', event_id: creation.eventId, event_time: creation.eventTime },
+          boundAt: Date.parse(reconcileBound(creation.eventTime)),
+        });
+      } else {
+        warnings.push(creationWarning(creation, `the creation address ${creation.email} is outside the Beta worker families`));
+      }
+      continue;
+    }
     if (identities.some((identity) => identity.email === creation.email)) continue;
     if (unresolved.some((entry) => entry.email === creation.email)) continue;
     // A creation with no manifest entry is attributed to the run its credential session names
@@ -653,7 +871,7 @@ export function buildIdentitySet({ manifests, events, window, userPoolId }) {
     });
   }
   identities.sort((left, right) => left.boundAt - right.boundAt || left.email.localeCompare(right.email));
-  return { identities, unresolved, created, unattributable };
+  return { identities, unresolved, created, unattributable, warnings };
 }
 
 /**
@@ -918,6 +1136,9 @@ function requireDeadline(value, label) {
  *   readArtifact(artifact)         -> the artifact's entries, each {name, size, directory, symlink, bytes}
  *   getWorkflowRun(runId)          -> { path, event, head_branch, head_sha } of one workflow run
  *   lookupCreateUserEvents(window) -> CloudTrail lookup-events rows
+ *   getUserByUsername(username)    -> { Username, UserAttributes } or UserNotFoundException;
+ *                                     resolves a masked creation's `additionalEventData.sub` to
+ *                                     the address that identity was created with
  *   getUser(email)                 -> { Username, UserAttributes } or UserNotFoundException
  *   deleteUser(username)           -> deletes by immutable username
  *   runServiceCleanup(inputs, env, { deadline, migrationGeneration? })
@@ -995,7 +1216,13 @@ export async function reconcileAccounts({
   }
 
   const events = await io.lookupCreateUserEvents(window);
-  const identitySet = buildIdentitySet({ manifests, events, window, userPoolId: environment.USER_POOL_ID });
+  // The live event masks the created address (#217), so a masked creation's `sub` is resolved
+  // to its address before the identity set exists. Resolution happens here, before any Service
+  // cleanup or Cognito delete, and a read it cannot answer is a source failure.
+  const creationSet = parseCreateUserEvents(events, window, { userPoolId: environment.USER_POOL_ID });
+  const resolvedCreations = await resolveCreateUserEvents(creationSet, { io });
+  const identitySet = buildIdentitySet({ manifests, parsed: resolvedCreations, window });
+  const creationWarnings = creationWarningAnnotations(identitySet.warnings ?? []);
   if (artifacts.length === 0) {
     log(`Reconcile ${reconcileId}: no run-bound lifecycle artifact in the ${lookbackDaysOfWindow(window)}-day window`
       + `${artifactsIgnored > 0 ? ` (${artifactsIgnored} ignored as unbound)` : ''}; `
@@ -1003,7 +1230,8 @@ export async function reconcileAccounts({
   }
   log(`Reconcile ${reconcileId}: ${artifacts.length} run-bound artifact(s), ${artifactsIgnored} ignored, `
     + `${manifests.length} manifest(s), ${events.length} CloudTrail event(s), `
-    + `${identitySet.identities.length} attributable identit(ies), ${identitySet.unresolved.length} reportable condition(s).`);
+    + `${identitySet.identities.length} attributable identit(ies), ${identitySet.unresolved.length} reportable condition(s), `
+    + `${creationWarnings.length} unattributed creation warning(s).`);
 
   const recordIdentities = [];
   const unresolved = [];
@@ -1051,7 +1279,7 @@ export async function reconcileAccounts({
     unresolved: unresolved.sort((left, right) => left.email.localeCompare(right.email)),
     result,
   });
-  return { record, result, identitySet };
+  return { record, result, identitySet, warnings: creationWarnings };
 }
 
 async function reconcileGroup({ group, index, io, environment, recordIdentities, unresolved, deadline, migrationGeneration }) {
@@ -1323,6 +1551,18 @@ export function createReconcileIo(environment = process.env, { cleanupIo } = {})
       const user = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
       return { Username: user.Username, UserAttributes: user.UserAttributes };
     },
+    /**
+     * Read one identity by its immutable username.
+     *
+     * CloudTrail masks `AdminCreateUser`'s request username, so the event's
+     * `additionalEventData.sub` is the only address handle it carries. In this pool the
+     * immutable Cognito username is that `sub`, so the same read the reconcile already uses
+     * resolves a masked creation to the address it was created with.
+     */
+    async getUserByUsername(username) {
+      const user = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: username }));
+      return { Username: user.Username, UserAttributes: user.UserAttributes };
+    },
     async deleteUser(username) {
       assertE2EExecution(environment);
       await client.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
@@ -1352,12 +1592,14 @@ async function main() {
     assertE2EExecution();
     io = createReconcileIo(process.env);
     const runIdentity = { runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT) };
-    const { record } = await reconcileAccounts({ io, environment: process.env, runIdentity });
+    const { record, warnings } = await reconcileAccounts({ io, environment: process.env, runIdentity });
     await mkdir(dirname(resolve(recordPath)), { recursive: true });
     await writeFile(resolve(recordPath), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
-    process.stdout.write(`Reconcile record: ${record.reconcile_id} result=${record.result} identities=${record.identities.length} unresolved=${record.unresolved.length}\n`);
+    process.stdout.write(`Reconcile record: ${record.reconcile_id} result=${record.result} identities=${record.identities.length} unresolved=${record.unresolved.length} warnings=${warnings.length}\n`);
     const annotations = recordAnnotations(record);
-    for (const warning of annotations.warnings) process.stderr.write(`${warning}\n`);
+    // An unattributed creation is a warning, never a failure: the record cannot state an address
+    // it could not resolve, so the annotation is the only place the operator sees the event.
+    for (const warning of [...warnings, ...annotations.warnings]) process.stderr.write(`${warning}\n`);
     for (const error of annotations.errors) process.stderr.write(`${error}\n`);
     if (record.result !== 'passed') process.exitCode = 1;
   } catch (error) {
