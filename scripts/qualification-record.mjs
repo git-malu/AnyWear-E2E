@@ -32,11 +32,15 @@ import {
 // suite and re-observed after it, and the two observations must be identical.
 const commitPattern = /^[0-9a-f]{40}$/;
 const imageDigestPattern = /^sha256:[0-9a-f]{64}$/;
-// #228: validation rules are discovered grammars, not fixed sets: a stage input path is
-// `/anywear/beta/<name>`, a stack name matches the committed `AnyWear*` prefix, and a
+// #228: validation rules are discovered grammars, not fixed sets. A stage input path is
+// `/anywear/beta/<name>`: every member the published prefix carries is accepted (the
+// observation seals whatever the prefix publishes — the live prefix includes the legacy
+// `/anywear/beta/ENABLE_INFRA_E2E` parameter — and drift stays caught by the
+// smoke-vs-qualification equality and the closing re-read), while a foreign path outside
+// the prefix is refused. A stack name matches the committed `AnyWear*` prefix, and a
 // Lambda/queue name matches the committed `beta-anywear-*` prefix. The regions a stack
 // row may state are the two committed observation regions.
-const stagePathPattern = new RegExp(`^${STAGE_PATH}[a-z0-9_]+$`);
+const stagePathPattern = new RegExp(`^${STAGE_PATH}.+$`);
 const stackNamePattern = new RegExp(`^${STACK_NAME_PREFIX}[A-Za-z0-9-]+$`);
 const resourceNamePattern = new RegExp(`^${QUEUE_NAME_PREFIX}[a-z0-9-]+$`);
 const versionPattern = /^[1-9][0-9]*$/;
