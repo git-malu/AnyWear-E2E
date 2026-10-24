@@ -7,34 +7,35 @@ import { pathToFileURL } from 'node:url';
 import { byteHash } from './evidence-contract.mjs';
 import { assertVendoredProvenance, loadVendoredProvenance } from './vendored-contract.mjs';
 
-const SOURCE_SHA = '9382e40810fa451b626f13a3303fe205614305f7';
+const SOURCE_SHA = '8022da659001d0c14bcc35e09f5d667180c49dd5';
+const VENDORED_FILES = [
+  'contracts.mjs', 'deployment-contract.mjs', 'json-contract.mjs', 'operation-stacks.mjs', 'stage-contract-parameters.mjs',
+];
 
-test('the vendored v4 contract matches its pinned producer commit and file hashes', async () => {
+test('the vendored contract matches its pinned producer commit and file hashes', async () => {
   const provenance = await loadVendoredProvenance();
   assert.equal(provenance.source_repository, 'git-malu/AnyWear-Infra');
   assert.equal(provenance.source_sha, SOURCE_SHA);
-  assert.deepEqual(Object.keys(provenance.files).sort(),
-    ['deployment-contract.mjs', 'json-contract.mjs', 'operation-stacks.mjs', 'stage-contract-parameters.mjs', 'stage-contracts.mjs']);
-  assert.deepEqual(Object.keys(provenance.producer_files).sort(),
-    ['deployment-contract.mjs', 'stage-contract-parameters.mjs']);
-  assert.deepEqual(provenance.import_rewrites, {
-    'deployment-contract.mjs': [{ from: "from '@git-malu/stage-contracts'", to: "from './stage-contracts.mjs'" }],
-    'stage-contract-parameters.mjs': [{ from: "from '@git-malu/stage-contracts'", to: "from './stage-contracts.mjs'" }],
+  assert.deepEqual(Object.keys(provenance.files).sort(), VENDORED_FILES);
+  assert.deepEqual(provenance.producer_paths, {
+    'contracts.mjs': 'lib/contracts.mjs',
+    'deployment-contract.mjs': 'scripts/deployment-contract.mjs',
+    'json-contract.mjs': 'scripts/json-contract.mjs',
+    'operation-stacks.mjs': 'scripts/operation-stacks.mjs',
+    'stage-contract-parameters.mjs': 'scripts/stage-contract-parameters.mjs',
   });
-  assert.equal(provenance.package.name, '@git-malu/stage-contracts');
-  assert.equal(provenance.package.version, '0.3.0');
-  assert.equal(provenance.package.sha256, '0180a2788e7df0bf695d235f17af2f7ee2cff81520bccf2d9efe7f5d1da0fadb');
-  assert.equal(provenance.package.tarball_commit, '29601d9a2264e69544daccbe7d4b7f29fe2a5991');
-  assert.match(provenance.package.note, /api_base_url/);
-  assert.match(provenance.package.note, /Runtime/);
-  assert.match(provenance.package.note, /No stage-contracts-v0\.3\.0 tag exists/);
+  assert.deepEqual(Object.keys(provenance.producer_files), ['stage-contract-parameters.mjs']);
+  assert.deepEqual(provenance.import_rewrites, {
+    'stage-contract-parameters.mjs': [{ from: "from '../lib/contracts.mjs'", to: "from './contracts.mjs'" }],
+  });
+  assert.equal(provenance.package, undefined);
   assert.deepEqual(await assertVendoredProvenance(), provenance);
 });
 
 // #180: E2E takes the authenticated platform observation itself, so it reads the
 // stage contract through the same bounded `ssm get-parameters` reader the producer
-// uses. The vendored copy is the producer's file with one declared package-specifier
-// rewrite, and the reader still refuses a short or foreign stage-contract surface.
+// uses. The vendored copy is the producer's file with one declared import rewrite,
+// and the reader still refuses a short or foreign stage-contract surface.
 test('the vendored stage-input reader is the producer copy with the declared rewrite', async () => {
   const reader = await import('./vendor/stage-contract-parameters.mjs');
   assert.equal(typeof reader.readStageInputs, 'function');
@@ -42,32 +43,34 @@ test('the vendored stage-input reader is the producer copy with the declared rew
   assert.ok(Array.isArray(reader.STAGE_CONTRACT_READ_PARAMETERS) && reader.STAGE_CONTRACT_READ_PARAMETERS.length > 0);
   assert.ok(Array.isArray(reader.STAGE_CONTRACT_READ_BATCHES) && reader.STAGE_CONTRACT_READ_BATCHES.length > 0);
   const source = await readFile(new URL('./vendor/stage-contract-parameters.mjs', import.meta.url), 'utf8');
-  assert.match(source, /from '\.\/stage-contracts\.mjs'/);
-  assert.doesNotMatch(source, /from '@git-malu\/stage-contracts'/);
+  assert.match(source, /from '\.\/contracts\.mjs'/);
 });
 
-// Issue #166: the Service release slice is the Runtime stack. The vendored
-// package entry and operation table are the only place this repository learns the
-// stack identity, so the pinned bytes must state Runtime and keep the disposable
-// Egress stack out of the always-present manifest.
-test('the vendored 0.3.0 identity is Runtime and Egress stays operation-owned', async () => {
-  const stage = await import('./vendor/stage-contracts.mjs');
+// Issue #166: the Service release slice is the Runtime stack, and #195 moved its
+// deployment into Infra's restricted mutations entry. The vendored contract and
+// operation table are the only place this repository learns the stack identity, so
+// the pinned bytes must state Runtime, name the mutate workflow, and keep both
+// disposable stacks out of the always-present manifest.
+test('the vendored Runtime identity and the operation-owned stacks stay pinned', async () => {
+  const stage = await import('./vendor/contracts.mjs');
   assert.equal(stage.SERVICE_RUNTIME_STACK.name, 'AnyWearRuntimeStack-beta');
   assert.equal(stage.SERVICE_RUNTIME_STACK.region, 'ap-east-1');
-  assert.equal(stage.SERVICE_RUNTIME_STACK.workflow_path, '.github/workflows/service-artifacts.yml');
+  assert.equal(stage.SERVICE_RUNTIME_STACK.workflow_path, '.github/workflows/mutate.yml');
   assert.equal(stage.runtimeStackName('beta'), 'AnyWearRuntimeStack-beta');
   assert.equal(stage.runtimeStageFromStack('AnyWearRuntimeStack-beta'), 'beta');
-  // #207 retired the operation/deployment record chain: E2E no longer consumes the
-  // record validators, and the reader census forbids naming them outside the frozen
-  // diagnostic test. The vendored bytes and the Runtime identity above are unchanged,
-  // so this test no longer asserts the retired validator surface.
+  // #207 retired the operation/deployment record chain and #191 re-sourced the
+  // producer, so neither the record validators nor the Workload identity exists in
+  // the pinned bytes. The reader census forbids naming the retired validators
+  // outside the frozen diagnostic test, so this test asserts only the absence.
   assert.equal(stage.SERVICE_WORKLOAD_STACK, undefined);
   assert.equal(stage.workloadStageFromStack, undefined);
   const stacks = await import('./vendor/operation-stacks.mjs');
   assert.deepEqual(stacks.configuredStacks.map(({ stack_name: name }) => name),
     ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearBillingStack-beta']);
   assert.deepEqual(stacks.operationOwnedStacks.map(({ stack_name: name }) => name),
-    ['AnyWearEgressStack-beta']);
+    ['AnyWearEgressStack-beta', 'AnyWearRuntimeStack-beta']);
+  assert.deepEqual(stacks.changedStackNames('deploy-runtime'), ['AnyWearRuntimeStack-beta']);
+  assert.deepEqual(stacks.changedStackNames('stop-runtime'), ['AnyWearRuntimeStack-beta']);
   assert.deepEqual(stacks.changedStackNames('deploy-egress'), ['AnyWearEgressStack-beta']);
   assert.deepEqual(stacks.changedStackNames('delete-egress'), ['AnyWearEgressStack-beta']);
 });
@@ -108,9 +111,9 @@ test('an extra or missing vendored module is refused as a file-set drift', async
 test('a producer file without its declared rewrite is refused instead of being trusted as a copy', async () => {
   await withVendoredCopy(async ({ directory, root, provenance }) => {
     const missing = structuredClone(provenance);
-    delete missing.import_rewrites['deployment-contract.mjs'];
+    delete missing.import_rewrites['stage-contract-parameters.mjs'];
     await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(missing, null, 2)}\n`);
-    await assert.rejects(assertVendoredProvenance({ root }), /deployment-contract\.mjs has no declared import rewrite/);
+    await assert.rejects(assertVendoredProvenance({ root }), /producer file stage-contract-parameters\.mjs has no declared import rewrite/);
   });
   await withVendoredCopy(async ({ directory, root, provenance }) => {
     const { import_rewrites: ignored, ...declarationless } = provenance;
@@ -126,12 +129,52 @@ test('a producer file without its declared rewrite is refused instead of being t
   });
 });
 
+test('producer bytes declared next to an empty rewrite list are refused', async () => {
+  await withVendoredCopy(async ({ directory, root, provenance }) => {
+    const empty = structuredClone(provenance);
+    empty.import_rewrites['stage-contract-parameters.mjs'] = [];
+    await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(empty, null, 2)}\n`);
+    await assert.rejects(assertVendoredProvenance({ root }), /empty rewrite list with producer bytes/);
+  });
+});
+
+test('a vendored file with no producer path is refused', async () => {
+  await withVendoredCopy(async ({ directory, root, provenance }) => {
+    const missing = structuredClone(provenance);
+    delete missing.producer_paths['json-contract.mjs'];
+    await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(missing, null, 2)}\n`);
+    await assert.rejects(assertVendoredProvenance({ root }), /producer_paths must cover exactly the files key set \(missing json-contract\.mjs/);
+  });
+  await withVendoredCopy(async ({ directory, root, provenance }) => {
+    const extra = structuredClone(provenance);
+    extra.producer_paths['extra.mjs'] = 'scripts/extra.mjs';
+    await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(extra, null, 2)}\n`);
+    await assert.rejects(assertVendoredProvenance({ root }), /producer_paths names files that are not vendored \(extra\.mjs/);
+  });
+});
+
+test('a package block is refused and names the retired artifact', async () => {
+  await withVendoredCopy(async ({ directory, root, provenance }) => {
+    const packaged = structuredClone(provenance);
+    packaged.package = {
+      name: '@example/retired-artifact',
+      version: '1.2.3',
+      source: 'packages/retired-artifact',
+      sha256: '0'.repeat(64),
+      tarball_commit: 'a'.repeat(40),
+    };
+    await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(packaged, null, 2)}\n`);
+    await assert.rejects(assertVendoredProvenance({ root }),
+      /package block for the retired artifact @example\/retired-artifact@1\.2\.3/);
+  });
+});
+
 test('a malformed rewrite declaration is refused', async () => {
   await withVendoredCopy(async ({ directory, root, provenance }) => {
     const malformed = structuredClone(provenance);
-    malformed.import_rewrites['deployment-contract.mjs'][0].to = '';
+    malformed.import_rewrites['stage-contract-parameters.mjs'][0].to = '';
     await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(malformed, null, 2)}\n`);
-    await assert.rejects(assertVendoredProvenance({ root }), /import rewrite for deployment-contract\.mjs is malformed/);
+    await assert.rejects(assertVendoredProvenance({ root }), /import rewrite for stage-contract-parameters\.mjs is malformed/);
   });
 });
 
@@ -139,21 +182,21 @@ test('bytes that move beyond the declared rewrite are refused even when the vend
   await withVendoredCopy(async ({ directory, root, provenance }) => {
     // An extra, undeclared specifier rewrite: the committed file and its `files`
     // hash agree, but the reconstructed producer bytes no longer do.
-    const doctored = (await readFile(join(directory, 'deployment-contract.mjs'), 'utf8'))
+    const doctored = (await readFile(join(directory, 'stage-contract-parameters.mjs'), 'utf8'))
       .replace('./json-contract.mjs', './json-contract-local.mjs');
-    await writeFile(join(directory, 'deployment-contract.mjs'), doctored);
-    provenance.files['deployment-contract.mjs'] = byteHash(Buffer.from(doctored));
+    await writeFile(join(directory, 'stage-contract-parameters.mjs'), doctored);
+    provenance.files['stage-contract-parameters.mjs'] = byteHash(Buffer.from(doctored));
     await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`);
     await assert.rejects(assertVendoredProvenance({ root }), /differs from its raw git-malu\/AnyWear-Infra@\w+ producer bytes beyond the declared import rewrites/);
   });
   await withVendoredCopy(async ({ directory, root, provenance }) => {
     // A declared rewrite that no longer appears cannot be reversed deterministically.
-    const rewritten = (await readFile(join(directory, 'deployment-contract.mjs'), 'utf8'))
-      .replace("from './stage-contracts.mjs'", "from './stage-contracts-copy.mjs'");
-    await writeFile(join(directory, 'deployment-contract.mjs'), rewritten);
-    provenance.files['deployment-contract.mjs'] = byteHash(Buffer.from(rewritten));
+    const rewritten = (await readFile(join(directory, 'stage-contract-parameters.mjs'), 'utf8'))
+      .replace("from './contracts.mjs'", "from './contracts-copy.mjs'");
+    await writeFile(join(directory, 'stage-contract-parameters.mjs'), rewritten);
+    provenance.files['stage-contract-parameters.mjs'] = byteHash(Buffer.from(rewritten));
     await writeFile(join(directory, 'provenance.json'), `${JSON.stringify(provenance, null, 2)}\n`);
-    await assert.rejects(assertVendoredProvenance({ root }), /import rewrite for deployment-contract\.mjs is not applied exactly once/);
+    await assert.rejects(assertVendoredProvenance({ root }), /import rewrite for stage-contract-parameters\.mjs is not applied exactly once/);
   });
 });
 

@@ -2,7 +2,7 @@ import { environmentVerdict } from '../qualification-environment.mjs';
 import { SERVICE_RELEASE_ASSET_NAMES } from '../qualification-record.mjs';
 import { readMinimumSupportedClient } from '../minimum-supported-client.mjs';
 import { SCENARIO_DIRECTORY, qualificationSelection, selectedScenarios } from '../test-selection.mjs';
-import { stageContractSchemaHash } from '../vendor/deployment-contract.mjs';
+import { stageContractSchemaHash } from '../vendor/contracts.mjs';
 import { configuredStacks } from '../vendor/operation-stacks.mjs';
 import { STAGE_CONTRACT_READ_PARAMETERS } from '../vendor/stage-contract-parameters.mjs';
 

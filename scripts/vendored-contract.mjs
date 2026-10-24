@@ -1,12 +1,14 @@
-// Loader assertion for the vendored v4 Service deployment contract.
+// Loader assertion for the vendored Infra contract.
 //
-// The vendored files are the producer's public contract. This assertion is the
-// seam that keeps them from silently drifting: it names the exact producer commit,
-// hashes every vendored module, and for a file that carries a declared import
-// rewrite it reconstructs the raw producer bytes, hashes those too, and refuses
-// any difference the declaration does not explain. It checks repository identity
-// and file bytes only; it does not fetch the producer, prove its review status or
-// authorize deployment.
+// The vendored files are ordinary AnyWear-Infra source pinned by commit, not a
+// published artifact. This assertion is the seam that keeps them from silently
+// drifting: it names the exact producer commit, requires a producer path for every
+// vendored file, hashes every vendored module, and for a file that carries a
+// declared import rewrite it reconstructs the raw producer bytes, hashes those too,
+// and refuses any difference the declaration does not explain. A provenance that
+// still declares a package, or that declares producer bytes with an empty rewrite
+// list, is refused outright. It checks repository identity and file bytes only; it
+// does not fetch the producer, prove its review status or authorize deployment.
 import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { byteHash } from './evidence-contract.mjs';
@@ -26,7 +28,39 @@ export async function loadVendoredProvenance({ root = defaultRoot } = {}) {
   const provenance = JSON.parse(await readFile(new URL('provenance.json', root), 'utf8'));
   if (provenance.source_repository !== 'git-malu/AnyWear-Infra') throw new Error('Vendored contract source repository is unexpected');
   if (typeof provenance.source_sha !== 'string' || !/^[0-9a-f]{40}$/.test(provenance.source_sha)) throw new Error('Vendored contract source SHA is malformed');
+  // The producer is ordinary source: there is no packed or published artifact left to
+  // pin. A `package` block would describe the retired artifact, so refuse it and name
+  // the artifact the block still claims.
+  if (hasOwn(provenance, 'package')) {
+    const declared = isObject(provenance.package) ? provenance.package : {};
+    const artifact = typeof declared.name === 'string'
+      ? `${declared.name}${typeof declared.version === 'string' ? `@${declared.version}` : ''}`
+      : 'an unnamed package artifact';
+    throw new Error(`Vendored contract provenance declares a package block for the retired artifact ${artifact}; vendored files are ordinary producer source named by producer_paths`);
+  }
   return provenance;
+}
+
+// Every vendored file names the producer path it was copied from, and the map is
+// exactly the vendored set: a file with no producer path is a copy nobody can
+// re-derive, and a path with no file is a stale claim.
+function validateProducerPaths(provenance, expected) {
+  if (!isObject(provenance.producer_paths)) throw new Error('Vendored contract producer_paths is malformed');
+  const declared = Object.keys(provenance.producer_paths).sort();
+  const missing = expected.filter((name) => !hasOwn(provenance.producer_paths, name));
+  if (missing.length > 0) {
+    throw new Error(`Vendored contract producer_paths must cover exactly the files key set (missing ${missing.join(', ')}; expected ${expected.join(', ')})`);
+  }
+  const extra = declared.filter((name) => !expected.includes(name));
+  if (extra.length > 0) {
+    throw new Error(`Vendored contract producer_paths names files that are not vendored (${extra.join(', ')}; expected ${expected.join(', ')})`);
+  }
+  for (const name of expected) {
+    const producerPath = provenance.producer_paths[name];
+    if (typeof producerPath !== 'string' || producerPath.length === 0) {
+      throw new Error(`Vendored contract producer path for ${name} is malformed`);
+    }
+  }
 }
 
 // One declared rewrite is one exact textual substitution. Both halves are
@@ -63,7 +97,7 @@ function applyImportRewrites(name, text, rewrites, sourceKey, targetKey) {
 function assertProducerBytes(name, committed, provenance) {
   const producerHash = requireHash(provenance.producer_files[name], `Vendored contract producer hash for ${name}`);
   if (!isObject(provenance.import_rewrites) || !hasOwn(provenance.import_rewrites, name)) {
-    throw new Error(`Vendored contract ${name} has no declared import rewrite for its producer copy`);
+    throw new Error(`Vendored contract producer file ${name} has no declared import rewrite for its producer copy`);
   }
   const rewrites = validateImportRewrites(name, provenance.import_rewrites[name]);
   const committedText = committed.toString('utf8');
@@ -85,6 +119,7 @@ export async function assertVendoredProvenance({ root = defaultRoot } = {}) {
   if (JSON.stringify(present) !== JSON.stringify(expected)) {
     throw new Error(`Vendored contract file set differs from provenance (present ${present.join(', ')}; expected ${expected.join(', ')})`);
   }
+  validateProducerPaths(provenance, expected);
   const producerFiles = provenance.producer_files;
   const rewrites = provenance.import_rewrites;
   if ((producerFiles === undefined) !== (rewrites === undefined)
@@ -92,6 +127,17 @@ export async function assertVendoredProvenance({ root = defaultRoot } = {}) {
     throw new Error('Vendored contract producer rewrite declarations are malformed');
   }
   if (producerFiles !== undefined) {
+    for (const name of Object.keys(producerFiles)) {
+      if (!hasOwn(rewrites, name)) {
+        throw new Error(`Vendored contract producer file ${name} has no declared import rewrite`);
+      }
+      // Producer bytes are only trustworthy when a declared rewrite explains why the
+      // committed copy differs from them; an empty list would make the "reversal"
+      // vacuous and let a hand-edited byte copy pass as producer output.
+      if (!Array.isArray(rewrites[name]) || rewrites[name].length === 0) {
+        throw new Error(`Vendored contract ${name} declares producer bytes with an empty import rewrite list; an empty rewrite list with producer bytes is refused`);
+      }
+    }
     for (const name of Object.keys(rewrites)) {
       if (!hasOwn(producerFiles, name)) throw new Error(`Vendored contract import rewrite for ${name} is undeclared in producer_files`);
     }

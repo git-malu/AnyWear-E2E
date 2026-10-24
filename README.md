@@ -128,9 +128,8 @@ qualification.
 
 The automatic `Check` entry's `tool-regressions` job runs the one retained operational-support
 test file, its implementation and shared evidence/source contracts, the
-vendored deployment contract (the v3 core plus the v4 Service bake gate) with its
-provenance assertion, and
-the lockfile. `quality.yml` carried no path
+vendored Infra contract modules, their producer paths and the provenance assertion,
+and the lockfile. `quality.yml` carried no path
 filter, so that job now runs on every check rather than only on its former path set; the
 cost is recorded in the PR body for #163. Both jobs have only `contents: read` and no
 deployment environment or credential steps. SQS prototypes are excluded from both routine
@@ -142,7 +141,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Check entry runs the vendored-contract assertion, the explicit 21 core test files,
+Check entry runs the vendored-contract assertion, the explicit 23 core test files,
 the credential-free tool regressions, lint, type checking, and Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 

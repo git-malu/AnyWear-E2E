@@ -5,7 +5,7 @@ import {
 import { assertQualificationEnvironment } from './qualification-environment.mjs';
 import { assertLiveClientFloor, readMinimumSupportedClient } from './minimum-supported-client.mjs';
 import { configuredStacks } from './vendor/operation-stacks.mjs';
-import { stageContractSchemaHash } from './vendor/deployment-contract.mjs';
+import { stageContractSchemaHash } from './vendor/contracts.mjs';
 import {
   QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, RECORDABLE_RESULTS, SCENARIO_KEYS, SELECTION_KEYS, TEST_KEYS,
   assertTestSelection, buildTestMember, reportScenarios,
