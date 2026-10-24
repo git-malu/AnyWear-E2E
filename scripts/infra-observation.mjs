@@ -58,12 +58,17 @@ export function liveObservationIo({ execute = execFileSync, environment = proces
   };
 }
 
-// One bounded read over a paginated AWS list. Every page's token must be new, no listed
-// name may repeat across pages, and more than PAGINATION_PAGE_BOUND pages is a refusal —
-// a looping or misbehaving list can never become an unbounded read.
+// One bounded read over a paginated AWS list. Every page's token must be new and more
+// than PAGINATION_PAGE_BOUND pages is a refusal — a looping or misbehaving list can never
+// become an unbounded read. Per-name uniqueness is the default refusal: the four
+// unique-surface readers (SSM parameters, Lambda functions, SQS queues, CloudFront
+// distributions) keep it, because a repeated name there is a pagination anomaly.
+// `list-stacks` legitimately returns one row per stack occurrence (a stack's
+// stop/start history), so the stack reader passes `allowRepeatedNames` and moves the
+// name-uniqueness check after its own status filter (`discoverStacks`).
 async function readPages(io, baseArgs, {
   region, tokenFlag, pageKey, tokenKey, nameOf, label,
-  readPage = (response) => response, truncatedKey,
+  readPage = (response) => response, truncatedKey, allowRepeatedNames = false,
 }) {
   const seenTokens = new Set();
   const seenNames = new Set();
@@ -85,7 +90,7 @@ async function readPages(io, baseArgs, {
     for (const item of page[pageKey] ?? []) {
       const name = nameOf(item);
       if (typeof name !== 'string' || name.length === 0) throw new Error(`${label} lists an unnamed entry`);
-      if (seenNames.has(name)) throw new Error(`${label} lists ${name} more than once`);
+      if (!allowRepeatedNames && seenNames.has(name)) throw new Error(`${label} lists ${name} more than once`);
       seenNames.add(name);
       items.push(item);
     }
@@ -108,7 +113,12 @@ async function readPages(io, baseArgs, {
 // other persistent stacks are in ap-east-1. Every row's ARN must belong to the reviewed
 // account, and a listed `AnyWear*` stack that is not in a terminal success status is a
 // deployment crossing the observation window. `DELETE_COMPLETE` is the one ignored
-// status — the disposable stacks' normal stop history.
+// status — the disposable stacks' normal stop history. Because `list-stacks` returns one
+// row per stack occurrence, any number of `DELETE_COMPLETE` rows per stack name is
+// dropped by the filter below (never described, never recorded, never reaching the
+// closing re-read); the reviewed set — the non-`DELETE_COMPLETE` `AnyWear*` rows — must
+// still contain at most one row per stack name, and a duplicated live row for one name,
+// on one page or across pages, is refused naming the stack.
 async function discoverStacks(io, reviewedAccount) {
   const rows = [];
   const brackets = new Map();
@@ -116,12 +126,19 @@ async function discoverStacks(io, reviewedAccount) {
     const summaries = await readPages(io, ['cloudformation', 'list-stacks'], {
       region, tokenFlag: '--next-token', pageKey: 'StackSummaries', tokenKey: 'NextToken',
       nameOf: (stack) => stack.StackName, label: `CloudFormation list-stacks in ${region}`,
+      allowRepeatedNames: true,
     });
     const reviewed = summaries.filter((stack) => stack.StackName?.startsWith(STACK_NAME_PREFIX)
       && stack.StackStatus !== 'DELETE_COMPLETE');
+    const seenNames = new Set();
     for (const stack of reviewed) {
+      const name = stack.StackName;
+      if (seenNames.has(name)) {
+        throw new Error(`CloudFormation list-stacks in ${region} lists ${name} more than once`);
+      }
+      seenNames.add(name);
       if (!TERMINAL_STACK_STATUSES.includes(stack.StackStatus)) {
-        throw new Error(`CloudFormation stack ${stack.StackName} is not in a terminal state (observed ${stack.StackStatus})`);
+        throw new Error(`CloudFormation stack ${name} is not in a terminal state (observed ${stack.StackStatus})`);
       }
     }
     if (reviewed.length === 0) {
