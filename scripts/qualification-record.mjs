@@ -1,11 +1,10 @@
 import {
-  assertEqual, byteHash, exactKeys, payloadDigest as strictPayloadDigest, repositories,
+  assertEqual, byteHash, contentHash, exactKeys, payloadDigest as strictPayloadDigest, repositories,
   parseStrictJson, requireHttpsUrl as requireContractHttpsUrl, requireId, requireHash,
 } from './evidence-contract.mjs';
 import { assertQualificationEnvironment } from './qualification-environment.mjs';
 import { assertLiveClientFloor, readMinimumSupportedClient } from './minimum-supported-client.mjs';
-import { configuredStacks } from './vendor/operation-stacks.mjs';
-import { stageContractSchemaHash } from './vendor/contracts.mjs';
+import { OBSERVATION_REGIONS, QUEUE_NAME_PREFIX, STACK_NAME_PREFIX, STAGE_PATH } from './platform-entrypoints.mjs';
 import {
   QUALIFICATION_REPORT_ENV, QUALIFICATION_REPORT_PATH, RECORDABLE_RESULTS, SCENARIO_KEYS, SELECTION_KEYS, TEST_KEYS,
   assertTestSelection, buildTestMember, reportScenarios,
@@ -33,7 +32,13 @@ import {
 // suite and re-observed after it, and the two observations must be identical.
 const commitPattern = /^[0-9a-f]{40}$/;
 const imageDigestPattern = /^sha256:[0-9a-f]{64}$/;
-const parameterPattern = /^\/anywear\/[a-z0-9]+\/[a-z0-9_]+$/;
+// #228: validation rules are discovered grammars, not fixed sets: a stage input path is
+// `/anywear/beta/<name>`, a stack name matches the committed `AnyWear*` prefix, and a
+// Lambda/queue name matches the committed `beta-anywear-*` prefix. The regions a stack
+// row may state are the two committed observation regions.
+const stagePathPattern = new RegExp(`^${STAGE_PATH}[a-z0-9_]+$`);
+const stackNamePattern = new RegExp(`^${STACK_NAME_PREFIX}[A-Za-z0-9-]+$`);
+const resourceNamePattern = new RegExp(`^${QUEUE_NAME_PREFIX}[a-z0-9-]+$`);
 const versionPattern = /^[1-9][0-9]*$/;
 const lambdaCodePattern = /^[A-Za-z0-9+/]{43}=$/;
 const cloudFrontDomainPattern = /^[a-z0-9][a-z0-9-]*\.cloudfront\.net$/;
@@ -43,11 +48,11 @@ export const QUALIFICATION_TRIGGERS = Object.freeze(['manual', 'deploy-smoke', '
 export const OBSERVATION_KEYS = Object.freeze(['collected_at', 'client', 'service', 'platform', 'authenticated']);
 export const OBSERVED_CLIENT_KEYS = Object.freeze(['url', 'source_commit', 'built_at']);
 export const OBSERVED_SERVICE_KEYS = Object.freeze(['url', 'service_commit', 'image_digest']);
-export const PLATFORM_KEYS = Object.freeze(['stacks', 'inputs', 'schema_sha256', 'lambdas', 'queue_config_sha256', 'client_domain']);
+export const PLATFORM_KEYS = Object.freeze(['stacks', 'inputs', 'schema_sha256', 'lambdas', 'queues', 'client_domain']);
 export const PLATFORM_STACK_KEYS = Object.freeze(['name', 'region', 'template_sha256']);
 export const PLATFORM_INPUT_KEYS = Object.freeze(['parameter', 'version', 'value_sha256']);
-export const LAMBDA_KEYS = Object.freeze(['pre-sign-up', 'post-confirmation']);
 export const LAMBDA_IDENTITY_KEYS = Object.freeze(['code_sha256', 'configuration_sha256']);
+export const QUEUE_KEYS = Object.freeze(['name', 'queueVisibilitySeconds', 'maxReceives']);
 // #193: the Service release publishes exactly these four assets. The set is frozen here
 // (and in the Service and Infra slices) so the gate cannot accept a release that renamed,
 // dropped or added a consumed name; an extra legacy asset is ignored, which is what keeps
@@ -202,28 +207,34 @@ export function validateObservation(observation, label = 'observation') {
   requireImageDigest(observation.service.image_digest);
 
   exactKeys(observation.platform, [...PLATFORM_KEYS], `${label} platform`);
-  if (!Array.isArray(observation.platform.stacks) || observation.platform.stacks.length !== configuredStacks.length) {
-    throw new Error(`${label} platform must list exactly the ${configuredStacks.length} configured stacks`);
+  // #228: the platform is the discovered surface, validated by grammar instead of a
+  // committed name list. Every list is non-empty, sorted by name and unique.
+  if (!Array.isArray(observation.platform.stacks) || observation.platform.stacks.length === 0) {
+    throw new Error(`${label} platform stacks must be a non-empty list of discovered stacks`);
   }
-  const expectedStacks = [...configuredStacks]
-    .map(({ stack_name: name, region }) => ({ name, region }))
-    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   const seenStacks = [];
   for (const row of observation.platform.stacks) {
     exactKeys(row, [...PLATFORM_STACK_KEYS], `${label} platform stack`);
-    const configured = expectedStacks.find((stack) => stack.name === row.name);
-    if (!configured || configured.region !== row.region) throw new Error(`${label} platform stack ${row.name} is not a configured stack in its reviewed region`);
+    if (typeof row.name !== 'string' || !stackNamePattern.test(row.name)) {
+      throw new Error(`${label} platform stack ${JSON.stringify(row.name)} is not an AnyWear stack name`);
+    }
+    if (!OBSERVATION_REGIONS.includes(row.region)) {
+      throw new Error(`${label} platform stack ${row.name} region ${JSON.stringify(row.region)} is not an observation region`);
+    }
     if (seenStacks.includes(row.name)) throw new Error(`${label} platform stack ${row.name} is duplicated`);
     seenStacks.push(row.name);
     requireHash(row.template_sha256, `${label} platform stack ${row.name} template hash`);
   }
-  assertEqual(seenStacks, expectedStacks.map(({ name }) => name), `${label} platform stack order`);
+  const sortedStacks = [...seenStacks].sort();
+  assertEqual(seenStacks, sortedStacks, `${label} platform stack order`);
 
-  if (!Array.isArray(observation.platform.inputs)) throw new Error(`${label} platform inputs must be a list`);
+  if (!Array.isArray(observation.platform.inputs) || observation.platform.inputs.length === 0) {
+    throw new Error(`${label} platform inputs must be a non-empty list of discovered stage parameters`);
+  }
   const seenParameters = [];
   for (const row of observation.platform.inputs) {
     exactKeys(row, [...PLATFORM_INPUT_KEYS], `${label} platform input`);
-    if (typeof row.parameter !== 'string' || !parameterPattern.test(row.parameter)) {
+    if (typeof row.parameter !== 'string' || !stagePathPattern.test(row.parameter)) {
       throw new Error(`${label} platform input parameter ${JSON.stringify(row.parameter)} is not a stage parameter path`);
     }
     if (typeof row.version !== 'string' || !versionPattern.test(row.version) || !Number.isSafeInteger(Number(row.version))) {
@@ -236,17 +247,51 @@ export function validateObservation(observation, label = 'observation') {
   const sortedParameters = [...seenParameters].sort();
   assertEqual(seenParameters, sortedParameters, `${label} platform input order`);
   requireHash(observation.platform.schema_sha256, `${label} platform schema hash`);
-  if (observation.platform.schema_sha256 !== stageContractSchemaHash(observation.platform.inputs)) {
+  if (observation.platform.schema_sha256 !== contentHash(
+    observation.platform.inputs.map(({ parameter, version }) => ({ parameter, version })))) {
     throw new Error(`${label} platform schema_sha256 is not the content hash of its recorded inputs`);
   }
 
-  exactKeys(observation.platform.lambdas, [...LAMBDA_KEYS], `${label} platform lambdas`);
-  for (const key of LAMBDA_KEYS) {
-    const identity = exactKeys(observation.platform.lambdas[key], [...LAMBDA_IDENTITY_KEYS], `${label} platform lambda ${key}`);
-    if (!lambdaCodePattern.test(identity.code_sha256)) throw new Error(`${label} platform lambda ${key} code_sha256 is not a Lambda CodeSha256`);
-    requireHash(identity.configuration_sha256, `${label} platform lambda ${key} configuration hash`);
+  if (!Array.isArray(observation.platform.lambdas) || observation.platform.lambdas.length === 0) {
+    throw new Error(`${label} platform lambdas must be a non-empty list of discovered functions`);
   }
-  requireHash(observation.platform.queue_config_sha256, `${label} platform queue configuration hash`);
+  const seenLambdas = [];
+  for (const row of observation.platform.lambdas) {
+    exactKeys(row, ['name', ...LAMBDA_IDENTITY_KEYS], `${label} platform lambda`);
+    if (typeof row.name !== 'string' || !resourceNamePattern.test(row.name)) {
+      throw new Error(`${label} platform lambda ${JSON.stringify(row.name)} is not a beta-anywear function name`);
+    }
+    if (!lambdaCodePattern.test(row.code_sha256)) {
+      throw new Error(`${label} platform lambda ${row.name} code_sha256 is not a Lambda CodeSha256`);
+    }
+    requireHash(row.configuration_sha256, `${label} platform lambda ${row.name} configuration hash`);
+    if (seenLambdas.includes(row.name)) throw new Error(`${label} platform lambda ${row.name} is duplicated`);
+    seenLambdas.push(row.name);
+  }
+  const sortedLambdas = [...seenLambdas].sort();
+  assertEqual(seenLambdas, sortedLambdas, `${label} platform lambda order`);
+
+  if (!Array.isArray(observation.platform.queues) || observation.platform.queues.length === 0) {
+    throw new Error(`${label} platform queues must be a non-empty list of discovered queues`);
+  }
+  const seenQueues = [];
+  for (const row of observation.platform.queues) {
+    exactKeys(row, [...QUEUE_KEYS], `${label} platform queue`);
+    if (typeof row.name !== 'string' || !resourceNamePattern.test(row.name)) {
+      throw new Error(`${label} platform queue ${JSON.stringify(row.name)} is not a beta-anywear queue name`);
+    }
+    if (!Number.isSafeInteger(row.queueVisibilitySeconds) || row.queueVisibilitySeconds < 0) {
+      throw new Error(`${label} platform queue ${row.name} queueVisibilitySeconds is not a non-negative integer`);
+    }
+    if (row.maxReceives !== null && (!Number.isSafeInteger(row.maxReceives) || row.maxReceives < 1)) {
+      throw new Error(`${label} platform queue ${row.name} maxReceives must be a positive integer or null`);
+    }
+    if (seenQueues.includes(row.name)) throw new Error(`${label} platform queue ${row.name} is duplicated`);
+    seenQueues.push(row.name);
+  }
+  const sortedQueues = [...seenQueues].sort();
+  assertEqual(seenQueues, sortedQueues, `${label} platform queue order`);
+
   if (typeof observation.platform.client_domain !== 'string' || !cloudFrontDomainPattern.test(observation.platform.client_domain)) {
     throw new Error(`${label} platform client_domain must be a bare CloudFront distribution host`);
   }

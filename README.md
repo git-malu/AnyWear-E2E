@@ -53,7 +53,7 @@ operation reads the previous seven days of those manifests plus the CloudTrail
 ## Commands
 
 ```bash
-pnpm check             # vendored contract, explicit core contracts, lint, typecheck and safe discovery
+pnpm check             # explicit core contracts, lint, typecheck and safe discovery
 pnpm test:core         # the registered offline identity/cleanup/qualification/artifact contracts
 pnpm test:tool-regressions # the one retained offline operational-support test file
 pnpm test:deferred-sqs  # two source-only SQS prototype test files; manual #58 review
@@ -127,9 +127,8 @@ offline assertions remain required by `check` without claiming actual publicatio
 qualification.
 
 The automatic `Check` entry's `tool-regressions` job runs the one retained operational-support
-test file, its implementation and shared evidence/source contracts, the
-vendored Infra contract modules, their producer paths and the provenance assertion,
-and the lockfile. `quality.yml` carried no path
+test file, its implementation and shared evidence/source contracts, and the lockfile.
+`quality.yml` carried no path
 filter, so that job now runs on every check rather than only on its former path set; the
 cost is recorded in the PR body for #163. Both jobs have only `contents: read` and no
 deployment environment or credential steps. SQS prototypes are excluded from both routine
@@ -141,7 +140,7 @@ repository applies.
 ## Execution Policy
 
 Pull requests do not run cross-repository browser E2E as a required check. The E2E
-Check entry runs the vendored-contract assertion, the explicit 23 core test files,
+Check entry runs the explicit 25 core test files,
 the credential-free tool regressions, lint, type checking, and Playwright test discovery. Client and Service workflows remain responsible for their
 required unit, repository integration, contract, database, and browser integration tests.
 
@@ -211,7 +210,9 @@ preflight validates that combination before any credential job. The `full` opera
 production-readiness gate for an already-deployed Beta environment. It reads the live Client
 `build-metadata.json` and Service `/health`, compares them with the dispatch expectation,
 verifies that the live Service commit resolves to an immutable Service release, takes its own
-authenticated platform observation, runs the release-gating deployed selection and the oldest
+authenticated platform observation — the deployed surface discovered through AWS public
+list/describe APIs — verifies the deploy-smoke drift gate against the deploy-time
+observation of the same release, runs the release-gating deployed selection and the oldest
 supported Client leg, re-observes and requires an identical tuple, and hands a checksummed v4
 record to the credential-free `record` job, which re-verifies it offline and attaches the
 artifact. A green `full` run whose record `record` has verified and attached is the complete
@@ -290,9 +291,13 @@ The live tuple is:
   `component: 'AnyWear-Client'`, `source_commit`, `client_version` and `built_at`;
 - the Service at `E2E_SERVICE_URL`: `/health` with `status: 'ok'`, `service_commit`,
   `image_digest` and `minimum_client_version`;
-- the platform content this repository observes itself: the three configured stacks'
-  `Original` template hashes, the `/anywear/beta/*` stage inputs, the two Lambdas, the two
-  queues and the Client distribution domain.
+- the platform content this repository discovers itself (#228): every `AnyWear*` stack in
+  a terminal success status in both observation regions (`ap-east-1` and `us-east-1`),
+  recorded with its region and the sha256 of its raw `Original` template; the whole
+  published `/anywear/beta/` prefix as `{parameter, version, value_sha256}` rows; every
+  `beta-anywear-*` Lambda as `{name, code_sha256, configuration_sha256}`; every
+  `beta-anywear-*` queue (including the DLQs) as
+  `{name, queueVisibilitySeconds, maxReceives}`; and the Client distribution domain.
 
 The two endpoints are workflow constants in `beta-qualification.yml` (the same values as the
 `beta` environment's `BETA_CLIENT_URL`/`BETA_SERVICE_URL`). They are constants because the
@@ -334,7 +339,7 @@ it.
 | `expected` | `{service_commit, client_commit, source}`; `source` is `trigger` when the dispatcher supplied a Service commit, `live` when a manual `full` took the live value at run start |
 | `revisions` | `e2e {repository, sha}`, `client {repository, sha, client_version}`, `service {repository, sha, image_digest, minimum_client_version}`; **no `infra`** |
 | `service_artifacts` | `{repository, release_id, tag, target_commit, assets}`; `tag` is `service-artifacts-<service sha>` and `target_commit` is the commit the tag resolved to (the qualified Service commit); `assets` is exactly the four released names, each `{size, digest}` with `digest` a `sha256:<hex>` |
-| `observations` | `{before, after}`; each is `{collected_at, client{url, source_commit, built_at}, service{url, service_commit, image_digest}, platform{stacks, inputs, schema_sha256, lambdas, queue_config_sha256, client_domain}, authenticated: true}` |
+| `observations` | `{before, after}`; each is `{collected_at, client{url, source_commit, built_at}, service{url, service_commit, image_digest}, platform{stacks, inputs, schema_sha256, lambdas, queues, client_domain}, authenticated: true}` |
 | `test` | the derived selection, the report digest and one outcome per selected scenario |
 | `workflow` | `{repository, path, ref, run_id, run_attempt, run_url, trigger, dispatched_by}` |
 | `integrity` | `{algorithm: 'sha256', payload_sha256}` |
@@ -343,14 +348,24 @@ v4 replaces v3's `manifest_asset_id`/`manifest_sha256` with the release's own id
 record member names a manifest asset and the release gate never reads one. There is no
 `compatibility` and no `deployment` member either: the record consumes no producer record,
 and the observation is this repository's own authenticated platform read
-(`scripts/infra-observation.mjs`) through the vendored contract. The deployment lineage —
+(`scripts/infra-observation.mjs`), which discovers the deployed surface through AWS public
+list/describe APIs and hashes it with RFC 8785 canonical JSON and sha256 — no producer
+source and no committed name list (#228). The deployment lineage —
 which Infra or Service commit deployed the platform — is a platform fact: the GitHub
 Environment deployment `beta`, the CloudFormation stack events, the Service release
 tag→commit and the ECR image digest. There is no deployment record
 ([#207](https://github.com/git-malu/AnyWear/issues/207)); the qualification record proves
 the deployed *content*.
 
-Before and after the suite, `full` collects the same observation and refuses any difference in
+Before the suite, the `full` job also runs the consumer-side drift gate
+(`scripts/verify-smoke-drift.mjs`): it finds the newest deploy-smoke observation of the
+same release — the same Service commit and image digest and the same Client source commit —
+among the 30 newest completed-success `workflow_dispatch` runs' `tested-revisions-<run>-<attempt>`
+artifacts, compares `{client, service, platform}` member by member with the
+before-observation, and refuses a differing member or a missing smoke before the suite. The
+compared smoke run is recorded in `.qualification-inputs/smoke-drift.json` (an audit file,
+not a record member), and the credential-free `record` job re-verifies it against exactly
+the recorded artifact id. Before and after the suite, `full` collects the same observation and refuses any difference in
 Client, Service or platform. The record's two observations must be identical, and the
 `environment` endpoints must match them. `verifyQualificationRecord` re-checks the exact v4
 key set, the signed `operation: full`, the expectation and trigger bindings, the observation
@@ -377,14 +392,21 @@ release and its tag ref only and downloads no release asset. `scripts/github-rea
 (`infra-source.mjs`), the recovery owner-artifact reader and the cleanup diagnostic reader
 (`account-recovery-inputs.mjs`, `beta-cleanup-diagnostic.mjs`) are deleted.
 
-AWS credentials are assumed after the live-tuple gate. `beta-e2e-qualification-role` reads the
-three stage-base stacks of the release-slice split (Bootstrap/Foundation, the Base stack
-`AnyWearPlatformStack-beta` and Billing; `AnyWear-Service` owns
-`AnyWearRuntimeStack-{beta,prod}`), the actual CloudFormation `Original` template content
-hashes, the stable Lambda configuration and code hashes, the queue settings, the stage SSM
-inputs and the Client distribution domain. The Runtime identity is bound by the deployed
-Service `/health` and the Client build metadata. The record's `platform.schema_sha256` is a
-content hash of the stage-contract inputs; the database/applied schema identity moved to the
+AWS credentials are assumed after the live-tuple gate. `beta-e2e-qualification-role` reads
+the discovered surface (#228): `cloudformation list-stacks` in both observation regions with
+`describe-stacks` and `get-template --template-stage Original` per discovered `AnyWear*`
+stack (region parsed from the live stack ARN; every ARN must be in the reviewed account),
+`ssm get-parameters-by-path` over the whole published `/anywear/beta/` prefix (never with
+decryption — a SecureString is refused), `lambda list-functions` and `get-function` for
+every `beta-anywear-*` function (exact ARN/account/region, `Active`, `LastUpdateStatus`
+`Successful`; the stable configuration projection is E2E-owned), `sqs list-queues
+--queue-name-prefix beta-anywear` and `get-queue-attributes` for every `beta-anywear-*`
+queue including the DLQs, and `cloudfront list-distributions` to match the distribution
+whose `DomainName` or `Aliases` contains the live Client URL host (exactly one match,
+`Deployed` and enabled). The Runtime identity is bound by the deployed
+Service `/health` and the Client build metadata. The record's `platform.schema_sha256` is
+the sha256 of the RFC 8785 canonical JSON of the discovered `[{parameter, version}]` rows;
+the database/applied schema identity moved to the
 Service release chain with the release slice.
 
 ## Ordinary E2E execution

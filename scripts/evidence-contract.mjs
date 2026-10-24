@@ -92,6 +92,10 @@ export function canonicalJson(value) {
 
 export const byteHash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const payloadDigest = (payload) => byteHash(canonicalJson(payload));
+// The observation's alias for the same derivation: the sha256 of the RFC 8785 canonical
+// JSON of a value. `payloadDigest` stays the record integrity digest's name; `contentHash`
+// is what the platform discovery and its verifier call it.
+export const contentHash = (value) => byteHash(canonicalJson(value));
 
 // JSON.parse silently accepts duplicate keys. Scan the original text, including
 // escaped key spellings, before any security-sensitive record is interpreted.

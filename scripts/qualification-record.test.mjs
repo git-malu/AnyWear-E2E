@@ -256,8 +256,8 @@ test('requires a stable full observation and refuses each changed member by name
     ['client source', (o) => { o.client.source_commit = 'f'.repeat(40); }, /Deployed Client identity mismatch/],
     ['service image', (o) => { o.service.image_digest = `sha256:${'f'.repeat(64)}`; }, /Deployed Service identity mismatch/],
     ['stack template', (o) => { o.platform.stacks[0].template_sha256 = 'f'.repeat(64); }, /Deployed platform identity mismatch/],
-    ['lambda config', (o) => { o.platform.lambdas['pre-sign-up'].configuration_sha256 = '9'.repeat(64); }, /Deployed platform identity mismatch/],
-    ['queue config', (o) => { o.platform.queue_config_sha256 = 'f'.repeat(64); }, /Deployed platform identity mismatch/],
+    ['lambda config', (o) => { o.platform.lambdas[0].configuration_sha256 = '9'.repeat(64); }, /Deployed platform identity mismatch/],
+    ['queue member', (o) => { o.platform.queues[0].maxReceives = 4; }, /Deployed platform identity mismatch/],
     ['stage input', (o) => { o.platform.inputs[0].value_sha256 = 'f'.repeat(64); }, /Deployed platform identity mismatch/],
     ['client domain', (o) => { o.platform.client_domain = 'other.cloudfront.net'; }, /client_domain other\.cloudfront\.net differs/],
   ]) {
@@ -277,9 +277,14 @@ test('refuses an observation that is unauthenticated, out of order or wrongly sh
     ['unknown member', (o) => { o.schema_version = 1; }, /observation\.schema_version is unknown/],
     ['unknown platform member', (o) => { o.platform.extra = true; }, /platform\.extra is unknown/],
     ['unsorted inputs', (o) => { o.platform.inputs.reverse(); }, /platform input order/],
-    ['wrong stack count', (o) => { o.platform.stacks.pop(); }, /must list exactly the 3 configured stacks/],
+    ['empty stacks', (o) => { o.platform.stacks = []; }, /platform stacks must be a non-empty list of discovered stacks/],
+    ['empty inputs', (o) => { o.platform.inputs = []; }, /platform inputs must be a non-empty list of discovered stage parameters/],
+    ['empty lambdas', (o) => { o.platform.lambdas = []; }, /platform lambdas must be a non-empty list of discovered functions/],
+    ['empty queues', (o) => { o.platform.queues = []; }, /platform queues must be a non-empty list of discovered queues/],
     ['wrong schema hash', (o) => { o.platform.schema_sha256 = 'f'.repeat(64); }, /schema_sha256 is not the content hash/],
-    ['bad lambda code', (o) => { o.platform.lambdas['pre-sign-up'].code_sha256 = 'nope'; }, /code_sha256 is not a Lambda CodeSha256/],
+    ['bad lambda code', (o) => { o.platform.lambdas[0].code_sha256 = 'nope'; }, /code_sha256 is not a Lambda CodeSha256/],
+    ['unsorted queues', (o) => { o.platform.queues.reverse(); }, /platform queue order/],
+    ['unsorted lambdas', (o) => { o.platform.lambdas.reverse(); }, /platform lambda order/],
     ['bad collected_at', (o) => { o.collected_at = 'yesterday'; }, /collected_at must be an ISO timestamp/],
   ]) {
     const observation = structuredClone(f.evidence.before);
@@ -300,6 +305,29 @@ test('refuses an observation that is unauthenticated, out of order or wrongly sh
     before: { ...f.evidence.before, collected_at: f.evidence.after.collected_at },
     after: f.evidence.after,
   }, now.toISOString()), /before and after the suite in order/);
+});
+
+// #228: the validator judges the discovered grammars, not a fixed set. A member outside
+// the committed entry-point patterns — a stack name or region, a stage path, a
+// `beta-anywear-*` name, a queue member — is refused by name.
+test('refuses a platform member outside the discovered grammars', () => {
+  const f = fixture();
+  for (const [label, mutate, pattern] of [
+    ['stack name', (o) => { o.platform.stacks[0].name = 'OtherStack'; }, /is not an AnyWear stack name/],
+    ['stack region', (o) => { o.platform.stacks[0].region = 'eu-west-1'; }, /region "eu-west-1" is not an observation region/],
+    ['duplicated stack', (o) => { o.platform.stacks[1].name = o.platform.stacks[0].name; }, /platform stack .* is duplicated/],
+    ['input path', (o) => { o.platform.inputs[0].parameter = '/anywear/prod/api_base_url'; }, /is not a stage parameter path/],
+    ['lambda name', (o) => { o.platform.lambdas[0].name = 'pre-sign-up'; }, /is not a beta-anywear function name/],
+    ['queue name', (o) => { o.platform.queues[0].name = 'vto'; }, /is not a beta-anywear queue name/],
+    ['queue visibility', (o) => { o.platform.queues[0].queueVisibilitySeconds = '900'; }, /queueVisibilitySeconds is not a non-negative integer/],
+    ['queue maxReceives zero', (o) => { o.platform.queues[0].maxReceives = 0; }, /maxReceives must be a positive integer or null/],
+    ['queue maxReceives string', (o) => { o.platform.queues[1].maxReceives = '3'; }, /maxReceives must be a positive integer or null/],
+    ['duplicated queue', (o) => { o.platform.queues[1].name = o.platform.queues[0].name; }, /platform queue .* is duplicated/],
+  ]) {
+    const observation = structuredClone(f.evidence.before);
+    mutate(observation);
+    assert.throws(() => validateObservation(observation, 'observation'), pattern, label);
+  }
 });
 
 test('refuses a Service release identity that does not state the qualified release', () => {

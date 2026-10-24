@@ -87,8 +87,20 @@ Run install and build commands from this repository.
   `observations`, `test`, `workflow` (including `trigger` and `dispatched_by`) and
   `integrity`. It has no `compatibility` and no `deployment` member, and the v4 verifier
   refuses a v2/v3 record. The independent platform observation is this repository's own
-  authenticated read (`scripts/infra-observation.mjs`) through the vendored contract, not a
-  cross-repository Infra checkout.
+  authenticated read (`scripts/infra-observation.mjs`), which discovers the deployed
+  surface through AWS public list/describe APIs and hashes it with RFC 8785 canonical
+  JSON and sha256 — not a cross-repository Infra checkout. No committed stage-parameter
+  list remains; the committed surface is the stage path, the name prefixes, the account
+  and the two observation regions (`scripts/platform-entrypoints.mjs`).
+- The consumer-side drift gate (#228) compares the deploy-time smoke observation with
+  the qualification observation of the same release. The `full` job finds the newest
+  deploy-smoke observation (Service commit + image digest + Client source commit) among
+  the 30 newest completed-success `workflow_dispatch` runs' `tested-revisions-<run>-<attempt>`
+  artifacts, compares `{client, service, platform}` member by member, and refuses a
+  differing member or a missing smoke before the suite. The compared smoke run is
+  recorded in `.qualification-inputs/smoke-drift.json` (an audit file, not a record
+  member), and the credential-free `record` job re-verifies it against exactly the
+  recorded artifact id. Only `full` runs the gate; `smoke` and `reconcile` never do.
 - The compatibility pin is **deleted** (#192): the committed pin file, `docs/compatibility-pin.md`,
   `docs/compatibility-v3.md` and the pin tools (`validate-compatibility-pin.mjs`,
   `migrate-compatibility.mjs`, `check-compatibility.mjs`) were removed, and no

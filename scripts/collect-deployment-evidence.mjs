@@ -21,7 +21,10 @@ const identity = await collectDeploymentEvidence({
   serviceUrl: process.env.E2E_SERVICE_URL,
   runId: process.env.GITHUB_RUN_ID,
 }, expected);
-const platform = await observePlatform({ io: liveObservationIo() });
+// The Client-domain discovery matches the CloudFront distribution serving the host of
+// the live Client URL, so the host is passed into the observation from the validated
+// live identity.
+const platform = await observePlatform({ io: liveObservationIo(), clientHost: new URL(identity.client.url).host });
 const observation = {
   collected_at: new Date().toISOString(),
   client: identity.client,

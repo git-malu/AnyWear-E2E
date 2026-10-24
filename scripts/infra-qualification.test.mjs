@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  assertEqual, byteHash, canonicalJson, parseStrictJson,
+  assertEqual, byteHash, canonicalJson, contentHash, parseStrictJson,
 } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 import { assertE2EExecution } from './execution-guard.mjs';
@@ -10,84 +10,152 @@ import {
   SERVICE_RELEASE_ASSET_NAMES,
   buildQualificationRecord, validateObservation, verifyQualificationForPromotion,
 } from './qualification-record.mjs';
-import { configuredStacks } from './vendor/operation-stacks.mjs';
-import { stageContractSchemaHash } from './vendor/contracts.mjs';
+
+// The observation reads the reviewed account from the execution environment and verifies
+// it against the STS caller, exactly as the protected workflow provides it.
+process.env.AWS_ACCOUNT_ID = '650880818323';
 
 const now = new Date('2026-10-08T00:20:00.000Z');
 const qualify = (f) => buildQualificationRecord(f.input, f.expected, f.evidence, now, f.environment, f.report);
-const PLATFORM_STACK = 'AnyWearPlatformStack-beta';
-const DEFAULT_OUTPUTS = {
-  [PLATFORM_STACK]: {
-    VtoQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-vto',
-    AutoTaggingQueueUrl: 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-auto-tagging',
-    ClientDistributionDomainName: 'client123.cloudfront.net',
-  },
-};
+const ACCOUNT = '650880818323';
+const CLIENT_HOST = 'client123.cloudfront.net';
+// The unchanged pre-change fixture template: the compatibility test pins its hash.
+const DEFAULT_TEMPLATE = { Resources: { Shared: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'beta' } } } };
+
+const defaultParameters = () => [
+  { Name: '/anywear/beta/api_base_url', Value: 'https://api.example.com', Type: 'String', Version: 1 },
+  { Name: '/anywear/beta/api_security_group_id', Value: 'sg-1', Type: 'String', Version: 2 },
+  { Name: '/anywear/beta/auto_tagging_dlq_name', Value: 'beta-anywear-auto-tagging-dlq', Type: 'String', Version: 3 },
+];
+const defaultQueues = () => [
+  'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-auto-tagging',
+  'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-auto-tagging-dlq',
+  'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-vto',
+  'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-vto-dlq',
+];
+const defaultDistributions = () => [
+  { Id: 'E1', DomainName: 'client123.cloudfront.net', Status: 'Deployed', Enabled: true, Aliases: { Items: ['other.example.com'] } },
+  { Id: 'E2', DomainName: 'api123.cloudfront.net', Status: 'Deployed', Enabled: true, Aliases: { Items: [] } },
+  { Id: 'E3', DomainName: 'admin123.cloudfront.net', Status: 'Deployed', Enabled: true, Aliases: { Items: [] } },
+];
 
 // The AWS CLI double for the authenticated platform observation. Every read the
 // observation performs is answered here, and a test can fail or change exactly one
-// answer so the observation's own refusals are exercised without AWS. `calls` records
-// the exact `{args, region}` of every read, so a test can assert which region each
-// regional call actually used.
+// answer so the observation's own refusals are exercised without AWS. Every list is
+// paginated (`pageSize` rows per page, token flags included), so the observation's
+// bounded pagination loop runs on the fixture path too. `calls` records the exact
+// `{args, region}` of every read, so a test can assert which region each regional call
+// actually used. `handlers` overrides one command by `service action` key.
 function observationIo({
-  account = '650880818323', stackStatus = 'UPDATE_COMPLETE', secondStatus = stackStatus,
-  secondUpdatedTime = '2026-10-07T00:00:00.000Z', outputs = DEFAULT_OUTPUTS, lambdaArnAccount = '650880818323',
-  queueArnAccount = '650880818323', templateBodies = {}, distributionDomain = 'client123.cloudfront.net',
+  account = ACCOUNT,
+  stackStatus = 'UPDATE_COMPLETE',
+  secondStatus = stackStatus,
+  secondUpdatedTime = '2026-10-07T00:00:00.000Z',
+  listStatus = () => stackStatus,
+  stackSummaries = (region) => (region === 'ap-east-1'
+    ? ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta'] : ['AnyWearBillingStack-beta']),
+  describeArn = ({ region, name }) => `arn:aws:cloudformation:${region}:${account}:stack/${name}/id`,
+  stackTemplates = {},
+  parameters = defaultParameters(),
+  functionNames = ['beta-anywear-post-confirmation-sync', 'beta-anywear-pre-sign-up'],
+  functionArn = (name) => `arn:aws:lambda:ap-east-1:${account}:function:${name}`,
+  functionState = 'Active',
+  functionUpdateStatus = 'Successful',
+  queueUrls = defaultQueues(),
+  queueAttributes = () => ({}),
+  distributions = defaultDistributions(),
+  pageSize = 2,
+  handlers = {},
   calls = [],
 } = {}) {
-  const byKey = new Map();
-  for (const configured of configuredStacks) {
-    const record = {
-      StackName: configured.stack_name,
-      StackId: `arn:aws:cloudformation:${configured.region}:650880818323:stack/${configured.stack_name}/id`,
-      StackStatus: stackStatus,
-      LastUpdatedTime: '2026-10-07T00:00:00.000Z',
-      Outputs: Object.entries(outputs[configured.stack_name] ?? {}).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })),
-    };
-    byKey.set(configured.stack_name, record);
-    byKey.set(record.StackId, record);
-  }
+  const listPass = new Map();
+  const describePass = new Map();
+  const pages = (rows) => (args) => {
+    const flag = args.includes('--next-token') ? '--next-token' : '--marker';
+    const index = args.indexOf(flag);
+    const token = index >= 0 ? args[index + 1] : undefined;
+    const page = token === undefined ? 0 : Number(token);
+    const slice = rows.slice(page * pageSize, (page + 1) * pageSize);
+    const next = (page + 1) * pageSize < rows.length ? String(page + 1) : undefined;
+    return { slice, next };
+  };
   const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+  const byAction = {
+    'sts get-caller-identity': () => ({ Account: account }),
+    'cloudformation list-stacks': (args, region) => {
+      const pass = listPass.get(region) ?? 0;
+      listPass.set(region, pass + 1);
+      const { slice, next } = pages(stackSummaries(region, pass))(args);
+      return { StackSummaries: slice.map((StackName) => ({ StackName, StackStatus: listStatus(StackName) })),
+        ...(next ? { NextToken: next } : {}) };
+    },
+    'cloudformation describe-stacks': (args, region) => {
+      const key = valueAfter(args, '--stack-name');
+      const name = key.includes(':stack/') ? key.split('/')[1] : key;
+      const pass = describePass.get(name) ?? 0;
+      describePass.set(name, pass + 1);
+      return { Stacks: [{
+        StackName: name,
+        StackId: describeArn({ region, name }),
+        StackStatus: pass === 0 ? stackStatus : secondStatus,
+        LastUpdatedTime: pass === 0 ? '2026-10-07T00:00:00.000Z' : secondUpdatedTime,
+      }] };
+    },
+    'cloudformation get-template': (args) => {
+      const key = valueAfter(args, '--stack-name');
+      const name = key.split('/')[1];
+      return { TemplateBody: JSON.stringify(stackTemplates[name] ?? DEFAULT_TEMPLATE) };
+    },
+    'ssm get-parameters-by-path': (args) => {
+      const { slice, next } = pages(parameters)(args);
+      return { Parameters: slice, ...(next ? { NextToken: next } : {}) };
+    },
+    'lambda list-functions': (args) => {
+      const { slice, next } = pages(functionNames)(args);
+      return { Functions: slice.map((FunctionName) => ({ FunctionName })),
+        ...(next ? { NextMarker: next } : {}) };
+    },
+    'lambda get-function': (args) => {
+      const name = valueAfter(args, '--function-name');
+      return { Configuration: {
+        FunctionArn: functionArn(name), State: functionState, LastUpdateStatus: functionUpdateStatus,
+        CodeSha256: Buffer.from('e'.repeat(64), 'hex').toString('base64'),
+        FunctionName: name, Runtime: 'nodejs24.x', Handler: 'index.handler',
+        Role: 'arn:aws:iam::650880818323:role/beta-anywear-lambda', MemorySize: 512, Timeout: 30, Architectures: ['arm64'],
+      } };
+    },
+    'sqs list-queues': (args) => {
+      const { slice, next } = pages(queueUrls)(args);
+      return { QueueUrls: slice, ...(next ? { NextToken: next } : {}) };
+    },
+    'sqs get-queue-attributes': (args) => {
+      const url = valueAfter(args, '--queue-url');
+      const name = url.split('/').filter(Boolean).pop();
+      const attributes = {
+        QueueArn: `arn:aws:sqs:ap-east-1:${account}:${name}`,
+        VisibilityTimeout: '900',
+        ...(!name.endsWith('-dlq') ? {
+          RedrivePolicy: JSON.stringify({ maxReceiveCount: 3, deadLetterTargetArn: `arn:aws:sqs:ap-east-1:${account}:${name}-dlq` }),
+        } : {}),
+        ...queueAttributes(name),
+      };
+      return { Attributes: attributes };
+    },
+    'cloudfront list-distributions': (args) => {
+      const { slice, next } = pages(distributions)(args);
+      return { DistributionList: {
+        Items: slice, IsTruncated: Boolean(next), ...(next ? { NextMarker: next } : {}),
+      } };
+    },
+  };
+  const merged = { ...byAction, ...handlers };
   return {
-    async aws(args, stackRegion) {
-      calls.push({ args: [...args], region: stackRegion });
+    async aws(args, awsRegion) {
+      calls.push({ args: [...args], region: awsRegion });
       const [service, action] = args;
-      if (service === 'sts') return { Account: account };
-      if (service === 'cloudformation' && action === 'describe-stacks') {
-        const key = valueAfter(args, '--stack-name');
-        const record = byKey.get(key);
-        if (!record) throw new Error(`unexpected stack ${key}`);
-        const secondRead = key.includes(':stack/');
-        return { Stacks: [{ ...record, StackStatus: secondRead ? secondStatus : stackStatus, ...(secondRead ? { LastUpdatedTime: secondUpdatedTime } : {}) }] };
-      }
-      if (service === 'cloudformation' && action === 'get-template') {
-        const key = valueAfter(args, '--stack-name');
-        return { TemplateBody: JSON.stringify(templateBodies[key] ?? { Resources: { Shared: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'beta' } } } }) };
-      }
-      if (service === 'lambda' && action === 'get-function') {
-        const functionName = valueAfter(args, '--function-name');
-        return { Configuration: {
-          FunctionArn: `arn:aws:lambda:ap-east-1:${lambdaArnAccount}:function:${functionName}`,
-          LastUpdateStatus: 'Successful',
-          CodeSha256: Buffer.from('e'.repeat(64), 'hex').toString('base64'),
-          FunctionName: functionName, Runtime: 'nodejs22.x', Handler: 'index.handler',
-          Role: 'arn:aws:iam::650880818323:role/beta-anywear-lambda', MemorySize: 512, Timeout: 30, Architectures: ['arm64'],
-        } };
-      }
-      if (service === 'sqs' && action === 'get-queue-attributes') {
-        const queueName = new URL(valueAfter(args, '--queue-url')).pathname.split('/').pop();
-        return { Attributes: {
-          QueueArn: `arn:aws:sqs:ap-east-1:${queueArnAccount}:${queueName}`,
-          VisibilityTimeout: '900',
-          RedrivePolicy: JSON.stringify({ maxReceiveCount: 3, deadLetterTargetArn: `arn:aws:sqs:ap-east-1:${queueArnAccount}:${queueName}-dlq` }),
-        } };
-      }
-      if (service === 'ssm' && action === 'get-parameters') {
-        const names = args.slice(args.indexOf('--names') + 1);
-        return { Parameters: names.map((Name, index) => ({ Name, Value: `value:${Name}`, Type: 'String', Version: index + 1 })) };
-      }
-      if (service === 'cloudfront' && action === 'get-distribution') return { Distribution: { DomainName: distributionDomain } };
-      throw new Error(`unexpected AWS call ${args.join(' ')}`);
+      const handler = merged[`${service} ${action}`];
+      if (!handler) throw new Error(`unexpected AWS call ${args.join(' ')}`);
+      return handler(args, awsRegion);
     },
   };
 }
@@ -103,24 +171,37 @@ test('strict JSON rejects escaped duplicate keys, invalid UTF-8/Unicode and non-
   assert.equal(canonicalJson(parseStrictJson('{"z":1,"a":2}')), '{"a":2,"z":1}');
 });
 
-// #180: the observation is E2E's own authenticated read of the three configured stacks,
-// the stage inputs, the two Lambdas, the two queues and the Client distribution. It is
-// producer-free: no Infra commit, no deployment record, no producer fields on a stack row.
-test('observes the live platform itself: three stacks, stage inputs, Lambdas, queues and the Client domain', async () => {
-  const platform = await observePlatform({ io: observationIo() });
-  assert.deepEqual(platform.stacks.map(({ name }) => name),
-    ['AnyWearBillingStack-beta', 'AnyWearFoundationStack', 'AnyWearPlatformStack-beta']);
+// #180/#228: the observation is E2E's own authenticated discovery of the deployed
+// surface — every `AnyWear*` stack in the two observation regions, the published stage
+// prefix, every `beta-anywear-*` Lambda and queue, and the Client distribution. It is
+// producer-free: no Infra commit, no deployment record, no committed name list.
+test('observes the live platform itself: discovered stacks, stage inputs, Lambdas, queues and the Client domain', async () => {
+  const platform = await observePlatform({ io: observationIo(), clientHost: CLIENT_HOST });
+  assert.deepEqual(platform.stacks, [
+    { name: 'AnyWearBillingStack-beta', region: 'us-east-1', template_sha256: contentHash(DEFAULT_TEMPLATE) },
+    { name: 'AnyWearFoundationStack', region: 'ap-east-1', template_sha256: contentHash(DEFAULT_TEMPLATE) },
+    { name: 'AnyWearPlatformStack-beta', region: 'ap-east-1', template_sha256: contentHash(DEFAULT_TEMPLATE) },
+  ]);
   for (const row of platform.stacks) {
     assert.deepEqual(Object.keys(row).sort(), ['name', 'region', 'template_sha256']);
     assert.equal(row.producer_repository, undefined);
   }
-  assert.ok(platform.inputs.length > 0);
-  assert.deepEqual(platform.inputs.map(({ parameter }) => parameter), [...platform.inputs.map(({ parameter }) => parameter)].sort());
-  for (const input of platform.inputs) assert.match(input.version, /^[1-9][0-9]*$/);
-  assert.equal(platform.schema_sha256, stageContractSchemaHash(platform.inputs));
-  assert.deepEqual(Object.keys(platform.lambdas).sort(), ['post-confirmation', 'pre-sign-up']);
-  assert.match(platform.queue_config_sha256, /^[0-9a-f]{64}$/);
-  assert.equal(platform.client_domain, 'client123.cloudfront.net');
+  assert.deepEqual(platform.inputs.map(({ parameter, version }) => ({ parameter, version })), [
+    { parameter: '/anywear/beta/api_base_url', version: '1' },
+    { parameter: '/anywear/beta/api_security_group_id', version: '2' },
+    { parameter: '/anywear/beta/auto_tagging_dlq_name', version: '3' },
+  ]);
+  assert.equal(platform.inputs[0].value_sha256, byteHash('https://api.example.com'));
+  assert.equal(platform.schema_sha256, contentHash(platform.inputs.map(({ parameter, version }) => ({ parameter, version }))));
+  assert.deepEqual(platform.lambdas.map(({ name }) => name), ['beta-anywear-post-confirmation-sync', 'beta-anywear-pre-sign-up']);
+  assert.deepEqual(platform.queues.map(({ name }) => name), [
+    'beta-anywear-auto-tagging', 'beta-anywear-auto-tagging-dlq', 'beta-anywear-vto', 'beta-anywear-vto-dlq',
+  ]);
+  assert.deepEqual(platform.queues.find(({ name }) => name === 'beta-anywear-auto-tagging'),
+    { name: 'beta-anywear-auto-tagging', queueVisibilitySeconds: 900, maxReceives: 3 });
+  assert.deepEqual(platform.queues.find(({ name }) => name === 'beta-anywear-auto-tagging-dlq'),
+    { name: 'beta-anywear-auto-tagging-dlq', queueVisibilitySeconds: 900, maxReceives: null });
+  assert.equal(platform.client_domain, CLIENT_HOST);
 
   const f = qualificationFixture();
   const observation = {
@@ -133,63 +214,274 @@ test('observes the live platform itself: three stacks, stage inputs, Lambdas, qu
   assert.equal(validateObservation(observation, 'observed'), observation);
 });
 
-// #177 B1: `cloudformation get-template` is a regional read. The three configured stacks
-// do not share a region (Billing is us-east-1, Foundation and the Base stack are
-// ap-east-1), so each template read must run in the stack's own region.
+// #228 acceptance: the discovery walks every list to exhaustion with new tokens, so a
+// member added beyond the first page is still observed. The double pages at `pageSize`
+// rows, and the expanded fixture forces a second page on every list.
+test('pagination walks each discovery list to exhaustion with fresh tokens', async () => {
+  const calls = [];
+  const platform = await observePlatform({
+    io: observationIo({
+      stackSummaries: (region) => (region === 'ap-east-1'
+        ? ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta']
+        : ['AnyWearBillingStack-beta']),
+      parameters: [
+        ...defaultParameters(),
+        { Name: '/anywear/beta/tester_allowlist', Value: 'allow@anywear.local', Type: 'String', Version: 4 },
+      ],
+      functionNames: ['beta-anywear-post-confirmation-sync', 'beta-anywear-pre-sign-up', 'beta-anywear-new-worker'],
+      queueUrls: [...defaultQueues(), 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-new-queue'],
+      distributions: [...defaultDistributions(), { Id: 'E4', DomainName: 'extra.cloudfront.net', Status: 'Deployed', Enabled: true, Aliases: { Items: [] } }],
+      pageSize: 2,
+      calls,
+    }),
+    clientHost: CLIENT_HOST,
+  });
+  assert.deepEqual(platform.stacks.map(({ name }) => name),
+    ['AnyWearBillingStack-beta', 'AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta']);
+  assert.ok(platform.inputs.some(({ parameter }) => parameter === '/anywear/beta/tester_allowlist'));
+  assert.ok(platform.lambdas.some(({ name }) => name === 'beta-anywear-new-worker'));
+  assert.ok(platform.queues.some(({ name }) => name === 'beta-anywear-new-queue'));
+  for (const [service, action, flag] of [
+    ['cloudformation', 'list-stacks', '--next-token'],
+    ['ssm', 'get-parameters-by-path', '--next-token'],
+    ['lambda', 'list-functions', '--marker'],
+    ['sqs', 'list-queues', '--next-token'],
+    ['cloudfront', 'list-distributions', '--marker'],
+  ]) {
+    const reads = calls.filter(({ args }) => args[0] === service && args[1] === action);
+    assert.ok(reads.some(({ args }) => args.includes(flag)), `${service} ${action} must page with ${flag}`);
+  }
+});
+
+// #228 acceptance: a stage parameter, an `AnyWear*` stack, a `beta-anywear-*` Lambda and
+// queue added to the fixture appear in the observation output with no source change —
+// the discovered surface, not a committed list, is what the observation records.
+test('a stage parameter, stack, Lambda and queue added to the fixture appear with no source change', async () => {
+  const platform = await observePlatform({
+    io: observationIo({
+      stackSummaries: (region) => (region === 'ap-east-1'
+        ? ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearEgressStack-beta']
+        : ['AnyWearBillingStack-beta']),
+      parameters: [
+        ...defaultParameters(),
+        { Name: '/anywear/beta/qweather_api_host', Value: 'api.qweather.example', Type: 'String', Version: 7 },
+      ],
+      functionNames: ['beta-anywear-post-confirmation-sync', 'beta-anywear-pre-sign-up', 'beta-anywear-post-build-hook'],
+      queueUrls: [...defaultQueues(), 'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-outbox'],
+    }),
+    clientHost: CLIENT_HOST,
+  });
+  assert.deepEqual(platform.stacks.map(({ name }) => name), [
+    'AnyWearBillingStack-beta', 'AnyWearEgressStack-beta', 'AnyWearFoundationStack', 'AnyWearPlatformStack-beta',
+  ]);
+  assert.deepEqual(platform.inputs.map(({ parameter }) => parameter), [
+    '/anywear/beta/api_base_url', '/anywear/beta/api_security_group_id', '/anywear/beta/auto_tagging_dlq_name', '/anywear/beta/qweather_api_host',
+  ]);
+  assert.deepEqual(platform.lambdas.map(({ name }) => name),
+    ['beta-anywear-post-build-hook', 'beta-anywear-post-confirmation-sync', 'beta-anywear-pre-sign-up']);
+  assert.deepEqual(platform.queues.map(({ name }) => name), [
+    'beta-anywear-auto-tagging', 'beta-anywear-auto-tagging-dlq', 'beta-anywear-outbox', 'beta-anywear-vto', 'beta-anywear-vto-dlq',
+  ]);
+});
+
+// #228: unchanged fixture content keeps byte-identical hashes. The template content and
+// the [{parameter, version}] rows below are the pre-change fixture, and the hashes are
+// the values the pre-change derivation produced for them.
+test('template_sha256 and schema_sha256 of unchanged fixture content stay byte-identical to the pre-change values', async () => {
+  const platform = await observePlatform({ io: observationIo(), clientHost: CLIENT_HOST });
+  for (const row of platform.stacks) {
+    assert.equal(row.template_sha256, '464a8021cee726a2d01f4cc21da77d814a0ca6cbfef78ccb93c5e5620053bfb5');
+  }
+  assert.equal(platform.schema_sha256, '1a3790fedd149074b4d705e2f7e27e70765e9cd503246e4080136c0ea772922c');
+  assert.equal(platform.schema_sha256, contentHash(platform.inputs.map(({ parameter, version }) => ({ parameter, version }))));
+  const f = qualificationFixture();
+  assert.equal(f.evidence.before.platform.schema_sha256, '1a3790fedd149074b4d705e2f7e27e70765e9cd503246e4080136c0ea772922c');
+});
+
 test('reads each stack template in the stack\'s own region', async () => {
   const calls = [];
-  await observePlatform({ io: observationIo({ calls }) });
-  const configuredRegion = (stackName) => configuredStacks.find(({ stack_name: name }) => name === stackName)?.region;
+  await observePlatform({ io: observationIo({ calls }), clientHost: CLIENT_HOST });
   const templates = calls.filter(({ args }) => args[0] === 'cloudformation' && args[1] === 'get-template');
-  assert.equal(templates.length, configuredStacks.length);
+  // One template read per stack per discovery pass, so the closing re-read covers it.
+  assert.equal(templates.length, 6);
   for (const call of templates) {
     const stackArn = call.args[call.args.indexOf('--stack-name') + 1];
     const arnRegion = /^arn:aws:cloudformation:([a-z0-9-]+):/.exec(stackArn)?.[1];
     const stackName = stackArn.split('/')[1];
     assert.equal(call.region, arnRegion, `get-template for ${stackName} must use the region in its stack ARN`);
-    assert.equal(call.region, configuredRegion(stackName), `get-template for ${stackName} must use its configured region`);
   }
   const templateFor = (name) => templates.find(({ args }) => args.some((arg) => typeof arg === 'string' && arg.includes(name)));
   assert.equal(templateFor('AnyWearBillingStack-beta')?.region, 'us-east-1');
   assert.equal(templateFor('AnyWearFoundationStack')?.region, 'ap-east-1');
   assert.equal(templateFor('AnyWearPlatformStack-beta')?.region, 'ap-east-1');
-  // The describe-stacks reads (the initial identity read and the closing re-read) use the
-  // same per-stack regions, so neither can be silently routed to the default region.
   for (const call of calls.filter(({ args }) => args[0] === 'cloudformation' && args[1] === 'describe-stacks')) {
     const key = call.args[call.args.indexOf('--stack-name') + 1];
     const stackName = key.includes(':stack/') ? key.split('/')[1] : key;
-    assert.equal(call.region, configuredRegion(stackName), `describe-stacks for ${stackName} must use its configured region`);
+    const expected = stackName === 'AnyWearBillingStack-beta' ? 'us-east-1' : 'ap-east-1';
+    assert.equal(call.region, expected, `describe-stacks for ${stackName} must use its listed region`);
   }
 });
 
-test('refuses a stack, account, Lambda, queue or template that is not the reviewed deployed one', async () => {
-  await assert.rejects(observePlatform({ io: observationIo({ account: '111111111111' }) }),
-    /requires the Beta account 650880818323 \(observed 111111111111\)/);
-  await assert.rejects(observePlatform({ io: observationIo({ stackStatus: 'UPDATE_IN_PROGRESS' }) }),
-    /is not in a terminal state/);
-  await assert.rejects(observePlatform({ io: observationIo({ lambdaArnAccount: '111111111111' }) }),
-    /Actual Lambda identity\/update state unproven/);
-  await assert.rejects(observePlatform({ io: observationIo({ queueArnAccount: '111111111111' }) }),
-    /Foreign vto queue observation/);
-  await assert.rejects(observePlatform({ io: observationIo({ outputs: { ...DEFAULT_OUTPUTS, [PLATFORM_STACK]: {} } }) }),
-    /Deployed vto queue is unavailable/);
-  // A deployment that crosses the observation is refused instead of being recorded as one state.
-  await assert.rejects(observePlatform({ io: observationIo({ secondUpdatedTime: '2026-10-07T00:01:00.000Z' }) }),
-    /changed during the authenticated observation/);
-  // Without the distribution-domain output the domain is read from CloudFront itself.
-  const viaDistribution = await observePlatform({
+test('refuses a stack, account, Lambda, queue or distribution that is not the reviewed discovered one', async () => {
+  // The foreign-account guard keeps its message: an observation taken under another
+  // account cannot be recorded as Beta.
+  await assert.rejects(observePlatform({ io: observationIo({ account: '111111111111' }), clientHost: CLIENT_HOST }),
+    /Platform observation requires the Beta account 650880818323 \(observed 111111111111\)/);
+  // A non-terminal AnyWear* stack is a deployment crossing the window; DELETE_COMPLETE
+  // rows are the one ignored status.
+  await assert.rejects(observePlatform({ io: observationIo({ listStatus: () => 'UPDATE_IN_PROGRESS' }), clientHost: CLIENT_HOST }),
+    /is not in a terminal state \(observed UPDATE_IN_PROGRESS\)/);
+  const withDeletedEgress = await observePlatform({
     io: observationIo({
-      outputs: { [PLATFORM_STACK]: { ...DEFAULT_OUTPUTS[PLATFORM_STACK], ClientDistributionDomainName: undefined, ClientDistributionId: 'E123' } },
+      stackSummaries: (region) => (region === 'ap-east-1'
+        ? ['AnyWearEgressStack-beta', 'AnyWearFoundationStack', 'AnyWearPlatformStack-beta']
+        : ['AnyWearBillingStack-beta']),
+      listStatus: (name) => (name === 'AnyWearEgressStack-beta' ? 'DELETE_COMPLETE' : 'UPDATE_COMPLETE'),
     }),
+    clientHost: CLIENT_HOST,
   });
-  assert.equal(viaDistribution.client_domain, 'client123.cloudfront.net');
+  assert.equal(withDeletedEgress.stacks.some(({ name }) => name === 'AnyWearEgressStack-beta'), false);
+  // A foreign account/region entry inside a list is refused by name, never silently
+  // dropped.
+  await assert.rejects(observePlatform({
+    io: observationIo({ describeArn: () => 'arn:aws:cloudformation:ap-east-1:111111111111:stack/AnyWearFoundationStack/id' }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFormation stack AnyWearFoundationStack belongs to foreign account 111111111111/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ describeArn: () => 'arn:aws:cloudformation:eu-west-1:650880818323:stack/AnyWearFoundationStack/id' }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFormation stack AnyWearFoundationStack ARN region eu-west-1 differs from its list region ap-east-1/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ functionArn: () => 'arn:aws:lambda:ap-east-1:111111111111:function:beta-anywear-pre-sign-up' }),
+    clientHost: CLIENT_HOST,
+  }), /Actual Lambda identity\/update state unproven for beta-anywear-post-confirmation-sync/);
+  await assert.rejects(observePlatform({ io: observationIo({ functionState: 'Pending' }), clientHost: CLIENT_HOST }),
+    /Actual Lambda identity\/update state unproven/);
+  await assert.rejects(observePlatform({ io: observationIo({ functionUpdateStatus: 'Failed' }), clientHost: CLIENT_HOST }),
+    /Actual Lambda identity\/update state unproven/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ queueUrls: ['https://sqs.ap-east-1.amazonaws.com/111111111111/beta-anywear-vto',
+      'https://sqs.ap-east-1.amazonaws.com/650880818323/beta-anywear-auto-tagging'] }),
+    clientHost: CLIENT_HOST,
+  }), /Foreign queue URL observation for beta-anywear-vto/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ queueAttributes: (name) => (name === 'beta-anywear-vto'
+      ? { QueueArn: 'arn:aws:sqs:ap-east-1:111111111111:beta-anywear-vto' } : {}) }),
+    clientHost: CLIENT_HOST,
+  }), /Foreign queue observation for beta-anywear-vto/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ queueAttributes: (name) => (name === 'beta-anywear-vto' ? { RedrivePolicy: 'not-json' } : {}) }),
+    clientHost: CLIENT_HOST,
+  }), /Deployed beta-anywear-vto queue redrive policy is unreadable/);
+  // A SecureString under the stage path is refused: the reader never decrypts.
+  await assert.rejects(observePlatform({
+    io: observationIo({ parameters: [
+      { Name: '/anywear/beta/api_base_url', Value: 'https://api.example.com', Type: 'String', Version: 1 },
+      { Name: '/anywear/beta/secret_value', Value: 'masked', Type: 'SecureString', Version: 1 },
+    ] }),
+    clientHost: CLIENT_HOST,
+  }), /SSM parameter \/anywear\/beta\/secret_value is a SecureString/);
+  // A deployment that crosses the observation is refused instead of being recorded as one state.
+  await assert.rejects(observePlatform({ io: observationIo({ secondUpdatedTime: '2026-10-07T00:01:00.000Z' }), clientHost: CLIENT_HOST }),
+    /CloudFormation stack AnyWearFoundationStack changed during the authenticated observation/);
+  // A stack added or removed between the two discovery passes is refused and named.
+  await assert.rejects(observePlatform({
+    io: observationIo({
+      stackSummaries: (region, pass) => (region === 'ap-east-1'
+        ? (pass === 0 ? ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta'] : ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta'])
+        : ['AnyWearBillingStack-beta']),
+    }),
+    clientHost: CLIENT_HOST,
+  }), /Platform discovery mismatch at <root>\.stacks/);
+  await assert.rejects(observePlatform({
+    io: observationIo({
+      stackSummaries: (region, pass) => (region === 'ap-east-1'
+        ? (pass === 0 ? ['AnyWearFoundationStack', 'AnyWearPlatformStack-beta'] : ['AnyWearPlatformStack-beta'])
+        : ['AnyWearBillingStack-beta']),
+    }),
+    clientHost: CLIENT_HOST,
+  }), /Platform discovery mismatch at <root>\.stacks/);
+  // The client domain: no match, several matches, a disabled or not-Deployed one.
+  await assert.rejects(observePlatform({ io: observationIo({ distributions: defaultDistributions().slice(1) }), clientHost: CLIENT_HOST }),
+    /Client domain discovery found 0 CloudFront distributions serving client123\.cloudfront\.net/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ distributions: [...defaultDistributions(),
+      { Id: 'E4', DomainName: 'client123.cloudfront.net', Status: 'Deployed', Enabled: true, Aliases: { Items: [] } }] }),
+    clientHost: CLIENT_HOST,
+  }), /Client domain discovery found 2 CloudFront distributions serving client123\.cloudfront\.net/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ distributions: [{ Id: 'E1', DomainName: CLIENT_HOST, Status: 'InProgress', Enabled: true, Aliases: { Items: [] } }] }),
+    clientHost: CLIENT_HOST,
+  }), /not deployed and enabled \(Status InProgress, Enabled true\)/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ distributions: [{ Id: 'E1', DomainName: CLIENT_HOST, Status: 'Deployed', Enabled: false, Aliases: { Items: [] } }] }),
+    clientHost: CLIENT_HOST,
+  }), /not deployed and enabled \(Status Deployed, Enabled false\)/);
+});
+
+test('an empty discovered set per service is a loud failure naming the service and region', async () => {
+  await assert.rejects(observePlatform({
+    io: observationIo({ stackSummaries: () => [] }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFormation discovery found no AnyWear\* stacks in ap-east-1/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ stackSummaries: (region) => (region === 'ap-east-1' ? ['AnyWearFoundationStack'] : []) }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFormation discovery found no AnyWear\* stacks in us-east-1/);
+  await assert.rejects(observePlatform({ io: observationIo({ parameters: [] }), clientHost: CLIENT_HOST }),
+    /SSM discovery found no parameters under \/anywear\/beta\//);
+  await assert.rejects(observePlatform({ io: observationIo({ functionNames: [] }), clientHost: CLIENT_HOST }),
+    /Lambda discovery found no beta-anywear-\* functions in ap-east-1/);
+  await assert.rejects(observePlatform({ io: observationIo({ queueUrls: [] }), clientHost: CLIENT_HOST }),
+    /SQS discovery found no beta-anywear-\* queues in ap-east-1/);
+});
+
+test('a looping or unbounded list read is refused', async () => {
+  await assert.rejects(observePlatform({
+    io: observationIo({
+      handlers: {
+        'lambda list-functions': (args) => ({
+          Functions: [{ FunctionName: args.includes('--marker')
+            ? 'beta-anywear-post-confirmation-sync' : 'beta-anywear-pre-sign-up' }],
+          NextMarker: '1',
+        }),
+      },
+    }),
+    clientHost: CLIENT_HOST,
+  }), /Lambda list-functions pagination token repeated/);
+  await assert.rejects(observePlatform({
+    io: observationIo({
+      handlers: {
+        'lambda list-functions': (args) => ({
+          Functions: [
+            { FunctionName: 'beta-anywear-pre-sign-up' }, { FunctionName: 'beta-anywear-post-confirmation-sync' },
+          ],
+          NextMarker: args.includes('--marker') ? undefined : '1',
+        }),
+      },
+    }),
+    clientHost: CLIENT_HOST,
+  }), /Lambda list-functions lists beta-anywear-pre-sign-up more than once/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ functionNames: Array.from({ length: 101 }, (_, index) => `beta-anywear-f${String(index).padStart(3, '0')}`), pageSize: 2 }),
+    clientHost: CLIENT_HOST,
+  }), /Lambda list-functions exceeded the 50-page pagination bound/);
+  await assert.rejects(observePlatform({
+    io: observationIo({ handlers: {
+      'cloudfront list-distributions': () => ({ DistributionList: { Items: defaultDistributions(), IsTruncated: true } }),
+    } }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFront list-distributions is truncated without a next token/);
 });
 
 test('a changed deployed template is a different content identity', async () => {
-  const original = await observePlatform({ io: observationIo() });
-  const changed = await observePlatform({ io: observationIo({ templateBodies: {
-    'arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearFoundationStack/id': { Resources: { Shared: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'changed' } } } },
-  } }) });
+  const original = await observePlatform({ io: observationIo(), clientHost: CLIENT_HOST });
+  const changed = await observePlatform({
+    io: observationIo({ stackTemplates: {
+      'AnyWearFoundationStack': { Resources: { Shared: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'changed' } } } },
+    } }),
+    clientHost: CLIENT_HOST,
+  });
   assert.notEqual(changed.stacks.find(({ name }) => name === 'AnyWearFoundationStack').template_sha256,
     original.stacks.find(({ name }) => name === 'AnyWearFoundationStack').template_sha256);
   assert.equal(changed.stacks.find(({ name }) => name === 'AnyWearPlatformStack-beta').template_sha256,
@@ -198,10 +490,10 @@ test('a changed deployed template is a different content identity', async () => 
 
 test('the live AWS seam names the denied read instead of failing silently', async () => {
   const io = liveObservationIo({
-    execute: () => { const error = new Error('Command failed'); error.stderr = Buffer.from('An error occurred (AccessDenied) when calling the DescribeStacks operation'); throw error; },
+    execute: () => { const error = new Error('Command failed'); error.stderr = Buffer.from('An error occurred (AccessDenied) when calling the ListStacks operation'); throw error; },
   });
-  await assert.rejects(async () => io.aws(['cloudformation', 'describe-stacks', '--stack-name', 'AnyWearFoundationStack']),
-    /AWS read failed for cloudformation describe-stacks --stack-name AnyWearFoundationStack: An error occurred \(AccessDenied\)/);
+  await assert.rejects(async () => io.aws(['cloudformation', 'list-stacks']),
+    /AWS read failed for cloudformation list-stacks: An error occurred \(AccessDenied\)/);
 });
 
 test('the record is self-contained: only the v4 members, and the live tuple inside them', () => {
@@ -220,6 +512,9 @@ test('the record is self-contained: only the v4 members, and the live tuple insi
   assert.deepEqual(Object.keys(record.observations).sort(), ['after', 'before']);
   for (const phase of ['before', 'after']) {
     assert.deepEqual(Object.keys(record.observations[phase]).sort(), ['authenticated', 'client', 'collected_at', 'platform', 'service']);
+    // #228: the platform member is the discovered shape; `queue_config_sha256` is gone.
+    assert.deepEqual(Object.keys(record.observations[phase].platform).sort(),
+      ['client_domain', 'inputs', 'lambdas', 'queues', 'schema_sha256', 'stacks']);
   }
   // The serialized record is the whole tuple: Client, Service, image, platform content,
   // stage inputs, Lambdas, queues, distribution and the floor.
@@ -231,21 +526,26 @@ test('the record is self-contained: only the v4 members, and the live tuple insi
   assert.ok(serialized.includes(`"minimum_client_version":${record.revisions.service.minimum_client_version}`));
   assert.ok(serialized.includes(record.observations.after.platform.schema_sha256));
   assert.ok(serialized.includes(record.observations.after.platform.client_domain));
+  assert.ok(serialized.includes('"queueVisibilitySeconds"'));
   assert.equal(serialized.includes('"compatibility"'), false);
   assert.equal(serialized.includes('"deployment"'), false);
   assert.equal(serialized.includes('"infra"'), false);
+  assert.equal(serialized.includes('queue_config_sha256'), false);
 });
 
-test('the stage-contract schema hash is content identity derived from the inputs', () => {
+test('the stage-input schema hash is content identity derived from the inputs', () => {
   const f = qualificationFixture();
   const inputs = structuredClone(f.evidence.before.platform.inputs);
-  assert.equal(stageContractSchemaHash(inputs), f.evidence.before.platform.schema_sha256);
+  assert.equal(contentHash(inputs.map(({ parameter, version }) => ({ parameter, version }))),
+    f.evidence.before.platform.schema_sha256);
   const valueChanged = structuredClone(inputs);
   valueChanged[0].value_sha256 = 'a'.repeat(64);
-  assert.equal(stageContractSchemaHash(valueChanged), stageContractSchemaHash(inputs));
+  assert.equal(contentHash(valueChanged.map(({ parameter, version }) => ({ parameter, version }))),
+    contentHash(inputs.map(({ parameter, version }) => ({ parameter, version }))));
   const versionChanged = structuredClone(inputs);
   versionChanged[0].version = String(Number(versionChanged[0].version) + 1);
-  assert.notEqual(stageContractSchemaHash(versionChanged), stageContractSchemaHash(inputs));
+  assert.notEqual(contentHash(versionChanged.map(({ parameter, version }) => ({ parameter, version }))),
+    contentHash(inputs.map(({ parameter, version }) => ({ parameter, version }))));
 });
 
 test('promotion requires the exact unexpired artifact and completed-success E2E attempt, beyond the self-checksum', () => {
@@ -310,15 +610,14 @@ test('execution guard binds protected dispatch/source and the captured dedicated
   assert.throws(() => assertE2EExecution(beforeCredentials, { sourceSha }), /dedicated E2E principal/);
 });
 
-// AnyWear #138 stays true after v3: identity is content, never an ECS task-definition
-// revision. A changed platform template, input or application identity is refused by
-// name (the old pin comparison reported the first differing path with both values).
+// AnyWear #138 stays true after #228: identity is content, never a committed list. A
+// changed platform template, input or application identity is refused by name.
 test('#138 a changed deployment content is refused and the error names the differing field', () => {
   assert.throws(() => assertEqual({ platform: { template_sha256: 'a'.repeat(64) } }, { platform: { template_sha256: 'b'.repeat(64) } }, 'Record'),
     /Record mismatch at <root>\.platform\.template_sha256: expected "b{64}", observed "a{64}"/);
   const f = qualificationFixture();
   const changed = structuredClone(f);
-  changed.evidence.after.platform.lambdas['post-confirmation'].configuration_sha256 = 'f'.repeat(64);
+  changed.evidence.after.platform.lambdas.find(({ name }) => name === 'beta-anywear-post-confirmation-sync').configuration_sha256 = 'f'.repeat(64);
   assert.throws(() => qualify(changed), /Deployed platform identity mismatch/);
   const digestChanged = structuredClone(f);
   digestChanged.evidence.after.service.image_digest = `sha256:${'f'.repeat(64)}`;
