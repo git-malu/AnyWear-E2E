@@ -886,8 +886,8 @@ test('the migration allowance reaches the cleanup only from the 90-day reconcile
 });
 
 test('the migration allowance is derived from the recorded window and no other caller can request it', () => {
-  // Every qualification teardown, `full`/`smoke` cleanup and `recover` dispatch shares the
-  // same `runCleanupOperation` entry without an options object: none of them can mint the
+  // Every qualification teardown and `full`/`smoke` cleanup shares the same
+  // `runCleanupOperation` entry without an options object: none of them can mint the
   // migration generation, and the protected entry exposes no input that selects it.
   const teardown = readFileSync(new URL('./cleanup-worker-accounts.mjs', import.meta.url), 'utf8');
   assert.equal(teardown.includes('migrationGeneration'), false);

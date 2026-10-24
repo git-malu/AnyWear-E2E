@@ -10,7 +10,6 @@ import {
   SERVICE_RELEASE_ASSET_NAMES,
   buildQualificationRecord, validateObservation, verifyQualificationForPromotion,
 } from './qualification-record.mjs';
-import { assertRecoveryArtifact, prepareAccountRecovery } from './account-recovery-inputs.mjs';
 import { configuredStacks } from './vendor/operation-stacks.mjs';
 import { stageContractSchemaHash } from './vendor/deployment-contract.mjs';
 
@@ -285,16 +284,18 @@ test('execution guard binds protected dispatch/source and the captured dedicated
     E2E_CLEANUP_SERVICE_SHA: 'b'.repeat(40), E2E_AWS_ACCOUNT: '650880818323',
     E2E_AWS_PRINCIPAL_ARN: 'arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/e2e-123-1' };
   assert.equal(assertE2EExecution(env, { sourceSha }), true);
-  for (const operation of ['full', 'smoke', 'recover']) {
+  for (const operation of ['full', 'smoke', 'reconcile']) {
     assert.equal(assertE2EExecution({ ...env, E2E_OPERATION: operation }, { sourceSha }), true);
   }
   for (const patch of [{ ENABLE_BETA_MUTATION: 'false' }, { GITHUB_REPOSITORY: 'other/E2E' }, { GITHUB_REPOSITORY_ID: '1' },
     { GITHUB_REPOSITORY_OWNER: 'other' }, { GITHUB_REPOSITORY_OWNER_ID: '1' }, { GITHUB_REF: 'refs/heads/topic' },
     { GITHUB_EVENT_NAME: 'pull_request' }, { E2E_STAGE: 'dev' }, { GITHUB_WORKFLOW_SHA: 'b'.repeat(40) },
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/integration.yml@refs/heads/main' },
-    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/account-recovery.yml@refs/heads/main' },
+    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/retired-recovery.yml@refs/heads/main' },
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/runtime-drill.yml@refs/heads/main' },
     { E2E_OPERATION: undefined }, { E2E_OPERATION: '' }, { E2E_OPERATION: 'measure' },
+    // #217: the manual recover operation is removed, so the guard refuses it explicitly.
+    { E2E_OPERATION: 'recover' },
     { E2E_OPERATION: 'instrumentation' },
     { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '9007199254740992' }, { GITHUB_RUN_ATTEMPT: '0' },
     { AWS_ACCOUNT_ID: '1' }, { AWS_REGION: 'us-east-1' }, { E2E_CLEANUP_SERVICE_SHA: 'main' },
@@ -307,40 +308,6 @@ test('execution guard binds protected dispatch/source and the captured dedicated
   const beforeCredentials = { ...env, E2E_AWS_ACCOUNT: undefined, E2E_AWS_PRINCIPAL_ARN: undefined };
   assert.equal(assertE2EExecution(beforeCredentials, { sourceSha, sourceOnly: true }), true);
   assert.throws(() => assertE2EExecution(beforeCredentials, { sourceSha }), /dedicated E2E principal/);
-});
-
-test('recovery binds the original completed owner and preserves unproven identities', () => {
-  const run = { id: 123, run_attempt: 1, head_sha: 'a'.repeat(40), repository: { full_name: 'git-malu/AnyWear-E2E' },
-    head_branch: 'main', event: 'workflow_dispatch', path: '.github/workflows/beta-qualification.yml', status: 'completed', conclusion: 'failure' };
-  const manifest = { version: 1, runScope: '123-1-0000000000000000', config: { maxActiveAccounts: 2, maxNewAccountsPerRun: 4, maxQuarantinedAccounts: 2 },
-    accounts: [{ mode: 'worker', status: 'in_use', subject: '00000000-0000-0000-0000-000000000001', email: 'e2e-beta-worker-0-chromium@anywear.local' },
-      { mode: 'worker', status: 'quarantined', subject: '00000000-0000-0000-0000-000000000002', email: 'e2e-beta-worker-1-chromium@anywear.local' },
-      { mode: 'worker', status: 'deleted', subject: 'already-gone' },
-      { mode: 'worker', status: 'provisioning', subject: 'unknown', email: 'e2e-beta-worker-2-chromium@anywear.local' }] };
-  const prepared = prepareAccountRecovery(structuredClone(manifest), run, 123, 1);
-  assert.equal(prepared.accounts[0].status, 'cleanup_pending');
-  // A quarantined record whose captured subject and address are intact is the
-  // same cleanup request; only an unproven identity stays terminal.
-  assert.equal(prepared.accounts[1].status, 'cleanup_pending');
-  assert.equal(prepared.accounts[2].status, 'deleted');
-  assert.equal(prepared.accounts[3].status, 'provisioning');
-  for (const patch of [{ status: 'in_progress' }, { run_attempt: 2 }, { path: '.github/workflows/runtime-drill.yml' }, { repository: { full_name: 'other/E2E' } }]) assert.throws(() => prepareAccountRecovery(structuredClone(manifest), { ...run, ...patch }, 123, 1));
-  assert.throws(() => prepareAccountRecovery({ ...manifest, runScope: '124-1-0000000000000000' }, run, 123, 1));
-  assert.throws(() => prepareAccountRecovery({ ...manifest, config: { ...manifest.config, maxNewAccountsPerRun: 1 } }, run, 123, 1));
-  const reordered = prepareAccountRecovery({ ...structuredClone(manifest), config: { maxQuarantinedAccounts: 2, maxNewAccountsPerRun: 4, maxActiveAccounts: 2 } }, run, 123, 1);
-  assert.equal(JSON.stringify(reordered.config), JSON.stringify(manifest.config));
-});
-
-test('recovery artifact binds unique original source/attempt times and lifetime', () => {
-  const run = { id: 123, run_attempt: 2, head_sha: 'a'.repeat(40), run_started_at: '2026-10-08T00:00:00Z', updated_at: '2026-10-08T00:20:00Z' };
-  const artifact = { id: 55, name: 'beta-account-lifecycle-123-2', expired: false, digest: `sha256:${'a'.repeat(64)}`,
-    created_at: '2026-10-08T00:10:00Z', expires_at: '2099-01-01T00:00:00Z', workflow_run: { id: 123, head_sha: run.head_sha } };
-  assert.equal(assertRecoveryArtifact(artifact, run), artifact);
-  for (const patch of [{ name: 'beta-account-lifecycle-123-1' }, { expired: true }, { workflow_run: { id: 123, head_sha: 'b'.repeat(40) } },
-    { created_at: '2026-10-07T23:59:00Z' }, { created_at: '2026-10-08T00:21:00Z' }, { expires_at: '2000-01-01T00:00:00Z' },
-    { digest: undefined }, { digest: null }, { digest: '' }, { digest: 'invalid' }]) {
-    assert.throws(() => assertRecoveryArtifact({ ...artifact, ...patch }, run));
-  }
 });
 
 // AnyWear #138 stays true after v3: identity is content, never an ECS task-definition

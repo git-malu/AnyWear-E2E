@@ -376,7 +376,7 @@ function resolveExpected(expected, observation) {
 // The record is produced only by the `full` operation of the single `qualify` entry.
 // The operation is read from the dispatch event (`E2E_OPERATION`), never inferred from
 // the workflow file, and it is written into the payload so the validator and the
-// release consumers can re-check the binding. `smoke` and `recover` share
+// release consumers can re-check the binding. `smoke` and `reconcile` share
 // the dispatch surface but cannot reach this function with a recordable operation.
 export function buildQualificationRecord(input, expected, evidence, now = new Date(), environment, reportBytes) {
   if (input.result !== 'passed') {

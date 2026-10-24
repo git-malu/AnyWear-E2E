@@ -1,7 +1,7 @@
 import { DescribeExecutionCommand, SFNClient, StartExecutionCommand, type DescribeExecutionOutput } from '@aws-sdk/client-sfn';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { parseStrictJson } from '../../scripts/evidence-contract.mjs';
@@ -117,9 +117,9 @@ export interface CleanupOperationOptions {
   /**
    * The explicit migration allowance (#217). Only the 90-day migration reconcile sets it, and
    * it permits the one `-migration1` generation once the captured scope's ordinary pair is
-   * already exhausted. Every other caller — the ordinary reconcile, `full`, `smoke`, the
-   * teardown and `recover` — leaves it unset and keeps the unchanged two-name rule: a
-   * generation 1 that is already terminal non-success refuses, and no third name is derived.
+   * already exhausted. Every other caller — the ordinary reconcile, `full`, `smoke` and the
+   * teardown — leaves it unset and keeps the unchanged two-name rule: a generation 1 that is
+   * already terminal non-success refuses, and no third name is derived.
    */
   migrationGeneration?: boolean;
 }
@@ -457,66 +457,6 @@ async function writeEvidence(path: string, evidence: CleanupOperationEvidence): 
   await rename(`${path}.tmp`, path);
 }
 
-function recordedEnvelope(value: unknown): CleanupOperationEnvelope {
-  const input = object(value, 'Recorded cleanup envelope');
-  // Owner evidence produced before `operation_mode` became mandatory may omit
-  // that one field; it may not omit anything else or carry a replay attempt.
-  const legacy = input.operation_mode === undefined && input.recovery_attempt === undefined;
-  const expected = createCleanupOperationEnvelope({ action: 'cleanup', emails: '[]', cleanup_json: String(input.cleanup_request) }, {
-    E2E_CLEANUP_SERVICE_SOURCE_SHA: String(input.service_commit_sha), E2E_CLEANUP_SERVICE_IMAGE_DIGEST: String(input.service_image_digest),
-  });
-  if (legacy) {
-    const original = Object.fromEntries(Object.entries(expected).filter(([key]) => key !== 'operation_mode'));
-    if (!isDeepStrictEqual(input, original)) throw new Error('Legacy owner envelope contains unknown or changed fields');
-    // Keep the original input bytes/hash; the missing mode is tolerated only for
-    // historical owner evidence, never for a new dispatch.
-    return input as unknown as CleanupOperationEnvelope;
-  }
-  if (!isDeepStrictEqual(input, expected)) throw new Error('Recorded cleanup envelope is malformed');
-  return expected;
-}
-
-interface OriginalEvidence {
-  operation: CleanupOperationEvidence['operation'];
-  envelope: CleanupOperationEnvelope;
-}
-
-/**
- * Validate a historical owner operation in its own terms: its own envelope,
- * source/image, version and execution identity. It deliberately does not compare
- * those against the current dispatch, because a captured scope may predate a
- * reviewed state-machine version or Service image/source advance and must still
- * be recoverable.
- */
-function originalOperation(value: unknown): OriginalEvidence {
-  const evidence = object(value, 'Original cleanup evidence');
-  if (![2, 3].includes(evidence.schema_version as number) || evidence.record_type !== 'anywear_e2e_service_cleanup_operation') {
-    throw new Error('Original cleanup evidence is not a schema 2 or 3 operation record');
-  }
-  const operation = object(evidence.operation, 'Original cleanup operation') as unknown as CleanupOperationEvidence['operation'];
-  const envelope = recordedEnvelope(operation.input);
-  if ((operation.operation_mode ?? 'normal') !== 'normal' || operation.operation_mode !== envelope.operation_mode
-    || operation.recovery_attempt !== envelope.recovery_attempt
-    || operation.input_sha256 !== hash(JSON.stringify(envelope))
-    || ![deterministicCleanupExecutionName(envelope, 0), deterministicCleanupExecutionName(envelope, 1)].includes(operation.execution_name)
-    || operation.execution_arn !== cleanupExecutionArn(operation.state_machine_version_arn, operation.execution_name)) {
-    throw new Error('Original cleanup evidence does not bind its own captured operation');
-  }
-  return { operation, envelope };
-}
-
-function recordedOperation(value: unknown): CleanupOperationEvidence['operation'] {
-  const evidence = object(value, 'Original owner evidence');
-  if (evidence.schema_version !== 3) throw new Error('Original owner evidence has a foreign operation binding');
-  return originalOperation(value).operation;
-}
-
-export function assertCleanupOwnerEvidence(value: unknown, cleanupRequest: string): CleanupOperationEvidence['operation'] {
-  const operation = recordedOperation(value);
-  if ((operation.operation_mode ?? 'normal') !== 'normal' || operation.input.cleanup_request !== cleanupRequest) throw new Error('Original owner evidence differs from captured canonical request');
-  return operation;
-}
-
 interface ExpectedExecution {
   envelope: CleanupOperationEnvelope;
   versionArn: string;
@@ -648,14 +588,14 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * Start or resume the deterministic cleanup operation for one captured run
  * scope.
  *
- * The rule is the same for an ordinary qualification cleanup, the ordinary
- * reconcile and a protected `recover` dispatch: resolve generation 0, resume it
- * while it runs, verify it when it succeeded, and start generation 1 only after
- * generation 0 is terminal non-success and exactly one bounded predecessor check
- * (its describe plus one cleanup-family inventory) shows the cleanup families
- * stopped. If generation 1 already exists it is resumed or verified; if it is
- * already terminal non-success the dispatch refuses and starts nothing. Without
- * the explicit migration allowance, at most two deterministic names exist per
+ * The caller is the run's own teardown or the `reconcile` operation, and both
+ * take the same normal path: resolve generation 0, resume it while it runs,
+ * verify it when it succeeded, and start generation 1 only after generation 0 is
+ * terminal non-success and exactly one bounded predecessor check (its describe
+ * plus one cleanup-family inventory) shows the cleanup families stopped. If
+ * generation 1 already exists it is resumed or verified; if it is already
+ * terminal non-success the dispatch refuses and starts nothing. Without the
+ * explicit migration allowance, at most two deterministic names exist per
  * captured scope.
  *
  * Only the 90-day migration reconcile passes `options.migrationGeneration`, and
@@ -671,16 +611,6 @@ async function cleanupFamiliesStopped(io: CleanupOperationIo): Promise<string[]>
  * generation is defined only against an already-exhausted captured scope.
  * Generation 0 keeps its ordinary behavior — absent is started, running is
  * resumed, succeeded is verified — so a scope with no execution is still cleaned.
- *
- * A recovery dispatch supplies the original owner evidence. That evidence is
- * validated in its own terms, so an execution captured before a reviewed version
- * or Service image/source advance is still observed under its own envelope and
- * version. A generation 1 newly started by this dispatch always uses the current
- * normal envelope under the current version; a retry already recorded in the
- * owner evidence is observed and, when it succeeded, verified under that
- * evidence's own version and envelope. If the owner evidence already used the
- * retry name, that name is the last allowed name and a terminal non-success
- * refuses.
  */
 export async function runCleanupOperation(inputs: ServiceCleanupInputs, environment: NodeJS.ProcessEnv = process.env,
   io?: CleanupOperationIo, options: CleanupOperationOptions = {}): Promise<CleanupOperationEvidence | undefined> {
@@ -697,11 +627,6 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
   }
   const envelope = createCleanupOperationEnvelope(inputs, environment);
   const current = [expectedExecution(envelope, versionArn, 0), expectedExecution(envelope, versionArn, 1)];
-  const originalPath = environment.E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH;
-  const original = originalPath ? originalOperation(parseStrictJson(await readFile(originalPath))) : undefined;
-  if (original && (original.envelope.cleanup_request !== envelope.cleanup_request || original.envelope.run_scope !== envelope.run_scope)) {
-    throw new Error('Original cleanup evidence does not bind this captured request and run scope');
-  }
   const transport = io ?? defaultIo(versionArn);
   const path = environment.E2E_SERVICE_CLEANUP_EVIDENCE_PATH ?? 'test-results/service-cleanup-operation.json';
   const evidence: CleanupOperationEvidence = { schema_version: 3, record_type: 'anywear_e2e_service_cleanup_operation',
@@ -754,36 +679,10 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
     return evidence;
   };
   try {
-    // A historical owner that already used the one retry name is at the last
-    // allowed name: resolve that exact execution and never start a third.
-    const originalRetry = original && original.operation.execution_name === deterministicCleanupExecutionName(original.envelope, 1)
-      ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 1) : undefined;
-    if (originalRetry) {
-      refusalPhase = 'execution_observation';
-      refusalCategory = 'execution_observation_unavailable';
-      const present = await describeExecution(transport, originalRetry.arn);
-      if (!present) throw new Error('Original captured retry execution is unavailable');
-      validateDescription(present, originalRetry.envelope, originalRetry.versionArn, originalRetry.name);
-      target(originalRetry);
-      const description = await observePresent(transport, present, originalRetry, evidence, path, options.deadline);
-      if (description.status === 'SUCCEEDED') return await verifySuccess(description, originalRetry.envelope);
-      if (description.status === 'RUNNING') {
-        refusalPhase = 'execution_observation';
-        refusalCategory = 'execution_not_succeeded';
-        throw new Error('Cleanup retry did not reach a terminal state within the bounded wait');
-      }
-      refusalPhase = 'retry_eligibility';
-      refusalCategory = 'retry_not_authorized';
-      throw new Error('Original captured retry execution is terminal non-success; no third execution is started');
-    }
-    // Generation 0. A normal dispatch resolves the current operation; a recovery
-    // dispatch may instead find the execution the original evidence recorded,
-    // under the owner's own envelope and version, or a generation 0 started by an
-    // earlier recovery dispatch under the current pair. An absent generation 0 is
-    // started under the current version and normal envelope.
+    // Generation 0. The ordinary dispatch resolves the current operation; an absent
+    // generation 0 is started under the current version and normal envelope.
     refusalPhase = 'execution_observation';
     refusalCategory = 'execution_observation_unavailable';
-    const originalBase = original ? expectedExecution(original.envelope, original.operation.state_machine_version_arn, 0) : undefined;
     let expected: ExpectedExecution;
     let description = await describeExecution(transport, current[0].arn);
     if (!description) {
@@ -795,16 +694,12 @@ export async function runCleanupOperation(inputs: ServiceCleanupInputs, environm
       refusalPhase = 'execution_observation';
       refusalCategory = 'execution_observation_unavailable';
       description = await awaitTerminal(transport, expected.arn, expected.envelope, expected.versionArn, expected.name, evidence, path, undefined, options.deadline);
-    } else if (originalBase && bindsExpected(description, originalBase)) {
-      expected = originalBase;
-      target(expected);
-      description = await observePresent(transport, description, expected, evidence, path, options.deadline);
     } else if (bindsExpected(description, current[0])) {
       expected = current[0];
       target(expected);
       description = await observePresent(transport, description, expected, evidence, path, options.deadline);
     } else {
-      throw new Error('Observed generation 0 does not bind the original owner or the current operation');
+      throw new Error('Observed generation 0 does not bind the current operation');
     }
     if (description.status === 'SUCCEEDED') return await verifySuccess(description, expected.envelope);
     if (description.status === 'RUNNING') {

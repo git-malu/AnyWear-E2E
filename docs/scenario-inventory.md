@@ -30,9 +30,9 @@ can neither satisfy nor fail release qualification.
 
 The separation is carried by the signed `operation` field, not by a workflow boundary, a step
 or a job. One protected dispatch surface, the `qualify` entry in `beta-qualification.yml`,
-carries `full`, `smoke`, `recover` and `reconcile`. A release consumer accepts a qualification
+carries `full`, `smoke` and `reconcile`. A release consumer accepts a qualification
 record only from the `full` operation of a completed-success qualification run: the record
-states `operation: full` and is produced only by that operation, so a `smoke`, `recover` or
+states `operation: full` and is produced only by that operation, so a `smoke` or
 `reconcile` run can neither produce nor withhold a record the gate legitimately produced. The
 three properties separation keeps are: the record is produced only by `full`; the record binds
 the operation dispatched, so its producer is uniquely identifiable; and both this repository's
@@ -108,7 +108,7 @@ agreeing about the invocations that exist.
 | Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |
 | Disposition | Retain |
 | Cleanup contract | `DirectTeardown` against the attempt's own `run_scope`/`test_scope`: register before the first business side effect, bind the owner subject, capture the created `wardrobe_item`, then finalize with the attempt's own authorization. The scenario reads back exact absence (HTTP 404) independently of the product assertion, and a teardown that is not `passed` retains the scope and fails a separate gate. The worker-lease fixture then deletes the Cognito identity and releases the lease |
-| Verification rationale | The product assertion stands alone; teardown is reported beside it and never rewrites it. A red result means a product defect or a provider failure — the scenario requires a terminal `ready`, so a provider failure cannot pass by the processing indicator disappearing. `retries: 0` is configured, because a failed provider attempt must not be repeated automatically and protected recovery owns non-terminal resources |
+| Verification rationale | The product assertion stands alone; teardown is reported beside it and never rewrites it. A red result means a product defect or a provider failure — the scenario requires a terminal `ready`, so a provider failure cannot pass by the processing indicator disappearing. `retries: 0` is configured, because a failed provider attempt must not be repeated automatically and the reconcile operation owns non-terminal resources |
 | Red result means | A release-gating product failure. It is not a measurement: no measurement failure can produce it, and it cannot be excused as one |
 
 ### `tests/auth-startup.spec.ts`

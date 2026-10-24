@@ -215,7 +215,7 @@ test('parses the CLI surface and refuses an unknown or incomplete one', () => {
   ]), {
     operation: 'full', clientUrl: 'https://client.example', serviceUrl: 'https://api.example', expectedServiceCommit: serviceSha,
   });
-  assert.deepEqual(serviceReleaseArguments(['--operation', 'recover']), { operation: 'recover' });
+  assert.deepEqual(serviceReleaseArguments(['--operation', 'reconcile']), { operation: 'reconcile' });
   assert.deepEqual(serviceReleaseArguments(['--help']), { help: true });
   for (const [argv, pattern] of [
     [[], /requires --operation/],
@@ -244,7 +244,7 @@ const fetcherFor = ({ client, service }) => async (url) => new Response(
 test('skips the live check for the operations that do not gate on the deployed tuple', async () => {
   let called = false;
   const result = await runServiceRelease({
-    argv: ['--operation', 'recover'], api: () => { called = true; }, log: () => {},
+    argv: ['--operation', 'reconcile'], api: () => { called = true; }, log: () => {},
   });
   assert.deepEqual(result, { skipped: true });
   assert.equal(called, false);

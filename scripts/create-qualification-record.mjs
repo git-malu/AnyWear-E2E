@@ -38,7 +38,7 @@ try {
 const record = buildQualificationRecord({
   result: process.env.QUALIFICATION_RESULT,
   // The dispatched operation, not a workflow file: the record path refuses anything but
-  // `full`, so the shared `qualify` entry cannot issue a record from smoke or recover.
+  // `full`, so the shared `qualify` entry cannot issue a record from smoke or reconcile.
   operation: process.env.E2E_OPERATION,
   e2eSha: process.env.GITHUB_SHA,
   repository: process.env.GITHUB_REPOSITORY,

@@ -225,7 +225,7 @@ test('every operation gate uses the preflight-validated operation output', () =>
   assert.ok(preflight.text.includes('echo "operation=$OPERATION" >> "$GITHUB_OUTPUT"'),
     'the operation validation step must publish the validated operation');
 
-  for (const operation of ['full', 'smoke', 'recover']) {
+  for (const operation of ['full', 'smoke']) {
     const candidate = job(operation);
     assert.match(candidate.needsLine, /preflight/, `${operation} must need preflight`);
     assert.match(candidate.ifLine, new RegExp(`needs\\.preflight\\.outputs\\.operation == '${operation}'`),

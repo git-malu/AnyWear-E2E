@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { parseStrictJson, repositories } from './evidence-contract.mjs';
 
-// The retained read-only GitHub helpers. They are the credential seam for every
-// non-AWS read this repository performs: the recovery owner artifact, the cleanup
-// diagnostic evidence and the immutable Service release that qualification verifies.
-// They were carved out of the retired deployment-record consumer
-// (`trusted-deployment-inputs.mjs`) unchanged, so `recover` keeps working after the
-// pin/record download chain is gone (#180).
+// The read-only GitHub helpers. They are the credential seam for every non-AWS read this
+// repository performs: the immutable Service release that qualification verifies and the
+// release tag it resolves to. They were carved out of the retired deployment-record consumer
+// (`trusted-deployment-inputs.mjs`) unchanged (#180); the recovery owner artifact and the
+// cleanup diagnostic evidence they once also read were removed with the manual `recover`
+// operation (#217).
 
 // Each reader is scoped to exactly one repository: the token that can read that
 // repository is renamed to GH_TOKEN for the duration of the command, and every other

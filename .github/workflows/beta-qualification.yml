@@ -1,15 +1,15 @@
 name: Beta Qualification
 
 # The E2E deployable unit's single manual entry (#163): the `qualify` entry. One protected
-# dispatch surface carries four operations — `full` (release qualification), `smoke`
-# (deployed diagnostic), `recover` (historical account recovery, removed by the stacked #217
-# pull request) and `reconcile` (automatic leftover expiry) — and since #180 it is also
-# dispatched by another workflow: a deployment smoke hook
+# dispatch surface carries three operations — `full` (release qualification), `smoke`
+# (deployed diagnostic) and `reconcile` (automatic leftover expiry) — and since #180 it is
+# also dispatched by another workflow: a deployment smoke hook
 # (`trigger=deploy-smoke`), the release action (`trigger=release-qualify`) and, since #217,
 # the daily account-reconcile schedule (`trigger=scheduled`).
 #
-# #217: leftover data is bounded by time, not quarantined. The `reconcile` job runs before
-# every qualification suite and as its own dispatched operation. It reads the previous seven
+# #217: leftover data is bounded by time, not quarantined, and the manual `recover` exit is
+# removed. The `reconcile` job runs before every qualification suite and as its own
+# dispatched operation. It reads the previous seven
 # days' `beta-account-lifecycle-*` / `beta-smoke-account-lifecycle-*` manifests and the
 # CloudTrail `AdminCreateUser` history, replays the exact-reference Service cleanup, deletes
 # the identity by its immutable username, reads absence back, and writes an
@@ -28,7 +28,7 @@ name: Beta Qualification
 # Separation between the three outcomes lives in the signed `operation` field, not in a
 # workflow-file boundary. Only the `full` job can produce `qualification-record.json`; the
 # `record` job validates and attaches it without a credential and is the last qualification
-# job. A `smoke` or `recover` run can therefore neither produce nor withhold a
+# job. A `smoke` or `reconcile` run can therefore neither produce nor withhold a
 # qualification record, and a green `full` run whose record `record` has verified and
 # attached completes the release decision: the audit trail is the `qualify` dispatch event
 # (actor and time), the E2E `full` run/attempt and the sealed v3 record tuple, not a
@@ -39,10 +39,10 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: 'Qualification operation: full (release gate), smoke (diagnostic), recover (account recovery) or reconcile (leftover expiry)'
+        description: 'Qualification operation: full (release gate), smoke (diagnostic) or reconcile (leftover expiry)'
         required: true
         type: choice
-        options: [full, smoke, recover, reconcile]
+        options: [full, smoke, reconcile]
       expected_service_commit:
         # #180: supplied by the release action (release-qualify) or by an operator who
         # re-runs a qualification. Only `full` compares it with the live Service commit,
@@ -80,14 +80,6 @@ on:
         type: choice
         options: ['7', '90']
         default: '7'
-      source_run_id:
-        description: Failed E2E run ID containing the account manifest; only operation recover accepts it
-        required: false
-        type: string
-      source_run_attempt:
-        description: Attempt number for that failed E2E run; only operation recover accepts it
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -162,8 +154,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The entry is one dispatch surface, so the operation and the inputs that belong to
-      # another operation are refused here rather than by file presence. The captured
-      # identity inputs are rejected by every operation but recover; the expected commits
+      # another operation are refused here rather than by file presence. The expected commits
       # are accepted only by `full`; and the trigger fixes which operation and inputs it
       # may accompany (#180).
       - name: Validate the dispatch operation, trigger and input scope
@@ -171,8 +162,6 @@ jobs:
         shell: bash
         env:
           OPERATION: ${{ inputs.operation }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           TRIGGER: ${{ inputs.trigger }}
           EXPECTED_SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
           EXPECTED_CLIENT_COMMIT: ${{ inputs.expected_client_commit }}
@@ -181,17 +170,9 @@ jobs:
           RECONCILE_LOOKBACK_DAYS: ${{ inputs.reconcile_lookback_days }}
         run: |
           case "$OPERATION" in
-            full|smoke|recover|reconcile) ;;
+            full|smoke|reconcile) ;;
             *) echo "::error::Unknown qualification operation '$OPERATION'"; exit 1 ;;
           esac
-          if [[ "$OPERATION" != recover ]]; then
-            for name in SOURCE_RUN_ID SOURCE_RUN_ATTEMPT; do
-              if [[ -n "${!name}" ]]; then
-                echo "::error::$name is only accepted by operation recover"
-                exit 1
-              fi
-            done
-          fi
           # #217: the reconcile operation owns no worker slot, so a slot offset on it is a
           # dispatch mistake rather than an allocation.
           if [[ "$OPERATION" == reconcile && "$WORKER_SLOT_OFFSET" != 0 ]]; then
@@ -1102,156 +1083,10 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The account-recovery flow of the former E2E Account Recovery workflow. It never writes
-  # qualification evidence.
-  recover:
-    name: Recover exact E2E identities and owned resources
-    needs: preflight
-    if: github.ref == 'refs/heads/main' && needs.preflight.outputs.operation == 'recover'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    environment: beta
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      E2E_STAGE: beta
-      E2E_OPERATION: ${{ inputs.operation }}
-      E2E_ACCOUNT_BUDGET_PATH: recovery/account-budget.json
-      E2E_SERVICE_CLEANUP_EVIDENCE_PATH: recovery/service-cleanup-operation.json
-      E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: recovery/beta-cleanup-diagnostic.json
-      RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-      RECOVERY_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
-      ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
-
-    steps:
-      - name: Checkout E2E recovery tools
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 11.18.0
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install E2E dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Generate Infra evidence read token
-        id: infra-evidence-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Infra
-          permission-contents: read
-          permission-actions: read
-
-      - name: Generate Service artifact read token
-        id: service-artifact-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Service
-          permission-contents: read
-          permission-actions: read
-
-      # #180: recovery is scoped to the captured original run and its original evidence, so
-      # it no longer consults the compatibility pin. The retired step also required the
-      # reviewed Infra source; recovery never read it.
-      - name: Require the captured recovery selection and protected execution
-        run: node scripts/account-recovery-inputs.mjs --validate-inputs
-
-      - name: Verify exact original E2E owner artifact
-        id: recovery-scope
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INFRA_EVIDENCE_READ_TOKEN: ${{ steps.infra-evidence-token.outputs.token }}
-          SERVICE_ARTIFACT_READ_TOKEN: ${{ steps.service-artifact-token.outputs.token }}
-        run: node scripts/account-recovery-inputs.mjs
-
-      - name: Configure Beta AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/beta-e2e-qualification-role
-          role-session-name: e2e-${{ github.run_id }}-${{ github.run_attempt }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify dedicated E2E principal
-        shell: bash
-        run: |
-          identity=$(aws sts get-caller-identity --output json)
-          account=$(jq -r '.Account' <<< "$identity")
-          principal=$(jq -r '.Arn' <<< "$identity")
-          [[ "$account" == 650880818323 ]]
-          [[ "$principal" == "arn:aws:sts::650880818323:assumed-role/beta-e2e-qualification-role/e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]
-          echo "E2E_AWS_ACCOUNT=$account" >> "$GITHUB_ENV"
-          echo "E2E_AWS_PRINCIPAL_ARN=$principal" >> "$GITHUB_ENV"
-
-      - name: Load deployed identity configuration
-        shell: bash
-        run: |
-          pool_id=$(aws ssm get-parameter --name /anywear/beta/cognito_user_pool_id --query Parameter.Value --output text)
-          echo "USER_POOL_ID=$pool_id" >> "$GITHUB_ENV"
-
-      - name: Recover exact worker data and identities through the reviewed Service operator
-        env:
-          E2E_CLEANUP_ORIGINAL_EVIDENCE_PATH: ${{ steps.recovery-scope.outputs.original_operation_path }}
-          E2E_BETA_CLEANUP_DIAGNOSTIC_PATH: ${{ steps.recovery-scope.outputs.diagnostic_path }}
-          E2E_BETA_CLEANUP_DIAGNOSTIC_SHA256: ${{ steps.recovery-scope.outputs.diagnostic_sha256 }}
-          E2E_ACCOUNT_RUN_SCOPE: ${{ steps.recovery-scope.outputs.run_scope }}
-          E2E_WORKERS: ${{ steps.recovery-scope.outputs.max_active }}
-          E2E_MAX_ACTIVE_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_active }}
-          E2E_MAX_NEW_ACCOUNTS_PER_RUN: ${{ steps.recovery-scope.outputs.max_new }}
-          E2E_MAX_QUARANTINED_ACCOUNTS: ${{ steps.recovery-scope.outputs.max_quarantined }}
-          E2E_CLEANUP_SERVICE_SHA: ${{ steps.recovery-scope.outputs.diagnostic_service_source_sha }}
-          E2E_CLEANUP_SERVICE_SOURCE_SHA: ${{ steps.recovery-scope.outputs.diagnostic_service_source_sha }}
-          E2E_CLEANUP_SERVICE_IMAGE_DIGEST: ${{ steps.recovery-scope.outputs.diagnostic_service_image_digest }}
-          BETA_CLEANUP_STATE_MACHINE_VERSION_ARN: ${{ steps.recovery-scope.outputs.diagnostic_state_machine_version_arn }}
-        run: |
-          node scripts/execution-guard.mjs
-          pnpm accounts:cleanup-workers
-
-      - name: Reject remaining unknown or unrecovered accounts
-        run: jq -e 'all(.accounts[]; .status == "deleted")' recovery/account-budget.json >/dev/null
-
-      - name: Preserve structured recovery failure
-        if: failure()
-        run: node scripts/account-recovery-inputs.mjs --record-failure
-
-      - name: Upload recovery evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: beta-account-recovery-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            recovery/account-budget.json
-            recovery/service-cleanup-operation.json
-            recovery/service-cleanup-run.json
-            recovery/original-account-budget.json
-            recovery/original-service-cleanup-operation.json
-            recovery/original-service-cleanup-run.json
-            recovery/original-owner.json
-            recovery/beta-cleanup-diagnostic.json
-            recovery/account-recovery-failure.json
-          if-no-files-found: ignore
-
   # The credential-free half of the qualification record: it downloads the `full` job's
   # handoff, re-runs the verifier in a job with no environment and no id-token, and only
   # then attaches the artifact a release consumer reads. It holds no AWS credential and is
-  # skipped unless the dispatched operation is `full`; the other three operations can
+  # skipped unless the dispatched operation is `full`; the other two operations can
   # neither produce nor withhold it.
   record:
     name: Validate and attach the qualification record

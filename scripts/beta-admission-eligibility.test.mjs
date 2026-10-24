@@ -235,13 +235,13 @@ test('unavailable or malformed CLI JSON produces a bounded diagnostic without ra
 test('workflow runs mandatory eligibility after principal verification and before account setup or suite', async () => {
   const workflow = await readFile(new URL('../.github/workflows/beta-qualification.yml', import.meta.url), 'utf8');
   const steps = workflow.split(/\r?\n {6}- name: /).slice(1);
-  // #163: one qualify entry carries three operations. `full` is the release gate and
+  // #163: one qualify entry carries the deployed operations. `full` is the release gate and
   // `smoke` is the deployed diagnostic; both lease pool accounts, so both prove the
-  // allowlist first. `recover` creates nothing and has no eligibility step.
+  // allowlist first. `reconcile` creates no account and has no eligibility step.
   for (const operation of ['full', 'smoke']) {
     const job = operation === 'full'
       ? workflow.slice(workflow.indexOf('\n  full:\n'), workflow.indexOf('\n  smoke:\n'))
-      : workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  recover:\n'));
+      : workflow.slice(workflow.indexOf('\n  smoke:\n'), workflow.indexOf('\n  record:\n'));
     const jobSteps = job.split(/\r?\n {6}- name: /).slice(1);
     const eligibility = jobSteps.findIndex((step) => step.startsWith('Require Beta admission eligibility\n')
       || step.startsWith('Require Beta admission eligibility\r\n'));

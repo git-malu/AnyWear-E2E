@@ -216,8 +216,8 @@ re-scoped. It is started at most once: an existing migration execution is resume
 dispatch refuses and starts nothing else, so there is no fourth attempt. The allowance never
 manufactures its own precondition — a migration dispatch that finds the retry absent refuses
 rather than starting it — while generation 0 keeps its ordinary behavior so a scope with no
-execution is still cleaned. The ordinary seven-day reconcile, `full`, `smoke`, the qualification
-teardown and `recover` leave the allowance unset and keep the unchanged two-name rule.
+execution is still cleaned. The ordinary seven-day reconcile, `full`, `smoke` and the
+qualification teardown leave the allowance unset and keep the unchanged two-name rule.
 
 Dispatch it from `main` with:
 
@@ -236,11 +236,12 @@ retained reason — until this operation deletes the identity and the record is 
 A `full` run whose own cleanup is not verified still withholds the qualification record: the
 teardown gate is unchanged, and a deferred cleanup is never evidence of a verified one.
 
-## Relationship to `recover`
+## Relationship to the removed `recover` operation
 
-`recover` and its two remaining dispatch inputs, `account-recovery-inputs.mjs`, the frozen
-cleanup diagnostic (`beta-cleanup-diagnostic.mjs`) and the retained diagnostic tuple are removed
-in the stacked #217 pull request once this operation has been delivered and the migration record
-exists. Their runbook is [account-recovery.md](account-recovery.md) until that removal lands.
-`reconcile` needs none of them: it reads the run-bound manifests and CloudTrail, not a pinned
-historical evidence artifact.
+The manual `recover` operation is removed, together with its dispatch inputs,
+`account-recovery-inputs.mjs`, the frozen cleanup diagnostic (`beta-cleanup-diagnostic.mjs`) and
+its retained diagnostic tuple (#217). `reconcile` needs none of them: it reads the run-bound
+lifecycle manifests and CloudTrail, not a pinned historical evidence artifact, and it resolves a
+leftover without an operator supplying a run id, an attempt number or a predecessor chain. A
+historical manifest that recorded `quarantined` is read as `retained`, so the records written
+before the removal are resolved by this operation rather than stranded.
