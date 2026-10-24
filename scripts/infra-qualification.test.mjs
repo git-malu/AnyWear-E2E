@@ -112,6 +112,10 @@ function observationIo({
       return { TemplateBody: JSON.stringify(stackTemplates[name] ?? DEFAULT_TEMPLATE) };
     },
     'ssm get-parameters-by-path': (args) => {
+      // #228 step 1b: the reader states --no-with-decryption explicitly so the request
+      // context carries WithDecryption: false for the reviewed grant's Bool condition.
+      assert.ok(args.includes('--no-with-decryption'),
+        'the stage-input read must pass --no-with-decryption explicitly');
       const { slice, next } = pages(parameters)(args);
       return { Parameters: slice, ...(next ? { NextToken: next } : {}) };
     },

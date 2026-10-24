@@ -180,10 +180,12 @@ async function discoverStacks(io, reviewedAccount) {
 // The whole published `/anywear/beta/` prefix, read without decryption. The value itself
 // is never recorded: each row carries the parameter name, the SSM version and the sha256
 // of the value. A SecureString is refused — hashing a masked value would seal a
-// non-identity, and the reader never decrypts.
+// non-identity, and the reader never decrypts. `--no-with-decryption` is stated
+// explicitly so the request context carries `WithDecryption: false` for the reviewed
+// grant's Bool condition, not merely an absent flag.
 async function discoverStageInputs(io) {
   const parameters = await readPages(io, [
-    'ssm', 'get-parameters-by-path', '--path', STAGE_PATH, '--recursive',
+    'ssm', 'get-parameters-by-path', '--path', STAGE_PATH, '--recursive', '--no-with-decryption',
   ], {
     region: CREDENTIAL_REGION, tokenFlag: '--next-token', pageKey: 'Parameters', tokenKey: 'NextToken',
     nameOf: (parameter) => parameter.Name, label: `SSM get-parameters-by-path ${STAGE_PATH}`,
