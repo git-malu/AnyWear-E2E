@@ -86,7 +86,12 @@ function observationIo({
       const pass = listPass.get(region) ?? 0;
       listPass.set(region, pass + 1);
       const { slice, next } = pages(stackSummaries(region, pass))(args);
-      return { StackSummaries: slice.map((StackName) => ({ StackName, StackStatus: listStatus(StackName) })),
+      // A summary may be a bare name (mapped through `listStatus`) or an explicit
+      // `{StackName, StackStatus}` row, so the live stop/start history — several rows
+      // for one stack name with mixed statuses — can be reproduced exactly.
+      return { StackSummaries: slice.map((entry) => (typeof entry === 'string'
+        ? { StackName: entry, StackStatus: listStatus(entry) }
+        : { StackName: entry.StackName, StackStatus: entry.StackStatus })),
         ...(next ? { NextToken: next } : {}) };
     },
     'cloudformation describe-stacks': (args, region) => {
@@ -282,6 +287,90 @@ test('a stage parameter, stack, Lambda and queue added to the fixture appear wit
   assert.deepEqual(platform.queues.map(({ name }) => name), [
     'beta-anywear-auto-tagging', 'beta-anywear-auto-tagging-dlq', 'beta-anywear-outbox', 'beta-anywear-vto', 'beta-anywear-vto-dlq',
   ]);
+});
+
+// #228 step 1a: the live account's legitimate stop/start history. `list-stacks` returns
+// one row per stack occurrence, so the same name appears many times with mixed statuses;
+// every `DELETE_COMPLETE` row is dropped before the reviewed set (never described, never
+// recorded), and exactly the live rows are recorded.
+test('the live stop/start history is dropped before the reviewed set and only the live rows are recorded', async () => {
+  const liveHistory = () => {
+    const runtime = [
+      { StackName: 'AnyWearRuntimeStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+      ...Array.from({ length: 6 }, () => ({ StackName: 'AnyWearRuntimeStack-beta', StackStatus: 'DELETE_COMPLETE' })),
+    ];
+    const egress = [
+      { StackName: 'AnyWearEgressStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+      { StackName: 'AnyWearEgressStack-beta', StackStatus: 'DELETE_COMPLETE' },
+    ];
+    const workload = Array.from({ length: 2 }, () => ({ StackName: 'AnyWearWorkloadStack-beta', StackStatus: 'DELETE_COMPLETE' }));
+    return [
+      { StackName: 'AnyWearFoundationStack', StackStatus: 'UPDATE_COMPLETE' },
+      { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+      ...runtime, ...egress, ...workload,
+    ];
+  };
+  const calls = [];
+  const platform = await observePlatform({
+    io: observationIo({
+      stackSummaries: (region) => (region === 'ap-east-1' ? liveHistory() : ['AnyWearBillingStack-beta']),
+      pageSize: 3,
+      calls,
+    }),
+    clientHost: CLIENT_HOST,
+  });
+  assert.deepEqual(platform.stacks.map(({ name }) => name), [
+    'AnyWearBillingStack-beta', 'AnyWearEgressStack-beta', 'AnyWearFoundationStack',
+    'AnyWearPlatformStack-beta', 'AnyWearRuntimeStack-beta',
+  ]);
+  // The deleted history rows are never described: one describe per live row per pass.
+  const describes = calls.filter(({ args }) => args[0] === 'cloudformation' && args[1] === 'describe-stacks');
+  assert.equal(describes.length, 10);
+  assert.equal(describes.some(({ args }) => String(args).includes('AnyWearWorkloadStack-beta')), false);
+});
+
+// #228 step 1a: the reviewed set must contain at most one row per stack name. A
+// duplicated non-DELETE_COMPLETE row for one name — on one page or across pages — is
+// refused naming the stack; only `DELETE_COMPLETE` rows may repeat.
+test('a duplicated non-DELETE_COMPLETE row for one stack name is refused naming the stack', async () => {
+  // Within one page: two live rows for one name on the same page.
+  await assert.rejects(observePlatform({
+    io: observationIo({
+      stackSummaries: () => [
+        { StackName: 'AnyWearFoundationStack', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+      ],
+      pageSize: 4,
+    }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFormation list-stacks in ap-east-1 lists AnyWearPlatformStack-beta more than once/);
+  // Across pages: the two live rows land on different pages.
+  await assert.rejects(observePlatform({
+    io: observationIo({
+      stackSummaries: () => [
+        { StackName: 'AnyWearFoundationStack', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearEgressStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+      ],
+      pageSize: 3,
+    }),
+    clientHost: CLIENT_HOST,
+  }), /CloudFormation list-stacks in ap-east-1 lists AnyWearPlatformStack-beta more than once/);
+  // Two rows for one name where one is DELETE_COMPLETE stays the normal history: the
+  // live row is recorded and the deleted row is dropped.
+  const platform = await observePlatform({
+    io: observationIo({
+      stackSummaries: (region) => (region === 'ap-east-1' ? [
+        { StackName: 'AnyWearFoundationStack', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
+        { StackName: 'AnyWearRuntimeStack-beta', StackStatus: 'DELETE_COMPLETE' },
+      ] : ['AnyWearBillingStack-beta']),
+    }),
+    clientHost: CLIENT_HOST,
+  });
+  assert.equal(platform.stacks.some(({ name }) => name === 'AnyWearRuntimeStack-beta'), false);
 });
 
 // #228: unchanged fixture content keeps byte-identical hashes. The template content and
