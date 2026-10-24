@@ -11,7 +11,7 @@ import {
   verifyQualificationRecord,
 } from './qualification-record.mjs';
 import { ENVIRONMENT_VERDICT_PATH, environmentVerdict, qualificationRefusalMessage } from './qualification-environment.mjs';
-import { byteHash, payloadDigest } from './evidence-contract.mjs';
+import { byteHash, contentHash, payloadDigest } from './evidence-contract.mjs';
 import { qualificationFixture } from './fixtures/infra-qualification.mjs';
 
 const now = new Date('2026-10-08T00:20:00.000Z');
@@ -327,6 +327,24 @@ test('refuses a platform member outside the discovered grammars', () => {
     const observation = structuredClone(f.evidence.before);
     mutate(observation);
     assert.throws(() => validateObservation(observation, 'observation'), pattern, label);
+  }
+});
+
+// #228 step 1c: the validator accepts every `/anywear/beta/<name>` member the published
+// prefix carries — the live legacy `ENABLE_INFRA_E2E` shape, absent from the old closed
+// allowlist — and still refuses foreign paths outside the prefix. The recorded guards
+// stay: non-empty, sorted, unique, and `schema_sha256` re-derived over the rows.
+test('accepts every prefix member the stage publishes and still refuses foreign paths', () => {
+  const f = fixture();
+  const withLegacy = structuredClone(f.evidence.before);
+  withLegacy.platform.inputs.push({ parameter: '/anywear/beta/ENABLE_INFRA_E2E', version: '4', value_sha256: 'a'.repeat(64) });
+  withLegacy.platform.inputs.sort((left, right) => (left.parameter < right.parameter ? -1 : left.parameter > right.parameter ? 1 : 0));
+  withLegacy.platform.schema_sha256 = contentHash(withLegacy.platform.inputs.map(({ parameter, version }) => ({ parameter, version })));
+  assert.equal(validateObservation(withLegacy, 'observation'), withLegacy);
+  for (const parameter of ['/anywear/prod/api_base_url', '/anywear/beta', '/anywear/beta/', '/other/beta/x', '/anywear/betaX']) {
+    const foreign = structuredClone(f.evidence.before);
+    foreign.platform.inputs[0].parameter = parameter;
+    assert.throws(() => validateObservation(foreign, 'observation'), /is not a stage parameter path/, parameter);
   }
 });
 
