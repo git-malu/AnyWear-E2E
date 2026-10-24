@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { stableLambdaConfiguration } from './lambda-configuration.mjs';
-import { contentHash } from './vendor/json-contract.mjs';
+import { contentHash } from './evidence-contract.mjs';
 
 const CONFIGURATION = Object.freeze({
   FunctionName: 'beta-anywear-pre-sign-up',

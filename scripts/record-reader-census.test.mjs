@@ -14,14 +14,13 @@ import { repositoryRoot } from './test-selection.mjs';
 // image digest) and from this repository's own artifacts.
 //
 // These source assertions keep a reader from reappearing silently. They are a census, not a
-// parser: every `.mjs` module under `scripts/` and `tests/` is scanned (the frozen
-// `scripts/vendor/**` producer copy is excluded because it is kept byte-identical and its own
-// validators are checked by `vendored-contract.test.mjs`). The census file itself must name
-// the forbidden tokens to assert on them, so it excludes itself from its own scan.
+// parser: every `.mjs` module under `scripts/` and `tests/` is scanned. #228 deleted
+// `scripts/vendor/` with its bespoke verifier, so the census covers the whole tree with no
+// exclusion. The census file itself must name the forbidden tokens to assert on them, so it
+// excludes itself from its own scan.
 
 const CENSUS = 'scripts/record-reader-census.test.mjs';
 const MODULE_ROOTS = Object.freeze(['scripts', 'tests']);
-const VENDOR = 'scripts/vendor';
 
 // The one labelled historical reader #207 left and #217 removed. Naming them here is what
 // makes the census non-vacuous: the assertion fails if either comes back.
@@ -72,7 +71,7 @@ function moduleFiles() {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (posix(path) !== VENDOR) walk(path);
+        walk(path);
       } else if (entry.name.endsWith('.mjs')) {
         files.push(posix(path));
       }

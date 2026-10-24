@@ -2,18 +2,17 @@ import { environmentVerdict } from '../qualification-environment.mjs';
 import { SERVICE_RELEASE_ASSET_NAMES } from '../qualification-record.mjs';
 import { readMinimumSupportedClient } from '../minimum-supported-client.mjs';
 import { SCENARIO_DIRECTORY, qualificationSelection, selectedScenarios } from '../test-selection.mjs';
-import { stageContractSchemaHash } from '../vendor/contracts.mjs';
-import { configuredStacks } from '../vendor/operation-stacks.mjs';
-import { STAGE_CONTRACT_READ_PARAMETERS } from '../vendor/stage-contract-parameters.mjs';
+import { contentHash } from '../evidence-contract.mjs';
 
 // A v4 qualification fixture. Every member of the record is built from the same
 // derivation the live path uses, so the fixture cannot state a shape the producer would
 // not write:
 //
-// - the platform stacks are the vendored `configuredStacks`, sorted by name exactly as
-//   the observation records them;
-// - the stage inputs are names from the vendored stage contract and the schema hash is
-//   `stageContractSchemaHash` over them;
+// - the platform rows are the discovery-shaped surface the observation records
+//   (`stacks[]` over the discovered stack set, `inputs[]` over the published stage
+//   prefix, the `lambdas[]`/`queues[]` arrays, `schema_sha256` re-derived with the
+//   repository's own hasher). The names below are fixture data only — the observation
+//   discovers its rows live and no committed name list remains (#228);
 // - the Client version and the Service floor come from the committed
 //   `minimum-supported-client.json`, with the deployed Client one version above the
 //   floor;
@@ -58,36 +57,44 @@ function qualificationReport() {
   return Buffer.from(`${JSON.stringify({ config: { rootDir: SCENARIO_DIRECTORY.slice(0, -1) }, suites, errors: [], stats: {} }, null, 2)}\n`);
 }
 
-const sortedStacks = () => [...configuredStacks]
-  .map(({ stack_name: name, region }) => ({ name, region }))
-  .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-
-const parameterRows = (hash) => [...STAGE_CONTRACT_READ_PARAMETERS]
-  .sort()
-  .slice(0, 3)
-  .map((parameter, index) => ({
-    parameter,
-    version: String(index + 1),
-    value_sha256: hash(((index % 10) + 0).toString(16)),
-  }));
+// The discovery-shaped platform rows, exactly as the observation sorts them. The
+// parameter rows keep the pre-change fixture content and versions, so the compatibility
+// test can pin `schema_sha256` to the byte-identical pre-change value.
+const stackRows = () => [
+  { name: 'AnyWearBillingStack-beta', region: 'us-east-1', template_sha256: 'd'.repeat(64) },
+  { name: 'AnyWearFoundationStack', region: 'ap-east-1', template_sha256: 'd'.repeat(64) },
+  { name: 'AnyWearPlatformStack-beta', region: 'ap-east-1', template_sha256: 'd'.repeat(64) },
+];
+const parameterRows = () => [
+  { parameter: '/anywear/beta/api_base_url', version: '1', value_sha256: '0'.repeat(64) },
+  { parameter: '/anywear/beta/api_security_group_id', version: '2', value_sha256: '1'.repeat(64) },
+  { parameter: '/anywear/beta/auto_tagging_dlq_name', version: '3', value_sha256: '2'.repeat(64) },
+];
+const lambdaRows = () => [
+  { name: 'beta-anywear-post-confirmation-sync', code_sha256: Buffer.from('b'.repeat(64), 'hex').toString('base64'), configuration_sha256: 'e'.repeat(64) },
+  { name: 'beta-anywear-pre-sign-up', code_sha256: Buffer.from('e'.repeat(64), 'hex').toString('base64'), configuration_sha256: 'f'.repeat(64) },
+];
+const queueRows = () => [
+  { name: 'beta-anywear-auto-tagging', queueVisibilitySeconds: 900, maxReceives: 3 },
+  { name: 'beta-anywear-auto-tagging-dlq', queueVisibilitySeconds: 900, maxReceives: null },
+  { name: 'beta-anywear-vto', queueVisibilitySeconds: 900, maxReceives: 3 },
+  { name: 'beta-anywear-vto-dlq', queueVisibilitySeconds: 900, maxReceives: null },
+];
 
 // One observation: the two live identities, this repository's own platform snapshot, and
 // the literal `authenticated: true` assertion that it was taken with the Beta principal.
 function observation({ collectedAt, clientSha, serviceSha, image, clientDomain }) {
-  const inputs = parameterRows((letter) => letter.repeat(64));
+  const inputs = parameterRows();
   return {
     collected_at: collectedAt,
     client: { url: `https://${clientDomain}`, source_commit: clientSha, built_at: '2026-10-07T00:00:00.000Z' },
     service: { url: 'https://api123.cloudfront.net', service_commit: serviceSha, image_digest: image },
     platform: {
-      stacks: sortedStacks().map(({ name, region }) => ({ name, region, template_sha256: 'd'.repeat(64) })),
+      stacks: stackRows(),
       inputs,
-      schema_sha256: stageContractSchemaHash(inputs),
-      lambdas: {
-        'pre-sign-up': { code_sha256: Buffer.from('e'.repeat(64), 'hex').toString('base64'), configuration_sha256: 'f'.repeat(64) },
-        'post-confirmation': { code_sha256: Buffer.from('b'.repeat(64), 'hex').toString('base64'), configuration_sha256: 'e'.repeat(64) },
-      },
-      queue_config_sha256: 'a'.repeat(64),
+      schema_sha256: contentHash(inputs.map(({ parameter, version }) => ({ parameter, version }))),
+      lambdas: lambdaRows(),
+      queues: queueRows(),
       client_domain: clientDomain,
     },
     authenticated: true,
