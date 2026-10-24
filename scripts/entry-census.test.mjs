@@ -157,7 +157,8 @@ test('the qualify chain keeps one credential job per operation and a credential-
   assert.ok(record.length > 0);
   assert.match(record, /needs: \[preflight, full\]/);
   assert.match(record, /if: github\.ref == 'refs\/heads\/main' && needs\.preflight\.outputs\.operation == 'full'/);
-  assert.match(record, /permissions:\n {6}contents: read\n/);
+  // #228: the drift gate's --verify-recorded re-proof needs the Actions read scope.
+  assert.match(record, /permissions:\n {6}actions: read\n {6}contents: read\n/);
   assert.doesNotMatch(record, /environment:|id-token|configure-aws-credentials/);
   assert.match(job('full'), /qualification:generate/);
 
@@ -173,6 +174,46 @@ test('the qualify chain keeps one credential job per operation and a credential-
   }
   // `record` is the last job in the workflow.
   assert.ok(qualify.trimEnd().endsWith('if-no-files-found: error'), 'record must be the last qualification job');
+});
+
+test('the deploy-smoke drift gate runs only in full and the record job re-verifies it', () => {
+  // #228: `full` gains `actions: read` (the reconcile job's precedent) and runs the
+  // drift gate immediately after the before-observation, before the suite, so a drift
+  // or a missing smoke fails before a 90-minute suite spends its time.
+  const full = job('full');
+  assert.match(full, /permissions:\n {6}actions: read\n {6}contents: read\n {6}id-token: write\n/);
+  assert.match(full, /run: node scripts\/verify-smoke-drift\.mjs\n/);
+  assert.match(full, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.match(full, /SMOKE_DRIFT_BASELINE: deployment-evidence-before\.json/);
+  assert.match(full, /\.qualification-inputs\/smoke-drift\.json/);
+  const driftStep = full.indexOf('Verify the deploy-smoke observation agrees with the qualification observation');
+  const beforeObservation = full.indexOf('Observe authenticated deployed tuple before suite');
+  const suite = full.indexOf('Run the release-gating business regression suite');
+  assert.ok(beforeObservation >= 0 && driftStep > beforeObservation && suite > driftStep,
+    'the drift gate must sit after the before-observation and before the suite');
+
+  // The smoke operation keeps taking the same platform observation and uploading it with
+  // its `tested-revisions-<run>-<attempt>` artifact — no drift gate there.
+  const smoke = job('smoke');
+  assert.match(smoke, /name: tested-revisions-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(smoke, /pnpm qualification:collect/);
+  for (const name of ['preflight', 'smoke', 'reconcile']) {
+    assert.doesNotMatch(job(name), /verify-smoke-drift/, `${name} must never run the drift gate`);
+  }
+
+  // The credential-free record job gains `actions: read` and re-proves the gate against
+  // exactly the recorded artifact id.
+  const record = job('record');
+  assert.match(record, /permissions:\n {6}actions: read\n {6}contents: read\n/);
+  assert.match(record, /run: node scripts\/verify-smoke-drift\.mjs --verify-recorded\n/);
+  assert.match(record, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.match(record, /SMOKE_DRIFT_BASELINE: deployment-evidence-before\.json/);
+  assert.match(record, /\.qualification-inputs\/smoke-drift\.json/);
+
+  // No workflow may reference the deleted vendored contract.
+  for (const [name, source] of [['beta-qualification.yml', qualify], ['check.yml', check]]) {
+    assert.doesNotMatch(source, /vendor/, `${name} must not reference the deleted vendored contract`);
+  }
 });
 
 test('no qualification job downloads a producer deployment record or checks out producer source', () => {
