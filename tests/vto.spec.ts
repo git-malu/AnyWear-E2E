@@ -50,7 +50,11 @@ interface Generation {
   generation_id: string;
   status: string;
   state_version: number;
-  image_key: string | null;
+  // The reads identify the generation's image by the image's uuid and carry a URL that
+  // the Service signs at read time; a generation that is still running or that failed
+  // has both members null.
+  imageId: string | null;
+  url: string | null;
   error_message?: string | null;
 }
 
@@ -272,10 +276,11 @@ test.describe('Virtual try-on @regression @full-stack', () => {
       return latestGeneration.status;
     }, { timeout: VTO_TERMINAL_WAIT_MS, intervals: [1_000, 2_000, 5_000] }).toBe('Complete');
 
-    // The terminal body names the generated image; retrieve it and assert real bytes.
+    // The terminal body identifies the generated image by its uuid and carries a URL
+    // freshly signed at read time; retrieve it and assert real bytes.
     const terminal = latestGeneration!;
-    expect(typeof terminal.image_key).toBe('string');
-    const image = await page.request.get(String(terminal.image_key));
+    expect(typeof terminal.imageId).toBe('string');
+    const image = await page.request.get(String(terminal.url));
     expect(image.ok()).toBe(true);
     expect((await image.body()).length).toBeGreaterThan(0);
 
