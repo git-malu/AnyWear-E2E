@@ -133,10 +133,11 @@ test.describe('Wardrobe Management @regression @full-stack', () => {
     expect(uploadedResponse.status()).toBe(200);
     // The upload-url response books the upload; the item does not exist until the
     // confirmation has read the stored object back.
-    const reservation = await readServiceJson<{ reservationId: string; key: string; expiresAt: string; upload: unknown }>(uploadedResponse);
+    const reservation = await readServiceJson<{ reservationId: string; expiresAt: string; upload: unknown }>(uploadedResponse);
     expect(reservation.reservationId).toBeTruthy();
-    expect(reservation.key).toBeTruthy();
     expect(reservation.expiresAt).toBeTruthy();
+    // The reservation carries no object key (#232): `upload` is the signed S3
+    // POST policy, and the image identity is minted only by the confirmation.
     expect(reservation.upload).toBeTruthy();
     authorization = await uploadedResponse.request().headerValue('authorization') ?? undefined;
     expect(authorization).toBeTruthy();
