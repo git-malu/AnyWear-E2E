@@ -1,18 +1,20 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { exactKeys, parseStrictJson, requireCommit } from './evidence-contract.mjs';
+import { exactKeys, parseStrictJson } from './evidence-contract.mjs';
 import { repositoryRoot } from './test-selection.mjs';
 
-// #180: the oldest supported Client is the one small committed file the live path
+// #180/#256: the reviewed Client floor is the one small committed file the live path
 // still reads. It is not a tuple identity and not a pre-submitted copy of the live
 // deployment: the floor version is the deployed Service's own
-// `/health.minimum_client_version`, and this file only names the Client commit whose
-// `client-version.json` declares that same version. Qualification refuses a
-// disagreement instead of picking the oldest version itself, so a deployment that
-// raises the floor cannot be qualified against a stale file, and a file that moves
-// ahead of the deployment cannot silently qualify either.
+// `/health.minimum_client_version`, and this file states the reviewed floor version the
+// suite must meet. Qualification refuses a disagreement instead of picking the oldest
+// version itself, so a deployment that raises the floor cannot be qualified against a
+// stale file, and a file that moves ahead of the deployment cannot silently qualify
+// either. The file names no Client commit: the oldest-Client qualification leg that read
+// a `sha` is deleted, and the exact-key check below refuses a leftover `sha` instead of
+// ignoring it.
 export const MINIMUM_SUPPORTED_CLIENT_PATH = 'minimum-supported-client.json';
-export const MINIMUM_SUPPORTED_CLIENT_KEYS = Object.freeze(['version', 'sha']);
+export const MINIMUM_SUPPORTED_CLIENT_KEYS = Object.freeze(['version']);
 export const MINIMUM_SUPPORTED_CLIENT_SOURCE = MINIMUM_SUPPORTED_CLIENT_PATH;
 
 export function validateMinimumSupportedClient(value) {
@@ -23,7 +25,6 @@ export function validateMinimumSupportedClient(value) {
   if (!Number.isSafeInteger(value.version) || value.version < 0) {
     throw new Error(`${MINIMUM_SUPPORTED_CLIENT_PATH}.version must be a non-negative safe integer`);
   }
-  requireCommit(value.sha, `${MINIMUM_SUPPORTED_CLIENT_PATH}.sha`);
   return value;
 }
 
@@ -35,7 +36,7 @@ export function readMinimumSupportedClient(root = repositoryRoot) {
   try {
     bytes = readFileSync(path);
   } catch (error) {
-    throw new Error(`${MINIMUM_SUPPORTED_CLIENT_PATH} is unreadable at ${path}; the live floor comparison and the oldest-Client leg require it (${error.code ?? error.message})`, { cause: error });
+    throw new Error(`${MINIMUM_SUPPORTED_CLIENT_PATH} is unreadable at ${path}; the live floor comparison and the rejection-contract scenario require it (${error.code ?? error.message})`, { cause: error });
   }
   let value;
   try {

@@ -252,16 +252,17 @@ test('derives each invocation tag from package.json and refuses any that selects
   }
 });
 
-test('the spec titles, the scenario inventory and the release-gating selection agree on the four members', () => {
+test('the spec titles, the scenario inventory and the release-gating selection agree on the five members', () => {
   const declarations = assertScenarioDeclarations();
   assert.deepEqual(declarations.map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/vto.spec.ts',
-    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/rejection-contract.spec.ts',
+    'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(qualificationSelection(), { invocation: 'test', tag: '@regression' });
   // Every tracked deployed scenario is in the release-gating selection.
   assert.deepEqual(selectedScenarios('@regression').map(({ file }) => file), [
-    'tests/auth-startup.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
+    'tests/auth-startup.spec.ts', 'tests/rejection-contract.spec.ts', 'tests/vto.spec.ts',
+    'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts',
   ]);
   assert.deepEqual(selectedScenarios('@full-stack').map(({ file }) => file), [
     'tests/auth-startup.spec.ts', 'tests/vto.spec.ts',
@@ -311,10 +312,11 @@ test('refuses a report with no scenario, an unknown status, or a file that disag
 });
 
 test('refuses a selection that omits a declared member or adds one the tag does not select', () => {
-  const regression = ['tests/auth-startup.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
+  const regression = ['tests/auth-startup.spec.ts', 'tests/rejection-contract.spec.ts', 'tests/vto.spec.ts', 'tests/wardrobe.spec.ts', 'tests/worker-smoke.spec.ts'];
   // A record that drops a declared member silently narrows what it claims to have qualified.
   assert.throws(() => assertTestSelection(testMember('@regression', [
-    scenario('tests/auth-startup.spec.ts'), scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
+    scenario('tests/auth-startup.spec.ts'), scenario('tests/rejection-contract.spec.ts'),
+    scenario('tests/vto.spec.ts'), scenario('tests/worker-smoke.spec.ts'),
   ])), /omits tests\/wardrobe\.spec\.ts/);
   // A scenario file neither the tag nor this repository selects is refused rather than added
   // to the record's claim.
@@ -335,6 +337,7 @@ test('refuses a selection that omits a declared member or adds one the tag does 
 test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   const member = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/rejection-contract.spec.ts'),
     scenario('tests/vto.spec.ts'),
     // wardrobe.spec.ts has no `test.skip(condition)` at all: a collected-and-skipped entry
     // here would excuse an acceptance path that never ran.
@@ -346,6 +349,7 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
   // completed spec.
   assert.throws(() => assertTestSelection(testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/rejection-contract.spec.ts'),
     scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { collected: 2, skipped: 1 }),
     scenario('tests/worker-smoke.spec.ts'),
@@ -355,6 +359,7 @@ test('refuses a skipped scenario whose spec declares no runtime skip', () => {
 test('refuses a failed scenario even when the run reported success', () => {
   const failed = testMember('@regression', [
     scenario('tests/auth-startup.spec.ts'),
+    scenario('tests/rejection-contract.spec.ts'),
     scenario('tests/vto.spec.ts'),
     scenario('tests/wardrobe.spec.ts', { outcome: 'failed' }),
     scenario('tests/worker-smoke.spec.ts'),
@@ -365,6 +370,7 @@ test('refuses a failed scenario even when the run reported success', () => {
   // never reaches it.
   assert.throws(() => buildTestMember(reportBytes([
     fileSuite('tests/auth-startup.spec.ts', ['expected']),
+    fileSuite('tests/rejection-contract.spec.ts', ['expected']),
     fileSuite('tests/vto.spec.ts', ['expected']),
     fileSuite('tests/wardrobe.spec.ts', ['unexpected']),
     fileSuite('tests/worker-smoke.spec.ts', ['expected']),

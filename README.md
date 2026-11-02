@@ -184,8 +184,9 @@ revision; the current verifier does not accept the retired `suite: 'complete'` s
 
 Test classification is explicit: `@smoke` marks the small, stable critical path for the
 on-demand Beta diagnostic; `@regression` marks the scenarios admitted to the
-release-gating selection; `@full-stack` marks cross-repository scenarios, which every
-scenario here carries. A tag selects; the
+release-gating selection; `@full-stack` marks cross-repository scenarios. The
+rejection-contract scenario carries only `@regression`, because it observes the deployed
+Service without crossing the Client boundary. A tag selects; the
 [scenario inventory](docs/scenario-inventory.md) states the class and the verdict.
 Dev verification remains in the Client and Service unit and integration suites.
 
@@ -212,8 +213,9 @@ production-readiness gate for an already-deployed Beta environment. It reads the
 verifies that the live Service commit resolves to an immutable Service release, takes its own
 authenticated platform observation — the deployed surface discovered through AWS public
 list/describe APIs — verifies the deploy-smoke drift gate against the deploy-time
-observation of the same release, runs the release-gating deployed selection and the oldest
-supported Client leg, re-observes and requires an identical tuple, and hands a checksummed v4
+observation of the same release, runs the release-gating deployed selection (including the
+rejection-contract leg that proves the deployed Service refuses a Client below the reviewed
+floor), re-observes and requires an identical tuple, and hands a checksummed v4
 record to the credential-free `record` job, which re-verifies it offline and attaches the
 artifact. A green `full` run whose record `record` has verified and attached is the complete
 release decision; there is no separate approval action or approval Environment, and the audit
@@ -306,11 +308,15 @@ without `environment: beta` cannot resolve environment-scoped variables. If a di
 ever recreated, the constants move with it in one reviewed change.
 
 The only committed input on the live path is
-[`minimum-supported-client.json`](minimum-supported-client.json):
-`{ "version": 0, "sha": "<oldest-supported-client-sha>" }`. The Client has no version tag, so
-the oldest-Client leg needs the commit named explicitly; the file's `version` must equal the
-live Service's `minimum_client_version`, and a disagreement is refused — never resolved by
-picking the oldest version — with a message that says to sync the file.
+[`minimum-supported-client.json`](minimum-supported-client.json): `{ "version": 6 }`. It
+states the reviewed Client floor version only — the Client commit it used to name was read
+by the deleted oldest-Client leg. Its `version` must equal the live Service's
+`minimum_client_version`, and a disagreement is refused — never resolved by picking the
+oldest version — with a message that says to sync the file. Every direct Service request in
+the deployed suite presents that version in the `X-AnyWear-Client-Version` header, because
+at a floor above 0 the Service refuses a headerless request; the new
+`tests/rejection-contract.spec.ts` scenario proves the rejection contract against the
+deployed Service.
 
 `AnyWear-Service`'s release chain verifies its own sealed release before deploying it; E2E
 independently verifies that the live Service commit resolves to an immutable

@@ -101,7 +101,7 @@ test('refuses a live floor that disagrees with the committed file and tells the 
   const observed = floor.version + 1;
   await assert.rejects(collect(liveClient(), liveService({ minimum_client_version: observed })),
     new RegExp(`Deployed Service minimum_client_version ${observed} differs from minimum-supported-client\\.json version ${floor.version}[^\\n]*sync minimum-supported-client\\.json`));
-  await assert.rejects(collect(liveClient({ client_version: 0 }), liveService({ minimum_client_version: 1 }), {}, { version: 1, sha: 'a'.repeat(40) }),
+  await assert.rejects(collect(liveClient({ client_version: 0 }), liveService({ minimum_client_version: 1 }), {}, { version: 1 }),
     /Deployed Client client_version 0 is below minimum-supported-client\.json version 1/);
   await assert.rejects(collect(liveClient({ schema_version: 2 })),
     /schema_version is 2, expected 3/);
@@ -114,6 +114,14 @@ test('refuses a live floor that disagrees with the committed file and tells the 
   const { minimum_client_version: ignored, ...withoutFloor } = liveService();
   void ignored;
   await assert.rejects(collect(liveClient(), withoutFloor), /minimum_client_version must be a non-negative safe integer/);
+});
+
+test('refuses a floor file that still names a Client commit', async () => {
+  // #256: the committed manifest states the reviewed floor version only. A leftover `sha`
+  // from the deleted oldest-Client leg is refused by the exact-key check, never read as a
+  // no-op that would leave a stale reference in the live path.
+  await assert.rejects(collect(liveClient(), liveService(), {}, { version: floor.version, sha: 'a'.repeat(40) }),
+    /minimum-supported-client\.json\.sha is unknown/);
 });
 
 test('creates and verifies a checksummed passing v4 record from the live tuple', () => {
@@ -149,6 +157,7 @@ test('creates and verifies a checksummed passing v4 record from the live tuple',
   assert.equal(record.workflow.dispatched_by, null);
   assert.deepEqual(record.test.scenarios, [
     { file: 'tests/auth-startup.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
+    { file: 'tests/rejection-contract.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/vto.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/wardrobe.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
     { file: 'tests/worker-smoke.spec.ts', outcome: 'passed', collected: 1, skipped: 0 },
@@ -515,8 +524,9 @@ test('verifies the record against the report the suite wrote and refuses another
   assert.throws(() => verifyQualificationAgainstReport(record), /qualification-report\.json/);
 });
 
-// #180: the deployed Client is the latest one, and the floor is the oldest supported.
-// A Client at the floor is qualified; one below it is refused by the record builder too.
+// #180/#256: the deployed Client is the latest one, and the floor is the reviewed minimum
+// Client version. A Client at the floor is qualified; one below it is refused by the record
+// builder too.
 test('qualifies the latest Client and refuses one below the recorded floor', () => {
   const f = fixture();
   assert.ok(f.clientVersion > f.minimumClientVersion);

@@ -648,177 +648,23 @@ jobs:
           fi
           exit 1
 
-      # The second release-gating leg: the oldest Client the deployed Service still
-      # supports. Only `full` runs it, and it fails closed when the reviewed floor file is
-      # missing or malformed. The floor version is the live Service's own
-      # `minimum_client_version`; `minimum-supported-client.json` names the Client commit
-      # that declares it, because the Client has no version tag to resolve. #180 moved this
-      # read off the retired compatibility pin and onto that two-line file, whose version the
-      # live check already refused to disagree with. The primary report above is the one the
-      # qualification record's `test` member derives from; this leg writes its own report and
-      # its own cleanup scope, so neither its accounts nor its evidence can overwrite the
-      # primary leg.
+      # The reviewed Client floor this release qualifies against. The deployed Service
+      # enforces it on every non-exempt request, and the rejection-contract scenario inside
+      # the release-gating suite proves it: below-floor, headerless and malformed requests
+      # are refused with CLIENT_VERSION_UNSUPPORTED, a request at the floor is admitted, and
+      # `/health` stays exempt. `minimum-supported-client.json` states that reviewed floor
+      # version only; the oldest-Client build that used to be checked out from a `sha` is
+      # deleted with its leg. This is the workflow's only literal mention of the manifest, so
+      # the floor the run is about to qualify against is stated on the run itself.
       - name: Read the minimum supported Client floor
-        id: minimum-supported-client
         shell: bash
         run: |
-          minimum_supported_client_sha="$(jq -r '.sha // empty' minimum-supported-client.json)"
           minimum_supported_client_version="$(jq -r '.version // empty' minimum-supported-client.json)"
-          if [[ ! "$minimum_supported_client_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::operation full requires minimum-supported-client.json sha naming the oldest supported Client"
-            exit 1
-          fi
           if [[ ! "$minimum_supported_client_version" =~ ^(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::operation full requires minimum-supported-client.json version as a non-negative integer"
+            echo "::error::minimum-supported-client.json version must be a non-negative integer"
             exit 1
           fi
-          {
-            echo "MINIMUM_SUPPORTED_CLIENT_SHA=$minimum_supported_client_sha"
-            echo "MINIMUM_SUPPORTED_CLIENT_VERSION=$minimum_supported_client_version"
-          } >> "$GITHUB_ENV"
-          {
-            echo "sha=$minimum_supported_client_sha"
-            echo "version=$minimum_supported_client_version"
-          } >> "$GITHUB_OUTPUT"
-          {
-            echo "### Oldest supported Client qualification leg"
-            echo
-            echo "- Client commit: \`$minimum_supported_client_sha\`"
-            echo "- Client version floor: \`$minimum_supported_client_version\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Generate Client contents read token
-        id: client-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: AnyWear-Client
-          permission-contents: read
-
-      - name: Checkout the oldest supported Client
-        uses: actions/checkout@v4
-        with:
-          repository: git-malu/AnyWear-Client
-          ref: ${{ steps.minimum-supported-client.outputs.sha }}
-          path: AnyWear-Client-oldest
-          # The token is scoped to AnyWear-Client alone, and the source build does not
-          # read the API-specification submodule, so fetch the Client sources only.
-          token: ${{ steps.client-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Install the oldest supported Client
-        working-directory: AnyWear-Client-oldest
-        run: pnpm install --frozen-lockfile
-
-      - name: Build the oldest supported Client from its pinned commit
-        working-directory: AnyWear-Client-oldest
-        env:
-          VITE_API_BASE_URL: ${{ env.E2E_SERVICE_URL }}
-          SOURCE_COMMIT_SHA: ${{ steps.minimum-supported-client.outputs.sha }}
-        run: |
-          export VITE_COGNITO_USER_POOL_ID="${VITE_COGNITO_USER_POOL_ID:?the Beta Cognito user pool was not loaded}"
-          export VITE_COGNITO_CLIENT_ID="${VITE_COGNITO_CLIENT_ID:?the Beta Cognito client was not loaded}"
-          pnpm build
-          recorded_schema_version="$(jq -r '.schema_version // empty' dist/build-metadata.json)"
-          recorded_client_version="$(jq -r '.client_version // empty' dist/build-metadata.json)"
-          recorded_source_commit="$(jq -r '.source_commit // empty' dist/build-metadata.json)"
-          oldest_metadata_ok=false
-          # Version 0 is the unversioned Client: an oldest supported Client pinned at
-          # floor 0 may predate client-version.json, so a schema 1/2 build without
-          # client_version is version 0 by definition. A floor above 0 must be stated
-          # by a schema-3 build.
-          case "$MINIMUM_SUPPORTED_CLIENT_VERSION:$recorded_schema_version" in
-            0:3) [[ "$recorded_client_version" == 0 ]] && oldest_metadata_ok=true ;;
-            0:1|0:2) [[ -z "$recorded_client_version" ]] && oldest_metadata_ok=true ;;
-            *) [[ "$recorded_schema_version" == 3 && "$recorded_client_version" == "$MINIMUM_SUPPORTED_CLIENT_VERSION" ]] && oldest_metadata_ok=true ;;
-          esac
-          if [[ "$recorded_source_commit" != "$MINIMUM_SUPPORTED_CLIENT_SHA" ]]; then
-            oldest_metadata_ok=false
-          fi
-          if [[ "$oldest_metadata_ok" != true ]]; then
-            echo "::error::the oldest supported Client build metadata does not bind source $MINIMUM_SUPPORTED_CLIENT_SHA to client_version $MINIMUM_SUPPORTED_CLIENT_VERSION"
-            jq '{schema_version, client_version, source_commit}' dist/build-metadata.json || true
-            exit 1
-          fi
-          mkdir -p ../test-results
-          cp dist/build-metadata.json ../test-results/oldest-client-build-metadata.json
-          {
-            echo "Oldest supported Client build verified"
-            echo
-            echo "- Source commit: \`$MINIMUM_SUPPORTED_CLIENT_SHA\`"
-            echo "- Floor: \`$MINIMUM_SUPPORTED_CLIENT_VERSION\`"
-            echo "- Recorded schema_version: \`$recorded_schema_version\`"
-            echo "- Recorded client_version: \`${recorded_client_version:-unversioned (0)}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Set the oldest-client leg cleanup run scope
-        shell: bash
-        run: |
-          run_scope="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 8)"
-          {
-            echo "E2E_CLEANUP_RUN_SCOPE=$run_scope"
-            echo "E2E_ACCOUNT_RUN_SCOPE=$run_scope"
-            echo "E2E_ACCOUNT_BUDGET_PATH=test-results/account-budget-oldest-client.json"
-          } >> "$GITHUB_ENV"
-          echo "Oldest-client cleanup run scope: $run_scope" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Run the release-gating suite against the oldest supported Client
-        id: oldest-client-suite
-        env:
-          E2E_CLIENT_URL: http://127.0.0.1:4173
-          E2E_ALLOW_LOOPBACK_CLIENT: 'true'
-          # The oldest leg's Playwright output and report live outside `test-results`:
-          # a second Playwright run cleans its output directory, and the primary report,
-          # account evidence and environment verdict under `test-results` are the
-          # qualification record's inputs. They must survive the second leg.
-          E2E_PLAYWRIGHT_OUTPUT_DIR: test-results/oldest-client
-          E2E_QUALIFICATION_REPORT: test-results/qualification-report-oldest-client.json
-        run: |
-          set -euo pipefail
-          node scripts/execution-guard.mjs
-          preview_log="test-results/oldest-client-preview.log"
-          mkdir -p test-results
-          (
-            cd AnyWear-Client-oldest
-            exec ./node_modules/.bin/vite preview --host 127.0.0.1 --port 4173 --strictPort
-          ) > "$preview_log" 2>&1 &
-          preview_pid=$!
-          cleanup_preview() {
-            kill "$preview_pid" 2>/dev/null || true
-            wait "$preview_pid" 2>/dev/null || true
-          }
-          trap cleanup_preview EXIT
-          ready=''
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent --show-error http://127.0.0.1:4173/ > /dev/null 2>&1; then
-              ready=1
-              break
-            fi
-            if ! kill -0 "$preview_pid" 2>/dev/null; then
-              cat "$preview_log"
-              echo "::error::the oldest supported Client preview exited before it became ready (attempt ${attempt}/60)"
-              exit 1
-            fi
-            sleep 1
-          done
-          if [[ "$ready" != 1 ]]; then
-            cat "$preview_log"
-            echo "::error::the oldest supported Client preview did not become ready"
-            exit 1
-          fi
-          pnpm test
-
-      - name: Clean up oldest-client Beta worker identities
-        if: ${{ always() && steps.oldest-client-suite.outcome != 'skipped' }}
-        run: |
-          node scripts/execution-guard.mjs
-          pnpm accounts:cleanup-workers
-
-      - name: Preserve oldest-client suite failure
-        if: ${{ always() && steps.oldest-client-suite.outcome == 'failure' }}
-        run: exit 1
+          echo "Committed floor: $minimum_supported_client_version"
 
       - name: Confirm deployed identities remained stable
         env:
@@ -860,8 +706,6 @@ jobs:
             deployment-evidence.json
             qualification-record.json
             test-results/qualification-report.json
-            test-results/qualification-report-oldest-client.json
-            test-results/oldest-client-build-metadata.json
             test-results/beta-environment-verdict.json
           retention-days: 90
           include-hidden-files: true
@@ -880,10 +724,6 @@ jobs:
             deployment-evidence-before.json
             deployment-evidence.json
             test-results/qualification-report.json
-            test-results/qualification-report-oldest-client.json
-            test-results/oldest-client-build-metadata.json
-            test-results/oldest-client-preview.log
-            test-results/account-budget-oldest-client.json
             test-results/beta-environment-verdict.json
             test-results/**/error-context.md
           retention-days: 90
@@ -897,7 +737,6 @@ jobs:
           name: beta-account-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-results/account-budget.json
-            test-results/account-budget-oldest-client.json
             test-results/service-cleanup-operation.json
             test-results/service-cleanup-run.json
           if-no-files-found: ignore
@@ -1157,8 +996,6 @@ jobs:
             deployment-evidence.json
             qualification-record.json
             test-results/qualification-report.json
-            test-results/qualification-report-oldest-client.json
-            test-results/oldest-client-build-metadata.json
             test-results/beta-environment-verdict.json
           retention-days: 90
           include-hidden-files: true

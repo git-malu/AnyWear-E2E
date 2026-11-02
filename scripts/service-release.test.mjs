@@ -7,6 +7,7 @@ import {
   SERVICE_RELEASE_ASSET_NAMES, readServiceRelease, runServiceRelease, serviceReleaseArguments,
 } from './service-release.mjs';
 import { TAG_DEREF_LIMIT } from './github-read.mjs';
+import { readMinimumSupportedClient } from './minimum-supported-client.mjs';
 
 const serviceSha = 'b'.repeat(40);
 const otherSha = 'e'.repeat(40);
@@ -230,12 +231,17 @@ test('parses the CLI surface and refuses an unknown or incomplete one', () => {
   }
 });
 
+// The live fixture derives its Client version and Service floor from the committed
+// `minimum-supported-client.json`, so raising the reviewed floor moves this fixture with it
+// instead of pinning a stale literal.
+const committedFloor = readMinimumSupportedClient().version;
+
 const liveMetadata = () => ({
   client: {
-    component: 'AnyWear-Client', schema_version: 3, source_commit: 'a'.repeat(40), client_version: 0,
+    component: 'AnyWear-Client', schema_version: 3, source_commit: 'a'.repeat(40), client_version: committedFloor,
     built_at: '2026-10-07T00:00:00.000Z',
   },
-  service: { status: 'ok', service_commit: serviceSha, image_digest: `sha256:${'c'.repeat(64)}`, minimum_client_version: 0 },
+  service: { status: 'ok', service_commit: serviceSha, image_digest: `sha256:${'c'.repeat(64)}`, minimum_client_version: committedFloor },
 });
 const fetcherFor = ({ client, service }) => async (url) => new Response(
   JSON.stringify(url.pathname === '/build-metadata.json' ? client : service), { status: 200 },
@@ -277,11 +283,11 @@ test('writes the verified live identity and release identity for the record', as
     assert.deepEqual(JSON.parse(await readFile(join(directory, 'live-identity.json'), 'utf8')), {
       client: {
         url: 'https://client123.cloudfront.net', source_commit: 'a'.repeat(40),
-        built_at: '2026-10-07T00:00:00.000Z', client_version: 0,
+        built_at: '2026-10-07T00:00:00.000Z', client_version: committedFloor,
       },
       service: {
         url: 'https://api123.cloudfront.net', service_commit: serviceSha,
-        image_digest: `sha256:${'c'.repeat(64)}`, minimum_client_version: 0,
+        image_digest: `sha256:${'c'.repeat(64)}`, minimum_client_version: committedFloor,
       },
     });
   } finally {
@@ -306,7 +312,7 @@ test('refuses a wrong expectation or floor before the release read', async () =>
   await assert.rejects(run({ expected: ['--expected-service-commit', 'f'.repeat(40)] }),
     /Deployed Service service_commit mismatch[^\n]*expected f{40} \(dispatch input\), observed b{40} \(live\)/);
   assert.equal(apiCalled, false);
-  await assert.rejects(run({ metadata: { service: { ...metadata.service, minimum_client_version: 1 } } }),
+  await assert.rejects(run({ metadata: { service: { ...metadata.service, minimum_client_version: committedFloor + 1 } } }),
     /sync minimum-supported-client\.json/);
   assert.equal(apiCalled, false);
   await assert.rejects(run(), /release read must not run/);

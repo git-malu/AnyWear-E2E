@@ -48,7 +48,7 @@ and the four released assets with their published digests), and
 the `record` job is the last qualification job: the green `full` run plus its sealed record is
 the release decision, with the dispatch event, the run/attempt and the record tuple as the
 audit trail. No release-qualification path reads a committed compatibility file; the
-qualification path reads `minimum-supported-client.json` only for the oldest-Client leg.
+qualification path reads `minimum-supported-client.json` as the reviewed Client floor.
 
 `test:list` and `playwright test --list` discover tests without executing them. Discovery
 reads configuration only, makes no cloud call and asserts no verdict.
@@ -156,6 +156,29 @@ agreeing about the invocations that exist.
 | Cleanup contract | Declares `declareNoBusinessCleanup` with `teardownResult: 'passed'`. The worker-lease fixture deletes the captured Cognito identity, reads back its absence, and releases the lease. Ownership is per attempt: the address is bound to the run scope and slot and is never re-bound |
 | Verification rationale | The binding assertion is the reason the scenario exists and it cannot be established at a lower boundary: the defect it guards against appeared only against the deployed identity boundary. The profile status is attached as evidence for a red run |
 | Red result means | A product failure in the identity/profile binding contract, or an environment condition. As smoke it withholds diagnostic confidence; inside the release selection it fails the gate |
+
+### `tests/rejection-contract.spec.ts`
+
+| Field | Value |
+| --- | --- |
+| Declared title | `Client version rejection contract @regression` |
+| Policy class | Full deployed system E2E |
+| Tags | `@regression` |
+| Intent | The deployed Service enforces its release Client floor on the ordinary request path: a Client below the floor, a headerless request and a malformed header are refused with HTTP 400 `CLIENT_VERSION_UNSUPPORTED` carrying the floor and the parsed header value, a Client at the floor is admitted, and `/health` stays reachable below the floor |
+| Current caller | The `full` operation of the protected `qualify` entry, through the release-gating selection. `test:smoke` does not select it |
+| Assertion boundary | Deployed Service HTTP contract only: no Client UI, no identity and no provider call |
+| Actual operation | Reads `E2E_SERVICE_URL`, reads the live floor from the Service's own `/health`, then issues four unauthenticated probes to a non-exempt business route (`GET /users/me`, which answers 401 once admitted) and a second, below-floor `/health` read |
+| Owner | AnyWear-E2E maintainers |
+| Lifecycle | Current. It replaces the deleted oldest-Client qualification leg (#256): the floor is proven through the rejection contract instead of by building and running an old Client |
+| Command | `pnpm test:regression`, and `pnpm test` because the suite step runs the same selection |
+| Default trigger | The `full` operation of the `qualify` entry, whose selection this scenario is part of |
+| Cost | No identity, no uploaded object and no provider spend; six HTTP reads per attempt |
+| Side effects | None: read-only probes against the deployed Service |
+| Evidence level | Qualification, when the complete selection and the pre/post identity checks pass |
+| Disposition | Retain |
+| Cleanup contract | None to perform: the bare Playwright `request` fixture creates no Cognito identity, no Service row and no cloud resource, so the scenario registers no teardown and deletes nothing |
+| Verification rationale | The contract is the Service's own middleware behaviour and can only be proven against the deployed floor. The live floor is read in the test body, and a floor below 1 refuses clearly rather than skipping, because `floor - 1` cannot be derived otherwise. `playwright test --list` loads the spec with no E2E environment, so no environment variable is read at module scope |
+| Red result means | A release-gating product failure in the Service's Client-version gate: it admits a Client below the floor, refuses one at the floor, misses the exemption, or states a floor the committed manifest does not match. A live floor below 1 is a fail-closed precondition refusal of the deployed configuration, not a product result |
 
 ## Retired scenarios
 
