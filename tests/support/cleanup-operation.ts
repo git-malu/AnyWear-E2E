@@ -5,6 +5,7 @@ import {
   closeAttemptBusinessCleanup,
   type AttemptKey,
 } from './attempt-cleanup-registry.ts';
+import { CLIENT_VERSION_HEADERS } from './client-version.ts';
 
 /**
  * Issue 86 ordinary-path direct teardown.
@@ -370,7 +371,11 @@ export class DirectTeardown {
           continue;
         }
         const response = await this.options.request.delete(this.options.serviceUrl + route, {
-          headers: { Authorization: authorization },
+          // The Service's client-version gate covers the ordinary user-facing DELETE
+          // routes, so a teardown delete carries the committed floor like every other
+          // direct Service request. The `/cleanup-operations*` machine surface this class
+          // also calls is exempt and stays headerless.
+          headers: { ...CLIENT_VERSION_HEADERS, Authorization: authorization },
         });
         const status = response.status();
         outcomes.push({ ref, status, deleted: status === 200 || status === 204 || status === 404 });

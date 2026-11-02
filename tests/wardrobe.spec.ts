@@ -4,6 +4,7 @@ import {
   requireEnvironment,
 } from './support/account.js';
 import { DirectTeardown, quarantinesScope, type ProductResult } from './support/cleanup-operation.js';
+import { CLIENT_VERSION_HEADERS } from './support/client-version.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   readServiceJson,
@@ -85,7 +86,7 @@ test.describe('Wardrobe Management @regression @full-stack', () => {
     // Exact absence readback after teardown, independent of the product assertion.
     const readback = await page.request.get(
       `${requireEnvironment('E2E_SERVICE_URL')}/wardrobe/items/${createdItemId}`,
-      { headers: { Authorization: authorization } },
+      { headers: { ...CLIENT_VERSION_HEADERS, Authorization: authorization } },
     );
     expect(readback.status()).toBe(404);
 
@@ -150,7 +151,7 @@ test.describe('Wardrobe Management @regression @full-stack', () => {
     expect(accepted).toEqual({ itemId: createdItemId, taggingStatus: 'processing' });
     const idempotencyKey = await confirmedResponse.request().headerValue('idempotency-key');
     expect(idempotencyKey).toBeTruthy();
-    const headers = { Authorization: authorization!, 'Idempotency-Key': idempotencyKey! };
+    const headers = { ...CLIENT_VERSION_HEADERS, Authorization: authorization!, 'Idempotency-Key': idempotencyKey! };
     const ownedItemUrl = `${serviceUrl}/wardrobe/items/${createdItemId}`;
 
     const replay = await page.request.post(`${serviceUrl}/wardrobe/upload`, {

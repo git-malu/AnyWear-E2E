@@ -57,10 +57,13 @@ Run install and build commands from this repository.
   Service through `/health` (`service_commit`, `image_digest`, `minimum_client_version`);
   `full` compares those values with the dispatch expectation and refuses a mismatch before
   the suite, naming the observed and the expected value. The only committed input on the
-  live path is `minimum-supported-client.json` (`{version, sha}`): the oldest supported
-  Client the deployed Service still accepts, whose `version` must equal the live Service
-  floor (a disagreement is a refusal, never an automatic choice). Do not add a committed
-  file that describes the deployed revisions; that is what #180 removed.
+  live path is `minimum-supported-client.json` (`{version}`): the reviewed Client floor,
+  whose `version` must equal the live Service floor (a disagreement is a refusal, never an
+  automatic choice). Every direct Service request in the deployed suite presents that
+  version in the `X-AnyWear-Client-Version` header, and `tests/rejection-contract.spec.ts`
+  proves the deployed Service refuses a Client below the floor with HTTP 400
+  `CLIENT_VERSION_UNSUPPORTED` while admitting one at it. Do not add a committed file that
+  describes the deployed revisions; that is what #180 removed.
 - For release qualification, record the full intended Client, Service, and E2E
   SHAs and verify that the target environment serves those Client and Service
   revisions through Client `build-metadata.json` and Service `/health`. Recheck

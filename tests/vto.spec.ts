@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { assertE2EExecution } from '../scripts/execution-guard.mjs';
 import { requireEnvironment } from './support/account.js';
+import { CLIENT_VERSION_HEADERS } from './support/client-version.js';
 import {
   DirectTeardown,
   deleteRouteFor,
@@ -135,13 +136,13 @@ test.describe('Virtual try-on @regression @full-stack', () => {
       const route = deleteRouteFor({ kind, id });
       if (!route) throw new Error(`No ordinary user-facing absence readback exists for ${kind}`);
       const readback = await page.request.get(`${requireEnvironment('E2E_SERVICE_URL')}${route}`, {
-        headers: { Authorization: authorization },
+        headers: { ...CLIENT_VERSION_HEADERS, Authorization: authorization },
       });
       expect(readback.status()).toBe(404);
     }
     if (basePhotoIds.length) {
       const listed = await page.request.get(`${requireEnvironment('E2E_SERVICE_URL')}/vto/base-photos`, {
-        headers: { Authorization: authorization },
+        headers: { ...CLIENT_VERSION_HEADERS, Authorization: authorization },
       });
       expect(listed.status()).toBe(200);
       const remaining = (await listed.json() as { id: string }[]).map(photo => photo.id);
@@ -165,7 +166,7 @@ test.describe('Virtual try-on @regression @full-stack', () => {
     const serviceUrl = requireEnvironment('E2E_SERVICE_URL');
     const serviceOrigin = serviceOriginOf(serviceUrl);
     const serviceJson = (criteria: { method: string; path?: string }) => serviceResponseMatcher(serviceOrigin, criteria);
-    const headers = { Authorization: authorization! };
+    const headers = { ...CLIENT_VERSION_HEADERS, Authorization: authorization! };
     const credit = async () => {
       const response = await page.request.get(`${serviceUrl}/users/me`, { headers });
       expect(response.status()).toBe(200);

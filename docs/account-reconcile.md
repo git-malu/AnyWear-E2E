@@ -56,12 +56,15 @@ rather than truncating.
   lookup that cannot be read at all is a source failure. A bound artifact whose bytes fail the
   digest or archive checks is a source failure too, and so is one whose listing has no
   well-formed `sha256:<64 hex>` digest.
-- **The upload set is closed** — `account-budget.json`, `account-budget-oldest-client.json`,
-  `service-cleanup-operation.json` and `service-cleanup-run.json`. The smoke artifact carries
-  the first, third and fourth. Every `account-budget*.json` present is read as a manifest, so
-  the default and oldest-supported-Client legs feed one identity set; the two cleanup
-  diagnostics are ignored. Any other name, a directory, a symlink, a duplicate or an over-bound
-  file refuses the artifact. No specific manifest is required.
+- **The upload set is closed** — `account-budget.json`, the historical
+  `account-budget-oldest-client.json`, `service-cleanup-operation.json` and
+  `service-cleanup-run.json`. The smoke artifact carries the first, third and fourth. Every
+  `account-budget*.json` present is read as a manifest, so the addresses feed one identity
+  set; the two cleanup diagnostics are ignored. The oldest-client manifest is no longer
+  produced for new runs since #256 removed the oldest-Client leg, but it stays in the closed
+  set because runs recorded before that change still uploaded it. Any other name, a
+  directory, a symlink, a duplicate or an over-bound file refuses the artifact. No specific
+  manifest is required.
 - **CloudTrail `AdminCreateUser`** — the Beta pool creations in the window, attributed through
   the caller and the credential session. A creation for an address with no manifest entry is an
   orphan whose run comes from the session and whose `sub` is read back; a creation recorded
